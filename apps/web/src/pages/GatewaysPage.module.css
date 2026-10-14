@@ -4,6 +4,43 @@
   min-width: 0;
 }
 
+.resourceRow,
+.suggestionDetail {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.resourceRow > :first-child {
+  overflow-wrap: anywhere;
+}
+
+.suggestionDetail {
+  gap: 20px;
+}
+
+.rowBadges,
+.detailHeading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.detailHeading {
+  justify-content: space-between;
+}
+
+.detailHeading h2 {
+  margin: 0;
+}
+
+.rowBadges :global(.fui-Badge),
+.detailHeading :global(.fui-Button) {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .toolbar {
   padding: 16px 18px;
   display: grid;

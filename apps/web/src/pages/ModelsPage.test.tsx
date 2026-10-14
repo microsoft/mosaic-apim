@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-query'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
+import { createMemoryRouter, RouterProvider, useLocation, useNavigate } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ModelsPage } from './ModelsPage'
 import { accessPlan, modelPublication } from '../test/model-access'
@@ -215,6 +215,7 @@ const api = {
   listSuggestedModelEndpoints: vi.fn(),
   registerModelEndpoint: vi.fn(),
   updateModelEndpoint: vi.fn(),
+  assignEnvironments: vi.fn(),
   syncModelEndpoint: vi.fn(),
   preflightModelEndpoint: vi.fn(),
   deleteModelEndpoint: vi.fn(),
@@ -268,15 +269,12 @@ function renderModelsPage(entry = '/models', includeUnrelatedMutation = false) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[entry]}>
+  const router = createMemoryRouter([{ path: '*', element: <>
         <ModelsPage />
         {includeUnrelatedMutation && <UnrelatedPendingMutation />}
         <LocationProbe />
-      </MemoryRouter>
-    </QueryClientProvider>,
-  )
+      </> }], { initialEntries: [entry] })
+  return render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>)
 }
 
 const renderPage = renderModelsPage
@@ -402,7 +400,7 @@ describe('ModelsPage', () => {
     renderPage()
     await user.click(await screen.findByRole('button', { name: 'Review changes' }))
     await user.click(screen.getByRole('button', { name: 'Imported model APIs' }))
-    expect(screen.getByRole('table', { name: 'Published models' })).toBeVisible()
+    expect(screen.getByRole('region', { name: 'Published model details' })).toBeVisible()
     expect(screen.queryByRole('heading', { name: 'Imported model APIs' })).not.toBeInTheDocument()
     finish(publishPlan)
     expect(await screen.findByRole('table', { name: 'Publish plan steps' })).toBeVisible()
@@ -421,7 +419,7 @@ describe('ModelsPage', () => {
     renderPage('/models?tab=imported')
 
     // Scoped to the live table: the sample preview below also mentions Azure OpenAI.
-    const table = await screen.findByRole('table', { name: 'Imported model APIs' })
+    const table = await screen.findByRole('region', { name: 'Imported model API details' })
     expect(within(table).getByText('Chat completions')).toBeVisible()
     expect(within(table).getByText('Azure OpenAI')).toBeVisible()
     expect(within(table).getByRole('link', { name: 'Development gateway' })).toBeVisible()
@@ -430,7 +428,7 @@ describe('ModelsPage', () => {
   it('opens the import dialog from the gateway query and preselects detected APIs', async () => {
     renderPage('/models?import=gateway_1')
 
-    expect(await screen.findByRole('dialog')).toBeVisible()
+    expect(await screen.findByRole('region', { name: 'Import APIs from a gateway' })).toBeVisible()
     const recommended = await screen.findByRole('checkbox', {
       name: 'Import Chat completions',
     })
@@ -457,7 +455,7 @@ describe('ModelsPage', () => {
     const user = userEvent.setup()
     renderPage('/models?import=gateway_1')
 
-    await screen.findByRole('dialog')
+    await screen.findByRole('region', { name: 'Import APIs from a gateway' })
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
 
     await waitFor(() => {
@@ -472,7 +470,7 @@ describe('ModelsPage', () => {
 
     renderPage()
 
-    const table = await screen.findByRole('table', { name: 'Published models' })
+    const table = await screen.findByRole('region', { name: 'Published model details' })
     expect(within(table).getByText('GPT-4o production')).toBeVisible()
     expect(within(table).getByText('Published')).toBeVisible()
     expect(within(table).getByRole('link', { name: 'Development gateway' })).toBeVisible()
@@ -485,12 +483,12 @@ describe('ModelsPage', () => {
 
     renderPage()
 
-    const table = await screen.findByRole('table', { name: 'Published models' })
+    const table = await screen.findByRole('region', { name: 'Published model details' })
     await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
 
     await waitFor(() => expect(api.createPublishPlan).toHaveBeenCalledWith('pub_1'))
     const steps = await screen.findByRole('table', { name: 'Publish plan steps' })
-    const dialog = screen.getByRole('dialog')
+    const dialog = screen.getByRole('region', { name: 'Review model changes' })
     expect(dialog).toContainElement(steps)
     expect(within(steps).getByText('Create the API for this deployment.')).toBeVisible()
     expect(within(dialog).getByText('Review runtime access before applying.')).toBeVisible()
@@ -507,7 +505,7 @@ describe('ModelsPage', () => {
 
     renderPage()
 
-    const table = await screen.findByRole('table', { name: 'Published models' })
+    const table = await screen.findByRole('region', { name: 'Published model details' })
     expect(within(table).queryByRole('button', { name: 'Apply' })).not.toBeInTheDocument()
     await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
 
@@ -526,7 +524,7 @@ describe('ModelsPage', () => {
     api.listPublications.mockResolvedValue([modelPublication])
     api.createPublishPlan.mockResolvedValue(accessPlan)
     renderPage()
-    const table = await screen.findByRole('table', { name: 'Published models' })
+    const table = await screen.findByRole('region', { name: 'Published model details' })
     await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
     expect(await screen.findByRole('table', { name: 'All target model grants' })).toBeVisible()
     expect(api.applyPublishPlan).not.toHaveBeenCalled()
@@ -537,12 +535,12 @@ describe('ModelsPage', () => {
     api.listPublications.mockResolvedValue([modelPublication])
     api.createPublishPlan.mockResolvedValue(accessPlan)
     renderPage()
-    const table = await screen.findByRole('table', { name: 'Published models' })
+    const table = await screen.findByRole('region', { name: 'Published model details' })
     await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
 
     expect(await screen.findByRole('table', { name: 'All target model grants' })).toBeVisible()
     await waitFor(() => {
-      expect(screen.getByRole('dialog', { name: 'Review model access' })).toContainElement(
+      expect(screen.getByRole('region', { name: 'Review model access' })).toContainElement(
         document.activeElement as HTMLElement,
       )
     })
@@ -552,22 +550,22 @@ describe('ModelsPage', () => {
     const user = userEvent.setup()
     api.listPublications.mockResolvedValue([publication])
     renderPage()
-    const table = await screen.findByRole('table', { name: 'Published models' })
+    const table = await screen.findByRole('region', { name: 'Published model details' })
     await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
 
     expect(await screen.findByRole('table', { name: 'Publish plan steps' })).toBeVisible()
     await waitFor(() => {
-      expect(screen.getByRole('dialog', { name: 'Publish a model' })).toContainElement(
+      expect(screen.getByRole('region', { name: 'Review model changes' })).toContainElement(
         document.activeElement as HTMLElement,
       )
     })
   })
 
-  it('moves focus to the result once a re-planned publication is applied, where Escape closes the dialog', async () => {
+  it('moves focus to the applied plan result and returns to the selected publication with Close', async () => {
     const user = userEvent.setup()
     api.listPublications.mockResolvedValue([publication])
     renderPage()
-    const table = await screen.findByRole('table', { name: 'Published models' })
+    const table = await screen.findByRole('region', { name: 'Published model details' })
     await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
     await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
 
@@ -575,18 +573,18 @@ describe('ModelsPage', () => {
       await screen.findByText('Local development service reported completion; live APIM apply is not verified.'),
     ).toBeVisible()
     await waitFor(() => {
-      const dialog = screen.getByRole('dialog', { name: 'Publish a model' })
+      const dialog = screen.getByRole('region', { name: 'Review model changes' })
       const focused = document.activeElement as HTMLElement
       expect(dialog).toContainElement(focused)
       expect(focused).not.toBe(dialog)
       expect(focused).toContainElement(screen.getByRole('table', { name: 'Publish run steps' }))
     })
 
-    await user.keyboard('{Escape}')
+    await user.click(screen.getByRole('button', { name: 'Close' }))
 
-    // The page stays aria-hidden for a moment after a modal closes.
-    expect(await screen.findByRole('table', { name: 'Published models' })).toBeVisible()
-    expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Published model details' })).toBeVisible())
+    expect(screen.queryByRole('region', { name: 'Review model changes' })).not.toBeInTheDocument()
+    expect(api.createPublishPlan).toHaveBeenCalledExactlyOnceWith('pub_1')
   })
 
   it('moves focus to why MOSAIC refused the reviewed plan, above the fresh plan it made', async () => {
@@ -597,7 +595,7 @@ describe('ModelsPage', () => {
     api.createPublishPlan.mockResolvedValueOnce({ ...publishPlan, id: 'plan_2' }).mockResolvedValueOnce({ ...publishPlan, id: 'plan_3' })
     api.applyPublishPlan.mockRejectedValueOnce(new TestApiError(refusal, 409))
     renderPage()
-    const table = await screen.findByRole('table', { name: 'Published models' })
+    const table = await screen.findByRole('region', { name: 'Published model details' })
     await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
     await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
 
@@ -605,7 +603,7 @@ describe('ModelsPage', () => {
       await screen.findByText('MOSAIC has already re-planned. Review the fresh plan below before you apply it.'),
     ).toBeVisible()
     await waitFor(() => {
-      const dialog = screen.getByRole('dialog', { name: 'Publish a model' })
+      const dialog = screen.getByRole('region', { name: 'Review model changes' })
       const focused = document.activeElement as HTMLElement
       expect(dialog).toContainElement(focused)
       expect(focused).not.toBe(dialog)
@@ -622,7 +620,7 @@ describe('ModelsPage', () => {
     api.applyPublishPlan.mockResolvedValue(interrupted)
     api.getPublishRun.mockResolvedValue(interrupted)
     renderPage()
-    const table = await screen.findByRole('table', { name: 'Published models' })
+    const table = await screen.findByRole('region', { name: 'Published model details' })
     await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
     await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
     expect(await screen.findByText('Apply interrupted — runtime state unknown')).toBeVisible()
@@ -646,7 +644,7 @@ describe('ModelsPage', () => {
 
     renderPage()
 
-    const table = await screen.findByRole('table', { name: 'Published models' })
+    const table = await screen.findByRole('region', { name: 'Published model details' })
     await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
     await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
 
@@ -677,7 +675,7 @@ describe('ModelsPage', () => {
 
     renderPage()
 
-    const table = await screen.findByRole('table', { name: 'Published models' })
+    const table = await screen.findByRole('region', { name: 'Published model details' })
     await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
 
     expect(
@@ -697,7 +695,7 @@ describe('ModelsPage', () => {
 
       renderPage()
 
-      const table = await screen.findByRole('table', { name: 'Published models' })
+      const table = await screen.findByRole('region', { name: 'Published model details' })
       await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
       const applyPlan = await screen.findByRole('button', { name: 'Apply plan' })
       expect(api.applyPublishPlan).not.toHaveBeenCalled()
@@ -724,7 +722,7 @@ describe('ModelsPage', () => {
 
     renderPage()
 
-    const table = await screen.findByRole('table', { name: 'Published models' })
+    const table = await screen.findByRole('region', { name: 'Published model details' })
     await openRowMenu(user, table)
     await user.click(await screen.findByRole('menuitem', { name: 'Remove MOSAIC record' }))
 
@@ -761,7 +759,7 @@ describe('ModelsPage', () => {
     const user = userEvent.setup()
     api.listPublications.mockResolvedValue([{ ...publication, accessState: 'unknown' }])
     renderPage()
-    const table = await screen.findByRole('table', { name: 'Published models' })
+    const table = await screen.findByRole('region', { name: 'Published model details' })
     expect(within(table).getByRole('button', { name: 'Review changes' })).toBeDisabled()
     await openRowMenu(user, table)
     const unpublish = await screen.findByRole('menuitem', { name: 'Unpublish' })
@@ -780,7 +778,7 @@ describe('ModelsPage', () => {
 
     renderPage()
 
-    const table = await screen.findByRole('table', { name: 'Published models' })
+    const table = await screen.findByRole('region', { name: 'Published model details' })
     await openRowMenu(user, table)
     await user.click(await screen.findByRole('menuitem', { name: 'Remove MOSAIC record' }))
     const dialog = await screen.findByRole('alertdialog')
@@ -798,7 +796,7 @@ describe('ModelsPage', () => {
 
     renderPage()
 
-    const table = await screen.findByRole('table', { name: 'Published models' })
+    const table = await screen.findByRole('region', { name: 'Published model details' })
     await openRowMenu(user, table)
     await user.click(await screen.findByRole('menuitem', { name: 'Unpublish' }))
 
@@ -840,21 +838,22 @@ describe('ModelsPage', () => {
 
     renderPage()
 
-    const table = await screen.findByRole('table', { name: 'Published models' })
-    const [, recent, older] = within(table).getAllByRole('row')
-    expect(within(recent).getByText('Unpublished')).toBeVisible()
-    expect(within(recent).getByText(`Unpublished ${new Date(unpublishedAt).toLocaleString()}`)).toBeVisible()
-    expect(within(older).getAllByText('Unpublished')).toHaveLength(2)
-    expect(within(table).queryByText('Draft')).not.toBeInTheDocument()
-    expect(within(table).queryByText(new Date(publication.lastAppliedAt!).toLocaleString())).not.toBeInTheDocument()
-
-    await user.click(within(recent).getByRole('button', { name: /Review changes|Review publish plan/ }))
+    const details = await screen.findByRole('region', { name: 'Published model details' })
+    expect(await within(details).findByText(`Unpublished ${new Date(unpublishedAt).toLocaleString()}`)).toBeVisible()
+    expect(within(details).getByText('Unpublished')).toBeVisible()
+    await user.click(within(screen.getByRole('list', { name: 'Published models' })).getByRole('button', { name: /Older unpublish/ }))
+    expect(within(details).getAllByText('Unpublished')).toHaveLength(2)
+    expect(within(details).queryByText('Draft')).not.toBeInTheDocument()
+    expect(within(details).queryByText(new Date(publication.lastAppliedAt!).toLocaleString())).not.toBeInTheDocument()
+    await user.click(within(screen.getByRole('list', { name: 'Published models' })).getByRole('button', { name: /GPT-4o production/ }))
+    await user.click(within(details).getByRole('button', { name: /Review changes|Review publish plan/ }))
 
     await waitFor(() => expect(api.createPublishPlan).toHaveBeenCalledWith('pub_1'))
     expect(await screen.findByRole('button', { name: 'Apply plan' })).toBeEnabled()
   })
 
   it('says an imported model API is hidden from the portal while its publication is unpublished', async () => {
+    const user = userEvent.setup()
     const unpublishedApi = { ...modelApi, id: 'modelApi_2', displayName: 'Unpublished chat', importedFromSnapshotId: null, publicationId: 'pub_1' }
     const liveApi = { ...modelApi, id: 'modelApi_3', displayName: 'Live chat', importedFromSnapshotId: null, publicationId: 'pub_2' }
     api.listModelApis.mockResolvedValue([modelApi, unpublishedApi, liveApi])
@@ -871,19 +870,22 @@ describe('ModelsPage', () => {
 
     renderPage('/models?tab=imported')
 
-    const table = await screen.findByRole('table', { name: 'Imported model APIs' })
+    const table = await screen.findByRole('region', { name: 'Imported model API details' })
     const note = "Hidden from the portal catalog while it isn't published."
-    const rowFor = (name: string) => within(table).getByText(name).closest('tr') as HTMLElement
-    expect(await within(rowFor('Unpublished chat')).findByText(note)).toBeVisible()
-    expect(within(rowFor('Live chat')).queryByText(note)).not.toBeInTheDocument()
-    expect(within(rowFor('Chat completions')).queryByText(note)).not.toBeInTheDocument()
+    const select = async (name: string) => user.click(within(screen.getByRole('list', { name: 'Imported model APIs' })).getByRole('button', { name: new RegExp(name) }))
+    await select('Unpublished chat')
+    expect(await within(table).findByText(note)).toBeVisible()
+    await select('Live chat')
+    expect(within(table).queryByText(note)).not.toBeInTheDocument()
+    await select('Chat completions')
+    expect(within(table).queryByText(note)).not.toBeInTheDocument()
   })
 
   it('opens the registration dialog from the shell query and clears it when closed', async () => {
     const user = userEvent.setup()
     renderPage('/models?register=1')
 
-    expect(await screen.findByRole('dialog')).toBeVisible()
+    expect(await screen.findByRole('region', { name: 'Register model endpoint' })).toBeVisible()
     expect(await screen.findByLabelText(/Azure resource ID/i)).toBeVisible()
 
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
@@ -891,6 +893,95 @@ describe('ModelsPage', () => {
     await waitFor(() => {
       expect(screen.getByTestId('location')).toHaveTextContent('/models')
     })
+  })
+
+  it('keeps model identity in a selectable list and secondary metadata in the selected detail', async () => {
+    const user = userEvent.setup()
+    api.listModelApis.mockResolvedValue([modelApi, { ...modelApi, id: 'modelApi_2', displayName: 'Embeddings' }])
+    renderPage('/models?tab=imported&filter=keep')
+    const list = await screen.findByRole('list', { name: 'Imported model APIs' })
+    expect(within(list).queryByText(modelApi.serviceUrl!)).not.toBeInTheDocument()
+    expect(within(list).queryByRole('combobox')).not.toBeInTheDocument()
+    await user.click(within(list).getByRole('button', { name: /Embeddings/ }))
+    const details = screen.getByRole('region', { name: 'Imported model API details' })
+    expect(within(details).getByRole('heading', { name: 'Embeddings' })).toBeVisible()
+    expect(within(details).getByText(modelApi.serviceUrl!)).toBeVisible()
+    expect(screen.getByTestId('location')).toHaveTextContent('selected=modelApi_2')
+    expect(screen.getByTestId('location')).toHaveTextContent('filter=keep')
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+  })
+
+  it('shows an unavailable selection instead of silently choosing a different model', async () => {
+    api.listModelApis.mockResolvedValue([modelApi])
+    renderPage('/models?tab=imported&selected=deleted&filter=keep')
+    expect(await screen.findByText('This resource is no longer available.')).toBeVisible()
+    expect(screen.queryByRole('combobox', { name: /Catalog visibility/ })).not.toBeInTheDocument()
+    expect(screen.getByTestId('location')).toHaveTextContent('selected=deleted')
+  })
+
+  it('loads a directly linked review once and never applies it on opening', async () => {
+    api.listPublications.mockResolvedValue([publication])
+    renderPage('/models?tab=published&mode=review&selected=pub_1&filter=keep')
+    expect(await screen.findByRole('region', { name: 'Review model changes' })).toBeVisible()
+    expect(await screen.findByRole('table', { name: 'Publish plan steps' })).toBeVisible()
+    expect(api.createPublishPlan).toHaveBeenCalledExactlyOnceWith('pub_1')
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByTestId('location')).toHaveTextContent('filter=keep')
+  })
+
+  it('returns from import with the imported model selected and the original filters intact', async () => {
+    const user = userEvent.setup()
+    api.listModelApis.mockResolvedValueOnce([]).mockResolvedValue([modelApi])
+    renderPage('/models?tab=imported&mode=import&filter=keep')
+    await user.click(await screen.findByRole('button', { name: 'Import 1' }))
+    const details = await screen.findByRole('region', { name: 'Imported model API details' })
+    expect(await within(details).findByRole('heading', { name: 'Chat completions' })).toBeVisible()
+    expect(screen.getByTestId('location')).toHaveTextContent('selected=modelApi_1')
+    expect(screen.getByTestId('location')).toHaveTextContent('filter=keep')
+    expect(screen.getByTestId('location')).not.toHaveTextContent('mode=import')
+    expect(api.importModelApis).toHaveBeenCalledExactlyOnceWith('gateway_1', ['chat-api'])
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+  })
+
+  it('protects dirty registration on section navigation and keeps credentials out of the URL', async () => {
+    const user = userEvent.setup()
+    renderPage('/models?tab=endpoints&mode=new&filter=keep')
+    const editor = await screen.findByRole('region', { name: 'Register model endpoint' })
+    await user.click(within(editor).getByRole('tab', { name: 'Azure AI with an API key' }))
+    await user.type(within(editor).getByLabelText(/^API key/), 'fictional-ephemeral-key')
+    expect(screen.getByTestId('location')).not.toHaveTextContent('fictional-ephemeral-key')
+    await user.click(screen.getByRole('button', { name: 'Published models' }))
+    expect(await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Stay' }))
+    expect(within(editor).getByLabelText(/^API key/)).toHaveValue('fictional-ephemeral-key')
+    await user.click(within(editor).getByRole('button', { name: 'Back' }))
+    await user.click(screen.getByRole('button', { name: 'Discard changes' }))
+    expect(await screen.findByRole('button', { name: 'Register endpoint' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Register endpoint' }))
+    const reopened = await screen.findByRole('region', { name: 'Register model endpoint' })
+    await user.click(within(reopened).getByRole('tab', { name: 'Azure AI with an API key' }))
+    expect(within(reopened).getByLabelText(/^API key/)).toHaveValue('')
+    expect(api.registerModelEndpoint).not.toHaveBeenCalled()
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+  })
+
+  it('edits endpoint metadata in the workspace and returns with the saved endpoint selected', async () => {
+    const user = userEvent.setup()
+    api.listModelEndpoints.mockResolvedValue([modelEndpoint()])
+    api.updateModelEndpoint.mockResolvedValue(modelEndpoint({ name: 'Renamed models' }))
+    renderPage('/models?tab=endpoints&selected=endpoint_1&mode=edit&filter=keep')
+    const editor = await screen.findByRole('region', { name: 'Edit Contoso models' })
+    await user.clear(within(editor).getByRole('textbox', { name: 'Display name' }))
+    await user.type(within(editor).getByRole('textbox', { name: 'Display name' }), 'Renamed models')
+    await user.click(within(editor).getByRole('button', { name: 'Save endpoint' }))
+    await waitFor(() => expect(api.updateModelEndpoint).toHaveBeenCalledExactlyOnceWith('endpoint_1', { name: 'Renamed models' }))
+    expect(await screen.findByRole('list', { name: 'Registered model endpoints' })).toBeVisible()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByTestId('location')).toHaveTextContent('selected=endpoint_1')
+    expect(screen.getByTestId('location')).toHaveTextContent('filter=keep')
+    expect(screen.getByTestId('location')).not.toHaveTextContent('mode=edit')
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
   })
 })
 
@@ -1129,7 +1220,7 @@ describe('ModelsPage model endpoints', () => {
     renderPage()
 
     expect(
-      await screen.findByText(/never changes them and never calls a model/i),
+      await screen.findByText(/never changes the provider or calls a model/i),
     ).toBeVisible()
   })
 
@@ -1148,7 +1239,7 @@ describe('ModelsPage model endpoints', () => {
 
     renderPage()
 
-    const table = await screen.findByRole('table', { name: 'Registered model endpoints' })
+    const table = await screen.findByRole('region', { name: 'Model endpoint details' })
     await openRowMenu(user, table)
     await user.click(await screen.findByRole('menuitem', { name: 'Remove' }))
 
@@ -1203,7 +1294,7 @@ describe('ModelsPage model endpoints', () => {
 
     renderPage()
 
-    const table = await screen.findByRole('table', { name: 'Registered model endpoints' })
+    const table = await screen.findByRole('region', { name: 'Model endpoint details' })
     await openRowMenu(user, table)
     await user.click(await screen.findByRole('menuitem', { name: 'Remove' }))
     const dialog = await screen.findByRole('alertdialog')
@@ -1225,7 +1316,7 @@ describe('ModelsPage model endpoints', () => {
     // The open modal dialog hides the rest of the page from assistive technology, so include hidden
     // elements to find the table behind it.
     expect(
-      screen.getByRole('table', { name: 'Registered model endpoints', hidden: true }),
+      document.querySelector('[aria-label="Model endpoint details"]'),
     ).toHaveTextContent('Contoso models')
   })
 
@@ -1244,7 +1335,7 @@ describe('ModelsPage model endpoints', () => {
 
     renderPage('/models?register=1')
 
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('region', { name: 'Register model endpoint' })
     await user.click(within(dialog).getByLabelText(/Azure resource ID/i))
     await user.paste(AI_RESOURCE_ID)
     await user.click(within(dialog).getByRole('button', { name: 'Register' }))
@@ -1291,7 +1382,7 @@ describe('ModelsPage model endpoints', () => {
     const card = heading.closest('.fui-Card') as HTMLElement
     await user.click(within(card).getByRole('button', { name: 'Register' }))
 
-    const dialog = await screen.findByRole('dialog', { name: 'Register model endpoint' })
+    const dialog = await screen.findByRole('region', { name: 'Register model endpoint' })
     expect(within(dialog).getByDisplayValue(AI_RESOURCE_ID)).toBeVisible()
     expect(within(dialog).getByText(/Suggested: Development/)).toBeVisible()
     expect(api.registerModelEndpoint).not.toHaveBeenCalled()
@@ -1302,9 +1393,10 @@ describe('ModelsPage model endpoints', () => {
 
     renderPage()
 
-    expect(await screen.findByText('Contoso models')).toBeVisible()
-    expect(screen.getByText('Azure OpenAI')).toBeVisible()
-    expect(screen.getByText('Connected')).toBeVisible()
+    const list = await screen.findByRole('list', { name: 'Registered model endpoints' })
+    expect(within(list).getByText('Contoso models')).toBeVisible()
+    expect(within(list).getByText('Azure OpenAI · 2 models')).toBeVisible()
+    expect(within(list).getByText('Connected')).toBeVisible()
   })
 
   it('separates MOSAIC read access from gateway runtime access', async () => {
@@ -1966,7 +2058,7 @@ describe('ModelsPage model endpoints', () => {
     expect(screen.getByText(/without also granting/i)).toBeVisible()
   })
 
-  it('surfaces suggestions and labels where each came from', async () => {
+  it('surfaces actionable suggestions and retains their evidence without redundant source badges', async () => {
     api.listSuggestedModelEndpoints.mockResolvedValue(
       suggestionView({
         suggestions: [
@@ -1993,8 +2085,11 @@ describe('ModelsPage model endpoints', () => {
 
     renderPage()
 
-    expect(await screen.findByText('Used by a gateway')).toBeVisible()
-    expect(screen.getByText('Found in a subscription')).toBeVisible()
+    const suggestions = (await screen.findByRole('heading', { name: 'Endpoints MOSAIC found' })).closest('div')!
+    expect(within(suggestions).getByText(/The gateway apim-contoso-dev routes traffic to this host/)).toBeVisible()
+    expect(within(suggestions).getByText(/Found in subscription 00000000-0000-0000-0000-000000000000/)).toBeVisible()
+    expect(within(suggestions).queryByText('Used by a gateway')).not.toBeInTheDocument()
+    expect(within(suggestions).queryByText('Found in a subscription')).not.toBeInTheDocument()
     // A hostname alone cannot be registered, so no action is offered for it.
     expect(screen.getByText('Needs a resource ID')).toBeVisible()
     expect(screen.getByText('Scanned 1 subscription.')).toBeVisible()
@@ -2210,7 +2305,7 @@ describe('ModelsPage model endpoints', () => {
     renderPage()
 
     // The gateway suggestion proves the view arrived before asserting what it left out.
-    expect(await screen.findByText('Used by a gateway')).toBeVisible()
+    expect(await screen.findByText(/The gateway apim-contoso-dev routes traffic to this host/)).toBeVisible()
     expect(screen.queryByText(/^Scanned \d+ subscription/)).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: /subscriptions/i })).not.toBeInTheDocument()
   })
@@ -2290,7 +2385,7 @@ describe('ModelsPage model endpoints', () => {
 
     async function openKeyTab(user: ReturnType<typeof userEvent.setup>) {
       renderPage('/models?register=1')
-      const dialog = await screen.findByRole('dialog', { name: 'Register model endpoint' })
+      const dialog = await screen.findByRole('region', { name: 'Register model endpoint' })
       await user.click(within(dialog).getByRole('tab', { name: 'Azure AI with an API key' }))
       return dialog
     }
@@ -2361,7 +2456,7 @@ describe('ModelsPage model endpoints', () => {
           { deploymentName: 'gpt-4-1', modelName: 'gpt-4.1', apiShape: 'azureOpenAi' },
         ],
       })
-      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      await waitFor(() => expect(screen.queryByRole('region', { name: 'Register model endpoint' })).not.toBeInTheDocument())
     })
 
     it('registers a pasted key, and never keeps it in the form', async () => {
@@ -2392,10 +2487,10 @@ describe('ModelsPage model endpoints', () => {
           },
         ],
       })
-      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      await waitFor(() => expect(screen.queryByRole('region', { name: 'Register model endpoint' })).not.toBeInTheDocument())
 
       await user.click(await screen.findByRole('button', { name: 'Register endpoint' }))
-      const reopened = await screen.findByRole('dialog', { name: 'Register model endpoint' })
+      const reopened = await screen.findByRole('region', { name: 'Register model endpoint' })
       await user.click(within(reopened).getByRole('tab', { name: 'Azure AI with an API key' }))
       expect(within(reopened).getByLabelText(/^API key/)).toHaveValue('')
     })
@@ -2423,10 +2518,11 @@ describe('ModelsPage model endpoints', () => {
       await user.click(within(dialog).getByLabelText(/^API key/))
       await user.paste(API_KEY)
       await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
-      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      await user.click(await screen.findByRole('button', { name: 'Discard changes' }))
+      await waitFor(() => expect(screen.queryByRole('region', { name: 'Register model endpoint' })).not.toBeInTheDocument())
 
       await user.click(await screen.findByRole('button', { name: 'Register endpoint' }))
-      const reopened = await screen.findByRole('dialog', { name: 'Register model endpoint' })
+      const reopened = await screen.findByRole('region', { name: 'Register model endpoint' })
       await user.click(within(reopened).getByRole('tab', { name: 'Azure AI with an API key' }))
       expect(within(reopened).getByLabelText(/^API key/)).toHaveValue('')
     })
@@ -2475,8 +2571,8 @@ describe('ModelsPage model endpoints', () => {
 
       renderPage()
 
-      const table = await screen.findByRole('table', { name: 'Registered model endpoints' })
-      const row = within(table).getByText('Fabrikam partner Foundry').closest('tr') as HTMLElement
+      const table = await screen.findByRole('region', { name: 'Model endpoint details' })
+      const row = table
       expect(within(row).getByText('API key from Key Vault')).toBeVisible()
       expect(within(row).getByText('1 declared')).toBeVisible()
       // An API key can't list deployments, so there is nothing to sync.
@@ -2782,7 +2878,7 @@ describe('ModelsPage model endpoints', () => {
 
     async function openTab(user: ReturnType<typeof userEvent.setup>, tab: string) {
       renderPage('/models?register=1')
-      const dialog = await screen.findByRole('dialog', { name: 'Register model endpoint' })
+      const dialog = await screen.findByRole('region', { name: 'Register model endpoint' })
       await user.click(within(dialog).getByRole('tab', { name: tab }))
       return dialog
     }
@@ -2831,10 +2927,10 @@ describe('ModelsPage model endpoints', () => {
           { deploymentName: OPUS_ID, modelName: 'claude-opus-4-5', apiShape: 'anthropicMessages' },
         ],
       })
-      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      await waitFor(() => expect(screen.queryByRole('region', { name: 'Register model endpoint' })).not.toBeInTheDocument())
 
       await user.click(await screen.findByRole('button', { name: 'Register endpoint' }))
-      const reopened = await screen.findByRole('dialog', { name: 'Register model endpoint' })
+      const reopened = await screen.findByRole('region', { name: 'Register model endpoint' })
       await user.click(within(reopened).getByRole('tab', { name: 'AWS Bedrock' }))
       expect(within(reopened).getByLabelText(/^Bedrock API key/)).toHaveValue('')
       expect(within(reopened).getByLabelText('Model 1 ID')).toHaveValue('')
@@ -2975,8 +3071,8 @@ describe('ModelsPage model endpoints', () => {
 
       renderPage()
 
-      const table = await screen.findByRole('table', { name: 'Registered model endpoints' })
-      const row = within(table).getByText('Bedrock us-east-1').closest('tr') as HTMLElement
+      const table = await screen.findByRole('region', { name: 'Model endpoint details' })
+      const row = table
       expect(within(row).getByText('AWS Bedrock')).toBeVisible()
       expect(within(row).getByText('API key from Key Vault')).toBeVisible()
       expect(within(row).getByText('1 declared')).toBeVisible()
@@ -3185,7 +3281,7 @@ describe('ModelsPage model endpoints', () => {
 
       renderPage()
 
-      const table = await screen.findByRole('table', { name: 'Registered model endpoints' })
+      const table = await screen.findByRole('region', { name: 'Model endpoint details' })
       await openRowMenu(user, table)
       await user.click(await screen.findByRole('menuitem', { name: 'Remove' }))
       const dialog = await screen.findByRole('alertdialog', { name: 'Remove Bedrock us-east-1?' })
@@ -3233,7 +3329,7 @@ describe('ModelsPage model endpoints', () => {
 
       renderPage()
 
-      const table = await screen.findByRole('table', { name: 'Registered model endpoints' })
+      const table = await screen.findByRole('region', { name: 'Model endpoint details' })
       await openRowMenu(user, table)
       await user.click(await screen.findByRole('menuitem', { name: 'Remove' }))
       const dialog = await screen.findByRole('alertdialog')

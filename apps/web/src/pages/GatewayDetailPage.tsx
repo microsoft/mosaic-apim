@@ -17,10 +17,11 @@ import {
 } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { CloudRegular, CodeRegular, DocumentRegular, InfoRegular, KeyRegular, PeopleRegular, PlugConnectedRegular, ShieldRegular } from '@fluentui/react-icons'
 import { ApiError, useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
-import { ChangeEnvironmentDialog } from '../components/ChangeEnvironmentDialog'
+import { GatewayRecordEditor } from '../components/GatewayEditors'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { EnvironmentFindings } from '../components/EnvironmentFindings'
 import { GatewayManagementMode } from '../components/GatewayManagementMode'
@@ -28,21 +29,24 @@ import { AI_KIND_LABELS, BACKFILL_STATUS_LABELS, MANAGEMENT_MODE_LABELS, TELEMET
 import { PolicyDocumentCard, PolicyFragmentCard } from '../components/PolicyFacets'
 import { lastAppliedLabel, publicationStatusLabel } from '../publication-state'
 import type { AiBackendKind, ApiDiagnosticGap, ApiTelemetry, Gateway, GatewayTelemetry } from '../types'
-import { environmentLabel, invalidateEnvironmentQueries, useEnvironmentCatalog } from '../environments'
+import { environmentLabel, useEnvironmentCatalog } from '../environments'
 import { PageHeader } from '../components/PageHeader'
 import { SectionLayout, usePageSection } from '../components/SectionLayout'
+import { RemovalDialog } from '../components/RemovalDialog'
+import { RowActions } from '../components/RowActions'
+import { useWorkbenchLocation } from '../components/useWorkbenchLocation'
 import { AccessPanel, GatewayStatusBadge } from './GatewaysPage'
 import styles from './GatewayDetailPage.module.css'
 
 const gatewaySections = [
-  { value: 'overview', label: 'Overview' },
-  { value: 'apis', label: 'APIs and endpoints' },
-  { value: 'mcpServers', label: 'MCP servers' },
-  { value: 'products', label: 'Products' },
-  { value: 'subscriptions', label: 'Subscriptions' },
-  { value: 'identities', label: 'Users and groups' },
-  { value: 'policies', label: 'Policies' },
-  { value: 'backends', label: 'Backends' },
+  { value: 'overview', label: 'Overview', icon: <InfoRegular /> },
+  { value: 'apis', label: 'APIs and endpoints', icon: <CodeRegular /> },
+  { value: 'mcpServers', label: 'MCP servers', icon: <PlugConnectedRegular /> },
+  { value: 'products', label: 'Products', icon: <DocumentRegular /> },
+  { value: 'subscriptions', label: 'Subscriptions', icon: <KeyRegular /> },
+  { value: 'identities', label: 'Users and groups', icon: <PeopleRegular /> },
+  { value: 'policies', label: 'Policies', icon: <ShieldRegular /> },
+  { value: 'backends', label: 'Backends', icon: <CloudRegular /> },
 ]
 
 
@@ -104,10 +108,9 @@ function AiBadge({ kind }: { kind: AiBackendKind }) {
   )
 }
 
-function Overview({ gateway, onChanged }: { gateway: Gateway; onChanged: (message: string) => void }) {
+function Overview({ gateway, onEdit }: { gateway: Gateway; onEdit: () => void }) {
   const { inventory, capabilities } = gateway
   const catalog = useEnvironmentCatalog()
-  const [changeOpen, setChangeOpen] = useState(false)
   return (
     <>
       <Card className={styles.detailCard}>
@@ -115,7 +118,7 @@ function Overview({ gateway, onChanged }: { gateway: Gateway; onChanged: (messag
         <div className={styles.environmentRow}>
           <Text weight="semibold">Environment</Text>
           <EnvironmentBadge environment={gateway.environment} catalog={catalog.data} />
-          <Button appearance="subtle" size="small" onClick={() => setChangeOpen(true)}>Change</Button>
+          <Button appearance="subtle" size="small" onClick={onEdit}>Change</Button>
         </div>
         {gateway.azureEnvironmentTag && <Text block size={200}>Azure tag: {gateway.azureEnvironmentTag}</Text>}
         {gateway.environmentLabel && <Text block size={200}>Legacy label: {gateway.environmentLabel}</Text>}
@@ -157,20 +160,6 @@ function Overview({ gateway, onChanged }: { gateway: Gateway; onChanged: (messag
       </section>
       <AccessPanel gateway={gateway} />
       <GatewayManagementMode key={gateway.id} gateway={gateway} />
-      <ChangeEnvironmentDialog
-        resource={{
-          resourceKind: 'gateway',
-          resourceId: gateway.id,
-          resourceName: gateway.name,
-          environment: gateway.environment,
-        }}
-        open={changeOpen}
-        onClose={() => setChangeOpen(false)}
-        onChanged={() => {
-          setChangeOpen(false)
-          onChanged(`Updated ${gateway.name}'s environment.`)
-        }}
-      />
     </>
   )
 }
@@ -781,13 +770,32 @@ function BackendsTab({ gatewayId }: { gatewayId: string }) {
   )
 }
 
-export function GatewayDetailPage() {
-  const { gatewayId = '' } = useParams()
+export function GatewayDetailPage({ gatewayId: selectedGatewayId, embedded = false }: { gatewayId?: string; embedded?: boolean } = {}) {
+  const { gatewayId: routeGatewayId = '' } = useParams()
+  const gatewayId = selectedGatewayId ?? routeGatewayId
+  return <GatewayDetail key={gatewayId} gatewayId={gatewayId} embedded={embedded} />
+}
+
+function GatewayDetail({ gatewayId, embedded }: { gatewayId: string; embedded: boolean }) {
   const api = useMosaicApi()
   const navigate = useNavigate()
+  const location = useLocation()
+  const returnTo = (location.state as { gatewayReturnTo?: string } | null)?.gatewayReturnTo
+  const listUrl = returnTo === '/gateways' || returnTo?.startsWith('/gateways?')
+    ? returnTo : `/gateways?selected=${encodeURIComponent(gatewayId)}`
   const queryClient = useQueryClient()
-  const [tab, setTab] = usePageSection(gatewaySections)
+  const [tab] = usePageSection(gatewaySections, 'overview', embedded ? 'gatewayTab' : 'tab')
+  const [, setParams] = useSearchParams()
+  const workbench = useWorkbenchLocation({ section: embedded ? 'registered' : 'gateway-detail' })
+  function setTab(value: string) {
+    setParams((current) => {
+      const next = new URLSearchParams(current)
+      next.set(embedded ? 'gatewayTab' : 'tab', value)
+      return next
+    }, { preventScrollReset: true })
+  }
   const [message, setMessage] = useState<string | null>(null)
+  const [removing, setRemoving] = useState(false)
   const catalog = useEnvironmentCatalog()
 
   const gateway = useQuery({
@@ -799,27 +807,49 @@ export function GatewayDetailPage() {
     mutationFn: () => api.syncGateway(gatewayId),
     onSuccess: () => queryClient.invalidateQueries(),
   })
-
-  async function environmentChanged(messageText: string) {
-    setMessage(messageText)
-    await queryClient.invalidateQueries({ queryKey: ['gateway', gatewayId] })
-    invalidateEnvironmentQueries(queryClient)
-  }
+  const recheck = useMutation({
+    mutationFn: () => api.preflightGateway(gatewayId),
+    onSuccess: (result) => {
+      queryClient.setQueryData(['gateway', gatewayId], result)
+      void queryClient.invalidateQueries({ queryKey: ['gateways'] })
+    },
+  })
+  const remove = useMutation({
+    mutationFn: () => api.deleteGateway(gatewayId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['gateways'] })
+      void queryClient.invalidateQueries({ queryKey: ['gateway-suggestions'] })
+      if (embedded) workbench.close(null)
+      else {
+        const next = new URLSearchParams(listUrl.split('?')[1])
+        next.delete('selected')
+        next.delete('mode')
+        next.delete('workbench')
+        navigate({ pathname: '/gateways', search: `?${next}` }, { replace: true })
+      }
+    },
+  })
 
   if (gateway.isPending) return <Loading label="Loading gateway" />
-  if (gateway.isError) return <ErrorState error={gateway.error} />
+  if (gateway.isError) return <div className={styles.page}>
+    {embedded ? <Button onClick={() => workbench.close()}>Back to gateways</Button>
+      : <Link className={styles.backLink} to={listUrl}>← Back to gateways</Link>}
+    <ErrorState error={gateway.error} />
+  </div>
+
+  if (workbench.mode === 'edit') return <GatewayRecordEditor gateway={gateway.data}
+    onClose={() => workbench.close()} onSaved={() => { setMessage('Updated the MOSAIC gateway record.'); workbench.close(gatewayId) }} />
 
   return (
     <div className={styles.page}>
-      <Link className={styles.backLink} to="/gateways">
+      {!embedded && <Link className={styles.backLink} to={listUrl}>
         ← Back to gateways
-      </Link>
+      </Link>}
       <PageHeader
         title={gateway.data.name}
         description={`${gateway.data.serviceName} · ${
           MANAGEMENT_MODE_LABELS[gateway.data.managementMode]
         } mode`}
-        source="live"
         actions={
           <div className={styles.headerActions}>
             <GatewayStatusBadge status={gateway.data.status} />
@@ -850,6 +880,13 @@ export function GatewayDetailPage() {
             >
               {sync.isPending ? 'Syncing…' : 'Sync now'}
             </Button>
+            <RowActions label={`More actions for ${gateway.data.name}`}
+              primary={<Button aria-label="Check gateway access" disabled={recheck.isPending} onClick={() => recheck.mutate()}>
+                {recheck.isPending ? 'Checking access…' : 'Check access'}</Button>}
+              actions={[{ label: 'Edit', onClick: () => workbench.open('edit', gatewayId) }]}
+              destructiveActions={[{ label: 'Remove MOSAIC record', disabled: remove.isPending, onClick: () => setRemoving(true) }]} />
+            {embedded && <Link className={styles.backLink} to={`/gateways/${gatewayId}`}
+              state={{ gatewayReturnTo: `${location.pathname}${location.search}` }}>Open full detail</Link>}
           </div>
         }
       />
@@ -859,14 +896,16 @@ export function GatewayDetailPage() {
         </Text>
       )}
       {message && <Text block size={200} className={styles.syncError}>{message}</Text>}
+      {sync.isError && <ErrorState error={sync.error} title="MOSAIC couldn’t sync the gateway" />}
+      {recheck.isError && <ErrorState error={recheck.error} title="MOSAIC couldn’t check access" />}
 
       <EnvironmentFindings gatewayId={gatewayId} hideWhenEmpty />
-      <SectionLayout label="Gateway" sections={gatewaySections} active={tab} onSelect={setTab}>
+      <SectionLayout label="Gateway" sections={gatewaySections} active={tab} onSelect={setTab} orientation={embedded ? 'horizontal' : 'vertical'}>
       <div className={styles.tabPanel}>
         {tab !== 'overview' && <Text block size={200} className={styles.muted}>Read-only · Synced from APIM. Import records governance in MOSAIC; it does not edit this inventory.</Text>}
         {tab === 'overview' && (
           <>
-            <Overview gateway={gateway.data} onChanged={(text) => void environmentChanged(text)} />
+            <Overview gateway={gateway.data} onEdit={() => workbench.open('edit', gatewayId)} />
             <TelemetrySection gatewayId={gatewayId} />
             <PublishedModelsSection gatewayId={gatewayId} />
           </>
@@ -880,6 +919,12 @@ export function GatewayDetailPage() {
         {tab === 'backends' && <BackendsTab gatewayId={gatewayId} />}
       </div>
       </SectionLayout>
+      <RemovalDialog open={removing} title={`Remove ${gateway.data.name}?`} confirmLabel="Remove MOSAIC record"
+        refusalTitle="MOSAIC didn't remove this gateway record"
+        pending={remove.isPending} error={remove.error} onConfirm={() => remove.mutate()}
+        onCancel={() => { setRemoving(false); remove.reset() }}>
+        Removing this record deletes only what MOSAIC stored about it. The API Management service itself is never modified.
+      </RemovalDialog>
     </div>
   )
 }

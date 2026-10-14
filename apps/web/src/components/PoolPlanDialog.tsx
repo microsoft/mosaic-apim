@@ -1,12 +1,6 @@
 import {
   Badge,
   Button,
-  Dialog,
-  DialogActions,
-  DialogBody,
-  DialogContent,
-  DialogSurface,
-  DialogTitle,
   MessageBar,
   MessageBarBody,
   MessageBarTitle,
@@ -25,7 +19,7 @@ import type { RefObject } from 'react'
 import { useMosaicApi } from '../api'
 import { describeAccessMethods, describeLimits } from '../entitlement-limits'
 import { ENTITLEMENT_SUBJECT_KIND_LABELS, plural } from '../labels'
-import { POOL_RESOURCE_KIND_LABELS, planProblems } from '../pools'
+import { POOL_RESOURCE_KIND_LABELS, planProblems, poolChangeLockReason } from '../pools'
 import { runtimeConfig } from '../runtime-config'
 import type {
   ModelPool,
@@ -40,6 +34,7 @@ import { ErrorState, Loading } from './AsyncState'
 import { ModelAccessRecovery } from './ModelAccessRecovery'
 import { PolicyFacetItem } from './PolicyFacets'
 import styles from './PoolDialogs.module.css'
+import { WorkspaceEditorFrame } from './WorkspaceEditorFrame'
 
 export type PoolPlanMode = 'publish' | 'unpublish'
 
@@ -76,9 +71,11 @@ function statusOf(error: unknown): number | undefined {
 }
 
 export interface PoolPlanDialogProps {
-  pool: Pick<ModelPool, 'id' | 'displayName' | 'models'>
+  pool: Pick<ModelPool, 'id' | 'displayName' | 'models' | 'status' | 'accessState' | 'lastRunId'>
   mode: PoolPlanMode
   onClose: () => void
+  locked?: boolean
+  interruptedRunId?: string
   /** Called once, when the run the dialog started finishes, whatever its outcome. */
   onFinished?: (run: PublishRun) => void
 }
@@ -89,12 +86,14 @@ export interface PoolPlanDialogProps {
  * outgrown, and the dialog then says why and shows a fresh plan in its place. Parents mount it to
  * open it, so each opening plans afresh.
  */
-export function PoolPlanDialog({ pool, mode, onClose, onFinished }: PoolPlanDialogProps) {
+export function PoolPlanDialog({ pool, mode, onClose, onFinished, locked = false, interruptedRunId }: PoolPlanDialogProps) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const session = useId()
   const introId = useId()
   const publishing = mode === 'publish'
+  const lockReason = poolChangeLockReason(pool)
+  const changesLocked = locked || Boolean(lockReason)
   const [freshPlan, setFreshPlan] = useState<PublishPlan | null>(null)
   const [runId, setRunId] = useState('')
   const [refusal, setRefusal] = useState('')
@@ -110,6 +109,7 @@ export function PoolPlanDialog({ pool, mode, onClose, onFinished }: PoolPlanDial
   const planning = useQuery({
     queryKey: ['pool-plan', mode, pool.id, session],
     queryFn: createPlan,
+    enabled: !changesLocked,
     staleTime: Infinity,
     gcTime: 0,
     retry: false,
@@ -188,24 +188,47 @@ export function PoolPlanDialog({ pool, mode, onClose, onFinished }: PoolPlanDial
     target?.focus()
   }, [phase, outcome])
 
-  const busy = apply.isPending
+  const busy = apply.isPending || Boolean(runId && !finishedRun)
   const nothingToApply =
     publishing && plan != null && plan.steps.length > 0 && plan.steps.every((step) => step.action === 'noChange')
   const problems = planProblems(planning.error)
   const replanProblems = planProblems(replanError)
 
+  if (changesLocked && !apply.isPending && !runId) {
+    return (
+      <WorkspaceEditorFrame title="Pool changes are locked" onBack={onClose} onCancel={onClose} backLabel="Back to pool">
+        <MessageBar intent="warning">
+          <MessageBarBody>
+            {lockReason ?? (interruptedRunId
+              ? 'The last run was interrupted. Reconcile the unknown gateway state before changing the pool.'
+              : 'A plan is being applied. Wait for it to finish before editing or reviewing another plan.')}
+          </MessageBarBody>
+        </MessageBar>
+        {apply.error && <ErrorState error={apply.error}
+          title={publishing ? 'MOSAIC didn’t apply the plan' : `MOSAIC didn’t unpublish ${pool.displayName}`} />}
+        {(pool.accessState === 'unknown' || interruptedRunId) && <ModelAccessRecovery
+          publicationId={pool.id} runId={interruptedRunId ?? pool.lastRunId} target="pool" />}
+      </WorkspaceEditorFrame>
+    )
+  }
+
   return (
-    <Dialog
-      modalType={publishing ? 'modal' : 'alert'}
-      open
-      onOpenChange={(_, data) => {
-        if (!data.open && !busy) onClose()
-      }}
+    <WorkspaceEditorFrame
+      title={publishing ? `Review ${pool.displayName}` : `Unpublish ${pool.displayName}?`}
+      description="Preview the changes MOSAIC would apply. Nothing changes until you select Apply plan."
+      onBack={onClose}
+      onCancel={onClose}
+      backLabel="Back to pool"
+      pending={busy}
+      pendingLabel={publishing ? 'Applying the reviewed plan…' : 'Unpublishing…'}
+      actions={phase === 'review' && plan && (
+        <Button appearance="primary" className={publishing ? undefined : styles.destructive}
+          disabled={invalidPlan || nothingToApply} disabledFocusable={busy} onClick={() => apply.mutate()}>
+          {publishing ? (busy ? 'Applying…' : 'Apply plan') : busy ? 'Unpublishing…' : 'Unpublish pool'}
+        </Button>
+      )}
     >
-      <DialogSurface className={styles.surface} aria-describedby={introId}>
-        <DialogBody>
-          <DialogTitle>{publishing ? `Publish ${pool.displayName}` : `Unpublish ${pool.displayName}?`}</DialogTitle>
-          <DialogContent className={styles.content}>
+          <div className={styles.content} aria-describedby={introId}>
             <Text id={introId}>
               {publishing
                 ? 'MOSAIC has planned what it writes to API Management. Nothing changes until you apply the plan.'
@@ -319,27 +342,8 @@ export function PoolPlanDialog({ pool, mode, onClose, onFinished }: PoolPlanDial
                 )}
               </>
             )}
-          </DialogContent>
-          <DialogActions>
-            <Button appearance="secondary" disabled={busy} onClick={onClose}>
-              {phase === 'review' && (planning.isPending || plan) ? 'Cancel' : 'Close'}
-            </Button>
-            {/* A browser takes focus off a button that becomes disabled, so a busy button stays focusable. */}
-            {phase === 'review' && plan && (
-              <Button
-                appearance="primary"
-                className={publishing ? undefined : styles.destructive}
-                disabled={invalidPlan || nothingToApply}
-                disabledFocusable={busy}
-                onClick={() => apply.mutate()}
-              >
-                {publishing ? (busy ? 'Applying…' : 'Apply plan') : busy ? 'Unpublishing…' : 'Unpublish pool'}
-              </Button>
-            )}
-          </DialogActions>
-        </DialogBody>
-      </DialogSurface>
-    </Dialog>
+          </div>
+    </WorkspaceEditorFrame>
   )
 }
 

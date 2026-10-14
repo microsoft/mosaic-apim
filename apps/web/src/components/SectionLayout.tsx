@@ -1,5 +1,5 @@
-import { Button } from '@fluentui/react-components'
-import { ChevronLeftRegular, ChevronRightRegular } from '@fluentui/react-icons'
+import { Button, Tooltip } from '@fluentui/react-components'
+import { ChevronLeftRegular, ChevronRightRegular, GridRegular } from '@fluentui/react-icons'
 import { type ReactNode, useCallback, useId, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import styles from './SectionLayout.module.css'
@@ -8,6 +8,7 @@ export interface PageSection {
   value: string
   label: string
   description?: string
+  icon?: ReactNode
 }
 
 export function usePageSection(sections: readonly PageSection[], defaultValue = sections[0].value, parameter = 'tab') {
@@ -17,8 +18,12 @@ export function usePageSection(sections: readonly PageSection[], defaultValue = 
   const select = useCallback((value: string) => {
     const next = new URLSearchParams(params)
     next.set(parameter, value)
+    if (value !== active) {
+      next.delete('selected')
+      next.delete('mode')
+    }
     setParams(next)
-  }, [params, parameter, setParams])
+  }, [params, parameter, setParams, active])
   return [active, select] as const
 }
 
@@ -53,13 +58,15 @@ export function SectionLayout({
           aria-label={collapsed ? `Expand ${label} sections` : `Collapse ${label} sections`}
           aria-expanded={!collapsed} onClick={toggle} />}
         {sections.map((section) => (
-          <button key={section.value} type="button"
+          <Tooltip key={section.value} content={section.label} relationship="label">
+          <button type="button"
             className={active === section.value ? styles.active : ''}
             aria-current={active === section.value ? 'page' : undefined}
-            title={section.label} onClick={() => onSelect(section.value)}>
-            {collapsed && orientation === 'vertical' ? <span aria-hidden="true">{section.label.slice(0, 2)}</span> : section.label}
-            {collapsed && orientation === 'vertical' && <span className="sr-only">{section.label}</span>}
+            title={section.label} aria-label={section.label} onClick={() => onSelect(section.value)}>
+            <span className={styles.icon} aria-hidden="true">{section.icon ?? <GridRegular />}</span>
+            <span className={collapsed && orientation === 'vertical' ? 'sr-only' : styles.label}>{section.label}</span>
           </button>
+          </Tooltip>
         ))}
       </nav>
       <div className={styles.compact}>

@@ -5,6 +5,63 @@
   min-width: 0;
 }
 
+.resourceRow {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.resourceRow .primary {
+  font-size: 15px;
+}
+
+.selectedHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.selectedHeader a {
+  white-space: nowrap;
+}
+
+.editorForm {
+  display: grid;
+  gap: 24px;
+  max-width: 76ch;
+}
+
+.defaultSettings {
+  padding: 20px;
+  border-top: 1px solid var(--mosaic-border-soft);
+  background: var(--mosaic-surface);
+}
+
+.defaultSettings summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.defaultSettings[open] .form {
+  margin-top: 20px;
+  max-width: 76ch;
+}
+
+.defaultSettings summary:focus-visible {
+  outline: 2px solid var(--mosaic-primary);
+  outline-offset: 4px;
+}
+
+.embedded .card {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
 
 .grid {
   display: grid;
@@ -105,6 +162,10 @@
   gap: 8px;
 }
 
+.badges :global(.fui-Badge) {
+  white-space: nowrap;
+}
+
 .muted {
   color: var(--mosaic-text-muted);
 }
@@ -148,8 +209,6 @@
 .detailList dt {
   color: var(--mosaic-text-muted);
   font-size: 12px;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
 }
 
 .detailList dd {
@@ -188,16 +247,16 @@
   gap: 14px;
 }
 
+@container (max-width: 850px) {
+  .grid,
+  .budgetLayout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 980px) {
   .grid {
     grid-template-columns: 1fr;
-  }
-
-  @container (max-width: 850px) {
-    .grid,
-    .budgetLayout {
-      grid-template-columns: minmax(0, 1fr);
-    }
   }
 
   .budgetLayout {

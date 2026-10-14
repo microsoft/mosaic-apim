@@ -45,7 +45,15 @@ import { ErrorState, Loading } from './AsyncState'
 import { EnvironmentBadge } from './EnvironmentBadge'
 import { ModelAccessRecovery } from './ModelAccessRecovery'
 import { PolicyFacetItem } from './PolicyFacets'
+import {
+  WorkspaceDialog,
+  WorkspaceDialogActions,
+  WorkspaceDialogBody,
+  WorkspaceDialogContent,
+  WorkspaceDialogSurface,
+} from './WorkspaceDialog'
 import styles from './ImportFromGatewayDialog.module.css'
+import mcpStyles from '../pages/McpsPage.module.css'
 
 type Step = 'choose' | 'configure' | 'review' | 'apply'
 
@@ -253,9 +261,10 @@ function McpAccessReview({ plan }: { plan: PublishPlan }) {
       <Text size={200}>Application role: {snapshot.applicationRole}</Text>
       <Text size={200}>
         {snapshot.modelCaller
-          ? `Calls models as: ${snapshot.modelCaller.displayName} · ${snapshot.modelCaller.objectId}. The server receives each call's reference to pass on to its model calls.`
-          : 'Calls models as: none.'}
+          ? `Model-calling identity: ${snapshot.modelCaller.displayName} · ${snapshot.modelCaller.objectId}. The server receives each call's reference to pass on to its model calls.`
+          : 'Model-calling identity: none.'}
       </Text>
+      <Text size={200}>The identity this server uses when it calls a model.</Text>
       {snapshot.grants.length === 0 ? (
         <Text>No grants are in this target. The gateway will deny callers.</Text>
       ) : (
@@ -296,6 +305,8 @@ function McpAccessReview({ plan }: { plan: PublishPlan }) {
 
 type PublishMcpServerDialogProps = {
   open: boolean
+  surface?: 'dialog' | 'workspace'
+  initialEndpointId?: string | null
   mutationKey?: readonly unknown[]
   onClose: () => void
   onPublished: (message: string) => void
@@ -308,7 +319,7 @@ type PublishMcpServerDialogProps = {
 
 // Commit the opening step before Fluent focuses it. Retain that session during the close animation;
 // the next opening gets fresh state, including when it reviews the same publication again.
-export function PublishMcpServerDialog({ open, mutationKey, onClose, onPublished, initialReview }: PublishMcpServerDialogProps) {
+export function PublishMcpServerDialog({ open, mutationKey, onClose, onPublished, initialReview, surface = 'dialog', initialEndpointId }: PublishMcpServerDialogProps) {
   const review = initialReview ?? null
   const [session, setSession] = useState({ open, review, key: 0 })
   if (open && (!session.open || review !== session.review)) {
@@ -318,16 +329,17 @@ export function PublishMcpServerDialog({ open, mutationKey, onClose, onPublished
   }
   return (
     <PublishMcpServerSession key={session.key} open={open} mutationKey={mutationKey} initialReview={session.review}
+      surface={surface} initialEndpointId={initialEndpointId}
       onClose={onClose} onPublished={onPublished} />
   )
 }
 
-function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, initialReview }: PublishMcpServerDialogProps) {
+function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, initialReview, surface, initialEndpointId }: PublishMcpServerDialogProps) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const [step, setStep] = useState<Step>(initialReview ? 'review' : 'choose')
   const [gatewayId, setGatewayId] = useState(initialReview?.publication.gatewayId ?? '')
-  const [endpointId, setEndpointId] = useState('')
+  const [endpointId, setEndpointId] = useState(initialEndpointId ?? '')
   const [form, setForm] = useState<FormState>(() => defaultsFor(null))
   const [publication, setPublication] = useState<McpPublication | null>(initialReview?.publication ?? null)
   const [plan, setPlan] = useState<PublishPlan | null>(initialReview?.plan ?? null)
@@ -335,6 +347,7 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
   const [runId, setRunId] = useState('')
   const [refreshError, setRefreshError] = useState<Error | null>(null)
   const [invalidPlan, setInvalidPlan] = useState(false)
+  const [configurationChanged, setConfigurationChanged] = useState(false)
   const appliedGatewayRef = useRef(false)
   const notifiedRunRef = useRef('')
   const reviewingExistingPlan = Boolean(initialReview)
@@ -534,19 +547,26 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
     plan && plan.steps.length > 0 && plan.steps.every((planStep) => planStep.action === 'noChange'),
   )
 
-  return (
-    <Dialog open={open} onOpenChange={(_, data) => !data.open && onClose()}>
-      <DialogSurface>
-        <DialogBody>
-          <DialogTitle>{initialReview ? 'Review MCP access' : 'Publish an MCP server'}</DialogTitle>
-          <DialogContent>
+  const workspace = surface === 'workspace'
+  const Surface = workspace ? WorkspaceDialogSurface : DialogSurface
+  const Body = workspace ? WorkspaceDialogBody : DialogBody
+  const Content = workspace ? WorkspaceDialogContent : DialogContent
+  const Actions = workspace ? WorkspaceDialogActions : DialogActions
+  const pending = createAndPlan.isPending || apply.isPending || (step === 'apply' && (!currentRun || currentRun.status === 'running'))
+  const title = initialReview ? 'Review MCP access' : 'Publish an MCP server'
+  const renderContent = (requestClose: () => void) => (
+      <Surface onChangeCapture={() => setConfigurationChanged(true)}>
+        <Body>
+          {!workspace && <DialogTitle>{title}</DialogTitle>}
+          <Content>
             <div className={styles.intro}>
               <Text>Plan the API Management resources first, then explicitly apply the plan.</Text>
+              <Text>Preview the changes MOSAIC would apply. Nothing changes until you select Apply plan.</Text>
               <Text ref={stepRef} tabIndex={-1} size={200}>Step {['choose', 'configure', 'review', 'apply'].indexOf(step) + 1} of 4</Text>
             </div>
 
             {step === 'choose' && (
-              <div className={styles.nameCell}>
+              <div className={workspace ? mcpStyles.editorForm : styles.nameCell}>
                 <Field label="Gateway">
                   <Select
                     aria-label="Gateway"
@@ -653,7 +673,7 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
             )}
 
             {step === 'configure' && (
-              <div className={styles.nameCell}>
+              <div className={workspace ? mcpStyles.editorForm : styles.nameCell}>
                 <Text size={200}>
                   Defaults are shown below. Leave a field unchanged to use the computed publication names.
                 </Text>
@@ -775,11 +795,11 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
                 )}
               </div>
             )}
-          </DialogContent>
-          <DialogActions>
-            <Button appearance="secondary" onClick={onClose}>Close</Button>
-            {step === 'configure' && <Button appearance="secondary" onClick={() => setStep('choose')}>Back</Button>}
-            {step === 'review' && !reviewingExistingPlan && <Button appearance="secondary" onClick={() => setStep('configure')}>Back</Button>}
+          </Content>
+          <Actions>
+            <Button appearance="secondary" onClick={requestClose}>Close</Button>
+            {step === 'configure' && <Button appearance="secondary" disabled={workspace && pending} onClick={() => setStep('choose')}>{workspace ? 'Previous step' : 'Back'}</Button>}
+            {step === 'review' && !reviewingExistingPlan && <Button appearance="secondary" disabled={workspace && pending} onClick={() => setStep('configure')}>{workspace ? 'Previous step' : 'Back'}</Button>}
             {step === 'choose' && (
               <Button appearance="primary" disabled={!canConfigure} onClick={() => setStep('configure')}>Configure</Button>
             )}
@@ -802,9 +822,20 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
                 {apply.isPending ? 'Applying…' : 'Apply plan'}
               </Button>
             )}
-          </DialogActions>
-        </DialogBody>
-      </DialogSurface>
+          </Actions>
+        </Body>
+      </Surface>
+  )
+  return workspace ? (
+    <WorkspaceDialog open={open} title={title}
+      description="Prepare and review gateway changes before applying them."
+      onOpenChange={(_, data) => !data.open && onClose()}
+      dirty={(Boolean(endpointId) || configurationChanged) && step !== 'apply'} pending={pending}>
+      {renderContent}
+    </WorkspaceDialog>
+  ) : (
+    <Dialog open={open} onOpenChange={(_, data) => !data.open && onClose()}>
+      {renderContent(onClose)}
     </Dialog>
   )
 }

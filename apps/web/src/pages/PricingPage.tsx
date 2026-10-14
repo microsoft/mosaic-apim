@@ -20,7 +20,7 @@ import {
   Text,
   Textarea,
 } from '@fluentui/react-components'
-import { AddRegular } from '@fluentui/react-icons'
+import { AddRegular, MoneyRegular, WarningRegular, PlugConnectedRegular, DocumentRegular } from '@fluentui/react-icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type FormEvent, Fragment, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -930,7 +930,6 @@ export function PricingPage() {
       <PageHeader
         title="Pricing"
         description="The list prices MOSAIC turns measured usage into cost with, each with its source. Add prices for other clouds and providers, or override one from a date."
-        source={overview.data ? 'live' : undefined}
         actions={
           <Button appearance="primary" icon={<AddRegular />} onClick={() => setDraft(emptyDraft(cloud))}>
             Add price
@@ -950,6 +949,7 @@ export function PricingPage() {
       )}
       <SectionLayout label="Pricing" sections={tabs.map((item) => ({
         value: item.key,
+        icon: item.key === 'prices' ? <MoneyRegular /> : item.key === 'unpriced' ? <WarningRegular /> : item.key === 'endpoints' ? <PlugConnectedRegular /> : <DocumentRegular />,
         label: item.key === 'unpriced' && unpricedCount ? `${item.label} (${unpricedCount})` : item.label,
         description: item.key === 'unpriced' && unpricedCount !== undefined
           ? `${unpricedCount} unpriced entries. Fix missing endpoint facts or add the missing price using each row's action.`

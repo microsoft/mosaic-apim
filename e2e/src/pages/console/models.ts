@@ -5,7 +5,7 @@ import { banner, clickRowAction, escapeRegExp, expectDataLoaded, expectNoLoadErr
 import { PublishDialog } from './publish-dialog.ts'
 import { UnpublishDialog } from './unpublish-dialog.ts'
 
-/** The status badge the endpoints table shows for each status MOSAIC reports. */
+/** The status badge each endpoint list entry shows for the status MOSAIC reports. */
 export const endpointStatusLabels: Readonly<Record<string, string>> = {
   pending: 'Not checked',
   connected: 'Connected',
@@ -61,17 +61,38 @@ export class ModelsPage {
   // Published models
 
   get publishedModels(): Locator {
-    return this.page.getByRole('table', { name: 'Published models' })
+    return this.page.getByRole('list', { name: 'Published models', exact: true, includeHidden: true })
   }
 
-  /** A publication's row: its display name and API path, and its gateway when two gateways publish the same path. */
+  get publishedDetails(): Locator {
+    return this.page.getByRole('region', { name: 'Published model details', exact: true })
+  }
+
+  /** A publication's selectable list entry. Non-secret identity attributes disambiguate shared names and paths. */
   publishedRow(publication: { displayName: string; apiPath: string }, gatewayName?: string): Locator {
     let row = this.publishedModels
-      .getByRole('row')
+      .getByRole('listitem', { includeHidden: true })
       .filter({ has: this.page.getByText(publication.displayName, { exact: true }) })
-      .filter({ has: this.page.getByText(`/${publication.apiPath}`, { exact: true }) })
-    if (gatewayName) row = row.filter({ has: this.page.getByRole('link', { name: gatewayName, exact: true }) })
+      .filter({ has: this.page.locator(`[data-publication-path=${JSON.stringify(`/${publication.apiPath}`)}]`) })
+    if (gatewayName) row = row.filter({ has: this.page.locator(`[data-publication-gateway=${JSON.stringify(gatewayName)}]`) })
     return row
+  }
+
+  async #select(row: Locator, details: Locator): Promise<void> {
+    if (!await row.isVisible()) {
+      const back = details.getByRole('button', { name: 'Back to list', exact: true })
+      if (await back.isVisible()) await back.click()
+    }
+    const name = await row.locator('[data-resource-name]').getAttribute('data-resource-name')
+    const selection = row.getByRole('button')
+    await selection.click()
+    await expect(details).toBeVisible()
+    if (name) await expect(details.getByRole('heading', { name, exact: true })).toBeVisible()
+  }
+
+  async selectPublication(publication: { displayName: string; apiPath: string }, gatewayName?: string): Promise<void> {
+    await this.selectSection('published')
+    await this.#select(this.publishedRow(publication, gatewayName), this.publishedDetails)
   }
 
   async openPublishDialog(): Promise<PublishDialog> {
@@ -85,10 +106,11 @@ export class ModelsPage {
   /** Re-plans a publication; the dialog opens on the plan's review and the response is the plan. */
   async replan(row: Locator): Promise<{ dialog: PublishDialog; plan: Response }> {
     await this.selectSection('published')
+    await this.#select(row, this.publishedDetails)
     const plan = await this.#respond('POST', /^\/api\/v1\/publications\/[^/]+\/plan$/, () =>
-      clickRowAction(this.page, row, /^Review (changes|publish plan)$/),
+      clickRowAction(this.page, this.publishedDetails, /^Review (changes|publish plan)$/),
     )
-    const dialog = new PublishDialog(this.page, this.targets, /^(Publish a model|Review model access)$/)
+    const dialog = new PublishDialog(this.page, this.targets, /^(Review model changes|Review model access)$/)
     await dialog.visible()
     return { dialog, plan }
   }
@@ -99,8 +121,9 @@ export class ModelsPage {
    */
   async openUnpublish(row: Locator, displayName: string): Promise<{ dialog: UnpublishDialog; plan: Response }> {
     await this.selectSection('published')
+    await this.#select(row, this.publishedDetails)
     const plan = await this.#respond('POST', /^\/api\/v1\/publications\/[^/]+\/unpublish-plan$/, () =>
-      clickRowAction(this.page, row, 'Unpublish'),
+      clickRowAction(this.page, this.publishedDetails, 'Unpublish'),
     )
     const dialog = new UnpublishDialog(this.page, this.targets, displayName)
     await dialog.visible()
@@ -110,7 +133,8 @@ export class ModelsPage {
   /** Removes a publication record through its confirmation dialog. */
   async removePublication(row: Locator, displayName: string): Promise<Response> {
     await this.selectSection('published')
-    await clickRowAction(this.page, row, 'Remove MOSAIC record')
+    await this.#select(row, this.publishedDetails)
+    await clickRowAction(this.page, this.publishedDetails, 'Remove MOSAIC record')
     const dialog = this.page.getByRole('alertdialog', { name: `Remove ${displayName}?` })
     await expect(dialog).toBeVisible()
     const response = await this.#respond('DELETE', /^\/api\/v1\/publications\/[^/]+$/, () =>
@@ -123,73 +147,82 @@ export class ModelsPage {
   // Imported model APIs
 
   get importedModelApis(): Locator {
-    return this.page.getByRole('table', { name: 'Imported model APIs' })
+    return this.page.getByRole('list', { name: 'Imported model APIs', exact: true, includeHidden: true })
+  }
+
+  get importedDetails(): Locator {
+    return this.page.getByRole('region', { name: 'Imported model API details', exact: true })
   }
 
   visibility(displayName: string): Locator {
-    return this.page.getByRole('combobox', { name: `Catalog visibility for ${displayName}`, exact: true })
+    return this.importedDetails.getByRole('combobox', { name: `Catalog visibility for ${displayName}`, exact: true })
   }
 
   modelApiRow(displayName: string): Locator {
-    return this.importedModelApis.getByRole('row').filter({ has: this.visibility(displayName) })
+    return this.importedModelApis.getByRole('listitem', { includeHidden: true }).filter({ has: this.page.getByText(displayName, { exact: true }) })
   }
 
   async setVisibility(displayName: string, visibility: 'catalog' | 'private'): Promise<Response> {
     await this.selectSection('imported')
+    await this.#select(this.modelApiRow(displayName), this.importedDetails)
     return this.#respond('PATCH', /^\/api\/v1\/model-apis\/[^/]+\/catalog$/, () => this.visibility(displayName).selectOption(visibility))
   }
 
   /** Stops governing a model API at once: the console asks for no confirmation. */
   async removeModelApi(displayName: string): Promise<Response> {
     await this.selectSection('imported')
+    await this.#select(this.modelApiRow(displayName), this.importedDetails)
     return this.#respond('DELETE', /^\/api\/v1\/model-apis\/[^/]+$/, () =>
-      clickRowAction(this.page, this.modelApiRow(displayName), 'Remove'),
+      clickRowAction(this.page, this.importedDetails, 'Remove import'),
     )
   }
 
   // Model endpoints
 
   get endpoints(): Locator {
-    return this.page.getByRole('table', { name: 'Registered model endpoints' })
+    return this.page.getByRole('list', { name: 'Registered model endpoints', exact: true, includeHidden: true })
+  }
+
+  get endpointDetails(): Locator {
+    return this.page.getByRole('region', { name: 'Model endpoint details', exact: true })
   }
 
   endpointRow(name: string): Locator {
-    return this.endpoints.getByRole('row').filter({ has: this.page.getByRole('button', { name, exact: true }) })
+    return this.endpoints.getByRole('listitem', { includeHidden: true }).filter({ has: this.page.getByText(name, { exact: true }) })
   }
 
   /**
-   * Selects an endpoint, which shows its access and its models below the table: "Models on <name>" for an
-   * endpoint MOSAIC reads with its managed identity, or "Deployments on <name>" for one reached with an API key.
+   * Selects an endpoint and opens its generous detail pane with access, deployments, and pool membership.
    */
   async selectEndpoint(name: string): Promise<void> {
     await this.selectSection('endpoints')
-    await this.endpointRow(name).getByRole('button', { name, exact: true }).click()
-    await expect(this.page.getByRole('heading', { name: new RegExp(`^(Models|Deployments) on ${escapeRegExp(name)}$`) })).toBeVisible()
+    await this.#select(this.endpointRow(name), this.endpointDetails)
+    await expect(this.endpointDetails.getByRole('heading', { name, exact: true })).toBeVisible()
   }
 
   /** Checks access again. The page shows no banner, so the response is the result. */
   async checkAccess(name: string): Promise<Response> {
-    await this.selectSection('endpoints')
+    await this.selectEndpoint(name)
     return this.#respond('POST', /^\/api\/v1\/model-endpoints\/[^/]+\/preflight$/, () =>
-      clickRowAction(this.page, this.endpointRow(name), 'Check access'),
+      clickRowAction(this.page, this.endpointDetails, 'Check access'),
     )
   }
 
   /** Syncs an endpoint's models. The page shows no banner, so the response is the result. */
   async sync(name: string): Promise<Response> {
-    await this.selectSection('endpoints')
+    await this.selectEndpoint(name)
     return this.#respond(
       'POST',
       /^\/api\/v1\/model-endpoints\/[^/]+\/sync$/,
-      () => clickRowAction(this.page, this.endpointRow(name), 'Sync models'),
+      () => clickRowAction(this.page, this.endpointDetails, 'Sync models'),
       180_000,
     )
   }
 
   /** Removes what MOSAIC stored about an endpoint, through its confirmation dialog. Azure is never changed. */
   async removeEndpoint(name: string): Promise<Response> {
-    await this.selectSection('endpoints')
-    await clickRowAction(this.page, this.endpointRow(name), 'Remove')
+    await this.selectEndpoint(name)
+    await clickRowAction(this.page, this.endpointDetails, 'Remove')
     const dialog = this.page.getByRole('alertdialog', { name: `Remove ${name}?` })
     await expect(dialog).toBeVisible()
     const response = await this.#respond('DELETE', /^\/api\/v1\/model-endpoints\/[^/]+$/, () =>
@@ -200,12 +233,12 @@ export class ModelsPage {
   }
 
   readVerdict(canRead: boolean): Locator {
-    return this.page.getByText(canRead ? 'MOSAIC can read this endpoint' : 'MOSAIC cannot read this endpoint', { exact: true })
+    return this.endpointDetails.getByText(canRead ? 'MOSAIC can read this endpoint' : 'MOSAIC cannot read this endpoint', { exact: true })
   }
 
   /** An endpoint reached with an API key: whether it accepted the key MOSAIC read from Key Vault. */
   keyVerdict(accepted: boolean): Locator {
-    return this.page.getByText(accepted ? 'The endpoint accepts the key' : "MOSAIC can't confirm the key", { exact: true })
+    return this.endpointDetails.getByText(accepted ? 'The endpoint accepts the key' : "MOSAIC can't confirm the key", { exact: true })
   }
 
   /**
@@ -213,22 +246,22 @@ export class ModelsPage {
    * for an endpoint reached with an API key, "can read the key", "can't read the key" or "not confirmed".
    */
   gatewayVerdict(gatewayName: string): Locator {
-    return this.page.getByText(
+    return this.endpointDetails.getByText(
       new RegExp(`^${escapeRegExp(gatewayName)}: (can invoke|cannot invoke|not confirmed|can read the key|can't read the key)$`),
     )
   }
 
   get environmentVerdicts(): Locator {
-    return this.page.getByText(/^Environment rules: environment (allowed|warning|blocked|not evaluated)$/)
+    return this.endpointDetails.getByText(/^Environment rules: environment (allowed|warning|blocked|not evaluated)$/)
   }
 
   get deployments(): Locator {
-    return this.page.getByRole('table', { name: 'Discovered model deployments' })
+    return this.endpointDetails.getByRole('table', { name: 'Discovered model deployments' })
   }
 
   /** The deployments an admin declared for an endpoint reached with an API key, which can't list its own. */
   get declaredDeployments(): Locator {
-    return this.page.getByRole('table', { name: 'Declared model deployments' })
+    return this.endpointDetails.getByRole('table', { name: 'Declared model deployments' })
   }
 
   deploymentRow(deploymentName: string): Locator {
@@ -276,7 +309,7 @@ export class RegisterEndpointDialog {
 
   constructor(page: Page, targets: Targets) {
     this.page = page
-    this.root = page.getByRole('dialog', { name: 'Register model endpoint' })
+    this.root = page.getByRole('region', { name: 'Register model endpoint', exact: true })
     this.#apiOrigin = targets.origins.api
   }
 
@@ -304,7 +337,11 @@ export class RegisterEndpointDialog {
   }
 
   async cancel(): Promise<void> {
+    await expect(this.root).not.toHaveAttribute('aria-busy', 'true')
     await this.root.getByRole('button', { name: 'Cancel', exact: true }).click()
+    const discard = this.page.getByRole('dialog', { name: 'Discard unsaved changes?', exact: true })
+    await Promise.race([this.root.waitFor({ state: 'hidden' }), discard.waitFor({ state: 'visible' })])
+    if (await discard.isVisible()) await discard.getByRole('button', { name: 'Discard changes', exact: true }).click()
     await expect(this.root).toBeHidden()
   }
 }

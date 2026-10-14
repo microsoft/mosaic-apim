@@ -1,7 +1,6 @@
 import {
   Badge,
   Button,
-  Card,
   Dialog,
   DialogActions,
   DialogBody,
@@ -17,19 +16,29 @@ import {
   Text,
   Textarea,
   Title3,
-  useRestoreFocusTarget,
 } from '@fluentui/react-components'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { type FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { BotRegular, PeopleRegular, PersonRegular, ShieldRegular, AppsRegular } from '@fluentui/react-icons'
+import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { DirectoryPrincipalPicker } from '../components/DirectoryPrincipalPicker'
 import { IdentityAvatar } from '../components/IdentityAvatar'
-import { IdentityDetailsDrawer } from '../components/IdentityDetailsDrawer'
 import { PageHeader } from '../components/PageHeader'
 import { PrincipalKindBadge } from '../components/PrincipalKindBadge'
 import { SectionLayout } from '../components/SectionLayout'
+import { ResourceWorkbench, type ResourceWorkbenchProps } from '../components/ResourceWorkbench'
+import { WorkspaceEditorFrame } from '../components/WorkspaceEditorFrame'
+import {
+  WorkspaceDialog,
+  WorkspaceDialogSurface,
+  WorkspaceDialogBody,
+  WorkspaceDialogContent,
+  WorkspaceDialogActions,
+} from '../components/WorkspaceDialog'
+import { useWorkbenchLocation } from '../components/useWorkbenchLocation'
+import { completeWorkspaceNavigation } from '../components/WorkspaceLeaveGuard'
 import { PRINCIPAL_KIND_LABELS } from '../labels'
 import type { DirectorySearchKind, Principal, PrincipalKind } from '../types'
 import styles from './IdentityPage.module.css'
@@ -39,11 +48,11 @@ type IdentityTab = PrincipalTab | 'groups'
 type PrincipalDialogView = 'search' | 'manual'
 
 const IDENTITY_SECTIONS = [
-  { value: 'users', label: 'People', description: 'People referenced from Microsoft Entra. Labels and defaults are stored in MOSAIC; adding a reference does not create an Entra account.' },
-  { value: 'agents', label: 'Agents', description: 'Microsoft Entra agent identities and their paired agent users. MOSAIC records references, not new agents.' },
-  { value: 'applications', label: 'Applications & managed identities', description: 'Application service principals and Azure managed identities from Microsoft Entra. Registration in MOSAIC does not grant an Entra application role.' },
-  { value: 'security-groups', label: 'Entra security groups', description: 'Security-enabled groups whose membership is managed in Microsoft Entra. Group grants use validated token claims, not MOSAIC-local membership.' },
-  { value: 'groups', label: 'MOSAIC groups', description: 'Local collections of registered principals. Creating a MOSAIC group does not create or change an Entra group; these grants remain desired state only.' },
+  { value: 'users', label: 'People', icon: <PersonRegular />, description: 'People referenced from Microsoft Entra. Labels and defaults are stored in MOSAIC; adding a reference does not create an Entra account.' },
+  { value: 'agents', label: 'Agents', icon: <BotRegular />, description: 'Microsoft Entra agent identities and their paired agent users. MOSAIC records references, not new agents.' },
+  { value: 'applications', label: 'Applications & managed identities', icon: <AppsRegular />, description: 'Application service principals and Azure managed identities from Microsoft Entra. Registration in MOSAIC does not grant an Entra application role.' },
+  { value: 'security-groups', label: 'Entra security groups', icon: <ShieldRegular />, description: 'Security-enabled groups whose membership is managed in Microsoft Entra. Group grants use validated token claims, not MOSAIC-local membership.' },
+  { value: 'groups', label: 'MOSAIC groups', icon: <PeopleRegular />, description: 'Local collections of registered principals. Creating a MOSAIC group does not create or change an Entra group; these grants remain desired state only.' },
 ] as const
 
 function principalTabForKind(kind: PrincipalKind): PrincipalTab {
@@ -97,7 +106,7 @@ const PRINCIPAL_TAB_TEXT: Record<
   },
 }
 
-/** What the add dialog searches for, or enters by hand, when it opens from each tab. */
+/** Directory search and deliberate manual fallback follow the current identity section. */
 const ADD_DIALOG_DEFAULTS: Record<IdentityTab, { search: DirectorySearchKind; manual: PrincipalKind }> = {
   users: { search: 'user', manual: 'user' },
   agents: { search: 'agent', manual: 'agentIdentity' },
@@ -174,12 +183,22 @@ function formatTimestamp(value: string) {
   return Number.isNaN(parsed.valueOf()) ? value : parsed.toLocaleString()
 }
 
-function LiveBadge() {
-  return (
-    <Badge appearance="outline">
-      MOSAIC record
-    </Badge>
-  )
+function IdentityWorkbench<T>({
+  editing, dirty, pending, onBack, editorTitle, children, ...workbench
+}: Omit<ResourceWorkbenchProps<T>, 'renderDetail'> & {
+  editing: boolean
+  dirty: boolean
+  pending: boolean
+  onBack: () => void
+  editorTitle: string
+  children: (requestCancel: () => void) => ReactNode
+}) {
+  return editing
+    ? <WorkspaceEditorFrame title={editorTitle} onBack={onBack} onCancel={onBack}
+        dirty={dirty} pending={pending}>
+        {(requestLeave) => children(() => requestLeave(onBack))}
+      </WorkspaceEditorFrame>
+    : <ResourceWorkbench {...workbench} renderDetail={() => children(onBack)} />
 }
 
 export function IdentityPage() {
@@ -187,15 +206,18 @@ export function IdentityPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const location = useLocation()
-  const restoreFocus = useRestoreFocusTarget()
   const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search])
   const rawTab = searchParams.get('tab')
   const activeTab: IdentityTab = rawTab === 'workloads' ? 'applications' : isIdentityTab(rawTab) ? rawTab : 'users'
+  const workbench = useWorkbenchLocation({ section: activeTab })
+  const activeMutations = useIsMutating()
 
   const [searchQuery, setSearchQuery] = useState('')
-  const [requestedPrincipalId, setSelectedPrincipalId] = useState('')
-  const [selectedGroupId, setSelectedGroupId] = useState('')
-  const [principalDialogOpen, setPrincipalDialogOpen] = useState(false)
+  const requestedPrincipalId = activeTab === 'groups' ? '' : workbench.selectedId ?? ''
+  const selectedGroupId = activeTab === 'groups' ? workbench.selectedId ?? '' : ''
+  const principalDialogOpen = activeTab !== 'groups' && workbench.mode === 'new'
+  const createGroupOpen = activeTab === 'groups' && workbench.mode === 'new'
+  const detailEditing = workbench.mode === 'edit'
   const [principalDialogView, setPrincipalDialogView] = useState<PrincipalDialogView>('search')
   const [directoryKind, setDirectoryKind] = useState<DirectorySearchKind>('user')
   const [createPrincipalObjectId, setCreatePrincipalObjectId] = useState('')
@@ -203,7 +225,6 @@ export function IdentityPage() {
   const [createPrincipalKind, setCreatePrincipalKind] = useState<PrincipalKind>('user')
   const [createPrincipalDefaultCostCenterId, setCreatePrincipalDefaultCostCenterId] = useState('')
   const [createPrincipalParentId, setCreatePrincipalParentId] = useState('')
-  const [createGroupOpen, setCreateGroupOpen] = useState(false)
   const [createGroupName, setCreateGroupName] = useState('')
   const [createGroupDescription, setCreateGroupDescription] = useState('')
   const [principalDraftLabel, setPrincipalDraftLabel] = useState('')
@@ -212,16 +233,16 @@ export function IdentityPage() {
   const [groupDraftDescription, setGroupDraftDescription] = useState('')
   const [principalToAdd, setPrincipalToAdd] = useState('')
   const [confirmation, setConfirmation] = useState<ConfirmationState>(null)
-  const [detailEditing, setDetailEditing] = useState(false)
-  const [discardOpen, setDiscardOpen] = useState(false)
-  const [pendingTab, setPendingTab] = useState<IdentityTab | null>(null)
-  const [detailsOpen, setDetailsOpen] = useState(false)
+  const [saveCommitted, setSaveCommitted] = useState(false)
   const editButtonRef = useRef<HTMLButtonElement>(null)
   const editFormRef = useRef<HTMLFormElement>(null)
   const previousEditing = useRef(false)
+  const draftedPrincipalId = useRef<string | undefined>(undefined)
+  const draftedGroupId = useRef<string | undefined>(undefined)
+  const principalWorkspaceTab = useRef<IdentityTab | null>(null)
 
-  useLayoutEffect(() => {
-    if (detailsOpen && !discardOpen) {
+  useEffect(() => {
+    if (workbench.selectedId) {
       if (detailEditing) {
         editFormRef.current?.querySelector<HTMLInputElement | HTMLTextAreaElement>('input, textarea')?.focus()
       } else if (previousEditing.current) {
@@ -229,7 +250,7 @@ export function IdentityPage() {
       }
     }
     previousEditing.current = detailEditing
-  }, [detailEditing, detailsOpen, discardOpen])
+  }, [detailEditing, workbench.selectedId])
 
   const principals = useQuery({ queryKey: ['principals'], queryFn: api.listPrincipals })
   const costCenters = useQuery({ queryKey: ['cost-centers'], queryFn: api.listCostCenters })
@@ -251,12 +272,11 @@ export function IdentityPage() {
 
   const updateTab = useCallback(
     (nextTab: IdentityTab, replace = false) => {
-      setSelectedPrincipalId('')
-      setSelectedGroupId('')
-      setDetailEditing(false)
-      setDetailsOpen(false)
       const nextParams = new URLSearchParams(location.search)
       nextParams.set('tab', nextTab)
+      nextParams.delete('selected')
+      nextParams.delete('workbench')
+      nextParams.delete('mode')
       navigate(
         {
           pathname: location.pathname,
@@ -270,22 +290,26 @@ export function IdentityPage() {
 
   useEffect(() => {
     if (!isIdentityTab(rawTab)) {
-      updateTab(activeTab, true)
+      const nextParams = new URLSearchParams(location.search)
+      nextParams.set('tab', activeTab)
+      navigate({ pathname: location.pathname, search: `?${nextParams}` }, { replace: true, preventScrollReset: true })
     }
-  }, [activeTab, rawTab, updateTab])
+  }, [activeTab, rawTab, location.pathname, location.search, navigate])
 
   // Open the tab that lists the principal, and select it there.
   const showPrincipal = useCallback(
     (principal: Principal) => {
       const nextTab = principalTabForKind(principal.kind)
       setSearchQuery((current) => (principalMatchesSearch(principal, nextTab, current) ? current : ''))
-      if (nextTab !== activeTab) {
-        updateTab(nextTab, true)
-      }
-      setSelectedPrincipalId(principal.id)
-      setDetailEditing(false)
+      setSaveCommitted(true)
+      const nextParams = new URLSearchParams(location.search)
+      nextParams.set('tab', nextTab)
+      nextParams.set('selected', principal.id)
+      nextParams.delete('workbench')
+      nextParams.delete('mode')
+      completeWorkspaceNavigation(() => navigate({ pathname: location.pathname, search: `?${nextParams}` }, { replace: true }))
     },
-    [activeTab, updateTab],
+    [location.pathname, location.search, navigate],
   )
 
   const createPrincipal = useMutation({
@@ -294,7 +318,6 @@ export function IdentityPage() {
       setCreatePrincipalObjectId('')
       setCreatePrincipalLabel('')
       setCreatePrincipalParentId('')
-      setPrincipalDialogOpen(false)
       await queryClient.invalidateQueries({ queryKey: ['principals'] })
       showPrincipal(principal)
     },
@@ -318,8 +341,7 @@ export function IdentityPage() {
     mutationFn: api.deletePrincipal,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['principals'] })
-      setSelectedPrincipalId('')
-      setDetailsOpen(false)
+      completeWorkspaceNavigation(() => workbench.select(null))
     },
   })
 
@@ -328,12 +350,40 @@ export function IdentityPage() {
     onSuccess: async (group) => {
       setCreateGroupName('')
       setCreateGroupDescription('')
-      setCreateGroupOpen(false)
       await queryClient.invalidateQueries({ queryKey: ['groups'] })
-      updateTab('groups', true)
-      setSelectedGroupId(group.id)
+      setSaveCommitted(true)
+      completeWorkspaceNavigation(() => workbench.close(group.id))
     },
   })
+  const resetCreatePrincipal = createPrincipal.reset
+  const resetCreateGroup = createGroup.reset
+
+  useEffect(() => {
+    if (!principalDialogOpen) {
+      principalWorkspaceTab.current = null
+      return
+    }
+    if (principalWorkspaceTab.current === activeTab) return
+    principalWorkspaceTab.current = activeTab
+    const defaults = ADD_DIALOG_DEFAULTS[activeTab]
+    setDirectoryKind(defaults.search)
+    setCreatePrincipalKind(defaults.manual)
+    setPrincipalDialogView('search')
+    setCreatePrincipalObjectId('')
+    setCreatePrincipalLabel('')
+    setCreatePrincipalParentId('')
+    setCreatePrincipalDefaultCostCenterId(costCenterSettings.data?.defaultCostCenterId ?? '')
+    setSaveCommitted(false)
+    resetCreatePrincipal()
+  }, [principalDialogOpen, activeTab, costCenterSettings.data?.defaultCostCenterId, resetCreatePrincipal])
+
+  useEffect(() => {
+    if (!createGroupOpen) return
+    setCreateGroupName('')
+    setCreateGroupDescription('')
+    setSaveCommitted(false)
+    resetCreateGroup()
+  }, [createGroupOpen, resetCreateGroup])
 
   const updateGroup = useMutation({
     mutationFn: ({
@@ -345,7 +395,8 @@ export function IdentityPage() {
     }) => api.updateGroup(groupId, payload),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['groups'] })
-      setDetailEditing(false)
+      setSaveCommitted(true)
+      completeWorkspaceNavigation(() => workbench.close())
     },
   })
 
@@ -356,8 +407,7 @@ export function IdentityPage() {
       if (selectedGroupId) {
         await queryClient.removeQueries({ queryKey: ['memberships', selectedGroupId] })
       }
-      setSelectedGroupId('')
-      setDetailsOpen(false)
+      completeWorkspaceNavigation(() => workbench.select(null))
     },
   })
 
@@ -412,7 +462,9 @@ export function IdentityPage() {
 
   const selectedPrincipalId = requestedPrincipalId
 
-  const selectedPrincipal = principals.data?.find((principal) => principal.id === selectedPrincipalId)
+  const selectedPrincipal = principals.data?.find((principal) =>
+    principal.id === selectedPrincipalId && principalTabForKind(principal.kind) === principalTab,
+  )
   const selectedGroup = groups.data?.find((group) => group.id === selectedGroupId)
   const selectedPrincipalMembers = useQuery({
     queryKey: ['principals', selectedPrincipal?.id, 'members'],
@@ -421,15 +473,19 @@ export function IdentityPage() {
   })
 
   useEffect(() => {
+    if (detailEditing && draftedPrincipalId.current === selectedPrincipal?.id) return
+    draftedPrincipalId.current = selectedPrincipal?.id
     setPrincipalDraftLabel(selectedPrincipal?.label ?? '')
     setPrincipalDraftKind(selectedPrincipal?.kind ?? 'user')
     setPrincipalDraftDefaultCostCenterId(selectedPrincipal?.defaultCostCenterId ?? '')
-  }, [selectedPrincipal])
+  }, [selectedPrincipal, detailEditing])
 
   useEffect(() => {
+    if (detailEditing && draftedGroupId.current === selectedGroup?.id) return
+    draftedGroupId.current = selectedGroup?.id
     setGroupDraftDescription(selectedGroup?.description ?? '')
     setPrincipalToAdd('')
-  }, [selectedGroup])
+  }, [selectedGroup, detailEditing])
 
   const memberIds = useMemo(
     () => new Set(memberships.data?.map((membership) => membership.principalId) ?? []),
@@ -511,28 +567,7 @@ export function IdentityPage() {
     setPrincipalDraftKind(selectedPrincipal?.kind ?? 'user')
     setPrincipalDraftDefaultCostCenterId(selectedPrincipal?.defaultCostCenterId ?? '')
     setGroupDraftDescription(selectedGroup?.description ?? '')
-    setDetailEditing(false)
-  }
-
-  function keepEditing() {
-    setDiscardOpen(false)
-    setPendingTab(null)
-  }
-
-  function closeDetails(discard = false, nextTab: IdentityTab | null = null) {
-    if (updatePrincipal.isPending || updateGroup.isPending) return
-    if (!discard && detailEditing && (principalDetailHasChanges || groupDetailHasChanges)) {
-      setPendingTab(nextTab)
-      setDiscardOpen(true)
-      return
-    }
-    cancelEditing()
-    setDiscardOpen(false)
-    setPendingTab(null)
-    setDetailsOpen(false)
-    setSelectedPrincipalId('')
-    setSelectedGroupId('')
-    if (nextTab) updateTab(nextTab)
+    workbench.close()
   }
 
   const principalDetailError = updatePrincipal.error ?? deletePrincipal.error
@@ -543,7 +578,8 @@ export function IdentityPage() {
     const defaults = ADD_DIALOG_DEFAULTS[activeTab]
     createPrincipal.reset()
     setPrincipalDialogView('search')
-    setPrincipalDialogOpen(true)
+    setSaveCommitted(false)
+    workbench.open('new')
     setDirectoryKind(defaults.search)
     setCreatePrincipalObjectId('')
     setCreatePrincipalLabel('')
@@ -554,16 +590,17 @@ export function IdentityPage() {
 
   function closePrincipalDialog() {
     createPrincipal.reset()
-    setPrincipalDialogOpen(false)
+    workbench.close()
   }
 
   function closeGroupDialog() {
     createGroup.reset()
-    setCreateGroupOpen(false)
+    workbench.close()
   }
 
   function submitCreatePrincipal(event: FormEvent) {
     event.preventDefault()
+    if (!createPrincipalObjectId.trim() || createPrincipal.isPending) return
     createPrincipal.mutate({
       objectId: createPrincipalObjectId.trim(),
       kind: createPrincipalKind,
@@ -595,6 +632,7 @@ export function IdentityPage() {
 
   function submitCreateGroup(event: FormEvent) {
     event.preventDefault()
+    if (!createGroupName.trim() || createGroup.isPending) return
     createGroup.mutate({
       name: createGroupName.trim(),
       description: createGroupDescription.trim() || undefined,
@@ -639,11 +677,33 @@ export function IdentityPage() {
     setConfirmation(null)
   }
 
+  const identityFilter = <Input
+    className={styles.searchInput}
+    value={searchQuery}
+    placeholder={activeTab === 'groups' ? groupSearchPlaceholder : principalTabText.filter}
+    aria-label={activeTab === 'groups' ? groupSearchPlaceholder : principalTabText.filter}
+    onChange={(_, data) => setSearchQuery(data.value)}
+  />
+  const identityActions = activeTab === 'groups'
+    ? <Button appearance="primary" onClick={() => {
+        createGroup.reset()
+        setCreateGroupName('')
+        setCreateGroupDescription('')
+        setSaveCommitted(false)
+        workbench.open('new')
+      }}>Create MOSAIC group</Button>
+    : <Button appearance="primary" aria-label={principalTabText.add} title={principalTabText.add}
+        onClick={openPrincipalDialog}>
+        {activeTab === 'applications' ? <>
+          <span className={styles.applicationAction}>{principalTabText.add}</span>
+          <span className={styles.compactApplicationAction}>Add application</span>
+        </> : principalTabText.add}
+      </Button>
+
   return (
     <section className={styles.page}>
       <PageHeader
         title="Identity"
-        source="live"
         description="Manage registered identity references and local groups. Microsoft Entra remains authoritative for directory identities and security-group membership."
       />
 
@@ -657,119 +717,73 @@ export function IdentityPage() {
         </MessageBar>
       )}
 
-      <SectionLayout label="Identity" orientation="horizontal" sections={IDENTITY_SECTIONS} active={activeTab}
-        onSelect={(value) => isIdentityTab(value) && value !== activeTab && closeDetails(false, value)}>
-      <div className={styles.toolbar}>
-        <div className={styles.toolbarControls}>
-          <Input
-            className={styles.searchInput}
-            value={searchQuery}
-            placeholder={activeTab === 'groups' ? groupSearchPlaceholder : principalTabText.filter}
-            aria-label={activeTab === 'groups' ? groupSearchPlaceholder : principalTabText.filter}
-            onChange={(_, data) => setSearchQuery(data.value)}
-          />
-
-          <div className={styles.actionRow}>
-            {activeTab !== 'groups' && <Button
-              appearance="primary"
-              onClick={() => openPrincipalDialog()}
-            >
-              {principalTabText.add}
-            </Button>}
-            {activeTab === 'groups' && <Button
-              appearance="primary"
-              onClick={() => {
-                createGroup.reset()
-                setCreateGroupName('')
-                setCreateGroupDescription('')
-                setCreateGroupOpen(true)
-              }}
-            >
-              Create MOSAIC group
-            </Button>}
-          </div>
-        </div>
-      </div>
+      <SectionLayout label="Identity" sections={IDENTITY_SECTIONS} active={activeTab}
+        onSelect={(value) => isIdentityTab(value) && value !== activeTab && updateTab(value)}>
 
       {activeTab === 'groups' ? (
         groups.isLoading || principals.isLoading ? (
           <Loading label="Loading groups and principals" />
         ) : groups.error || principals.error ? (
           <ErrorState error={groups.error ?? principals.error} />
-        ) : !groups.data?.length ? (
-          <EmptyState title="No groups configured">
-            Create the first MOSAIC group to manage memberships.
-          </EmptyState>
         ) : (
-          <div className={styles.contentGrid}>
-            <Card className={styles.listCard}>
-              <div className={styles.cardHeader}>
-                <div className={styles.cardHeaderText}>
-                  <Title3 as="h2">MOSAIC groups</Title3>
-                  <Text className={styles.muted}>
-                    {filteredGroups.length} of {groups.data.length} group
-                    {groups.data.length === 1 ? '' : 's'}
-                  </Text>
-                </div>
-              </div>
-
-              {filteredGroups.length ? (
-                <div className={styles.groupList} aria-label="MOSAIC groups">
-                  {filteredGroups.map((group) => {
-                    const isSelected = group.id === selectedGroupId
-                    return (
-                      <button
-                        {...restoreFocus}
-                        key={group.id}
-                        type="button"
-                        className={
-                          isSelected
-                            ? `${styles.groupListItem} ${styles.groupListItemSelected}`
-                            : styles.groupListItem
-                        }
-                        onClick={() => { setSelectedGroupId(group.id); setDetailEditing(false); setDetailsOpen(true) }}
-                      >
-                        <span className={styles.groupListTitle}>{group.name}</span>
-                        <span className={styles.groupListDescription}>
-                          {group.description || 'No description'}
-                        </span>
-                      </button>
-                    )
-                  })}
-                </div>
-              ) : (
-                <div className={styles.emptyPanel}>
-                  <EmptyState title="No matching groups">
-                    Refine the filter or create a new group.
-                  </EmptyState>
-                </div>
-              )}
-            </Card>
-
-            <IdentityDetailsDrawer open={detailsOpen && Boolean(selectedGroup)} title={selectedGroup?.name ?? 'Group details'} onClose={() => closeDetails()}>
+          <IdentityWorkbench
+            title="MOSAIC groups"
+            description={`${filteredGroups.length} of ${groups.data?.length ?? 0} groups`}
+            actions={identityActions}
+            toolbar={identityFilter}
+            items={filteredGroups}
+            getId={(group) => group.id}
+            selectedId={workbench.selectedId}
+            onSelect={workbench.select}
+            listLabel="MOSAIC groups"
+            detailLabel={selectedGroup?.name ?? 'Group details'}
+            renderListItem={(group) => <span className={styles.resourceRow}>
+              <IdentityAvatar name={group.name} kind="securityGroup" />
+              <span className={styles.rowName}>
+                <span className={styles.rowPrimary}>{group.name}</span>
+                <span className={styles.rowSecondary}>{group.description || 'No description'}</span>
+              </span>
+            </span>}
+            emptyList={<EmptyState title={groups.data?.length ? 'No matching groups' : 'No groups configured'}>
+              {groups.data?.length ? 'Refine the filter or create a new group.' : 'Create the first MOSAIC group to manage memberships.'}
+            </EmptyState>}
+            emptySelection={<EmptyState title="Select a group">Choose a group to inspect its description and memberships.</EmptyState>}
+            missingSelection={<EmptyState title="Group not in this view">
+              This group may be filtered out or no longer available.
+              <Button onClick={() => { setSearchQuery(''); workbench.select(null) }}>Clear selection and filter</Button>
+            </EmptyState>}
+            editing={detailEditing}
+            editorTitle={`Edit ${selectedGroup?.name ?? 'group'}`}
+            dirty={!saveCommitted && (groupDetailHasChanges || Boolean(principalToAdd))}
+            pending={!saveCommitted && (updateGroup.isPending || deleteGroup.isPending || addMembership.isPending || removeMembership.isPending)}
+            onBack={cancelEditing}>
+            {(requestCancel) =>
             <div className={styles.detailCard}>
               {selectedGroup ? (
                 <>
                   <div className={styles.detailHeader}>
                     <div className={styles.detailTitleBlock}>
                       <IdentityAvatar name={selectedGroup.name} kind="securityGroup" size={48} />
+                      <Title3 as="h3">{selectedGroup.name}</Title3>
                       <Text className={styles.muted}>
                         Organize identities in MOSAIC. The gateway doesn&apos;t enforce these
                         groups; to control access for a group, add an Entra security group and grant it.
                       </Text>
                       <div className={styles.badgeRow}>
-                        <LiveBadge />
                         <Badge appearance="tint" className={styles.groupBadge}>
                           {memberships.data?.length ?? 0} member{memberships.data?.length === 1 ? '' : 's'}
                         </Badge>
                       </div>
-                      {!detailEditing && <Button ref={editButtonRef} appearance="secondary" onClick={() => setDetailEditing(true)}>Edit group</Button>}
+                      {!detailEditing && <Button ref={editButtonRef} appearance="secondary" onClick={() => { setSaveCommitted(false); workbench.open('edit') }}>Edit group</Button>}
                     </div>
                     <Button
                       appearance="subtle"
                       className={styles.dangerButton}
                       disabled={
                         deleteGroup.isPending ||
+                        updateGroup.isPending ||
+                        addMembership.isPending ||
+                        removeMembership.isPending ||
                         memberships.isLoading ||
                         Boolean(memberships.data?.length)
                       }
@@ -820,7 +834,7 @@ export function IdentityPage() {
                       >
                         Save changes
                       </Button>
-                      <Button onClick={cancelEditing}>Cancel editing</Button>
+                      <Button onClick={requestCancel}>Cancel editing</Button>
                     </div>}
                   </form>
 
@@ -931,144 +945,78 @@ export function IdentityPage() {
                   Choose a group to edit its description and memberships.
                 </EmptyState>
               )}
-            </div>
-            </IdentityDetailsDrawer>
-          </div>
+            </div>}
+          </IdentityWorkbench>
         )
       ) : principals.isLoading ? (
         <Loading label={`Loading ${principalTabText.title.toLowerCase()}`} />
       ) : principals.error ? (
         <ErrorState error={principals.error} />
-      ) : !tabPrincipals.length ? (
-        <EmptyState title={principalTabText.emptyTitle}>{principalTabText.emptyHint}</EmptyState>
       ) : (
-        <div className={styles.contentGrid}>
-          <Card className={styles.listCard}>
-            <div className={styles.cardHeader}>
-              <div className={styles.cardHeaderText}>
-                <Title3 as="h2">{principalTabText.title}</Title3>
-                <Text className={styles.muted}>
-                  {visiblePrincipals.length} of {tabPrincipals.length} shown
-                </Text>
-              </div>
-            </div>
-
-            {visiblePrincipals.length ? (
-              <div className={styles.tableWrapper}>
-                <table className={styles.table}>
-                  <thead>
-                    <tr>
-                      <th scope="col">Identity</th>
-                      <th scope="col">Type</th>
-                      <th scope="col">Default cost center</th>
-                      <th scope="col">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visiblePrincipals.map((principal) => {
-                      const isSelected = principal.id === selectedPrincipalId
-                      const mcpServerNames = mcpServersByModelCaller.get(principal.id) ?? []
-                      return (
-                        <tr
-                          key={principal.id}
-                          className={
-                            isSelected
-                              ? `${styles.selectableRow} ${styles.selectedRow}`
-                              : styles.selectableRow
-                          }
-                        >
-                          <td>
-                            <button
-                              {...restoreFocus}
-                              type="button"
-                              className={styles.rowButton}
-                              aria-pressed={isSelected}
-                              onClick={() => { setSelectedPrincipalId(principal.id); setDetailEditing(false); setDetailsOpen(true) }}
-                            >
-                              <IdentityAvatar name={getPrincipalName(principal)} kind={principal.kind} objectId={principal.objectId} />
-                              <span className={styles.rowName}>
-                              <span className={styles.rowPrimary}>{getPrincipalName(principal)}</span>
-                              <span className={styles.rowSecondary}>
-                                {principal.detail ?? principal.objectId}
-                              </span>
-                              </span>
-                            </button>
-                          </td>
-                          <td>
-                            <PrincipalKindBadge kind={principal.kind} />
-                          </td>
-                          <td>
-                            <div className={styles.memberMeta}>
-                              <span>{principal.defaultCostCenterId
-                                ? costCenterById.get(principal.defaultCostCenterId)?.name ?? 'Recorded cost center'
-                                : principal.kind === 'securityGroup' ? 'Not applicable' : 'Tenant default'}</span>
-                              {principal.kind === 'agentUser' && (
-                                <span className={styles.rowSecondary}>
-                                  Parent agent {principals.data?.find((item) => item.objectId === principal.identityParentId)?.label ?? principal.identityParentId ?? 'not recorded'}
-                                </span>
-                              )}
-                              {principal.kind === 'agentIdentity' && principal.blueprintId && (
-                                <span className={styles.rowSecondary}>Blueprint {principal.blueprintId}</span>
-                              )}
-                            </div>
-                          </td>
-                          <td>
-                            <div className={styles.statusCell}>
-                              <Badge
-                                appearance="tint"
-                                className={`${styles.statusBadge} ${principal.directoryVerifiedAt ? styles.liveBadge : styles.groupBadge}`}
-                              >
-                                {principal.directoryVerifiedAt ? 'Verified in Entra' : 'Not directory-verified'}
-                              </Badge>
-                              {principal.directoryVerifiedAt && (
-                                <span className={styles.rowSecondary}>
-                                  {formatTimestamp(principal.directoryVerifiedAt)}
-                                </span>
-                              )}
-                              {mcpServerNames.length > 0 && (
-                                <Badge appearance="tint" className={styles.groupBadge}>
-                                  Calls models for {mcpServerNames.join(', ')}
-                                </Badge>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className={styles.emptyPanel}>
-                <EmptyState title={`No matching ${principalTabText.title.toLowerCase()}`}>
-                  Refine the filter or add a new record.
-                </EmptyState>
-              </div>
-            )}
-          </Card>
-
-          <IdentityDetailsDrawer open={detailsOpen && Boolean(selectedPrincipal)} title={selectedPrincipal ? getPrincipalName(selectedPrincipal) : 'Identity details'} onClose={() => closeDetails()}>
+        <IdentityWorkbench
+          title={principalTabText.title}
+          description={`${visiblePrincipals.length} of ${tabPrincipals.length} shown`}
+          actions={identityActions}
+          toolbar={identityFilter}
+          items={visiblePrincipals}
+          getId={(principal) => principal.id}
+          selectedId={workbench.selectedId}
+          onSelect={workbench.select}
+          listLabel={principalTabText.title}
+          detailLabel={selectedPrincipal ? getPrincipalName(selectedPrincipal) : 'Identity details'}
+          renderListItem={(principal) => <span className={styles.resourceRow}>
+            <IdentityAvatar name={getPrincipalName(principal)} kind={principal.kind} objectId={principal.objectId} />
+            <span className={styles.rowName}>
+              <span className={styles.rowPrimary}>{getPrincipalName(principal)}</span>
+              <span className={styles.rowSecondary}>{principal.detail ?? principal.objectId}</span>
+              <span className={styles.badgeRow}>
+                <PrincipalKindBadge kind={principal.kind} />
+                <Badge appearance="outline">{principal.directoryVerifiedAt ? 'Verified in Entra' : 'Not directory-verified'}</Badge>
+              </span>
+              {principal.kind === 'agentUser' && <span className={styles.rowSecondary}>
+                Parent agent {principals.data?.find((item) => item.objectId === principal.identityParentId)?.label ?? principal.identityParentId ?? 'not recorded'}
+              </span>}
+              {principal.kind === 'agentIdentity' && principal.blueprintId && <span className={styles.rowSecondary}>Blueprint {principal.blueprintId}</span>}
+              {(mcpServersByModelCaller.get(principal.id) ?? []).length > 0 && <span className={styles.rowSecondary}>
+                Calls models for {(mcpServersByModelCaller.get(principal.id) ?? []).join(', ')}
+              </span>}
+            </span>
+          </span>}
+          emptyList={<EmptyState title={tabPrincipals.length ? `No matching ${principalTabText.title.toLowerCase()}` : principalTabText.emptyTitle}>
+            {tabPrincipals.length ? 'Refine the filter or add a new record.' : principalTabText.emptyHint}
+          </EmptyState>}
+          emptySelection={<EmptyState title={principalTabText.selectPrompt}>Choose a record to inspect its local metadata.</EmptyState>}
+          missingSelection={<EmptyState title="Identity not in this view">
+            This reference may be filtered out, unavailable, or listed in another identity section.
+            <Button onClick={() => { setSearchQuery(''); workbench.select(null) }}>Clear selection and filter</Button>
+          </EmptyState>}
+          editing={detailEditing}
+          editorTitle={`Edit ${selectedPrincipal ? getPrincipalName(selectedPrincipal) : 'identity'}`}
+          dirty={!saveCommitted && principalDetailHasChanges}
+          pending={!saveCommitted && (updatePrincipal.isPending || deletePrincipal.isPending)}
+          onBack={cancelEditing}>
+          {(requestCancel) =>
           <div className={styles.detailCard}>
             {selectedPrincipal ? (
               <>
                 <div className={styles.detailHeader}>
                   <div className={styles.detailTitleBlock}>
                     <IdentityAvatar name={getPrincipalName(selectedPrincipal)} kind={selectedPrincipal.kind} objectId={selectedPrincipal.objectId} size={56} />
+                    <Title3 as="h3">{getPrincipalName(selectedPrincipal)}</Title3>
                     <div className={styles.badgeRow}>
-                      <LiveBadge />
                       <PrincipalKindBadge kind={selectedPrincipal.kind} />
                       {(mcpServersByModelCaller.get(selectedPrincipal.id) ?? []).length > 0 && (
-                        <Badge appearance="tint" className={styles.groupBadge}>
+                        <Text className={styles.muted}>
                           Calls models for {(mcpServersByModelCaller.get(selectedPrincipal.id) ?? []).join(', ')}
-                        </Badge>
+                        </Text>
                       )}
                     </div>
-                    {!detailEditing && <Button ref={editButtonRef} appearance="secondary" onClick={() => setDetailEditing(true)}>Edit local metadata</Button>}
+                    {!detailEditing && <Button ref={editButtonRef} appearance="secondary" onClick={() => { setSaveCommitted(false); workbench.open('edit') }}>Edit local metadata</Button>}
                   </div>
                   <Button
                     appearance="subtle"
                     className={styles.dangerButton}
-                    disabled={deletePrincipal.isPending}
+                    disabled={deletePrincipal.isPending || updatePrincipal.isPending}
                     onClick={() =>
                       setConfirmation({
                         type: 'principal',
@@ -1077,7 +1025,7 @@ export function IdentityPage() {
                       })
                     }
                   >
-                    Delete
+                    Remove MOSAIC record
                   </Button>
                 </div>
 
@@ -1091,6 +1039,13 @@ export function IdentityPage() {
                 )}
 
                 <form ref={editFormRef} className={styles.detailSection} onSubmit={submitPrincipalDetails}>
+                  <div className={styles.readOnlyPanel}>
+                    <Text className={styles.readOnlyLabel}>Authoritative source</Text>
+                    <Text>Microsoft Entra. MOSAIC stores only the reference, local label, kind mapping, and charge default.</Text>
+                    <Text className={styles.muted}>{selectedPrincipal.directoryVerifiedAt
+                      ? `Verified in Entra ${formatTimestamp(selectedPrincipal.directoryVerifiedAt)}`
+                      : 'Not directory-verified'}</Text>
+                  </div>
                   <details className={styles.technicalDetails}>
                   <summary>Technical details</summary>
                   <div className={styles.readOnlyPanel}>
@@ -1183,7 +1138,7 @@ export function IdentityPage() {
                     >
                       Save changes
                     </Button>
-                    <Button onClick={cancelEditing}>Cancel editing</Button>
+                    <Button onClick={requestCancel}>Cancel editing</Button>
                   </div>
                   </>}
                 </form>
@@ -1257,19 +1212,19 @@ export function IdentityPage() {
                 Choose a record to inspect and edit its local metadata.
               </EmptyState>
             )}
-          </div>
-          </IdentityDetailsDrawer>
-        </div>
+          </div>}
+        </IdentityWorkbench>
       )}
 
       </SectionLayout>
 
-      <Dialog open={principalDialogOpen} onOpenChange={(_, data) => !data.open && closePrincipalDialog()}>
-        <DialogSurface className={styles.addDialog}>
+      <WorkspaceDialog open={principalDialogOpen} title={principalDialogTitle}
+        pending={!saveCommitted && activeMutations > 0}
+        onOpenChange={(_, data) => !data.open && closePrincipalDialog()}>
+        {(requestClose) => <WorkspaceDialogSurface>
           {effectivePrincipalDialogView === 'search' ? (
-            <DialogBody>
-              <DialogTitle>{principalDialogTitle}</DialogTitle>
-              <DialogContent className={styles.dialogForm}>
+            <WorkspaceDialogBody>
+              <WorkspaceDialogContent className={styles.dialogForm}>
                 <Text className={styles.muted}>{principalCreateHint}</Text>
                 {!directoryStatus.isPending && !directoryLookupEnabled && <MessageBar intent={directoryStatus.isError ? 'error' : 'warning'}>
                   <MessageBarBody>
@@ -1298,7 +1253,6 @@ export function IdentityPage() {
                   onKindChange={setDirectoryKind}
                   defaultCostCenterId={directoryKind === 'group' ? null : createPrincipalDefaultCostCenterId}
                   onCreated={(principal) => {
-                    setPrincipalDialogOpen(false)
                     showPrincipal(principal)
                   }}
                   onManualFallback={() => {
@@ -1309,18 +1263,12 @@ export function IdentityPage() {
                   setCreatePrincipalKind(MANUAL_KIND_FOR_SEARCH[directoryKind])
                   setPrincipalDialogView('manual')
                 }}>Use manual entry</Button>}
-              </DialogContent>
-              <DialogActions>
-                <Button appearance="secondary" type="button" onClick={closePrincipalDialog}>
-                  Cancel
-                </Button>
-              </DialogActions>
-            </DialogBody>
+              </WorkspaceDialogContent>
+            </WorkspaceDialogBody>
           ) : (
             <form onSubmit={submitCreatePrincipal}>
-              <DialogBody>
-                <DialogTitle>{principalDialogTitle}</DialogTitle>
-                <DialogContent className={styles.dialogForm}>
+              <WorkspaceDialogBody>
+                <WorkspaceDialogContent className={styles.dialogForm}>
                   <Text className={styles.muted}>{principalCreateHint}</Text>
 
                   {createPrincipal.error && (
@@ -1385,18 +1333,16 @@ export function IdentityPage() {
                       onChange={(_, data) => setCreatePrincipalLabel(data.value)}
                     />
                   </Field>
-                </DialogContent>
+                </WorkspaceDialogContent>
                 {
-                  <DialogActions position="start">
+                  <WorkspaceDialogActions>
                     <Button appearance="subtle" type="button" onClick={() => setPrincipalDialogView('search')}>
                       Search the directory
                     </Button>
-                  </DialogActions>
+                  </WorkspaceDialogActions>
                 }
-                <DialogActions>
-                  <Button appearance="secondary" type="button" onClick={closePrincipalDialog}>
-                    Cancel
-                  </Button>
+                <WorkspaceDialogActions>
+                  <Button appearance="secondary" type="button" onClick={requestClose}>Cancel entry</Button>
                   <Button
                     appearance="primary"
                     type="submit"
@@ -1404,32 +1350,20 @@ export function IdentityPage() {
                   >
                     Save
                   </Button>
-                </DialogActions>
-              </DialogBody>
+                </WorkspaceDialogActions>
+              </WorkspaceDialogBody>
             </form>
           )}
-        </DialogSurface>
-      </Dialog>
+        </WorkspaceDialogSurface>}
+      </WorkspaceDialog>
 
-      <Dialog open={discardOpen} onOpenChange={(_, data) => !data.open && keepEditing()}>
-        <DialogSurface>
-          <DialogBody>
-            <DialogTitle>Discard unsaved changes?</DialogTitle>
-            <DialogContent>Your local edits have not been saved. Keep editing or discard them to {pendingTab ? 'switch sections' : 'close the details'}.</DialogContent>
-            <DialogActions>
-              <Button onClick={keepEditing}>Keep editing</Button>
-              <Button appearance="primary" onClick={() => closeDetails(true, pendingTab)}>Discard changes</Button>
-            </DialogActions>
-          </DialogBody>
-        </DialogSurface>
-      </Dialog>
-
-      <Dialog open={createGroupOpen} onOpenChange={(_, data) => !data.open && closeGroupDialog()}>
-        <DialogSurface>
+      <WorkspaceDialog open={createGroupOpen} title="Create group"
+        pending={!saveCommitted && createGroup.isPending}
+        onOpenChange={(_, data) => !data.open && closeGroupDialog()}>
+        <WorkspaceDialogSurface>
           <form onSubmit={submitCreateGroup}>
-            <DialogBody>
-              <DialogTitle>Create group</DialogTitle>
-              <DialogContent className={styles.dialogForm}>
+            <WorkspaceDialogBody>
+              <WorkspaceDialogContent className={styles.dialogForm}>
                 <Text className={styles.muted}>
                   Create a MOSAIC access group without mirroring Entra group profiles.
                 </Text>
@@ -1457,11 +1391,8 @@ export function IdentityPage() {
                     onChange={(_, data) => setCreateGroupDescription(data.value)}
                   />
                 </Field>
-              </DialogContent>
-              <DialogActions>
-                <Button appearance="secondary" type="button" onClick={closeGroupDialog}>
-                  Cancel
-                </Button>
+              </WorkspaceDialogContent>
+              <WorkspaceDialogActions>
                 <Button
                   appearance="primary"
                   type="submit"
@@ -1469,11 +1400,11 @@ export function IdentityPage() {
                 >
                   Save
                 </Button>
-              </DialogActions>
-            </DialogBody>
+              </WorkspaceDialogActions>
+            </WorkspaceDialogBody>
           </form>
-        </DialogSurface>
-      </Dialog>
+        </WorkspaceDialogSurface>
+      </WorkspaceDialog>
 
       <Dialog open={confirmation !== null} onOpenChange={(_, data) => !data.open && setConfirmation(null)}>
         <DialogSurface>
@@ -1482,7 +1413,8 @@ export function IdentityPage() {
             <DialogContent>
               {confirmation?.type === 'principal' && (
                 <Text>
-                  Delete <strong>{confirmation.principalName}</strong> from MOSAIC?
+                  Remove <strong>{confirmation.principalName}</strong>&apos;s reference from MOSAIC?
+                  This does not delete its Microsoft Entra account or directory object.
                 </Text>
               )}
               {confirmation?.type === 'group' && (

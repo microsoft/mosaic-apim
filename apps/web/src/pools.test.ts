@@ -21,6 +21,7 @@ import {
   newestRunsFirst,
   percentOf,
   planProblems,
+  poolChangeLockReason,
   poolPrefill,
   poolPublishBlocker,
   poolRequestExample,
@@ -56,6 +57,21 @@ import type { CapacityType } from './types'
 function capacity(capacityType: CapacityType, skuCapacity: number | null) {
   return { capacityType, skuCapacity }
 }
+
+describe('pool change locks', () => {
+  it.each(['applying', 'unknown'] as const)('locks %s access independently of publication status', (accessState) => {
+    expect(poolChangeLockReason({ status: 'failed', accessState })).not.toBeNull()
+  })
+
+  it('locks active runs and gives unknown state precedence over applying', () => {
+    expect(poolChangeLockReason({ status: 'applying' })).toMatch(/Wait for it to finish/)
+    expect(poolChangeLockReason({ status: 'applying', accessState: 'unknown' })).toMatch(/access state is unknown/)
+  })
+
+  it.each(['pending', 'applied', 'failed', undefined] as const)('does not lock %s access without an active run', (accessState) => {
+    expect(poolChangeLockReason({ status: 'failed', accessState })).toBeNull()
+  })
+})
 
 describe('pool names', () => {
   it('derives the same default API name and path the API does', () => {

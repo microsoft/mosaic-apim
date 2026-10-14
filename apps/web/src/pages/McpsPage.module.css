@@ -5,22 +5,21 @@
   min-width: 0;
 }
 
-.panel {
+.toolsPanel {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  border: 1px solid var(--mosaic-border-soft);
-  background: var(--mosaic-surface);
-  box-shadow: var(--mosaic-shadow);
+  gap: 16px;
+  padding-top: 24px;
+  border-top: 1px solid var(--mosaic-border-soft);
   min-width: 0;
   overflow-x: auto;
 }
 
-.panel :global(table) {
+.toolsPanel :global(table) {
   table-layout: auto;
 }
 
-.panelHeader {
+.detailHeader {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
@@ -34,47 +33,18 @@
   gap: 4px;
 }
 
-.nameCell {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.pathText {
-  color: var(--mosaic-text-muted);
-  overflow-wrap: anywhere;
-}
-
 .toolList {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 12px;
   margin: 4px 0 0;
   padding: 0;
   list-style: none;
   color: var(--mosaic-text-muted);
 }
 
-.transportBadge {
-  color: var(--mosaic-primary);
-  background: var(--mosaic-primary-soft);
-}
-
 .gatewayLink {
   color: var(--mosaic-primary);
-}
-
-.rowActions {
-  display: flex;
-  gap: 10px;
-  justify-content: flex-end;
-}
-
-.actionRow {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  justify-content: flex-end;
 }
 
 .cellStack {
@@ -83,20 +53,67 @@
   gap: 2px;
 }
 
-.rowButton {
-  padding: 0;
-  border: none;
-  background: none;
-  font: inherit;
-  font-weight: 600;
-  color: var(--mosaic-primary);
-  text-align: left;
-  cursor: pointer;
+.resourceRow {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  justify-items: start;
 }
 
-.rowButton:hover,
-.rowButton:focus-visible {
-  text-decoration: underline;
+.resourceName {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.detailStack {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+}
+
+.detailSection {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 24px;
+  border-top: 1px solid var(--mosaic-border-soft);
+}
+
+.detailSection h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.metadata {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 20px 32px;
+  margin: 0;
+}
+
+.metadata div {
+  min-width: 0;
+}
+
+.metadata dt {
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.metadata dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.editorForm {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  width: 100%;
+  max-width: 760px;
+  min-width: 0;
 }
 
 .secondaryCell {
@@ -105,24 +122,13 @@
   overflow-wrap: anywhere;
 }
 
-.selectedRow :global(td) {
-  background: var(--mosaic-primary-soft);
-}
-
-.dialogForm {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
 .muted {
   color: var(--mosaic-text-muted);
 }
 
 .hintList {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  display: grid;
+  gap: 6px;
 }
 
 .schemaCell {
@@ -154,10 +160,4 @@
 .claimBadge {
   background: var(--colorNeutralBackground3);
   color: var(--colorNeutralForeground2);
-}
-
-.unstatedBadge {
-  background: transparent;
-  color: var(--mosaic-text-muted);
-  border: 1px dashed var(--mosaic-border-soft);
 }

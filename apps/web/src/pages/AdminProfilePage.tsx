@@ -1,75 +1,22 @@
 import { useMsal } from '@azure/msal-react'
-import {
-  Badge,
-  Button,
-  Card,
-  Input,
-  Text,
-  Title3,
-} from '@fluentui/react-components'
+import { Button, Card, Text, Title3 } from '@fluentui/react-components'
 import { PageHeader, PreviewNotice } from '../components/PageHeader'
 import { IdentityAvatar } from '../components/IdentityAvatar'
 import { runtimeConfig } from '../runtime-config'
 import styles from './AdminProfilePage.module.css'
 
-const sampleRoleAssignments = [
-  {
-    role: 'MOSAIC Platform Administrator',
-    scope: 'Subscription / Shared AI Gateway',
-    detail: 'Sample data for control-plane ownership and deployment approvals.',
-  },
-  {
-    role: 'MOSAIC Support Reviewer',
-    scope: 'Resource Group / Diagnostics',
-    detail: 'Sample data for operational triage and support workflows.',
-  },
-  {
-    role: 'MOSAIC Access Auditor',
-    scope: 'Workspace / Identity reports',
-    detail: 'Sample data for periodic RBAC review and governance checks.',
-  },
-]
-
-const sampleProgrammaticAccess = [
-  { label: 'Credential type', value: 'Sample federated workload identity' },
-  { label: 'Client application', value: 'sample-mosaic-admin-app' },
-  { label: 'Rotation policy', value: 'Sample quarterly review only' },
-  { label: 'Secret material', value: 'Never displayed in MOSAIC' },
-]
-
-const sampleRecentActivity = [
-  {
-    title: 'Sample role review completed',
-    timestamp: '2026-08-12 15:30 UTC',
-    detail: 'Preview-only governance check for MOSAIC admin assignments.',
-  },
-  {
-    title: 'Sample diagnostics export inspected',
-    timestamp: '2026-08-11 09:10 UTC',
-    detail: 'Preview-only review of support health signals and dashboard notes.',
-  },
-  {
-    title: 'Sample token metadata reviewed',
-    timestamp: '2026-08-09 18:45 UTC',
-    detail: 'Preview-only access metadata validation. No secret was generated.',
-  },
-]
-
 export function AdminProfilePage() {
   const { instance, accounts } = useMsal()
   const account = accounts[0]
-  const displayName = account?.name ?? 'Local administrator'
+  const displayName = account?.name ?? (runtimeConfig.authMode === 'local' ? 'Local administrator' : 'No signed-in administrator')
   const username = account?.username ?? 'No Entra account connected'
-  const tenantId = account?.tenantId ?? runtimeConfig.entraTenantId
-  const environment = account?.environment ?? 'local-preview'
-  const homeAccountId = account?.homeAccountId ?? 'local-administrator'
+  const unavailable = 'Not available without a signed-in account'
 
   return (
     <section className={styles.page}>
       <PageHeader
         title="Admin Profile"
-        description="Review administrator identity context and preview-only access metadata used in MOSAIC."
-        source={runtimeConfig.authMode === 'entra' ? 'live' : 'local'}
+        description="Review the identity and authentication context of your administrator session."
         actions={
           runtimeConfig.authMode === 'entra' ? (
             <Button onClick={() => void instance.logoutRedirect()}>
@@ -78,10 +25,11 @@ export function AdminProfilePage() {
           ) : undefined
         }
       />
-      <PreviewNotice kind="sample">
-        Role assignments, programmatic-access metadata, and recent activity below are sample data
-        only. This page never generates or reveals credentials.
-      </PreviewNotice>
+      {runtimeConfig.authMode === 'local' && (
+        <PreviewNotice kind="local">
+          Local development authentication is enabled. No Entra account is connected.
+        </PreviewNotice>
+      )}
 
       <div className={styles.grid}>
         <Card className={styles.card}>
@@ -90,8 +38,8 @@ export function AdminProfilePage() {
             <div>
               <Title3 as="h2">Administrator identity</Title3>
               <Text className={styles.cardDescription}>
-                Account data comes from MSAL when available; otherwise MOSAIC uses an explicit local
-                administrator placeholder.
+                Account details come from your signed-in Entra account. This page does not generate
+                credentials or change role assignments.
               </Text>
             </div>
           </div>
@@ -111,116 +59,19 @@ export function AdminProfilePage() {
             </div>
             <div className={styles.definitionRow}>
               <dt>Tenant ID</dt>
-              <dd>{tenantId}</dd>
+              <dd>{account?.tenantId ?? unavailable}</dd>
             </div>
             <div className={styles.definitionRow}>
               <dt>Environment</dt>
-              <dd>{environment}</dd>
+              <dd>{account?.environment ?? unavailable}</dd>
             </div>
             <div className={styles.definitionRow}>
               <dt>Home account ID</dt>
-              <dd>{homeAccountId}</dd>
+              <dd>{account?.homeAccountId ?? unavailable}</dd>
             </div>
           </dl>
         </Card>
 
-        <Card className={styles.card}>
-          <div className={styles.sectionHeader}>
-            <div>
-              <div className={styles.titleRow}>
-                <Title3 as="h2">Role assignments</Title3>
-                <Badge appearance="tint" className={styles.sampleBadge}>
-                  Sample data
-                </Badge>
-              </div>
-              <Text className={styles.cardDescription}>
-                Example RBAC records for layout review only. They do not grant or revoke access.
-              </Text>
-            </div>
-          </div>
-
-          <div className={styles.list}>
-            {sampleRoleAssignments.map((assignment) => (
-              <div className={styles.listItem} key={assignment.role}>
-                <div className={styles.itemHeader}>
-                  <Text className={styles.emphasis}>{assignment.role}</Text>
-                  <Text className={styles.scope}>{assignment.scope}</Text>
-                </div>
-                <Text className={styles.cardDescription}>{assignment.detail}</Text>
-              </div>
-            ))}
-          </div>
-
-          <div className={styles.actionRow}>
-            <Button disabled>Request role change</Button>
-            <Button disabled>Add assignment</Button>
-          </div>
-          <Text className={styles.helperText}>
-            Disabled controls indicate preview-only behavior. Role changes must be handled outside
-            this page, and the records above remain sample data.
-          </Text>
-        </Card>
-
-        <Card className={styles.card}>
-          <div className={styles.sectionHeader}>
-            <div>
-              <div className={styles.titleRow}>
-                <Title3 as="h2">Programmatic access metadata</Title3>
-                <Badge appearance="tint" className={styles.sampleBadge}>
-                  Sample data
-                </Badge>
-              </div>
-              <Text className={styles.cardDescription} id="credential-preview-help">
-                Sample metadata only. Tokens, client secrets, certificates, and credential values
-                are never generated or displayed here.
-              </Text>
-            </div>
-          </div>
-
-          <div className={styles.metadataGrid}>
-            {sampleProgrammaticAccess.map((item) => (
-              <div className={styles.metadataItem} key={item.label}>
-                <Text className={styles.infoLabel}>{item.label}</Text>
-                <Input aria-describedby="credential-preview-help" readOnly value={item.value} />
-              </div>
-            ))}
-          </div>
-
-          <div className={styles.actionRow}>
-            <Button aria-describedby="credential-preview-help" disabled>
-              Generate credential
-            </Button>
-            <Button aria-describedby="credential-preview-help" disabled>
-              Rotate secret
-            </Button>
-          </div>
-        </Card>
-
-        <Card className={styles.card}>
-          <div className={styles.sectionHeader}>
-            <div>
-              <div className={styles.titleRow}>
-                <Title3 as="h2">Recent activity</Title3>
-                <Badge appearance="tint" className={styles.sampleBadge}>
-                  Sample data
-                </Badge>
-              </div>
-              <Text className={styles.cardDescription}>
-                Preview timeline for audit and support workflows.
-              </Text>
-            </div>
-          </div>
-
-          <div className={styles.timeline}>
-            {sampleRecentActivity.map((activity) => (
-              <div className={styles.timelineItem} key={activity.title}>
-                <Text className={styles.emphasis}>{activity.title}</Text>
-                <Text className={styles.infoLabel}>{activity.timestamp}</Text>
-                <Text className={styles.cardDescription}>{activity.detail}</Text>
-              </div>
-            ))}
-          </div>
-        </Card>
       </div>
     </section>
   )

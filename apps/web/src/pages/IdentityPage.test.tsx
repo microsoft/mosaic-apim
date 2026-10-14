@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
+import { createMemoryRouter, RouterProvider, useLocation, useNavigate } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Group, Principal } from '../types'
 import { IdentityPage } from './IdentityPage'
@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   mcpPublications: [] as Array<{ id: string; displayName: string; modelCallerId?: string | null }>,
   searchDirectory: vi.fn(),
   createPrincipal: vi.fn(),
+  createGroup: vi.fn(),
   updatePrincipal: vi.fn(),
   updateGroup: vi.fn(),
 }))
@@ -47,7 +48,7 @@ vi.mock('../api', () => ({
     createPrincipal: mocks.createPrincipal,
     updatePrincipal: mocks.updatePrincipal,
     deletePrincipal: vi.fn(),
-    createGroup: vi.fn(),
+    createGroup: mocks.createGroup,
     updateGroup: mocks.updateGroup,
     deleteGroup: vi.fn(),
     addMembership: vi.fn(),
@@ -104,10 +105,10 @@ function renderPage(path = '/identity?tab=users') {
   })
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[path]}>
-        <IdentityPage />
-        <NavigationProbe />
-      </MemoryRouter>
+      <RouterProvider router={createMemoryRouter([{
+        path: '*',
+        element: <><IdentityPage /><NavigationProbe /></>,
+      }], { initialEntries: [path] })} />
     </QueryClientProvider>,
   )
 }
@@ -161,22 +162,23 @@ describe('IdentityPage', () => {
     mocks.mcpPublications = []
   })
 
-  it('opens an overview only on selection and protects unsaved drawer edits', async () => {
+  it('opens persistent details only on selection and protects workspace edits', async () => {
     const user = userEvent.setup()
     renderPage()
     const row = await screen.findByRole('button', { name: /Alex User/ })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     await user.click(row)
-    expect(await screen.findByRole('dialog', { name: 'Alex User' })).toBeVisible()
+    expect(await screen.findByRole('region', { name: 'Alex User' })).toBeVisible()
+    expect(screen.getByRole('list', { name: 'People' })).toBeVisible()
     expect(screen.queryByRole('textbox', { name: 'Local label' })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Edit local metadata' }))
     expect(screen.getByRole('textbox', { name: 'Local label' })).toHaveFocus()
     await user.type(screen.getByRole('textbox', { name: 'Local label' }), ' changed')
-    await user.click(screen.getByRole('button', { name: 'Close identity details' }))
+    await user.click(screen.getByRole('button', { name: 'Back' }))
     expect(await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })).toBeVisible()
-    await user.click(screen.getByRole('button', { name: 'Keep editing' }))
+    await user.click(screen.getByRole('button', { name: 'Stay' }))
     expect(screen.getByRole('textbox', { name: 'Local label' })).toHaveValue('Alex User changed')
-    await user.click(screen.getByRole('button', { name: 'Close identity details' }))
+    await user.click(screen.getByRole('button', { name: 'Back' }))
     await user.click(screen.getByRole('button', { name: 'Discard changes' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(mocks.updatePrincipal).not.toHaveBeenCalled()
@@ -202,7 +204,7 @@ describe('IdentityPage', () => {
     const row = await screen.findByRole('button', { name: /Research team/ })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     await user.click(row)
-    expect(await screen.findByRole('dialog', { name: 'Research team' })).toBeVisible()
+    expect(await screen.findByRole('region', { name: 'Research team' })).toBeVisible()
     expect(screen.queryByRole('textbox', { name: 'Description' })).not.toBeInTheDocument()
     expect(screen.queryByRole('combobox', { name: 'Add principal' })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Edit group' }))
@@ -245,26 +247,28 @@ describe('IdentityPage', () => {
       await user.click(screen.getByRole('button', { name: edit }))
       await user.type(screen.getByRole('textbox', { name: field }), ' changed')
 
-      // Section controls are behind the modal drawer; dispatch without moving focus outside it.
-      function selectAgents() {
-        if (control === 'buttons') {
-          fireEvent.click(sectionButton('Agents'))
-        } else {
-          fireEvent.change(screen.getByLabelText('Identity section'), { target: { value: 'agents' } })
-        }
+      // Both rail and compact selector use the same guarded URL transition.
+      async function selectAgents() {
+        await act(async () => {
+          if (control === 'buttons') {
+            fireEvent.click(sectionButton('Agents'))
+          } else {
+            fireEvent.change(screen.getByLabelText('Identity section'), { target: { value: 'agents' } })
+          }
+        })
       }
 
-      selectAgents()
+      await selectAgents()
       expect(await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })).toBeVisible()
       expect(screen.getByLabelText('Section query')).toHaveTextContent(`?tab=${tab}&scope=kept`)
       expect(sectionButton(section)).toHaveAttribute('aria-current', 'page')
 
-      await user.click(screen.getByRole('button', { name: 'Keep editing' }))
+      await user.click(screen.getByRole('button', { name: 'Stay' }))
       expect(await screen.findByRole('textbox', { name: field })).toHaveValue(`${value} changed`)
       expect(screen.getByLabelText('Section query')).toHaveTextContent(`?tab=${tab}&scope=kept`)
       expect(sectionButton(section)).toHaveAttribute('aria-current', 'page')
 
-      selectAgents()
+      await selectAgents()
       await user.click(await screen.findByRole('button', { name: 'Discard changes' }))
       expect(await screen.findByRole('heading', { name: 'Agents' })).toBeVisible()
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
@@ -286,7 +290,7 @@ describe('IdentityPage', () => {
         await user.click(screen.getByRole('button', { name: edit }))
       }
 
-      fireEvent.click(sectionButton('Agents'))
+      await act(async () => { fireEvent.click(sectionButton('Agents')) })
       expect(await screen.findByRole('heading', { name: 'Agents' })).toBeVisible()
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
       expect(screen.getByLabelText('Section query')).toHaveTextContent('?tab=agents&scope=kept')
@@ -299,51 +303,51 @@ describe('IdentityPage', () => {
       await user.click(screen.getByRole('button', { name: edit }))
       await user.type(screen.getByRole('textbox', { name: field }), ' changed')
 
-      fireEvent.click(sectionButton(section))
+      await act(async () => { fireEvent.click(sectionButton(section)) })
       expect(screen.queryByRole('dialog', { name: 'Discard unsaved changes?' })).not.toBeInTheDocument()
       expect(screen.getByRole('textbox', { name: field })).toHaveValue(`${value} changed`)
       expect(screen.getByLabelText('Section query')).toHaveTextContent(`?tab=${tab}&scope=kept`)
     })
 
-    it.each(['Keep editing', 'Escape'])('forgets section navigation canceled with %s when the drawer is subsequently closed', async (dismissal) => {
+    it.each(['Stay', 'Escape'])('forgets canceled section navigation when returning to details with %s', async (dismissal) => {
       const user = userEvent.setup()
       renderPage(`/identity?tab=${tab}&scope=kept`)
       await user.click(await screen.findByRole('button', { name: row }))
       await user.click(screen.getByRole('button', { name: edit }))
       await user.type(screen.getByRole('textbox', { name: field }), ' changed')
-      fireEvent.click(sectionButton('Agents'))
+      await act(async () => { fireEvent.click(sectionButton('Agents')) })
       const confirmation = await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })
-      await waitFor(() => expect(within(confirmation).getByRole('button', { name: 'Keep editing' })).toHaveFocus())
+      await waitFor(() => expect(within(confirmation).getByRole('button', { name: 'Stay' })).toHaveFocus())
       if (dismissal === 'Escape') {
         await user.keyboard('{Escape}')
       } else {
-        await user.click(screen.getByRole('button', { name: 'Keep editing' }))
+        await user.click(screen.getByRole('button', { name: 'Stay' }))
       }
       await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Discard unsaved changes?' })).not.toBeInTheDocument())
       const draft = await screen.findByRole('textbox', { name: field })
       expect(draft).toHaveValue(`${value} changed`)
       await waitFor(() => expect(draft).toHaveFocus())
 
-      await user.click(await screen.findByRole('button', { name: 'Close identity details' }))
+      await user.click(await screen.findByRole('button', { name: 'Back' }))
       await user.click(await screen.findByRole('button', { name: 'Discard changes' }))
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
       expect(await screen.findByRole('heading', { name: section })).toBeVisible()
       expect(screen.getByLabelText('Section query')).toHaveTextContent(`?tab=${tab}&scope=kept`)
     })
 
-    it.each(['Keep editing', 'Escape'])('restores focus to the draft when closing the drawer is canceled with %s', async (dismissal) => {
+    it.each(['Stay', 'Escape'])('restores focus to the draft when leaving the editor is canceled with %s', async (dismissal) => {
       const user = userEvent.setup()
       renderPage(`/identity?tab=${tab}&scope=kept`)
       await user.click(await screen.findByRole('button', { name: row }))
       await user.click(screen.getByRole('button', { name: edit }))
       await user.type(screen.getByRole('textbox', { name: field }), ' changed')
-      await user.click(screen.getByRole('button', { name: 'Close identity details' }))
+      await user.click(screen.getByRole('button', { name: 'Back' }))
       const confirmation = await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })
-      await waitFor(() => expect(within(confirmation).getByRole('button', { name: 'Keep editing' })).toHaveFocus())
+      await waitFor(() => expect(within(confirmation).getByRole('button', { name: 'Stay' })).toHaveFocus())
       if (dismissal === 'Escape') {
         await user.keyboard('{Escape}')
       } else {
-        await user.click(screen.getByRole('button', { name: 'Keep editing' }))
+        await user.click(screen.getByRole('button', { name: 'Stay' }))
       }
 
       await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Discard unsaved changes?' })).not.toBeInTheDocument())
@@ -364,7 +368,7 @@ describe('IdentityPage', () => {
     expect((await screen.findAllByText('Alex User')).length).toBeGreaterThan(0)
     expect(screen.queryByText('Benefits Bot')).not.toBeInTheDocument()
     expect(screen.queryByText('Build agent')).not.toBeInTheDocument()
-    expect(screen.getByText('Live data')).toBeVisible()
+    expect(screen.queryByText('Live data')).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Agents' }))
 
@@ -414,20 +418,20 @@ describe('IdentityPage', () => {
     expect((await screen.findAllByText('Alex User')).length).toBeGreaterThan(0)
 
     await user.click(screen.getByRole('button', { name: 'Add person' }))
-    let dialog = await screen.findByRole('dialog', { name: 'Add person' })
+    let dialog = await screen.findByRole('region', { name: 'Add person' })
     expect(await within(dialog).findByRole('textbox', { name: 'Directory search' })).toBeVisible()
     expect(within(dialog).getByRole('combobox', { name: 'Directory search kind' })).toHaveValue('user')
     expect(within(dialog).queryByRole('textbox', { name: /Entra object ID/ })).not.toBeInTheDocument()
 
     await user.click(within(dialog).getByRole('button', { name: 'Use manual entry' }))
-    dialog = screen.getByRole('dialog', { name: 'Add person' })
+    dialog = screen.getByRole('region', { name: 'Add person' })
     expect(within(dialog).getByRole('textbox', { name: /Entra object ID/ })).toBeVisible()
     expect(within(dialog).getByRole('combobox', { name: 'Principal type' })).toHaveValue('user')
     expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled()
     expect(within(dialog).queryByRole('textbox', { name: 'Directory search' })).not.toBeInTheDocument()
 
     await user.click(within(dialog).getByRole('button', { name: 'Search the directory' }))
-    dialog = screen.getByRole('dialog')
+    dialog = screen.getByRole('region', { name: 'Add person' })
     expect(within(dialog).getByRole('textbox', { name: 'Directory search' })).toBeVisible()
   })
 
@@ -438,20 +442,20 @@ describe('IdentityPage', () => {
     expect(await screen.findByRole('heading', { name: 'Agents' })).toBeVisible()
 
     await user.click(screen.getByRole('button', { name: 'Add agent' }))
-    let dialog = await screen.findByRole('dialog', { name: 'Add agent' })
+    let dialog = await screen.findByRole('region', { name: 'Add agent' })
     expect(within(dialog).getByRole('combobox', { name: 'Directory search kind' })).toHaveValue('agent')
     await user.type(within(dialog).getByRole('textbox', { name: 'Directory search' }), 'bot')
     await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalledWith('agent', 'bot', 20))
 
     await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Directory search kind' }), 'group')
-    expect(screen.getByRole('dialog', { name: 'Add security group' })).toBeVisible()
+    expect(screen.getByRole('region', { name: 'Add security group' })).toBeVisible()
     await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Directory search kind' }), 'agent')
 
     await user.click(within(dialog).getByRole('button', { name: 'Use manual entry' }))
-    dialog = screen.getByRole('dialog', { name: 'Add agent' })
+    dialog = screen.getByRole('region', { name: 'Add agent' })
     expect(within(dialog).getByRole('combobox', { name: 'Principal type' })).toHaveValue('agentIdentity')
     await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Principal type' }), 'agentUser')
-    expect(screen.getByRole('dialog', { name: 'Add agent user' })).toBeVisible()
+    expect(screen.getByRole('region', { name: 'Add agent user' })).toBeVisible()
   })
 
   it('maps the old workloads link to applications and exposes independent Entra and MOSAIC group sections', async () => {
@@ -460,10 +464,10 @@ describe('IdentityPage', () => {
     expect(await screen.findByRole('heading', { name: 'Applications & managed identities' })).toBeVisible()
     expect(screen.queryByRole('button', { name: /Security Readers/ })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Add application or managed identity' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Add application or managed identity' })
+    const dialog = await screen.findByRole('region', { name: 'Add application or managed identity' })
     expect(within(dialog).getByRole('combobox', { name: 'Directory search kind' })).toHaveValue('application')
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('region', { name: /^Add / })).not.toBeInTheDocument())
     await user.click(await screen.findByRole('button', { name: 'MOSAIC groups' }))
     expect(screen.getByText(/does not create or change an Entra group/)).toBeVisible()
     expect(screen.getByRole('button', { name: 'Create MOSAIC group' })).toBeVisible()
@@ -490,7 +494,7 @@ describe('IdentityPage', () => {
     expect((await screen.findAllByText('Alex User')).length).toBeGreaterThan(0)
 
     await user.click(screen.getByRole('button', { name: 'Add person' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Add person' })
+    const dialog = await screen.findByRole('region', { name: 'Add person' })
     expect(within(dialog).getByText('Checking directory lookup availability')).toBeVisible()
     expect(within(dialog).queryByText(/Directory lookup requires Entra authentication/)).not.toBeInTheDocument()
     expect(within(dialog).queryByRole('button', { name: 'Use manual entry' })).not.toBeInTheDocument()
@@ -503,7 +507,7 @@ describe('IdentityPage', () => {
     expect((await screen.findAllByText('Alex User')).length).toBeGreaterThan(0)
 
     await user.click(screen.getByRole('button', { name: 'Add person' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Add person' })
+    const dialog = await screen.findByRole('region', { name: 'Add person' })
     expect(await within(dialog).findByText(/Directory lookup requires Entra authentication/)).toBeVisible()
     expect(within(dialog).queryByText(/MOSAIC_ENTRA_DIRECTORY_LOOKUP/)).not.toBeInTheDocument()
     expect(within(dialog).queryByRole('textbox', { name: /Entra object ID/ })).not.toBeInTheDocument()
@@ -519,13 +523,13 @@ describe('IdentityPage', () => {
     expect((await screen.findAllByText('Alex User')).length).toBeGreaterThan(0)
 
     await user.click(screen.getByRole('button', { name: 'Add person' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Add person' })
+    const dialog = await screen.findByRole('region', { name: 'Add person' })
     expect(within(dialog).getByRole('textbox', { name: 'Directory search' })).toBeVisible()
 
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
 
     expect(screen.queryByRole('textbox', { name: /Entra object ID/ })).not.toBeInTheDocument()
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('region', { name: /^Add / })).not.toBeInTheDocument())
     expect(screen.queryByRole('textbox', { name: /Entra object ID/ })).not.toBeInTheDocument()
   })
 
@@ -539,14 +543,14 @@ describe('IdentityPage', () => {
 
     await user.type(filter, 'zzz')
     await user.click(screen.getByRole('button', { name: 'Add person' }))
-    let dialog = await screen.findByRole('dialog', { name: 'Add person' })
+    let dialog = await screen.findByRole('region', { name: 'Add person' })
     await user.click(within(dialog).getByRole('button', { name: 'Use manual entry' }))
-    dialog = screen.getByRole('dialog', { name: 'Add person' })
+    dialog = screen.getByRole('region', { name: 'Add person' })
     await user.type(within(dialog).getByRole('textbox', { name: /Entra object ID/ }), 'entra-new-person')
     await user.type(within(dialog).getByRole('textbox', { name: 'Local label' }), 'Nia Person')
     await user.click(within(dialog).getByRole('button', { name: 'Save' }))
 
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('region', { name: /^Add / })).not.toBeInTheDocument())
     expect(filter).toHaveValue('')
     expect(await screen.findByRole('button', { name: /Nia Person/, pressed: true })).toBeVisible()
   })
@@ -561,14 +565,14 @@ describe('IdentityPage', () => {
 
     await user.type(filter, 'nia')
     await user.click(screen.getByRole('button', { name: 'Add person' }))
-    let dialog = await screen.findByRole('dialog', { name: 'Add person' })
+    let dialog = await screen.findByRole('region', { name: 'Add person' })
     await user.click(within(dialog).getByRole('button', { name: 'Use manual entry' }))
-    dialog = screen.getByRole('dialog', { name: 'Add person' })
+    dialog = screen.getByRole('region', { name: 'Add person' })
     await user.type(within(dialog).getByRole('textbox', { name: /Entra object ID/ }), 'entra-new-person')
     await user.type(within(dialog).getByRole('textbox', { name: 'Local label' }), 'Nia Person')
     await user.click(within(dialog).getByRole('button', { name: 'Save' }))
 
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('region', { name: /^Add / })).not.toBeInTheDocument())
     expect(filter).toHaveValue('nia')
     expect(await screen.findByRole('button', { name: /Nia Person/, pressed: true })).toBeVisible()
   })
@@ -580,9 +584,9 @@ describe('IdentityPage', () => {
 
     expect((await screen.findAllByText('Alex User')).length).toBeGreaterThan(0)
     await user.click(screen.getByRole('button', { name: 'Add person' }))
-    let dialog = await screen.findByRole('dialog', { name: 'Add person' })
+    let dialog = await screen.findByRole('region', { name: 'Add person' })
     await user.click(within(dialog).getByRole('button', { name: 'Use manual entry' }))
-    dialog = screen.getByRole('dialog', { name: 'Add person' })
+    dialog = screen.getByRole('region', { name: 'Add person' })
     await user.type(within(dialog).getByRole('textbox', { name: /Entra object ID/ }), 'entra-new-person')
     await within(dialog).findByRole('option', { name: 'Support (support)' })
     await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Default cost center' }), 'cc-support')
@@ -602,7 +606,7 @@ describe('IdentityPage', () => {
 
     expect((await screen.findAllByText('Alex User')).length).toBeGreaterThan(0)
     await user.click(screen.getByRole('button', { name: 'Add person' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Add person' })
+    const dialog = await screen.findByRole('region', { name: 'Add person' })
     await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Default cost center' }), '')
     await user.type(within(dialog).getByRole('textbox', { name: 'Directory search' }), 'nia')
     await user.click(await within(dialog).findByRole('button', { name: 'Select Nia Person' }))
@@ -647,12 +651,12 @@ describe('IdentityPage', () => {
 
     await user.type(filter, 'zzz')
     await user.click(screen.getByRole('button', { name: 'Add person' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Add person' })
+    const dialog = await screen.findByRole('region', { name: 'Add person' })
     await user.type(within(dialog).getByRole('textbox', { name: 'Directory search' }), 'nia')
     await user.click(await within(dialog).findByRole('button', { name: 'Select Nia Person' }))
     await user.click(within(dialog).getByRole('button', { name: 'Add Nia Person' }))
 
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('region', { name: /^Add / })).not.toBeInTheDocument())
     expect(filter).toHaveValue('')
     expect(await screen.findByRole('button', { name: /Nia Person/, pressed: true })).toBeVisible()
   })
@@ -678,15 +682,14 @@ describe('IdentityPage', () => {
     expect(await screen.findByRole('heading', { name: 'Agents' })).toBeVisible()
 
     await user.click(screen.getByRole('button', { name: 'Add agent' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Add agent' })
+    const dialog = await screen.findByRole('region', { name: 'Add agent' })
     await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Directory search kind' }), 'user')
     await user.type(within(dialog).getByRole('textbox', { name: 'Directory search' }), 'nia')
     await user.click(await within(dialog).findByRole('button', { name: 'Select Nia Person' }))
     await user.click(within(dialog).getByRole('button', { name: 'Add Nia Person' }))
 
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    // The closed dialog's aria-hidden on the page lifts a moment later, so wait for the tab.
-    expect(await screen.findByRole('button', { name: 'People' })).toHaveAttribute('aria-current', 'page')
+    await waitFor(() => expect(screen.queryByRole('region', { name: /^Add / })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'People' })).toHaveAttribute('aria-current', 'page'))
     expect(await screen.findByRole('button', { name: /Nia Person/, pressed: true })).toBeVisible()
   })
 
@@ -737,7 +740,97 @@ describe('IdentityPage', () => {
     await user.click(screen.getByRole('button', { name: 'Save changes' }))
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Agents' })).toHaveAttribute('aria-current', 'page'))
-    expect(filter).toHaveValue('')
+    expect(screen.getByRole('textbox', { name: 'Filter by label, detail, object ID, or kind' })).toHaveValue('')
     expect(await screen.findByRole('button', { name: /Build agent/ })).toBeVisible()
+  })
+
+  it('restores a direct URL selection and guards browser Back from an unsaved workspace', async () => {
+    const user = userEvent.setup()
+    renderPage('/identity?selected=user&scope=kept')
+    expect(await screen.findByRole('region', { name: 'Alex User' })).toBeVisible()
+    expect(screen.getByRole('button', { name: /Alex User/, pressed: true })).toBeVisible()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Edit local metadata' }))
+    const draft = screen.getByRole('textbox', { name: 'Local label' })
+    await user.type(draft, ' unsaved')
+    await user.click(screen.getByRole('button', { name: 'Previous section' }))
+    expect(await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Stay' }))
+    expect(draft).toHaveValue('Alex User unsaved')
+    await waitFor(() => expect(draft).toHaveFocus())
+    await user.click(screen.getByRole('button', { name: 'Previous section' }))
+    await user.click(await screen.findByRole('button', { name: 'Discard changes' }))
+    expect(await screen.findByRole('region', { name: 'Alex User' })).toBeVisible()
+    expect(screen.queryByRole('textbox', { name: 'Local label' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Section query')).toHaveTextContent('selected=user')
+    expect(screen.getByLabelText('Section query')).toHaveTextContent('scope=kept')
+    expect(mocks.updatePrincipal).not.toHaveBeenCalled()
+  })
+
+  it('protects a manual onboarding draft and cannot leave while adding the reference', async () => {
+    const user = userEvent.setup()
+    let finish!: (principal: Principal) => void
+    mocks.createPrincipal.mockReturnValue(new Promise<Principal>((resolve) => { finish = resolve }))
+    renderPage('/identity?tab=users&mode=new')
+    expect(await screen.findByRole('region', { name: 'Add person' })).toBeVisible()
+    await user.click(await screen.findByRole('button', { name: 'Use manual entry' }))
+    await user.type(screen.getByRole('textbox', { name: 'Entra object ID' }), 'entra-new')
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Stay' }))
+    expect(screen.getByRole('textbox', { name: 'Entra object ID' })).toHaveValue('entra-new')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(mocks.createPrincipal).toHaveBeenCalled())
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    expect(await screen.findByRole('dialog', { name: 'Operation in progress' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Discard changes' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Stay' }))
+    const created: Principal = { id: 'new-user', tenantId: 'tenant', objectId: 'entra-new', kind: 'user', label: 'New person', ...timestamps }
+    mocks.principals.push(created)
+    finish(created)
+    expect(await screen.findByRole('button', { name: /New person/, pressed: true })).toBeVisible()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Add person' })).not.toBeInTheDocument()
+  })
+
+  it('shows a recoverable state for missing selected references instead of stale details', async () => {
+    renderPage('/identity?tab=users&selected=removed-reference')
+    expect(await screen.findByText('Identity not in this view')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Clear selection and filter' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Edit local metadata' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('creates and edits a MOSAIC group in full workspaces without changing its immutable name', async () => {
+    const user = userEvent.setup()
+    mocks.createGroup.mockImplementation(async (payload: { name: string; description: string }) => {
+      const group: Group = { id: 'local-group', tenantId: 'tenant', ...payload, ...timestamps }
+      mocks.groups.push(group)
+      return group
+    })
+    mocks.updateGroup.mockImplementation(async (id: string, payload: { description: string }) => {
+      mocks.groups = mocks.groups.map((group) => group.id === id ? { ...group, ...payload } : group)
+      return mocks.groups.find((group) => group.id === id)
+    })
+    renderPage('/identity?tab=groups&scope=kept')
+    await user.click(await screen.findByRole('button', { name: 'Create MOSAIC group' }))
+    expect(await screen.findByRole('region', { name: 'Create group' })).toBeVisible()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    await user.type(screen.getByRole('textbox', { name: 'Group name' }), 'Research team')
+    await user.type(screen.getByRole('textbox', { name: 'Description' }), 'Local collection')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByRole('button', { name: /Research team/, pressed: true })).toBeVisible()
+    expect(screen.getByRole('region', { name: 'Research team' })).toBeVisible()
+    expect(screen.getByLabelText('Section query')).toHaveTextContent('scope=kept')
+    await user.click(screen.getByRole('button', { name: 'Edit group' }))
+    expect(screen.getByRole('region', { name: 'Edit Research team' })).toBeVisible()
+    expect(screen.queryByRole('list', { name: 'MOSAIC groups' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'Group name' })).not.toBeInTheDocument()
+    await user.clear(screen.getByRole('textbox', { name: 'Description' }))
+    await user.type(screen.getByRole('textbox', { name: 'Description' }), 'Updated collection')
+    await user.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(mocks.updateGroup).toHaveBeenCalledWith('local-group', { description: 'Updated collection' }))
+    expect(await screen.findByRole('region', { name: 'Research team' })).toBeVisible()
+    expect(screen.queryByRole('textbox', { name: 'Description' })).not.toBeInTheDocument()
   })
 })

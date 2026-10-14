@@ -9,12 +9,6 @@
   gap: 16px;
 }
 
-.mainGrid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
-  gap: 20px;
-}
-
 .card {
   padding: 24px;
   gap: 18px;
@@ -52,8 +46,7 @@
   gap: 12px;
 }
 
-.infoTile,
-.receipt {
+.infoTile {
   padding: 14px 16px;
   display: grid;
   gap: 6px;
@@ -117,29 +110,6 @@
 .error {
   color: var(--mosaic-danger) !important;
   background: var(--mosaic-danger-soft) !important;
-}
-
-.ticketForm {
-  display: grid;
-  gap: 16px;
-}
-
-.fieldError {
-  margin-top: 6px;
-  display: block;
-  color: var(--mosaic-danger);
-}
-
-.formActions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-@media (max-width: 900px) {
-  .mainGrid {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media (max-width: 680px) {

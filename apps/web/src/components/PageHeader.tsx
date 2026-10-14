@@ -10,6 +10,7 @@ const sourceLabels: Record<DataSourceKind, string> = {
 }
 
 export function DataSourceBadge({ kind }: { kind: DataSourceKind }) {
+  if (kind === 'live') return null
   return (
     <Badge className={`source-badge source-badge-${kind}`} appearance="tint">
       {sourceLabels[kind]}

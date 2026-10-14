@@ -1,7 +1,6 @@
 import {
   Badge,
   Button,
-  Card,
   Field,
   Input,
   MessageBar,
@@ -12,30 +11,21 @@ import {
   TabList,
   Text,
   Textarea,
-  Title2,
   Title3,
   Tooltip,
 } from '@fluentui/react-components'
+import { ShieldTaskRegular } from '@fluentui/react-icons'
 import { useMutation } from '@tanstack/react-query'
 import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { type FormEvent, type ReactNode, useMemo, useState } from 'react'
 import { useMosaicApi } from '../api'
-import { PageHeader, PreviewNotice } from '../components/PageHeader'
+import { PageHeader } from '../components/PageHeader'
 import type { TokenEnforcement } from '../types'
 import { PolicyFacetItem } from '../components/PolicyFacets'
 import styles from './PoliciesPage.module.css'
 
 type PreviewTab = 'rules' | 'metadata'
 type QuotaPeriod = NonNullable<TokenEnforcement['tokenQuotaPeriod']>
-
-interface SamplePolicyRecord {
-  id: string
-  name: string
-  scope: string
-  environment: string
-  owner: string
-  note: string
-}
 
 interface PolicyFormState {
   backendResource: string
@@ -62,33 +52,6 @@ interface ValidationResult {
     backendResource?: string
   }
 }
-
-const samplePolicies: SamplePolicyRecord[] = [
-  {
-    id: 'shared-chat-preview',
-    name: 'Shared chat completions',
-    scope: 'APIM product / shared-chat',
-    environment: 'MOSAIC / prod-westus3',
-    owner: 'Platform security',
-    note: 'Sample metadata only. This policy shape mirrors the current MOSAIC policy workspace.',
-  },
-  {
-    id: 'embeddings-burst-cap',
-    name: 'Embeddings burst cap',
-    scope: 'APIM product / embeddings',
-    environment: 'MOSAIC / prod-eastus2',
-    owner: 'AI operations',
-    note: 'Illustrative embedding scope only. It is not queued for sync or saved to APIM.',
-  },
-  {
-    id: 'finance-annual-quota',
-    name: 'Finance annual quota',
-    scope: 'APIM product / finops-assist',
-    environment: 'MOSAIC / preprod-centralus',
-    owner: 'FinOps governance',
-    note: 'Illustrative finance scope only. No persisted policy or rollout state is represented.',
-  },
-]
 
 const quotaPeriods: QuotaPeriod[] = ['Hourly', 'Daily', 'Weekly', 'Monthly', 'Yearly']
 
@@ -203,12 +166,10 @@ function DisabledAction({
 
 export function PoliciesPage() {
   const sections = [
-    { value: 'preview', label: 'Enforcement preview', description: 'Generate rules and metadata from the form below using the live preview API. This does not save intent or change APIM.' },
-    { value: 'samples', label: 'Sample scopes', description: 'Illustrative policy metadata only, not a configured policy inventory. Selecting a sample does not change the preview request.' },
+    { value: 'preview', label: 'Enforcement preview', icon: <ShieldTaskRegular />, description: 'Generate rules and metadata from the form below using the preview API. This does not save intent or change APIM.' },
   ]
   const [section, selectSection] = usePageSection(sections)
   const api = useMosaicApi()
-  const [selectedPolicyId, setSelectedPolicyId] = useState(samplePolicies[0]?.id ?? '')
   const [form, setForm] = useState<PolicyFormState>(initialForm)
   const [submittedForm, setSubmittedForm] = useState<PolicyFormState | null>(null)
   const [previewTab, setPreviewTab] = useState<PreviewTab>('rules')
@@ -225,8 +186,6 @@ export function PoliciesPage() {
   })
 
   const validation = useMemo(() => validatePolicyForm(form), [form])
-  const selectedPolicy =
-    samplePolicies.find((policy) => policy.id === selectedPolicyId) ?? samplePolicies[0]
   const preview = previewMutation.data
   const previewWarnings = preview?.warnings ?? []
   const validationMessages = hasSubmitted ? validation.summary : []
@@ -270,7 +229,6 @@ export function PoliciesPage() {
       <PageHeader
         title="Policies"
         description="Inspect enforcement rules before making changes. This workspace previews only; publish and review model changes in Models to apply a supported one-shot plan."
-        source={section === 'samples' ? 'sample' : preview ? 'live' : undefined}
         actions={
           <div className={styles.headerActions}>
             <DisabledAction hint="This workspace cannot apply policy to APIM. Publishing a model from the Models workspace is the supported way to write policy today.">
@@ -292,76 +250,12 @@ export function PoliciesPage() {
       </Text>
 
       <SectionLayout label="Policies" sections={sections} active={section} onSelect={selectSection}>
-      {section === 'samples' && <PreviewNotice kind="local">Sample scopes and metadata are illustrative, not live APIM state.</PreviewNotice>}
-      <div className={section === 'samples' ? styles.workspace : styles.editorColumn}>
-        {section === 'samples' && <>
-        <aside className={`panel ${styles.policyListPanel}`}>
-          <div className="panel-header">
-            <div>
-              <Title3 as="h2">Sample scopes</Title3>
-              <Text size={200}>Sample data</Text>
-            </div>
-            <Badge appearance="outline">MOSAIC sample</Badge>
-          </div>
-          <div className={styles.policyList}>
-            {samplePolicies.map((policy) => (
-              <button
-                key={policy.id}
-                type="button"
-                className={
-                  policy.id === selectedPolicy.id
-                    ? `${styles.policyListItem} ${styles.policyListItemActive}`
-                    : styles.policyListItem
-                }
-                aria-pressed={policy.id === selectedPolicy.id}
-                onClick={() => setSelectedPolicyId(policy.id)}
-              >
-                <div className={styles.policyListRow}>
-                  <strong>{policy.name}</strong>
-                </div>
-                <span>{policy.scope}</span>
-              </button>
-            ))}
-          </div>
-        </aside>
-
         <div className={styles.editorColumn}>
-          <Card className={styles.metadataCard}>
-            <div className={styles.metadataHeader}>
-              <div>
-                <Title2 as="h2">{selectedPolicy.name}</Title2>
-                <Text className={styles.sampleLabel}>Selected policy metadata · sample data</Text>
-              </div>
-              <Badge appearance="outline">Illustrative only</Badge>
-            </div>
-
-            <div className={styles.metadataGrid}>
-              <div>
-                <span>Scope</span>
-                <strong>{selectedPolicy.scope}</strong>
-              </div>
-              <div>
-                <span>Environment</span>
-                <strong>{selectedPolicy.environment}</strong>
-              </div>
-              <div>
-                <span>Owner</span>
-                <strong>{selectedPolicy.owner}</strong>
-              </div>
-            </div>
-
-            <Text>{selectedPolicy.note}</Text>
-
-          </Card>
-        </div>
-        </>}
-
-        {section === 'preview' && <div className={styles.editorColumn}>
           <div className={`panel ${styles.formPanel}`}>
             <div className="panel-header">
               <div>
                 <Title3 as="h2">Enforcement form</Title3>
-                <Text size={200}>Live preview request payload</Text>
+                <Text size={200}>Preview request payload</Text>
               </div>
               <Badge appearance="outline">Deterministic</Badge>
             </div>
@@ -585,8 +479,7 @@ export function PoliciesPage() {
               </div>
             )}
           </div>
-        </div>}
-      </div>
+        </div>
       </SectionLayout>
     </section>
   )

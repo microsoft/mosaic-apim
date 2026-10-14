@@ -137,7 +137,7 @@ function renderDialog() {
 // only when the key is pressed inside it. The dialog itself contains everything, so it doesn't count.
 function focused() {
   const element = document.activeElement as HTMLElement
-  const dialog = screen.getByRole('dialog')
+  const dialog = screen.getByRole('region', { name: 'Import APIs from a gateway' })
   expect(element).not.toBe(document.body)
   expect(element).not.toBe(dialog)
   expect(dialog).toContainElement(element)
@@ -147,7 +147,7 @@ function focused() {
 async function expectClosed() {
   // The page stays aria-hidden for a moment after a modal closes.
   await screen.findByRole('button', { name: 'Import from a gateway' })
-  expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument()
+  expect(screen.queryByRole('region', { name: 'Import APIs from a gateway' })).not.toBeInTheDocument()
 }
 
 describe('ImportFromGatewayDialog', () => {
@@ -180,7 +180,7 @@ describe('ImportFromGatewayDialog', () => {
     expect(api.importModelApis).toHaveBeenCalledExactlyOnceWith(gateway.id, ['chat-api'])
   })
 
-  it('closes on Escape while the import is in flight', async () => {
+  it('protects a pending import from leaving or discarding', async () => {
     const user = userEvent.setup()
     api.importModelApis.mockReturnValue(new Promise(() => {}))
     renderDialog()
@@ -188,12 +188,15 @@ describe('ImportFromGatewayDialog', () => {
     const importing = await screen.findByRole('button', { name: 'Importing...' })
     expect(focused()).toBe(importing)
 
-    await user.keyboard('{Escape}')
-
-    await expectClosed()
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    const confirmation = await screen.findByRole('dialog', { name: 'Operation in progress' })
+    expect(confirmation).toHaveTextContent('Wait for the current operation')
+    expect(screen.queryByRole('button', { name: 'Discard changes' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Stay' }))
+    expect(screen.getByRole('button', { name: 'Importing...' })).toHaveAttribute('aria-disabled', 'true')
   })
 
-  it('moves focus to the reason an import failed, where Escape closes the dialog', async () => {
+  it('moves focus to an import failure and returns with Back', async () => {
     const user = userEvent.setup()
     api.importModelApis.mockRejectedValue(new Error(failure))
     renderDialog()
@@ -202,7 +205,7 @@ describe('ImportFromGatewayDialog', () => {
 
     await waitFor(() => expect(focused()).toHaveTextContent(failure))
     expect(screen.getByRole('button', { name: 'Import 1' })).toBeEnabled()
-    await user.keyboard('{Escape}')
+    await user.click(screen.getByRole('button', { name: 'Back' }))
     await expectClosed()
   })
 
@@ -230,12 +233,11 @@ describe('ImportFromGatewayDialog', () => {
     renderDialog()
     await user.click(await screen.findByRole('button', { name: 'Import 1' }))
     await waitFor(() => expect(focused()).toHaveTextContent(failure))
-    await user.keyboard('{Escape}')
+    await user.click(screen.getByRole('button', { name: 'Back' }))
 
     await user.click(await screen.findByRole('button', { name: 'Import from a gateway' }))
 
-    // Fluent focuses the first control Tab reaches.
-    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Gateway to import from' })).toHaveFocus())
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Import APIs from a gateway' })).toHaveFocus())
     expect(screen.getByText(failure)).toBeVisible()
   })
 
@@ -262,7 +264,9 @@ describe('ImportFromGatewayDialog', () => {
 
     await user.click(clear)
     expect(clear).toHaveFocus()
-    await user.keyboard('{Escape}')
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    expect(await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Discard changes' }))
     await expectClosed()
   })
 })

@@ -1,6 +1,14 @@
 .page {
   display: grid;
   gap: 20px;
+  min-width: 0;
+}
+
+.resourceRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
 }
 
 .toolbar {
@@ -8,6 +16,10 @@
   display: grid;
   gap: 16px;
   border: 0;
+}
+
+.toolbar[hidden] {
+  display: none;
 }
 
 .toolbarControls {
@@ -33,6 +45,10 @@
   gap: 8px;
 }
 
+.compactApplicationAction {
+  display: none;
+}
+
 .contentGrid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -55,11 +71,6 @@
   display: grid;
   gap: 16px;
   min-width: 0;
-}
-
-.addDialog:global(.fui-DialogSurface) {
-  width: min(700px, calc(100vw - 32px));
-  max-width: 700px;
 }
 
 .technicalDetails {
@@ -203,6 +214,10 @@
   gap: 6px;
 }
 
+.badgeRow :global(.fui-Badge) {
+  white-space: nowrap;
+}
+
 .detailSection {
   display: grid;
   gap: 12px;
@@ -243,7 +258,7 @@
 }
 
 .memberField {
-  min-width: 240px;
+  min-width: min(240px, 100%);
   flex: 1 1 240px;
 }
 
@@ -343,7 +358,8 @@
 
 .dialogForm {
   display: grid;
-  gap: 12px;
+  gap: 20px;
+  max-width: 76ch;
 }
 
 .dangerButton {
@@ -398,6 +414,16 @@
   .toolbar,
   .detailCard {
     padding: 14px;
+  }
+
+  @media (max-width: 480px) {
+    .applicationAction {
+      display: none;
+    }
+
+    .compactApplicationAction {
+      display: inline;
+    }
   }
 
   .cardHeader {

@@ -1,1371 +1,545 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { FluentProvider, textClassNames, webLightTheme } from '@fluentui/react-components'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { FluentProvider, webLightTheme } from '@fluentui/react-components'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, useLocation } from 'react-router-dom'
+import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AccessRequest, Entitlement, EnvironmentCatalogView, McpPublication, McpServer, Principal } from '../types'
-import { GOVERNED_COUNTER_KEY, callRateError, describeLimits, describePublicationLimits } from '../entitlement-limits'
+import type { AccessRequest, Entitlement, EnvironmentCatalogView } from '../types'
+import { GOVERNED_COUNTER_KEY, callRateError, describeLimits } from '../entitlement-limits'
 import { EntitlementsPage } from './EntitlementsPage'
-import { accessPlan, directGrant, modelPublication, publishedModelApi } from '../test/model-access'
+import { accessPlan, connectionInfo, directGrant, modelPublication, publishedModelApi } from '../test/model-access'
 import { ApiError } from '../api'
-import { anthropicPool, draftPool, governedAnthropicPool } from '../test/pool-fixtures'
+import { anthropicPool, governedAnthropicPool } from '../test/pool-fixtures'
 
 const entitlement: Entitlement = {
-  id: 'entitlement_1',
-  tenantId: 'tenant',
+  id: 'entitlement_1', tenantId: 'tenant',
   subject: { kind: 'group', id: 'group_1' },
   resource: { kind: 'modelApi', id: 'modelApi_1' },
-  enabled: true,
-  enforcement: {
-    tokens: {
-      counterKeyExpression: '@(context.Subscription?.Key)',
-      tokensPerMinute: 10000,
-      tokenQuota: 5000000,
-      tokenQuotaPeriod: 'Monthly',
-      estimatePromptTokens: true,
-    },
-  },
-  binding: null,
-  createdAt: '2026-01-01T00:00:00Z',
-  updatedAt: '2026-01-01T00:00:00Z',
+  enabled: true, binding: null, notes: 'Engineering evaluation',
+  enforcement: { tokens: { counterKeyExpression: '@(context.Subscription?.Key)', tokensPerMinute: 10000, tokenQuota: 5000000, tokenQuotaPeriod: 'Monthly', estimatePromptTokens: true } },
+  createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
 }
-
-const api = {
-  getEnvironmentCatalog: vi.fn(),
-  listEntitlements: vi.fn(),
-  listPrincipals: vi.fn(),
-  listGroups: vi.fn(),
-  listModelApis: vi.fn(),
-  listModelPools: vi.fn(),
-  listMcpServers: vi.fn(),
-  listCostCenters: vi.fn(),
-  getCostCenterSettings: vi.fn(),
-  listMcpPublications: vi.fn(),
-  listGateways: vi.fn(),
-  listModelEndpoints: vi.fn(),
-  listAccessRequests: vi.fn(),
-  listPublications: vi.fn(),
-  resolveEntitlements: vi.fn(),
-  createEntitlement: vi.fn(),
-  updateEntitlement: vi.fn(),
-  deleteEntitlement: vi.fn(),
-  getPublication: vi.fn(),
-  createPublishPlan: vi.fn(),
-  applyPublishPlan: vi.fn(),
-  updatePublication: vi.fn(),
-  linkPublicationModelApi: vi.fn(),
-  approveAccessRequest: vi.fn(),
-  denyAccessRequest: vi.fn(),
-  getGrantOverlaps: vi.fn(),
-  getMcpConnection: vi.fn(),
-  getEntitlementConnection: vi.fn(),
-  createEntitlementKey: vi.fn(),
-  rotateEntitlementKey: vi.fn(),
-  deleteEntitlementKey: vi.fn(),
-  revealEntitlementKey: vi.fn(),
+const request: AccessRequest = {
+  id: 'request_1', tenantId: 'tenant', requesterObjectId: 'USER-OBJECT-1',
+  requesterPrincipalId: null, resource: { kind: 'modelApi', id: 'modelApi_1' },
+  justification: 'Support bot evaluation', state: 'pending',
+  createdAt: '2026-09-01T12:00:00Z', updatedAt: '2026-09-01T12:00:00Z',
 }
-
 const catalog: EnvironmentCatalogView = {
   environments: [
     {
-      key: 'development',
-      displayName: 'Development',
-      description: null,
-      color: 'brand',
-      production: false,
-      aliases: [],
-      acceptsEndpointsFrom: [],
-      order: 10,
-      builtIn: true,
+      key: 'development', displayName: 'Development', color: 'brand', production: false,
+      aliases: [], acceptsEndpointsFrom: [], order: 10, builtIn: true,
       usage: { gateways: 1, modelEndpoints: 1, mcpEndpoints: 0 },
     },
     {
-      key: 'production',
-      displayName: 'Production',
-      description: null,
-      color: 'danger',
-      production: true,
-      aliases: [],
-      acceptsEndpointsFrom: [],
-      order: 50,
-      builtIn: true,
+      key: 'production', displayName: 'Production', color: 'danger', production: true,
+      aliases: [], acceptsEndpointsFrom: [], order: 50, builtIn: true,
       usage: { gateways: 1, modelEndpoints: 1, mcpEndpoints: 0 },
     },
   ],
-  requireClassification: false,
-  unclassified: { gateways: 0, modelEndpoints: 0, mcpEndpoints: 0 },
-  compatibility: [],
-  updatedAt: null,
+  requireClassification: false, unclassified: { gateways: 0, modelEndpoints: 0, mcpEndpoints: 0 }, compatibility: [], updatedAt: null,
 }
-
-const pendingRequest: AccessRequest = {
-  id: 'request_1',
-  tenantId: 'tenant',
-  // Entra object IDs are matched to principals without regard to letter case.
-  requesterObjectId: 'USER-OBJECT-1',
-  requesterPrincipalId: null,
-  resource: { kind: 'modelApi', id: 'modelApi_1' },
-  justification: 'Support bot evaluation',
-  state: 'pending',
-  createdAt: '2026-09-01T12:00:00Z',
-  updatedAt: '2026-09-01T12:00:00Z',
+const api = {
+  getEnvironmentCatalog: vi.fn(), listEntitlements: vi.fn(), listPrincipals: vi.fn(),
+  listGroups: vi.fn(), listModelApis: vi.fn(), listModelPools: vi.fn(), listMcpServers: vi.fn(),
+  listCostCenters: vi.fn(), getCostCenterSettings: vi.fn(), listMcpPublications: vi.fn(),
+  listGateways: vi.fn(), listModelEndpoints: vi.fn(), listAccessRequests: vi.fn(),
+  listPublications: vi.fn(), resolveEntitlements: vi.fn(), createEntitlement: vi.fn(),
+  updateEntitlement: vi.fn(), deleteEntitlement: vi.fn(), getPublication: vi.fn(),
+  createPublishPlan: vi.fn(), applyPublishPlan: vi.fn(), updatePublication: vi.fn(),
+  linkPublicationModelApi: vi.fn(), approveAccessRequest: vi.fn(), denyAccessRequest: vi.fn(),
+  getGrantOverlaps: vi.fn(), getMcpConnection: vi.fn(), getEntitlementConnection: vi.fn(),
+  createEntitlementKey: vi.fn(), rotateEntitlementKey: vi.fn(), deleteEntitlementKey: vi.fn(),
+  revealEntitlementKey: vi.fn(),
 }
-
-const docsServer: McpServer = {
-  id: 'mcp_1',
-  tenantId: 'tenant',
-  gatewayId: 'gateway_1',
-  apiName: 'mosaic-mcp-docs',
-  displayName: 'Docs search',
-  path: 'mosaic/mcp/docs',
-  serviceUrl: 'https://mcp.contoso.test',
-  protocols: ['https'],
-  kind: 'passthrough',
-  transportType: 'streamable',
-  endpoints: [],
-  tools: [],
-  toolCount: 0,
-  subscriptionRequired: false,
-  productNames: [],
-  visibility: 'catalog',
-  selection: 'detected',
-  importedFromSnapshotId: null,
-  importedAt: '2026-09-01T12:20:00Z',
-  importedBy: null,
-  publicationId: 'mcp_pub_1',
-  createdAt: '2026-09-01T12:10:00Z',
-  updatedAt: '2026-09-01T12:10:00Z',
-}
-
-const docsPublication: McpPublication = {
-  id: 'mcp_pub_1',
-  tenantId: 'tenant',
-  entityType: 'mcpPublication',
-  gatewayId: 'gateway_1',
-  mcpEndpointId: 'mcpEndpoint_1',
-  displayName: 'Docs search',
-  apiName: 'mosaic-mcp-docs',
-  apiPath: 'mosaic/mcp/docs',
-  backendName: 'mosaic-mcp-docs',
-  fragmentName: 'mosaic-mcp-docs',
-  metadataApiName: 'mosaic-mcp-docs-prm',
-  mcpServerId: 'mcp_1',
-  status: 'published',
-  resources: [],
-  lastPlanId: 'mcp_plan_1',
-  lastPlanDigest: 'digest',
-  lastRunId: 'mcp_run_1',
-  lastAppliedAt: '2026-09-01T12:20:00Z',
-  lastError: null,
-  appliedAccess: {
-    version: 1,
-    audience: 'runtime-client-id',
-    delegatedScope: 'Mcp.Invoke',
-    applicationRole: 'Mcp.Invoke.Application',
-    grants: [],
-  },
-  accessState: 'applied',
-  createdAt: '2026-09-01T12:00:00Z',
-  updatedAt: '2026-09-01T12:20:00Z',
-}
-
-async function openApproval(user: ReturnType<typeof userEvent.setup>) {
-  if (!screen.queryByRole('table', { name: 'Pending access requests' })) {
-    await user.click(screen.getByRole('button', { name: 'Access requests' }))
-  }
-  const requests = await screen.findByRole('table', { name: 'Pending access requests' })
-  const approve = within(requests).getByRole('button', { name: 'Approve' })
-  await waitFor(() => expect(approve).toBeEnabled())
-  await user.click(approve)
-  return screen.findByRole('dialog')
-}
-
-/** Each body row's cell under the named column header, in row order. */
-function columnCells(table: HTMLElement, header: string) {
-  if (['Cost center', 'Environment', 'Limits', 'Binding'].includes(header)) {
-    return within(table).getAllByRole('group', { name: header })
-  }
-  const column = within(table).getAllByRole('columnheader').findIndex((cell) => cell.textContent === header)
-  return within(table).getAllByRole('row').slice(1).map((row) => within(row).getAllByRole('cell')[column])
-}
-
-/** Each line of text in an element, in order. */
-function textLines(element: Element) {
-  return [...element.querySelectorAll(`.${textClassNames.root}`)].map((line) => line.textContent)
-}
-
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
   return { ...actual, useMosaicApi: () => api }
 })
 
-/** Shows where the page navigated, since the test renders it without the app's routes. */
-function LocationProbe() {
-  return <output aria-label="Current location">{useLocation().pathname}</output>
-}
-
 function renderPage(initial = '/entitlements') {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[initial]}>
-        <FluentProvider theme={webLightTheme}>
-          <EntitlementsPage />
-          <LocationProbe />
-        </FluentProvider>
-      </MemoryRouter>
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  const router = createMemoryRouter([{
+    path: '*', element: <QueryClientProvider client={queryClient}>
+      <FluentProvider theme={webLightTheme}><EntitlementsPage /></FluentProvider>
     </QueryClientProvider>,
-  )
-  return queryClient
+  }], { initialEntries: [initial] })
+  render(<RouterProvider router={router} />)
+  return { queryClient, router, params: () => new URLSearchParams(router.state.location.search) }
 }
 
-async function openRowMenu(user: ReturnType<typeof userEvent.setup>, scope: HTMLElement) {
-  await user.click(await within(scope).findByRole('button', { name: /^More actions for/ }))
+async function selectGrant(user: ReturnType<typeof userEvent.setup>, subject = 'Engineering') {
+  const list = await screen.findByRole('list', { name: 'Grants' })
+  await user.click(await within(list).findByRole('button', { name: new RegExp(subject) }))
+  return screen.findByRole('region', { name: 'Selected grant' })
+}
+async function openApproval(user: ReturnType<typeof userEvent.setup>) {
+  const detail = await screen.findByRole('region', { name: 'Selected access request' })
+  const approve = await within(detail).findByRole('button', { name: 'Approve' })
+  await waitFor(() => expect(approve).toBeEnabled())
+  await user.click(approve)
+  return screen.findByRole('region', { name: 'Approve access request' })
+}
+async function menu(user: ReturnType<typeof userEvent.setup>, scope: HTMLElement) {
+  await user.click(within(scope).getByRole('button', { name: /^More actions/ }))
 }
 
-describe('EntitlementsPage', () => {
+describe('Entitlements workbench', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     api.listEntitlements.mockResolvedValue([entitlement])
-    api.listPrincipals.mockResolvedValue([{
-      id: 'principal_1', tenantId: 'tenant', objectId: 'user-object-1', kind: 'user',
-      label: 'Ada Lovelace', createdAt: '', updatedAt: '',
-    }])
-    api.listGroups.mockResolvedValue([{
-      id: 'group_1', tenantId: 'tenant', name: 'Engineering', createdAt: '', updatedAt: '',
-    }])
+    api.listPrincipals.mockResolvedValue([{ id: 'principal_1', objectId: 'user-object-1', kind: 'user', label: 'Ada Lovelace' }])
+    api.listGroups.mockResolvedValue([{ id: 'group_1', name: 'Engineering' }])
     api.getEnvironmentCatalog.mockResolvedValue(catalog)
-    api.listGateways.mockResolvedValue([
-      { id: 'gateway_1', environment: 'production', name: 'Prod gateway' },
-      { id: 'gateway_dev', environment: 'development', name: 'Dev gateway' },
-    ])
-    api.listModelEndpoints.mockResolvedValue([
-      { id: 'endpoint_1', environment: 'development', name: 'Dev endpoint' },
-    ])
-    api.listModelApis.mockResolvedValue([{ ...publishedModelApi, publicationId: null, importedFromSnapshotId: 'snapshot_1' }])
+    api.listGateways.mockResolvedValue([{ id: 'gateway_1', environment: 'production' }])
+    api.listModelEndpoints.mockResolvedValue([])
+    api.listModelApis.mockResolvedValue([{ ...publishedModelApi, publicationId: null }])
     api.listModelPools.mockResolvedValue([])
     api.listMcpServers.mockResolvedValue([])
-    api.listCostCenters.mockResolvedValue([{ id: 'cc_general', tenantId: 'tenant', entityType: 'costCenter', name: 'General', code: 'general', description: null, owners: [], members: [], keysAllowed: true, limits: [], builtIn: true, createdAt: '', updatedAt: '', isTenantDefault: true, memberDetails: [], grantCount: 0, enabledGrantCount: 0, defaultFor: 0 }])
-    api.getCostCenterSettings.mockResolvedValue({ id: 'settings', tenantId: 'tenant', defaultCostCenterId: 'cc_general' })
+    api.listCostCenters.mockResolvedValue([{ id: 'cc_general', name: 'General', code: 'general', limits: [] }])
+    api.getCostCenterSettings.mockResolvedValue({ defaultCostCenterId: 'cc_general' })
     api.listMcpPublications.mockResolvedValue([])
     api.listAccessRequests.mockResolvedValue([])
     api.listPublications.mockResolvedValue([])
     api.resolveEntitlements.mockResolvedValue([])
-    api.getGrantOverlaps.mockResolvedValue({
-      overlaps: [],
-      membershipChecked: true,
-      skipped: [],
-      generatedAt: '2026-09-01T12:00:00Z',
-    })
+    api.getGrantOverlaps.mockResolvedValue({ overlaps: [], membershipChecked: true, skipped: [] })
     api.createPublishPlan.mockResolvedValue(accessPlan)
     api.getPublication.mockResolvedValue(modelPublication)
+    api.createEntitlement.mockResolvedValue({ ...entitlement, id: 'saved_grant' })
+    api.updateEntitlement.mockResolvedValue(entitlement)
+    api.approveAccessRequest.mockResolvedValue({ ...request, state: 'approved' })
   })
 
-  it('renders live grants with their subject, resource, and binding state', async () => {
-    renderPage()
-
-    expect(await screen.findByText('Engineering (MOSAIC group)')).toBeVisible()
-    expect(screen.getByText('Chat completions (model API)')).toBeVisible()
-    expect(screen.getAllByText('Production').length).toBeGreaterThan(0)
-    // A grant with no binding must say so: consumption cannot be attributed without one.
-    expect(screen.getByText('Not bound')).toBeVisible()
-    expect(screen.getByText('Live data')).toBeVisible()
-    expect(screen.queryByText('Sample data')).not.toBeInTheDocument()
-  })
-
-  it('renders only the selected entitlement view and preserves unrelated query parameters', async () => {
+  it('keeps the list slim and moves limits, bindings, notes and actions into the selected detail', async () => {
     const user = userEvent.setup()
-    api.listPublications.mockResolvedValue([modelPublication])
-    api.listCostCenters.mockResolvedValue([{ id: 'cc-support', name: 'Support', code: 'support' }])
-    renderPage('/entitlements?tab=requests&costCenter=cc-support')
-    expect(await screen.findByRole('heading', { name: 'Access requests' })).toBeVisible()
+    renderPage()
+    const list = await screen.findByRole('list', { name: 'Grants' })
+    expect(within(list).queryByText('Not bound')).not.toBeInTheDocument()
     expect(screen.queryByRole('table', { name: 'Entitlements' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('combobox', { name: 'Published model' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Live data')).not.toBeInTheDocument()
+    const detail = await selectGrant(user)
+    expect(within(detail).getByText('Not bound')).toBeVisible()
+    expect(within(detail).getByText('Engineering evaluation')).toBeVisible()
+    expect(within(detail).getByText('Limits usage to 10,000 tokens per minute.')).toBeVisible()
+    expect(within(detail).getByRole('button', { name: 'Edit grant' })).toBeVisible()
+    expect(within(list).getByRole('button')).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('selects grants through URLs and restores selection with browser Back and Forward', async () => {
+    const user = userEvent.setup()
+    api.listEntitlements.mockResolvedValue([entitlement, { ...directGrant, id: 'second' }])
+    const { router, params } = renderPage('/entitlements?selected=entitlement_1&costCenter=cc_general&custom=keep')
+    expect(await screen.findByText('Engineering evaluation')).toBeVisible()
+    await selectGrant(user, 'Ada')
+    expect(params().get('selected')).toBe('second')
+    expect(params().get('custom')).toBe('keep')
+    await act(() => router.navigate(-1))
+    await waitFor(() => expect(params().get('selected')).toBe('entitlement_1'))
+    await act(() => router.navigate(1))
+    await waitFor(() => expect(params().get('selected')).toBe('second'))
+    expect(params().get('costCenter')).toBe('cc_general')
+  })
+
+  it('clears cross-section selection atomically while preserving filters', async () => {
+    const user = userEvent.setup()
+    const { params } = renderPage('/entitlements?selected=entitlement_1&costCenter=cc_general&custom=keep')
+    await user.click(screen.getByRole('button', { name: 'Access requests' }))
+    expect(params().get('tab')).toBe('requests')
+    expect(params().has('selected')).toBe(false)
+    expect(params().get('costCenter')).toBe('cc_general')
+    expect(params().get('custom')).toBe('keep')
     expect(api.getGrantOverlaps).not.toHaveBeenCalled()
-    await user.click(screen.getByRole('button', { name: 'Model access settings' }))
-    expect(await screen.findByRole('combobox', { name: 'Published model' })).toBeVisible()
-    expect(screen.queryByRole('heading', { name: 'Access requests' })).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Grants' }))
-    expect(await screen.findByRole('combobox', { name: 'Filter grants by cost center' })).toHaveValue('cc-support')
   })
 
-  it('filters request history without exposing actionable decisions on a decided request', async () => {
+  it('shows an honest missing grant state without selecting a different grant', async () => {
+    renderPage('/entitlements?selected=deleted')
+    expect(await screen.findByText('Grant unavailable')).toBeVisible()
+    expect(screen.queryByText('Engineering evaluation')).not.toBeInTheDocument()
+  })
+
+  it('preserves URL environment and cost-center filters', async () => {
     const user = userEvent.setup()
-    api.listAccessRequests.mockImplementation(async (state?: string) =>
-      state === 'approved' ? [{ ...pendingRequest, state: 'approved' }] : [],
-    )
-    renderPage('/entitlements?tab=requests')
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Request status' }), 'approved')
-    const table = await screen.findByRole('table', { name: 'Access requests' })
-    expect(within(table).getByText('approved')).toBeVisible()
-    expect(within(table).getByRole('button', { name: 'Approve' })).toBeDisabled()
-    await openRowMenu(user, table)
-    expect(await screen.findByRole('menuitem', { name: 'Deny' })).toHaveAttribute('aria-disabled', 'true')
-    expect(api.listAccessRequests).toHaveBeenCalledWith('approved')
+    const { params } = renderPage('/entitlements?environment=production&costCenter=cc_general&custom=keep')
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Filter grants by environment' })).toHaveValue('production'))
+    expect(api.listEntitlements).toHaveBeenCalledWith({ costCenter: 'cc_general' })
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Filter grants by environment' }), 'development')
+    expect(params().get('environment')).toBe('development')
+    expect(params().get('custom')).toBe('keep')
+    expect(await screen.findByText('No grants match these filters')).toBeVisible()
   })
 
-  it('keeps request failures distinct from an empty queue and invalidates the shell pending key after denial', async () => {
+  it('keeps applied metadata distinct from pending desired intent', async () => {
+    api.listEntitlements.mockResolvedValue([{ ...directGrant, runtime: { ...directGrant.runtime!, status: 'pending' } }])
+    api.listPublications.mockResolvedValue([modelPublication])
+    renderPage(`/entitlements?selected=${directGrant.id}`)
+    expect(await screen.findByText('Desired: enabled')).toBeVisible()
+    expect(screen.getByText('Saved, not applied')).toBeVisible()
+    expect(screen.getByText('An earlier configuration was applied; saved changes are pending.')).toBeVisible()
+    expect(screen.getByText('Last applied methods: Subscription key OR Entra token')).toBeVisible()
+  })
+
+  it.each(['applying', 'unknown'] as const)('locks grant editing, recovery and revocation while runtime is %s', async (status) => {
     const user = userEvent.setup()
-    api.listAccessRequests.mockRejectedValueOnce(new Error('Requests are unavailable.')).mockResolvedValue([pendingRequest])
-    api.denyAccessRequest.mockResolvedValue({ ...pendingRequest, state: 'denied' })
-    const queryClient = renderPage('/entitlements?tab=requests')
-    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
-    expect(await screen.findByText('Requests are unavailable.')).toBeVisible()
-    expect(screen.queryByText('No pending requests')).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Retry requests' }))
-    const table = await screen.findByRole('table', { name: 'Pending access requests' })
-    await openRowMenu(user, table)
-    await user.click(await screen.findByRole('menuitem', { name: 'Deny' }))
-    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['access-requests'] }))
-    expect(queryClient.getQueryData(['access-requests', 'pending'])).toBeDefined()
+    api.listEntitlements.mockResolvedValue([{ ...directGrant, runtime: { ...directGrant.runtime, publicationId: modelPublication.id, status } }])
+    api.listPublications.mockResolvedValue([modelPublication])
+    renderPage(`/entitlements?selected=${directGrant.id}`)
+    const detail = await screen.findByRole('region', { name: 'Selected grant' })
+    await waitFor(() => expect(within(detail).getByRole('button', { name: 'Edit grant' })).toBeDisabled())
+    await menu(user, detail)
+    expect(await screen.findByRole('menuitem', { name: 'Revoke' })).toHaveAttribute('aria-disabled', 'true')
+    expect(api.updateEntitlement).not.toHaveBeenCalled()
   })
 
-  it.each([403, 409])('reports a failed request decision without announcing success (%s)', async (status) => {
-    const user = userEvent.setup()
-    api.listAccessRequests.mockResolvedValue([pendingRequest])
-    api.denyAccessRequest.mockRejectedValue(new ApiError(
-      status === 409 ? 'This request has already been decided.' : 'You are not authorized to decide requests.',
-      status,
-    ))
-    const queryClient = renderPage('/entitlements?tab=requests')
-    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
-    const table = await screen.findByRole('table', { name: 'Pending access requests' })
-    await openRowMenu(user, table)
-    await user.click(await screen.findByRole('menuitem', { name: 'Deny' }))
-    expect(await screen.findByText(status === 409 ? 'This request has already been decided.' : 'You are not authorized to decide requests.')).toBeVisible()
-    expect(screen.queryByText(/Denied the access request/)).not.toBeInTheDocument()
-    if (status === 409) {
-      await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['access-requests'] }))
-    }
-    expect(api.createEntitlement).not.toHaveBeenCalled()
-  })
-
-  it('shows cost-center names and codes in the grants table', async () => {
-    api.listCostCenters.mockResolvedValue([
-      { id: 'cc-support', tenantId: 'tenant', entityType: 'costCenter', name: 'Support', code: 'support', description: null, owners: [], members: [], keysAllowed: true, limits: [], builtIn: false, createdAt: '', updatedAt: '', isTenantDefault: false, memberDetails: [], grantCount: 1, enabledGrantCount: 1, defaultFor: 0 },
-    ])
-    api.listEntitlements.mockResolvedValue([{ ...entitlement, costCenterId: 'cc-support', costCenter: { id: 'cc-support', name: 'Support', code: 'support' } }])
-    renderPage()
-
-    const table = await screen.findByRole('table', { name: 'Entitlements' })
-    const row = within(table).getAllByRole('row').find((item) => item.textContent?.includes('Engineering'))
-    await waitFor(() => expect(row).toHaveTextContent('Support'))
-    expect(row).toHaveTextContent('support')
-    const costCenter = within(row as HTMLElement).getByRole('group', { name: 'Cost center' })
-    expect(costCenter).toHaveTextContent('Supportsupport')
-    expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
-      'Subject', 'Resource', 'Limits & binding', 'Desired / applied', 'Actions',
-    ])
-    expect(screen.queryByRole('button', { name: 'Collapse Entitlements sections' })).not.toBeInTheDocument()
-  })
-
-  it('filters grants by cost center from the query string and from the filter', async () => {
-    const user = userEvent.setup()
-    api.listCostCenters.mockResolvedValue([
-      { id: 'cc-general', tenantId: 'tenant', entityType: 'costCenter', name: 'General', code: 'general', description: null, owners: [], members: [], keysAllowed: true, limits: [], builtIn: true, createdAt: '', updatedAt: '', isTenantDefault: true, memberDetails: [], grantCount: 0, enabledGrantCount: 0, defaultFor: 0 },
-      { id: 'cc-support', tenantId: 'tenant', entityType: 'costCenter', name: 'Support', code: 'support', description: null, owners: [], members: [], keysAllowed: true, limits: [], builtIn: false, createdAt: '', updatedAt: '', isTenantDefault: false, memberDetails: [], grantCount: 0, enabledGrantCount: 0, defaultFor: 0 },
-    ])
-    renderPage('/entitlements?costCenter=cc-support')
-
-    const filter = await screen.findByRole('combobox', { name: 'Filter grants by cost center' })
-    await waitFor(() => expect(filter).toHaveValue('cc-support'))
-    await waitFor(() => expect(api.listEntitlements).toHaveBeenCalledWith({ costCenter: 'cc-support' }))
-
-    await user.selectOptions(filter, 'cc-general')
-    await waitFor(() => expect(api.listEntitlements).toHaveBeenLastCalledWith({ costCenter: 'cc-general' }))
-  })
-
-  it('sends the selected cost center when creating a grant', async () => {
-    const user = userEvent.setup()
-    api.listCostCenters.mockResolvedValue([
-      { id: 'cc-support', tenantId: 'tenant', entityType: 'costCenter', name: 'Support', code: 'support', description: null, owners: [], members: [], keysAllowed: true, limits: [], builtIn: false, createdAt: '', updatedAt: '', isTenantDefault: false, memberDetails: [], grantCount: 0, enabledGrantCount: 0, defaultFor: 0 },
-    ])
-    renderPage()
-
-    await user.click(await screen.findByRole('button', { name: 'Add entitlement' }))
-    const dialog = await screen.findByRole('dialog')
-    const selects = within(dialog).getAllByRole('combobox')
-    await user.selectOptions(selects[0], 'group_1')
-    await user.selectOptions(selects[1], 'modelApi_1')
-    await user.selectOptions(selects[2], 'cc-support')
-    await user.click(within(dialog).getByRole('button', { name: 'Grant access' }))
-
-    await waitFor(() => expect(api.createEntitlement).toHaveBeenCalledWith(expect.objectContaining({ costCenterId: 'cc-support' })))
-  })
-
-  it('shows when a grant was revoked because its subject left the cost center', async () => {
-    api.listEntitlements.mockResolvedValue([{
-      ...entitlement,
-      revocation: { reason: 'costCenterMembership', costCenterId: 'cc-general', revokedAt: '2026-09-01T12:00:00Z', revokedBy: 'admin' },
-    }])
-    renderPage()
-
-    expect(await screen.findByText('Revoked when its subject left the cost center.')).toBeVisible()
-  })
-
-  it('keeps the whole APIM subscription name and source in explicit binding details', async () => {
-    const user = userEvent.setup()
-    const subscriptionName = 'mosaic-grant-0123456789abcdef0123456789abcdef'
-    api.listEntitlements.mockResolvedValue([
-      {
-        ...directGrant,
-        binding: { gatewayId: 'gateway_1', source: 'orchestrated', apimSubscriptionName: subscriptionName },
-      },
-      { ...entitlement, id: 'recorded_grant', binding: { gatewayId: 'gateway_1', source: 'manual' } },
-      entitlement,
-    ])
-    renderPage()
-
-    const table = await screen.findByRole('table', { name: 'Entitlements' })
-    const [named, recorded, unbound] = columnCells(table, 'Binding')
-    expect(within(named).getByText('APIM subscription')).toBeVisible()
-    expect(within(named).getByText(subscriptionName)).not.toBeVisible()
-    await user.click(within(named).getByText('Binding details'))
-    expect(within(named).getByText(subscriptionName)).toBeVisible()
-    expect(within(named).getByText('orchestrated')).toBeVisible()
-    expect(within(recorded).getByText('Recorded')).toBeVisible()
-    await user.click(within(recorded).getByText('Binding details'))
-    expect(within(recorded).getByText('manual')).toBeVisible()
-    expect(within(unbound).getByText('Not bound')).toBeVisible()
-  })
-
-  it('filters grants by environment, including deployment grants from their endpoint', async () => {
-    const user = userEvent.setup()
-    api.listEntitlements.mockResolvedValue([
-      entitlement,
-      {
-        ...entitlement,
-        id: 'deployment_grant',
-        resource: { kind: 'modelDeployment', id: 'gpt-4o', scopeId: 'endpoint_1' },
-      },
-    ])
-    renderPage()
-
-    const table = await screen.findByRole('table', { name: 'Entitlements' })
-    expect(within(table).getByText('Production')).toBeVisible()
-    expect(within(table).getByText('Development')).toBeVisible()
-    await user.selectOptions(screen.getByLabelText('Filter grants by environment'), 'development')
-
-    const filtered = await screen.findByRole('table', { name: 'Entitlements' })
-    expect(within(filtered).getByText('Development')).toBeVisible()
-    expect(within(filtered).queryByText('Chat completions (model API)')).not.toBeInTheDocument()
-  })
-
-  it('shows request display names, requested environment, moved note, and removed resource label', async () => {
-    api.listAccessRequests.mockResolvedValue([{
-      ...pendingRequest,
-      requestedEnvironment: 'development',
-      resourceSnapshot: { displayName: 'Legacy chat', gatewayId: 'gateway_1', gatewayName: 'Gateway' },
-      resourceSummary: {
-        kind: 'modelApi',
-        id: 'modelApi_1',
-        scopeId: null,
-        displayName: 'Chat completions',
-        gatewayId: 'gateway_1',
-        gatewayName: 'Gateway',
-        environment: 'production',
-        available: false,
-      },
-    }])
-    renderPage('/entitlements?tab=requests')
-
-    const requests = await screen.findByRole('table', { name: 'Pending access requests' })
-    expect(within(requests).getByText('Chat completions')).toBeVisible()
-    expect(within(requests).getByText('No longer available')).toBeVisible()
-    expect(within(requests).getByText('Development')).toBeVisible()
-    expect(within(requests).getByText('Now Production')).toBeVisible()
-    expect(within(requests).queryByText('modelApi_1')).not.toBeInTheDocument()
-  })
-
-  it('states limits as sentences rather than policy markup', async () => {
-    renderPage()
-
-    expect(await screen.findByText('Limits usage to 10,000 tokens per minute.')).toBeVisible()
-    expect(screen.getByText('Allows 5,000,000 tokens per month.')).toBeVisible()
-  })
-
-  it('distinguishes pending desired intent from earlier applied access and inherited limits', async () => {
-    api.listEntitlements.mockResolvedValue([{
-      ...directGrant, runtime: { ...directGrant.runtime, status: 'pending' },
-    }])
-    api.listPublications.mockResolvedValue([{ ...modelPublication, accessState: 'pending' }])
-    renderPage()
-
-    const table = await screen.findByRole('table', { name: 'Entitlements' })
-    expect(within(table).getByText('Desired: enabled')).toBeVisible()
-    expect(within(table).getByText('Saved, not applied')).toBeVisible()
-    expect(within(table).getByText('An earlier configuration was applied; saved changes are pending.')).toBeVisible()
-    expect(within(table).getByText('Last applied methods: Subscription key OR Entra token')).toBeVisible()
-    expect(within(table).getAllByText('Publication: Limits usage to 12,000 tokens per minute.')).toHaveLength(2)
-    expect(within(table).queryByText(/unrestricted/i)).not.toBeInTheDocument()
-    expect(api.applyPublishPlan).not.toHaveBeenCalled()
-  })
-
-  it('saves revocation intent instead of deleting managed access, and can re-enable it', async () => {
+  it('revokes managed grants as disabled intent without deleting applied access', async () => {
     const user = userEvent.setup()
     api.listEntitlements.mockResolvedValue([directGrant])
     api.listPublications.mockResolvedValue([modelPublication])
-    api.updateEntitlement.mockImplementation(async (_id, { enabled }: { enabled: boolean }) => {
-      const updated = {
-        ...directGrant, enabled,
-        runtime: { ...directGrant.runtime, status: enabled ? 'pending' : 'revocationPending' },
-      }
-      api.listEntitlements.mockResolvedValue([updated])
-      return updated
-    })
-    renderPage()
-
-    await openRowMenu(user, await screen.findByRole('table', { name: 'Entitlements' }))
+    renderPage(`/entitlements?selected=${directGrant.id}`)
+    const detail = await screen.findByRole('region', { name: 'Selected grant' })
+    await within(detail).findByText('Desired: enabled')
+    await menu(user, detail)
     await user.click(await screen.findByRole('menuitem', { name: 'Revoke' }))
-    expect(api.updateEntitlement).toHaveBeenCalledWith(directGrant.id, { enabled: false })
+    await waitFor(() => expect(api.updateEntitlement).toHaveBeenCalledWith(directGrant.id, { enabled: false }))
     expect(api.deleteEntitlement).not.toHaveBeenCalled()
-    expect(await screen.findByText('Revocation pending')).toBeVisible()
-    expect(screen.getByText(/Access may still work until/)).toBeVisible()
-    expect(api.applyPublishPlan).not.toHaveBeenCalled()
-    await user.click(screen.getByRole('button', { name: 'Re-enable' }))
-    expect(api.updateEntitlement).toHaveBeenLastCalledWith(directGrant.id, { enabled: true })
-    expect(await screen.findByText('Saved, not applied')).toBeVisible()
+    expect(await screen.findByText(/Managed revocation is pending/)).toBeVisible()
   })
 
-  it('preserves desired-only group grant deletion without claiming APIM revocation', async () => {
+  it('removes desired-only group grants without claiming runtime revocation', async () => {
     const user = userEvent.setup()
-    api.deleteEntitlement.mockResolvedValue(undefined)
-    renderPage()
-    expect(await screen.findByText('Desired state only')).toBeVisible()
-    await openRowMenu(user, screen.getByRole('table', { name: 'Entitlements' }))
+    renderPage('/entitlements?selected=entitlement_1')
+    const detail = await screen.findByRole('region', { name: 'Selected grant' })
+    await within(detail).findByText('Not bound')
+    await menu(user, detail)
     await user.click(await screen.findByRole('menuitem', { name: 'Revoke' }))
-    expect(api.deleteEntitlement).toHaveBeenCalledWith(entitlement.id)
-    expect(api.updateEntitlement).not.toHaveBeenCalled()
+    await waitFor(() => expect(api.deleteEntitlement).toHaveBeenCalledWith(entitlement.id))
     expect(await screen.findByText('Removed the desired-state grant. API Management is unchanged.')).toBeVisible()
   })
 
-  it('keeps imported direct and MCP grants desired-only', async () => {
+  it('opens Manage model in the settings section with its model selected', async () => {
     const user = userEvent.setup()
-    api.listEntitlements.mockResolvedValue([
-      { ...directGrant, binding: { gatewayId: 'gateway_1', source: 'manual', attributionKey: 'grant:direct_grant' }, runtime: null },
-      { ...directGrant, id: 'mcp-grant', resource: { kind: 'mcpServer', id: 'mcp_1' }, binding: null, runtime: null },
-    ])
-    renderPage()
-    expect(await screen.findByText('Desired state only')).toBeVisible()
-    expect(screen.getByText('Recorded, not enforced')).toBeVisible()
-    const [gatewayLog] = columnCells(screen.getByRole('table', { name: 'Entitlements' }), 'Binding')
-    expect(within(gatewayLog).getByText('Gateway log')).toBeVisible()
-    await user.click(within(gatewayLog).getByText('Binding details'))
-    expect(within(gatewayLog).getByText('manual')).toBeVisible()
-    expect(screen.getByText(/doesn't enforce it for an imported MCP server/)).toBeVisible()
-    const mcpRow = screen.getByText('Recorded, not enforced').closest('tr') as HTMLElement
-    await openRowMenu(user, mcpRow)
-    expect(await screen.findByRole('menuitem', { name: 'Connection info' })).toBeVisible()
-    expect(screen.queryByRole('button', { name: 'Manage model' })).not.toBeInTheDocument()
+    api.listEntitlements.mockResolvedValue([directGrant])
+    api.listPublications.mockResolvedValue([modelPublication])
+    const { params } = renderPage(`/entitlements?selected=${directGrant.id}`)
+    const detail = await screen.findByRole('region', { name: 'Selected grant' })
+    await within(detail).findByText('Desired: enabled')
+    await menu(user, detail)
+    await user.click(await screen.findByRole('menuitem', { name: 'Manage model' }))
+    expect(params().get('tab')).toBe('settings')
+    expect(params().get('selected')).toBe(modelPublication.id)
+    expect(await screen.findByRole('combobox', { name: 'Published model' })).toHaveValue(modelPublication.id)
+  })
+
+  it('creates in the full workspace and returns with the saved grant selected, preserving filters', async () => {
+    const user = userEvent.setup()
+    api.createEntitlement.mockImplementation(async () => {
+      const saved = { ...entitlement, id: 'saved_grant', subject: { kind: 'user', id: 'principal_1' } }
+      api.listEntitlements.mockResolvedValue([saved])
+      return saved
+    })
+    const { params } = renderPage('/entitlements?costCenter=cc_general&custom=keep')
+    const newGrant = screen.getByRole('button', { name: 'New grant' })
+    await waitFor(() => expect(newGrant).toBeEnabled())
+    await user.click(newGrant)
+    const editor = await screen.findByRole('region', { name: 'New grant' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    await within(editor).findByRole('option', { name: 'Ada Lovelace (Person)' })
+    fireEvent.change(within(editor).getByRole('combobox', { name: 'Subject' }), { target: { value: 'principal_1' } })
+    fireEvent.change(within(editor).getByRole('combobox', { name: 'Resource' }), { target: { value: 'modelApi_1' } })
+    fireEvent.change(within(editor).getByRole('combobox', { name: 'Cost center' }), { target: { value: 'cc_general' } })
+    await user.click(within(editor).getByRole('button', { name: 'Grant access' }))
+    await waitFor(() => expect(params().get('selected')).toBe('saved_grant'))
+    expect(params().has('mode')).toBe(false)
+    expect(params().get('costCenter')).toBe('cc_general')
+    expect(params().get('custom')).toBe('keep')
+    expect(api.createEntitlement).toHaveBeenCalledWith(expect.objectContaining({ costCenterId: 'cc_general' }))
     expect(api.applyPublishPlan).not.toHaveBeenCalled()
   })
 
-  it('offers only models whose API is in API Management for governed access', async () => {
-    api.listPublications.mockResolvedValue([
-      modelPublication,
-      // A failed re-apply still leaves the model published.
-      {
-        ...modelPublication,
-        id: 'pub_failed',
-        displayName: 'Retried chat',
-        status: 'failed',
-        resources: [
-          { kind: 'api', name: modelPublication.apiName, resourceId: '/apis/chat', createdByMosaic: true, appliedAt: modelPublication.createdAt },
-        ],
-      },
-      // Reviewing an unpublished model's access would publish it again.
-      { ...modelPublication, id: 'pub_unpublished', displayName: 'Retired chat', status: 'draft', unpublishedAt: modelPublication.createdAt },
-    ])
-    renderPage('/entitlements?tab=settings')
-
-    const picker = await screen.findByRole('combobox', { name: 'Published model' })
-    await within(picker).findByRole('option', { name: /Published chat/ })
-    expect(within(picker).getByRole('option', { name: /Retried chat/ })).toBeInTheDocument()
-    expect(within(picker).queryByRole('option', { name: /Retired chat/ })).not.toBeInTheDocument()
+  it('supports direct New grant links and protects drafts across section navigation', async () => {
+    const user = userEvent.setup()
+    const { params } = renderPage('/entitlements?mode=new&custom=keep')
+    const editor = await screen.findByRole('region', { name: 'New grant' })
+    await user.type(within(editor).getByRole('textbox', { name: 'Notes' }), 'Draft only')
+    await user.click(screen.getByRole('button', { name: 'Access requests' }))
+    expect(await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })).toBeVisible()
+    expect(params().get('mode')).toBe('new')
+    await user.click(screen.getByRole('button', { name: 'Stay' }))
+    expect(within(editor).getByRole('textbox', { name: 'Notes' })).toHaveValue('Draft only')
+    await user.click(within(editor).getByRole('button', { name: 'Cancel' }))
+    await user.click(await screen.findByRole('button', { name: 'Discard changes' }))
+    await waitFor(() => expect(params().has('mode')).toBe(false))
+    expect(api.createEntitlement).not.toHaveBeenCalled()
+    expect(params().get('custom')).toBe('keep')
   })
 
-  it('creates direct grant intent on the canonical model without changing Azure', async () => {
+  it('edits limits and notes without changing immutable subject, resource or cost center', async () => {
+    const user = userEvent.setup()
+    const { params } = renderPage('/entitlements?selected=entitlement_1&mode=edit')
+    const editor = await screen.findByRole('region', { name: 'Edit grant' })
+    expect(within(editor).getByRole('combobox', { name: 'Subject' })).toBeDisabled()
+    expect(within(editor).getByRole('combobox', { name: 'Resource' })).toBeDisabled()
+    expect(within(editor).getByRole('combobox', { name: 'Cost center' })).toBeDisabled()
+    await user.clear(within(editor).getByRole('textbox', { name: 'Notes' }))
+    await user.type(within(editor).getByRole('textbox', { name: 'Notes' }), 'Updated notes')
+    await user.click(within(editor).getByRole('button', { name: 'Save grant' }))
+    await waitFor(() => expect(api.updateEntitlement).toHaveBeenCalledWith(entitlement.id, expect.objectContaining({ notes: 'Updated notes' })))
+    await waitFor(() => expect(params().has('mode')).toBe(false))
+    expect(params().get('selected')).toBe(entitlement.id)
+  })
+
+  it('keeps failed grant saves in the workspace without promising applied access', async () => {
+    const user = userEvent.setup()
+    api.updateEntitlement.mockRejectedValue(new Error('Grant save failed'))
+    renderPage('/entitlements?selected=entitlement_1&mode=edit')
+    const editor = await screen.findByRole('region', { name: 'Edit grant' })
+    await user.click(within(editor).getByRole('button', { name: 'Save grant' }))
+    expect(await within(editor).findByText('Grant save failed')).toBeVisible()
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+  })
+
+  it('retains existing call rates and call quotas on a notes-only edit', async () => {
+    const user = userEvent.setup()
+    const enforcement = { requests: { calls: 30, renewalPeriodSeconds: 60, callQuota: 500, callQuotaPeriod: 'Monthly' as const, counterKeyExpression: GOVERNED_COUNTER_KEY } }
+    api.listEntitlements.mockResolvedValue([{ ...entitlement, enforcement }])
+    renderPage('/entitlements?selected=entitlement_1&mode=edit')
+    const editor = await screen.findByRole('region', { name: 'Edit grant' })
+    expect(within(editor).getByRole('spinbutton', { name: 'Calls' })).toHaveValue(30)
+    await user.type(within(editor).getByRole('textbox', { name: 'Notes' }), ' added')
+    await user.click(within(editor).getByRole('button', { name: 'Save grant' }))
+    await waitFor(() => expect(api.updateEntitlement).toHaveBeenCalledWith(entitlement.id, expect.objectContaining({ enforcement })))
+  })
+
+  it('keeps imported-only direct grants desired-only', async () => {
+    api.listEntitlements.mockResolvedValue([{ ...directGrant, runtime: null, binding: null }])
+    renderPage(`/entitlements?selected=${directGrant.id}`)
+    expect(await screen.findByText('No runtime orchestration. APIM is unchanged by this grant.')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Manage model' })).not.toBeInTheDocument()
+  })
+
+  it('refuses half-filled call limits in the grant workspace', async () => {
+    const user = userEvent.setup()
+    renderPage('/entitlements?selected=entitlement_1&mode=edit')
+    const editor = await screen.findByRole('region', { name: 'Edit grant' })
+    await user.type(within(editor).getByRole('spinbutton', { name: 'Calls' }), '30')
+    await user.clear(within(editor).getByRole('spinbutton', { name: 'Per how many seconds' }))
+    expect(within(editor).getByRole('button', { name: 'Save grant' })).toBeDisabled()
+    expect(api.updateEntitlement).not.toHaveBeenCalled()
+  })
+
+  it('clears hidden token limits when choosing MCP and sends only call limits', async () => {
+    const user = userEvent.setup()
+    api.listMcpServers.mockResolvedValue([{ id: 'mcp_1', displayName: 'Docs search' }])
+    renderPage('/entitlements?mode=new')
+    const editor = await screen.findByRole('region', { name: 'New grant' })
+    await within(editor).findByRole('option', { name: 'Docs search (MCP server)' })
+    fireEvent.change(within(editor).getByRole('combobox', { name: 'Subject' }), { target: { value: 'principal_1' } })
+    fireEvent.change(within(editor).getByRole('combobox', { name: 'Resource' }), { target: { value: 'modelApi_1' } })
+    await user.type(within(editor).getByRole('spinbutton', { name: 'Tokens per minute' }), '1000')
+    fireEvent.change(within(editor).getByRole('combobox', { name: 'Resource' }), { target: { value: 'mcp_1' } })
+    expect(within(editor).queryByRole('spinbutton', { name: 'Tokens per minute' })).not.toBeInTheDocument()
+    await user.type(within(editor).getByRole('spinbutton', { name: 'Calls' }), '30')
+    await user.click(within(editor).getByRole('button', { name: 'Grant access' }))
+    await waitFor(() => expect(api.createEntitlement).toHaveBeenCalledWith(expect.objectContaining({
+      resource: { kind: 'mcpServer', id: 'mcp_1' },
+      enforcement: { requests: { calls: 30, renewalPeriodSeconds: 60, counterKeyExpression: '@(context.Subscription?.Key)' } },
+    })))
+  })
+
+  it('preserves pool-model scope and the shared safeguard', async () => {
+    const user = userEvent.setup()
+    api.listModelPools.mockResolvedValue([anthropicPool])
+    renderPage('/entitlements?mode=new')
+    const editor = await screen.findByRole('region', { name: 'New grant' })
+    const option = await within(editor).findByRole('option', { name: /Claude Opus 4.5 in Anthropic Claude/ })
+    fireEvent.change(within(editor).getByRole('combobox', { name: 'Subject' }), { target: { value: 'principal_1' } })
+    await user.selectOptions(within(editor).getByRole('combobox', { name: 'Resource' }), option)
+    expect(within(editor).getByText(/shared token limit still applies/)).toBeVisible()
+    await user.click(within(editor).getByRole('button', { name: 'Grant access' }))
+    await waitFor(() => expect(api.createEntitlement).toHaveBeenCalledWith(expect.objectContaining({
+      resource: { kind: 'poolModel', id: anthropicPool.models[0].id, scopeId: anthropicPool.id },
+    })))
+  })
+
+  it('selects the EXACT notification request, not the first request in the queue', async () => {
+    api.listAccessRequests.mockResolvedValue([{ ...request, id: 'first', justification: 'Wrong request' }, { ...request, id: 'notification-target', justification: 'Exact requested review' }])
+    const { params } = renderPage('/entitlements?tab=requests&selected=notification-target&custom=keep')
+    const detail = await screen.findByRole('region', { name: 'Selected access request' })
+    expect(await within(detail).findByText('Exact requested review')).toBeVisible()
+    expect(within(detail).getByText('notification-target')).toBeVisible()
+    expect(within(detail).queryByText('Wrong request')).not.toBeInTheDocument()
+    expect(params().get('selected')).toBe('notification-target')
+    expect(params().get('custom')).toBe('keep')
+  })
+
+  it('resolves an exact decided request outside the pending filter and keeps decisions final', async () => {
+    api.listAccessRequests.mockImplementation(async (state?: string) => state === 'pending' ? [] : [{ ...request, state: 'approved', decisionNote: 'Already decided' }])
+    renderPage('/entitlements?tab=requests&selected=request_1')
+    const detail = await screen.findByRole('region', { name: 'Selected access request' })
+    expect(await within(detail).findByText('Already decided')).toBeVisible()
+    expect(within(detail).getByRole('button', { name: 'Approve' })).toBeDisabled()
+    expect(api.listAccessRequests).toHaveBeenCalledWith()
+  })
+
+  it('reports an inaccessible exact request rather than silently selecting another request', async () => {
+    api.listAccessRequests.mockResolvedValue([request])
+    renderPage('/entitlements?tab=requests&selected=missing')
+    expect(await screen.findByText('Request unavailable')).toBeVisible()
+    expect(screen.queryByText('Support bot evaluation')).not.toBeInTheDocument()
+  })
+
+  it('opens substantive approval in the workspace and saves only grant intent', async () => {
+    const user = userEvent.setup()
+    api.listAccessRequests.mockResolvedValue([request])
+    api.listPublications.mockResolvedValue([modelPublication])
+    const { params, queryClient } = renderPage('/entitlements?tab=requests&selected=request_1&custom=keep')
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const editor = await openApproval(user)
+    expect(params().get('mode')).toBe('review')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(within(editor).getByRole('spinbutton', { name: 'Tokens per minute' })).toHaveValue(12000)
+    await user.click(within(editor).getByRole('button', { name: 'Approve and create grant' }))
+    await waitFor(() => expect(api.approveAccessRequest).toHaveBeenCalledWith(request.id, expect.objectContaining({
+      enforcement: { tokens: { counterKeyExpression: GOVERNED_COUNTER_KEY, tokensPerMinute: 12000, estimatePromptTokens: true } },
+    })))
+    await waitFor(() => expect(params().has('mode')).toBe(false))
+    expect(params().get('selected')).toBe(request.id)
+    expect(params().get('custom')).toBe('keep')
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['access-requests'] })
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+    expect(await screen.findByText(/API Management is unchanged; review and apply/)).toBeVisible()
+  })
+
+  it('reconstructs a directly linked approval workspace and preserves approval finality', async () => {
+    api.listAccessRequests.mockResolvedValue([{ ...request, state: 'denied' }])
+    renderPage('/entitlements?tab=requests&selected=request_1&mode=review')
+    const editor = await screen.findByRole('region', { name: 'Approve access request' })
+    expect(within(editor).getByRole('button', { name: 'Approve and create grant' })).toBeDisabled()
+    expect(api.approveAccessRequest).not.toHaveBeenCalled()
+  })
+
+  it('keeps a rejected approval open with its real error', async () => {
+    const user = userEvent.setup()
+    api.listAccessRequests.mockResolvedValue([request])
+    api.approveAccessRequest.mockRejectedValue(new ApiError('This request has already been decided.', 409))
+    renderPage('/entitlements?tab=requests&selected=request_1')
+    const editor = await openApproval(user)
+    await user.click(within(editor).getByRole('button', { name: 'Approve and create grant' }))
+    expect(await within(editor).findByText('This request has already been decided.')).toBeVisible()
+    expect(editor).toBeVisible()
+    expect(screen.queryByText(/Approved the request and created/)).not.toBeInTheDocument()
+  })
+
+  it('resolves requester names case-insensitively but retains the exact object ID in details', async () => {
+    api.listAccessRequests.mockResolvedValue([request])
+    renderPage('/entitlements?tab=requests&selected=request_1')
+    const detail = await screen.findByRole('region', { name: 'Selected access request' })
+    expect(await within(detail).findByText('Ada Lovelace')).toBeVisible()
+    expect(within(detail).getByText('USER-OBJECT-1')).toBeVisible()
+  })
+
+  it('does not fabricate requester names when principals fail', async () => {
+    api.listPrincipals.mockRejectedValue(new Error('Directory unavailable'))
+    api.listAccessRequests.mockResolvedValue([request])
+    renderPage('/entitlements?tab=requests&selected=request_1')
+    expect(await screen.findByText('Directory unavailable')).toBeVisible()
+    const detail = screen.getByRole('region', { name: 'Selected access request' })
+    expect(await within(detail).findByText('USER-OBJECT-1')).toBeVisible()
+    expect(within(detail).getByRole('button', { name: 'Approve' })).toBeDisabled()
+    expect(screen.getByText('Requester name unavailable')).toBeVisible()
+  })
+
+  it('denies without creating a grant and invalidates the shell pending key', async () => {
+    const user = userEvent.setup()
+    api.listAccessRequests.mockResolvedValue([request])
+    const { queryClient } = renderPage('/entitlements?tab=requests&selected=request_1')
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const detail = await screen.findByRole('region', { name: 'Selected access request' })
+    await within(detail).findByText('Support bot evaluation')
+    await menu(user, detail)
+    await user.click(await screen.findByRole('menuitem', { name: 'Deny' }))
+    expect(await screen.findByText('Denied the access request. No grant was created, and API Management is unchanged.')).toBeVisible()
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['access-requests'] })
+    expect(api.createEntitlement).not.toHaveBeenCalled()
+  })
+
+  it('opens model review without applying and keeps the complete access snapshot', async () => {
     const user = userEvent.setup()
     api.listPublications.mockResolvedValue([modelPublication])
     api.listModelApis.mockResolvedValue([publishedModelApi])
-    api.createEntitlement.mockResolvedValue(directGrant)
-    renderPage('/entitlements?tab=settings')
-    await screen.findByRole('option', { name: /Published chat/ })
-    fireEvent.change(screen.getByLabelText('Published model'), { target: { value: modelPublication.id } })
-    await user.click(await screen.findByRole('button', { name: 'Add direct grant' }))
-    const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).queryByRole('option', { name: 'Engineering (MOSAIC group)' })).not.toBeInTheDocument()
-    expect(within(dialog).getByRole('combobox', { name: 'Resource' })).toBeDisabled()
-    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Subject' }), { target: { value: 'principal_1' } })
-    await user.click(within(dialog).getByRole('button', { name: 'Grant access' }))
-    await waitFor(() => expect(api.createEntitlement).toHaveBeenCalledWith({
-      subject: { kind: 'user', id: 'principal_1' },
-      resource: { kind: 'modelApi', id: publishedModelApi.id },
-      enforcement: null,
-      notes: null,
-    }))
-    expect(api.applyPublishPlan).not.toHaveBeenCalled()
-    expect(await screen.findByText(/Saved grant intent. API Management is unchanged/)).toBeVisible()
-  })
-
-  it('groups subjects by identity kind and sends the mapped subject kind', async () => {
-    const user = userEvent.setup()
-    api.listPrincipals.mockResolvedValue([
-      { id: 'person_1', tenantId: 'tenant', objectId: 'person-object', kind: 'user', label: 'Ada Person', createdAt: '', updatedAt: '' },
-      { id: 'agent_1', tenantId: 'tenant', objectId: 'agent-object', kind: 'agentIdentity', label: 'Agent identity', createdAt: '', updatedAt: '' },
-      { id: 'agent_user_1', tenantId: 'tenant', objectId: 'agent-user-object', kind: 'agentUser', label: 'Agent user', createdAt: '', updatedAt: '' },
-      { id: 'sg_1', tenantId: 'tenant', objectId: 'sg-object', kind: 'securityGroup', label: 'Security readers', createdAt: '', updatedAt: '' },
-      { id: 'app_1', tenantId: 'tenant', objectId: 'app-object', kind: 'servicePrincipal', label: 'Application', createdAt: '', updatedAt: '' },
-    ])
-    api.createEntitlement.mockResolvedValue(directGrant)
-    renderPage()
-
-    await user.click(await screen.findByRole('button', { name: 'Add entitlement' }))
-    const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByRole('group', { name: 'People' })).toBeVisible()
-    expect(within(dialog).getByRole('group', { name: 'Agents' })).toBeVisible()
-    expect(within(dialog).getByRole('group', { name: 'Security groups' })).toBeVisible()
-    expect(within(dialog).getByRole('group', { name: 'Applications' })).toBeVisible()
-    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Subject' }), { target: { value: 'agent_user_1' } })
-    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Resource' }), { target: { value: publishedModelApi.id } })
-    await user.click(within(dialog).getByRole('button', { name: 'Grant access' }))
-
-    await waitFor(() => expect(api.createEntitlement).toHaveBeenCalledWith(expect.objectContaining({
-      subject: { kind: 'user', id: 'agent_user_1' },
-    })))
-
-    api.createEntitlement.mockClear()
-    await user.click(await screen.findByRole('button', { name: 'Add entitlement' }))
-    const second = await screen.findByRole('dialog')
-    fireEvent.change(within(second).getByRole('combobox', { name: 'Subject' }), { target: { value: 'sg_1' } })
-    fireEvent.change(within(second).getByRole('combobox', { name: 'Resource' }), { target: { value: publishedModelApi.id } })
-    await user.click(within(second).getByRole('button', { name: 'Grant access' }))
-    await waitFor(() => expect(api.createEntitlement).toHaveBeenCalledWith(expect.objectContaining({
-      subject: { kind: 'securityGroup', id: 'sg_1' },
-    })))
-  })
-
-  it('offers only call limits for an MCP server, so no token limit is dropped on save', async () => {
-    const user = userEvent.setup()
-    api.listMcpServers.mockResolvedValue([docsServer])
-    api.createEntitlement.mockResolvedValue(directGrant)
-    renderPage()
-    const add = await screen.findByRole('button', { name: 'Add entitlement' })
-    await waitFor(() => expect(add).toBeEnabled())
-    await user.click(add)
-    const dialog = await screen.findByRole('dialog')
-    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Subject' }), { target: { value: 'principal_1' } })
-    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Resource' }), { target: { value: 'modelApi_1' } })
-    await user.type(within(dialog).getByRole('spinbutton', { name: 'Tokens per minute' }), '1000')
-
-    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Resource' }), { target: { value: 'mcp_1' } })
-    expect(within(dialog).queryByRole('spinbutton', { name: 'Tokens per minute' })).not.toBeInTheDocument()
-    expect(within(dialog).queryByRole('spinbutton', { name: 'Token quota' })).not.toBeInTheDocument()
-    expect(within(dialog).getByText(/MCP servers are limited by calls, not tokens/)).toBeVisible()
-    await user.type(within(dialog).getByRole('spinbutton', { name: 'Calls' }), '30')
-    await user.click(within(dialog).getByRole('button', { name: 'Grant access' }))
-
-    await waitFor(() => expect(api.createEntitlement).toHaveBeenCalledWith({
-      subject: { kind: 'user', id: 'principal_1' },
-      resource: { kind: 'mcpServer', id: 'mcp_1' },
-      enforcement: {
-        requests: { counterKeyExpression: '@(context.Subscription?.Key)', calls: 30, renewalPeriodSeconds: 60 },
-      },
-      notes: null,
-    }))
-    expect(await screen.findByText(
-      'Saved grant intent. API Management is unchanged; use Plan and apply on the MCPs page to activate it on a MOSAIC-published MCP server.',
-    )).toBeVisible()
-  })
-
-  describe('pool models', () => {
-    const megan: Principal = {
-      id: 'principal_megan', tenantId: 'tenant', objectId: '11111111-1111-1111-1111-111111111111', kind: 'user',
-      label: 'Megan Bowen', createdAt: '', updatedAt: '',
-    }
-    const research: Principal = {
-      id: 'principal_research', tenantId: 'tenant', objectId: '22222222-2222-2222-2222-222222222222',
-      kind: 'securityGroup', label: 'Research engineers', createdAt: '', updatedAt: '',
-    }
-    const meganGrant: Entitlement = {
-      id: 'entitlement_pool_megan',
-      tenantId: 'tenant',
-      subject: { kind: 'user', id: megan.id },
-      resource: { kind: 'poolModel', id: 'poolmodel_opus', scopeId: governedAnthropicPool.id },
-      enabled: true,
-      enforcement: {
-        tokens: { counterKeyExpression: GOVERNED_COUNTER_KEY, estimatePromptTokens: true, tokensPerMinute: 20000 },
-      },
-      binding: null,
-      runtime: {
-        publicationId: governedAnthropicPool.id,
-        status: 'applied',
-        appliedMethods: { keysEnabled: true, entraEnabled: true },
-        subscriptionName: 'mosaic-pool-anthropic-claude-megan',
-        keyExists: true,
-      },
-      createdAt: '2026-09-02T09:00:00Z',
-      updatedAt: '2026-09-02T09:00:00Z',
-    }
-    const researchGrant: Entitlement = {
-      ...meganGrant,
-      id: 'entitlement_pool_research',
-      subject: { kind: 'securityGroup', id: research.id },
-      enforcement: null,
-      runtime: { ...meganGrant.runtime!, subscriptionName: null, keyExists: false },
-    }
-
-    async function openAddDialog(user: ReturnType<typeof userEvent.setup>, poolModelOption: string) {
-      const add = await screen.findByRole('button', { name: 'Add entitlement' })
-      await waitFor(() => expect(add).toBeEnabled())
-      await user.click(add)
-      const dialog = await screen.findByRole('dialog')
-      // The button enables as soon as any resource loads, so wait for the pools too.
-      await within(dialog).findByRole('option', { name: poolModelOption })
-      return dialog
-    }
-
-    it('offers each pool model under its pool, sends the pool with the grant, and links to the pool to apply it', async () => {
-      const user = userEvent.setup()
-      // Two pools serve a model with the same ID. Only the pool tells them apart.
-      api.listModelPools.mockResolvedValue([governedAnthropicPool, { ...draftPool, models: anthropicPool.models }])
-      api.createEntitlement.mockResolvedValue(meganGrant)
-      renderPage()
-
-      const dialog = await openAddDialog(user, 'Claude Opus 4.5 in Anthropic Claude (pool model)')
-      const resource = within(dialog).getByRole('combobox', { name: 'Resource' })
-      expect(within(resource).getByRole('option', { name: 'Claude Opus 4.5 in OpenAI chat (pool model)' })).toBeInTheDocument()
-      fireEvent.change(within(dialog).getByRole('combobox', { name: 'Subject' }), { target: { value: 'principal_1' } })
-      fireEvent.change(resource, { target: { value: `poolModel:${governedAnthropicPool.id}:poolmodel_opus` } })
-      expect(within(dialog).getByText(/The pool's shared token limit still applies/)).toBeVisible()
-      await user.type(within(dialog).getByRole('spinbutton', { name: 'Tokens per minute' }), '20000')
-      await user.click(within(dialog).getByRole('button', { name: 'Grant access' }))
-
-      await waitFor(() => expect(api.createEntitlement).toHaveBeenCalledWith({
-        subject: { kind: 'user', id: 'principal_1' },
-        resource: { kind: 'poolModel', id: 'poolmodel_opus', scopeId: governedAnthropicPool.id },
-        enforcement: {
-          tokens: { counterKeyExpression: GOVERNED_COUNTER_KEY, estimatePromptTokens: true, tokensPerMinute: 20000 },
-        },
-        notes: null,
-      }))
-      expect(api.createPublishPlan).not.toHaveBeenCalled()
-      expect(
-        await screen.findByText(
-          'Saved grant intent. API Management is unchanged until the Anthropic Claude plan is reviewed and applied.',
-        ),
-      ).toBeVisible()
-      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-      await user.click(await screen.findByRole('link', { name: 'Go to Anthropic Claude' }))
-      expect(screen.getByRole('status', { name: 'Current location' })).toHaveTextContent(
-        `/pools/${governedAnthropicPool.id}`,
-      )
-    })
-
-    it('says a grant waits while its pool still shares one subscription', async () => {
-      const user = userEvent.setup()
-      api.listModelPools.mockResolvedValue([anthropicPool])
-      api.createEntitlement.mockResolvedValue(meganGrant)
-      renderPage()
-
-      const dialog = await openAddDialog(user, 'Claude Opus 4.5 in Anthropic Claude (pool model)')
-      fireEvent.change(within(dialog).getByRole('combobox', { name: 'Subject' }), { target: { value: 'principal_1' } })
-      fireEvent.change(within(dialog).getByRole('combobox', { name: 'Resource' }), {
-        target: { value: `poolModel:${anthropicPool.id}:poolmodel_opus` },
-      })
-      expect(
-        within(dialog).getByText(/Anthropic Claude doesn't use governed access yet, so this grant waits until it does\./),
-      ).toBeVisible()
-      await user.click(within(dialog).getByRole('button', { name: 'Grant access' }))
-
-      expect(
-        await screen.findByText(
-          "Saved grant intent. Anthropic Claude doesn't use governed access yet, so its callers still share one subscription. Turn on governed access for the pool, then review and apply its plan.",
-        ),
-      ).toBeVisible()
-      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-      expect(await screen.findByRole('link', { name: 'Go to Anthropic Claude' })).toHaveAttribute(
-        'href',
-        `/pools/${anthropicPool.id}`,
-      )
-    })
-
-    it('shows a pool grant’s key, the pool’s shared limit, and what the pool last applied', async () => {
-      const user = userEvent.setup()
-      api.listModelPools.mockResolvedValue([governedAnthropicPool])
-      api.listGateways.mockResolvedValue([{ id: governedAnthropicPool.gatewayId, environment: 'production', name: 'Contoso AI' }])
-      api.listPrincipals.mockResolvedValue([megan, research])
-      api.listEntitlements.mockResolvedValue([meganGrant, researchGrant])
-      renderPage()
-
-      const table = await screen.findByRole('table', { name: 'Entitlements' })
-      await waitFor(() =>
-        expect(columnCells(table, 'Resource')[0]).toHaveTextContent('Claude Opus 4.5 in Anthropic Claude (pool model)'),
-      )
-      const [meganEnvironment] = columnCells(table, 'Environment')
-      expect(within(meganEnvironment).getByText('Production')).toBeVisible()
-
-      const [meganLimits, researchLimits] = columnCells(table, 'Limits')
-      expect(within(meganLimits).getAllByText('Limits usage to 20,000 tokens per minute.')).toHaveLength(2)
-      expect(within(meganLimits).getByText('Pool: Every caller shares 200,000 tokens per minute.')).toBeVisible()
-      await user.click(within(meganLimits).getByText('Last applied limit details'))
-      expect(within(meganLimits).getByText(/Last applied limits/)).toBeVisible()
-      expect(within(researchLimits).getAllByText('No grant-specific limit is configured.')).toHaveLength(2)
-
-      const [meganKey, researchKey] = columnCells(table, 'Binding')
-      expect(within(meganKey).getByText('Subscription key')).toBeVisible()
-      expect(within(meganKey).getByText('mosaic-pool-anthropic-claude-megan')).not.toBeVisible()
-      await user.click(within(meganKey).getByText('Subscription details'))
-      expect(within(meganKey).getByText('mosaic-pool-anthropic-claude-megan')).toBeVisible()
-      expect(within(meganKey).getByText('Pool key')).toBeVisible()
-      expect(within(researchKey).getByText('Entra token')).toBeVisible()
-      expect(within(researchKey).getByText('No key')).toBeVisible()
-      expect(within(table).queryByText('Not bound')).not.toBeInTheDocument()
-      // The pool's policy checks a pool grant on every call, so it never counts as unbound.
-      const unbound = screen.getByText('Without a binding').closest('div') as HTMLElement
-      expect(within(unbound).getByText('0')).toBeVisible()
-
-      const [meganActions] = columnCells(table, 'Actions')
-      await openRowMenu(user, meganActions)
-      await user.click(await screen.findByRole('menuitem', { name: 'Manage pool' }))
-      expect(screen.getByRole('status', { name: 'Current location' })).toHaveTextContent(
-        `/pools/${governedAnthropicPool.id}`,
-      )
-    })
-
-    it('says a pool grant waits for the pool to govern access when it has no runtime yet', async () => {
-      api.listModelPools.mockResolvedValue([anthropicPool])
-      api.listPrincipals.mockResolvedValue([megan])
-      api.listEntitlements.mockResolvedValue([{ ...meganGrant, runtime: null }])
-      renderPage()
-
-      const table = await screen.findByRole('table', { name: 'Entitlements' })
-      const [key] = columnCells(table, 'Binding')
-      expect(within(key).getByText('Waits for the pool to govern access')).toBeVisible()
-    })
-  })
-
-  it('shows overlap winners, shadowed grants, membership-unchecked notice, and the empty state', async () => {
-    const user = userEvent.setup()
-    api.listEntitlements.mockResolvedValue([
-      directGrant,
-      { ...directGrant, id: 'group_grant', subject: { kind: 'securityGroup', id: 'sg_1' }, binding: null },
-    ])
-    api.getGrantOverlaps.mockResolvedValueOnce({
-      membershipChecked: false,
-      skipped: ['Graph membership unavailable'],
-      generatedAt: '2026-09-01T12:00:00Z',
-      overlaps: [{
-        kind: 'directAndGroup',
-        resource: { kind: 'modelApi', id: 'modelApi_1' },
-        resourceLabel: 'Chat completions',
-        principalId: 'principal_1',
-        principalLabel: 'Ada Lovelace',
-        winner: {
-          entitlementId: 'direct_grant',
-          subject: { kind: 'user', id: 'principal_1' },
-          subjectLabel: 'Ada Lovelace',
-          enabled: true,
-          enforcement: { tokens: { tokensPerMinute: 20000 } },
-        },
-        shadowed: [{
-          entitlementId: 'group_grant',
-          subject: { kind: 'securityGroup', id: 'sg_1' },
-          subjectLabel: 'Security readers',
-          enabled: true,
-        }],
-        reason: 'A direct grant wins over a security-group grant.',
-      }],
-    })
-    renderPage('/entitlements?tab=effective')
-
-    expect(await screen.findByText('Direct grant overrides group grant')).toBeVisible()
-    expect(screen.getByText('Affected principal:')).toBeVisible()
-    expect(screen.getAllByText('Ada Lovelace').length).toBeGreaterThan(0)
-    expect(screen.getByText('Applies')).toBeVisible()
-    expect(screen.getByText("Doesn't apply")).toBeVisible()
-    // Each side of an overlap states its own limits, so the admin can see what the winner changes.
-    expect(screen.getByText('Limits usage to 20,000 tokens per minute.')).toBeVisible()
-    expect(screen.getByText('Security readers').nextElementSibling).toHaveTextContent(
-      'No grant-specific limit is configured.',
-    )
-    expect(screen.getByText(/Microsoft Graph membership was not checked/)).toBeVisible()
-    expect(screen.getByText(/Graph membership unavailable/)).toBeVisible()
-
-    // Each grant links to its row in the grants table, where it can be disabled or revoked.
-    const link = await screen.findByRole('link', { name: 'Go to the Security readers grant on Chat completions' })
-    expect(document.getElementById('grant-group_grant')).toBeNull()
-    await user.click(link)
-    const row = document.getElementById('grant-group_grant')
-    expect(row).not.toBeNull()
-    expect(row).toHaveFocus()
-    expect(screen.queryByRole('link', { name: 'Go to the Ada Lovelace grant on Chat completions' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Grants' })).toHaveAttribute('aria-current', 'page')
-  })
-
-  it('shows resolved access paths and whether each grant applies', async () => {
-    api.resolveEntitlements.mockResolvedValue([
-      { entitlement: directGrant, via: 'direct', effective: true, shadowedBy: null },
-      {
-        entitlement: { ...directGrant, id: 'shadowed-grant', enabled: true },
-        via: 'securityGroup',
-        viaGroupId: 'sg_1',
-        viaGroupName: 'Security readers',
-        effective: false,
-        shadowedBy: directGrant.id,
-      },
-      {
-        entitlement: { ...directGrant, id: 'disabled-grant', enabled: false },
-        via: 'group',
-        viaGroupId: 'group_1',
-        viaGroupName: 'Engineering',
-        effective: false,
-        shadowedBy: null,
-      },
-    ])
-    renderPage('/entitlements?tab=effective')
-
-    await screen.findByRole('option', { name: 'Ada Lovelace' })
-    fireEvent.change(screen.getByRole('combobox', { name: 'Principal' }), { target: { value: 'principal_1' } })
-
-    await waitFor(() => expect(screen.getAllByText((_, element) => element?.textContent?.includes('Direct · Applies') ?? false).length).toBeGreaterThan(0))
-    expect(screen.getAllByText((_, element) => element?.textContent?.includes('Security group Security readers · Overridden by the direct grant') ?? false).length).toBeGreaterThan(0)
-    expect(screen.getAllByText((_, element) => element?.textContent?.includes('MOSAIC group Engineering · Disabled') ?? false).length).toBeGreaterThan(0)
-  })
-
-  it('reviews the full model snapshot, not a row-scoped apply', async () => {
-    const user = userEvent.setup()
-    api.listPublications.mockResolvedValue([modelPublication])
-    api.listEntitlements.mockResolvedValue([directGrant])
-    api.createPublishPlan.mockResolvedValue({
-      ...accessPlan,
-      accessSnapshot: {
-        ...accessPlan.accessSnapshot,
-        grants: [...accessPlan.accessSnapshot!.grants, {
-          ...accessPlan.accessSnapshot!.grants[0], entitlementId: 'other-grant', displayName: 'Another pending application',
-          subject: { kind: 'application', id: 'app_1' }, enabled: false,
-        }],
-      },
-    })
-    renderPage('/entitlements?tab=settings')
-    await screen.findByRole('option', { name: /Published chat/ })
-    fireEvent.change(screen.getByLabelText('Published model'), { target: { value: modelPublication.id } })
-    await user.click(await screen.findByRole('button', { name: 'Review model changes' }))
-    const table = await screen.findByRole('table', { name: 'All target model grants' })
-    expect(within(table).getByText('Ada Lovelace')).toBeVisible()
-    expect(within(table).getByText('Another pending application')).toBeVisible()
-    expect(within(table).getByText('Disabled — revoke both methods')).toBeVisible()
+    renderPage(`/entitlements?tab=settings&selected=${modelPublication.id}`)
+    const review = await screen.findByRole('button', { name: 'Review model changes' })
+    await waitFor(() => expect(review).toBeEnabled())
+    await user.click(review)
+    expect(await screen.findByRole('table', { name: 'All target model grants' })).toBeVisible()
     expect(api.createPublishPlan).toHaveBeenCalledWith(modelPublication.id)
     expect(api.applyPublishPlan).not.toHaveBeenCalled()
   })
 
-  it.each([true, false])('uses the supported shared counter for governed direct limits (governed: %s)', async (governed) => {
-    const user = userEvent.setup()
-    if (governed) {
-      api.listPublications.mockResolvedValue([modelPublication])
-      api.listModelApis.mockResolvedValue([publishedModelApi])
-    }
-    api.createEntitlement.mockResolvedValue(directGrant)
-    renderPage()
-    const add = await screen.findByRole('button', { name: 'Add entitlement' })
-    await waitFor(() => expect(add).toBeEnabled())
-    await user.click(add)
-    const dialog = await screen.findByRole('dialog')
-    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Subject' }), { target: { value: 'principal_1' } })
-    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Resource' }), { target: { value: publishedModelApi.id } })
-    await user.type(within(dialog).getByRole('spinbutton', { name: 'Tokens per minute' }), '1000')
-    await user.type(within(dialog).getByRole('spinbutton', { name: 'Calls' }), '20')
-    await user.click(within(dialog).getByRole('button', { name: 'Grant access' }))
-    await waitFor(() => expect(api.createEntitlement).toHaveBeenCalledWith({
-      subject: directGrant.subject,
-      resource: directGrant.resource,
-      enforcement: {
-        tokens: {
-          counterKeyExpression: governed ? '@(context.Subscription.Id)' : '@(context.Subscription?.Key)',
-          tokensPerMinute: 1000,
-          estimatePromptTokens: true,
-        },
-        requests: {
-          counterKeyExpression: governed ? '@(context.Subscription.Id)' : '@(context.Subscription?.Key)',
-          calls: 20,
-          renewalPeriodSeconds: 60,
-        },
-      },
-      notes: null,
-    }))
-    expect(api.applyPublishPlan).not.toHaveBeenCalled()
-  })
-
-  it('shows planning failures without inventing a successful apply', async () => {
+  it('does not invent an access snapshot when planning fails', async () => {
     const user = userEvent.setup()
     api.listPublications.mockResolvedValue([modelPublication])
-    api.createPublishPlan.mockRejectedValue(new Error('This gateway does not support the selected policy.'))
-    renderPage('/entitlements?tab=settings')
-    await screen.findByRole('option', { name: /Published chat/ })
-    fireEvent.change(screen.getByLabelText('Published model'), { target: { value: modelPublication.id } })
-    await user.click(await screen.findByRole('button', { name: 'Review model changes' }))
-    expect(await screen.findByText('This gateway does not support the selected policy.')).toBeVisible()
-    expect(screen.queryByRole('button', { name: 'Apply plan' })).not.toBeInTheDocument()
+    api.createPublishPlan.mockRejectedValue(new Error('Planning failed'))
+    renderPage(`/entitlements?tab=settings&selected=${modelPublication.id}`)
+    const review = await screen.findByRole('button', { name: 'Review model changes' })
+    await waitFor(() => expect(review).toBeEnabled())
+    await user.click(review)
+    expect(await screen.findByText('Planning failed')).toBeVisible()
     expect(api.applyPublishPlan).not.toHaveBeenCalled()
   })
 
-  describe('access requests', () => {
-    it('names a registered requester above their object ID, found by recorded principal or by object ID', async () => {
-      const user = userEvent.setup()
-      api.listPrincipals.mockResolvedValue([
-        {
-          id: 'principal_1', tenantId: 'tenant', objectId: 'user-object-1', kind: 'user',
-          label: 'Ada Lovelace', createdAt: '', updatedAt: '',
-        },
-        {
-          id: 'principal_2', tenantId: 'tenant', objectId: 'user-object-2', kind: 'user',
-          label: 'Grace Hopper', createdAt: '', updatedAt: '',
-        },
-      ])
-      api.listAccessRequests.mockResolvedValue([
-        // Matched by object ID alone, in a different letter case.
-        pendingRequest,
-        // Matched by the principal the request recorded, whatever its object ID.
-        { ...pendingRequest, id: 'request_2', requesterObjectId: 'other-object-2', requesterPrincipalId: 'principal_2' },
-      ])
-      renderPage('/entitlements?tab=requests')
-
-      const requests = await screen.findByRole('table', { name: 'Pending access requests' })
-      await within(requests).findByText('Grace Hopper')
-      const [byObjectId, byPrincipal] = columnCells(requests, 'Requester')
-      expect(within(byObjectId).getByText('Ada Lovelace')).toBeVisible()
-      expect(within(byObjectId).getByText('USER-OBJECT-1')).toBeVisible()
-      expect(within(byPrincipal).getByText('Grace Hopper')).toBeVisible()
-      expect(within(byPrincipal).getByText('other-object-2')).toBeVisible()
-
-      // Approve names the same person the table does.
-      const approve = within(requests).getAllByRole('button', { name: 'Approve' })[1]
-      await waitFor(() => expect(approve).toBeEnabled())
-      await user.click(approve)
-      const dialog = await screen.findByRole('dialog')
-      expect(within(dialog).getByText('Grace Hopper')).toBeVisible()
-      expect(within(dialog).queryByText(/Not registered in MOSAIC/)).not.toBeInTheDocument()
+  it('retains effective-access diagnostics and atomically selects a grant from overlaps', async () => {
+    const user = userEvent.setup()
+    api.getGrantOverlaps.mockResolvedValue({
+      membershipChecked: false, skipped: ['Directory permission missing'],
+      overlaps: [{
+        kind: 'directAndGroup', resource: entitlement.resource, resourceLabel: 'Chat completions',
+        reason: 'Direct grants take precedence', winner: { entitlementId: entitlement.id, subjectLabel: 'Engineering', enforcement: entitlement.enforcement }, shadowed: [],
+      }],
     })
+    const { params } = renderPage('/entitlements?tab=effective&custom=keep')
+    expect(await screen.findByText(/Microsoft Graph membership was not checked/)).toBeVisible()
+    await user.click(screen.getByRole('link', { name: /Go to the Engineering grant/ }))
+    expect(params().get('tab')).toBe('grants')
+    expect(params().get('selected')).toBe(entitlement.id)
+    expect(params().get('custom')).toBe('keep')
+    expect(await screen.findByText('Engineering evaluation')).toBeVisible()
+  })
 
-    it('shows only the object ID for a requester MOSAIC does not know', async () => {
-      api.listAccessRequests.mockResolvedValue([
-        pendingRequest,
-        { ...pendingRequest, id: 'request_2', requesterObjectId: 'new-object-1' },
-      ])
-      renderPage('/entitlements?tab=requests')
+  it('tears down credential connection state when selection or section changes', async () => {
+    const user = userEvent.setup()
+    api.listEntitlements.mockResolvedValue([directGrant, entitlement])
+    api.listPublications.mockResolvedValue([modelPublication])
+    api.getEntitlementConnection.mockResolvedValue(connectionInfo)
+    renderPage(`/entitlements?selected=${directGrant.id}`)
+    const detail = await screen.findByRole('region', { name: 'Selected grant' })
+    const connection = await within(detail).findByRole('button', { name: 'Connection info' })
+    await user.click(connection)
+    expect(await screen.findByRole('dialog')).toBeVisible()
+    // Programmatic navigation covers notification/sidebar/Back changes while a reveal is mounted.
+    fireEvent.click(screen.getByRole('button', { name: 'Access requests', hidden: true }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(api.revealEntitlementKey).not.toHaveBeenCalled()
+  })
 
-      const requests = await screen.findByRole('table', { name: 'Pending access requests' })
-      await within(requests).findByText('Ada Lovelace')
-      const [, unregistered] = columnCells(requests, 'Requester')
-      expect(unregistered).toHaveTextContent(/^new-object-1$/)
-    })
-
-    it('shows only the object ID while principals cannot be loaded', async () => {
-      api.listPrincipals.mockRejectedValue(new Error('Principals are unavailable.'))
-      api.listAccessRequests.mockResolvedValue([pendingRequest])
-      renderPage('/entitlements?tab=requests')
-
-      expect(await screen.findByText('Principals are unavailable.')).toBeVisible()
-      const requests = await screen.findByRole('table', { name: 'Pending access requests' })
-      const [requester] = columnCells(requests, 'Requester')
-      expect(requester).toHaveTextContent(/^USER-OBJECT-1$/)
-    })
-
-    // Registered as user-object-1, while the request recorded USER-OBJECT-1.
-    const withoutLabel: Principal = {
-      id: 'principal_1', tenantId: 'tenant', objectId: 'user-object-1', kind: 'user', createdAt: '', updatedAt: '',
-    }
-
-    it.each<[shows: string, principals: Principal[], inTable: string[], inDialog: string[]]>([
-      [
-        'a registered requester by label, then the object ID the request recorded',
-        [{ ...withoutLabel, label: 'Megan Bowen' }],
-        ['Megan Bowen', 'USER-OBJECT-1'],
-        ['Megan Bowen', 'USER-OBJECT-1'],
-      ],
-      [
-        'a registered requester without a label by the recorded object ID once',
-        [withoutLabel],
-        ['USER-OBJECT-1'],
-        ['USER-OBJECT-1'],
-      ],
-      [
-        'a registered requester with a blank label by the recorded object ID once',
-        [{ ...withoutLabel, label: '' }],
-        ['USER-OBJECT-1'],
-        ['USER-OBJECT-1'],
-      ],
-      [
-        'a requester MOSAIC does not know by the object ID once, and that approving registers them',
-        [],
-        ['USER-OBJECT-1'],
-        ['USER-OBJECT-1', 'Not registered in MOSAIC yet. Approving registers them as a user principal.'],
-      ],
-    ])('shows %s, in the table and when approving', async (_, principals, inTable, inDialog) => {
-      const user = userEvent.setup()
-      api.listPrincipals.mockResolvedValue(principals)
-      api.listAccessRequests.mockResolvedValue([pendingRequest])
-      renderPage('/entitlements?tab=requests')
-
-      const requests = await screen.findByRole('table', { name: 'Pending access requests' })
-      // Approve waits for principals, so by then the table shows all it knows about the requester.
-      await waitFor(() => expect(within(requests).getByRole('button', { name: 'Approve' })).toBeEnabled())
-      expect(textLines(columnCells(requests, 'Requester')[0])).toEqual(inTable)
-
-      const dialog = await openApproval(user)
-      expect(textLines(within(dialog).getByText('Requester').nextElementSibling as HTMLElement)).toEqual(inDialog)
-    })
-
-    it('approves through the limits dialog, creating linked grant intent that still needs review and apply', async () => {
-      const user = userEvent.setup()
-      api.listPublications.mockResolvedValue([modelPublication])
-      api.listModelApis.mockResolvedValue([publishedModelApi])
-      api.listAccessRequests.mockResolvedValue([pendingRequest])
-      api.approveAccessRequest.mockImplementation(async () => {
-        api.listAccessRequests.mockResolvedValue([])
-        return {
-          ...pendingRequest, state: 'approved', requesterPrincipalId: 'principal_1',
-          grantedEntitlementId: 'granted_1',
-        }
-      })
-      renderPage()
-
-      const dialog = await openApproval(user)
-      expect(api.approveAccessRequest).not.toHaveBeenCalled()
-      expect(within(dialog).getByRole('heading', { name: 'Approve access request' })).toBeVisible()
-      expect(within(dialog).getByText('Ada Lovelace')).toBeVisible()
-      expect(within(dialog).getByText('Chat completions (model API)')).toBeVisible()
-      expect(within(dialog).getByText('Support bot evaluation')).toBeVisible()
-      expect(within(dialog).queryByText(/Not registered in MOSAIC/)).not.toBeInTheDocument()
-      expect(within(dialog).getByRole('spinbutton', { name: 'Tokens per minute' })).toHaveValue(12000)
-      await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
-
-      await waitFor(() => expect(api.approveAccessRequest).toHaveBeenCalledWith(pendingRequest.id, {
-        note: null,
-        enforcement: {
-          tokens: {
-            counterKeyExpression: '@(context.Subscription.Id)',
-            estimatePromptTokens: true,
-            tokensPerMinute: 12000,
-          },
-        },
-      }))
-      expect(await screen.findByText(
-        'Approved the request and created grant intent for Ada Lovelace. API Management is unchanged; review and apply the Published chat model plan to activate it.',
-      )).toBeVisible()
-      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-      expect(await screen.findByText('No pending requests')).toBeVisible()
-      expect(api.createEntitlement).not.toHaveBeenCalled()
-
-      // The rest of the page stays hidden from assistive technology for a moment after the modal
-      // dialog is gone, so the first role query outside it has to wait.
-      await user.click(await screen.findByRole('link', { name: 'Go to review and apply for Published chat' }))
-      const publishedModel = screen.getByRole('combobox', { name: 'Published model' })
-      expect(publishedModel).toHaveValue(modelPublication.id)
-      expect(publishedModel).toHaveFocus()
-      expect(await screen.findByRole('button', { name: 'Review model changes' })).toBeVisible()
-      expect(api.createPublishPlan).not.toHaveBeenCalled()
-      expect(api.applyPublishPlan).not.toHaveBeenCalled()
-    })
-
-    it('approves an MCP server request with call limits only, and points to the MCP plan', async () => {
-      const user = userEvent.setup()
-      api.listMcpServers.mockResolvedValue([docsServer])
-      api.listMcpPublications.mockResolvedValue([docsPublication])
-      api.listAccessRequests.mockResolvedValue([
-        { ...pendingRequest, resource: { kind: 'mcpServer', id: 'mcp_1' } },
-      ])
-      api.approveAccessRequest.mockImplementation(async () => {
-        api.listAccessRequests.mockResolvedValue([])
-        return {
-          ...pendingRequest, resource: { kind: 'mcpServer', id: 'mcp_1' }, state: 'approved',
-          requesterPrincipalId: 'principal_1', grantedEntitlementId: 'granted_1',
-        }
-      })
-      renderPage()
-
-      const dialog = await openApproval(user)
-      expect(within(dialog).getByText('Docs search (MCP server)')).toBeVisible()
-      expect(within(dialog).getByText(
-        'Approving creates grant intent only. API Management is unchanged until this MCP server is planned and applied from the MCPs page.',
-      )).toBeVisible()
-      expect(within(dialog).queryByRole('spinbutton', { name: 'Tokens per minute' })).not.toBeInTheDocument()
-      expect(within(dialog).getByText(/MCP servers are limited by calls, not tokens/)).toBeVisible()
-      await user.type(within(dialog).getByRole('spinbutton', { name: 'Calls' }), '10')
-      await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
-
-      await waitFor(() => expect(api.approveAccessRequest).toHaveBeenCalledWith(pendingRequest.id, {
-        note: null,
-        enforcement: {
-          requests: { counterKeyExpression: '@(context.Subscription.Id)', calls: 10, renewalPeriodSeconds: 60 },
-        },
-      }))
-      expect(await screen.findByText(
-        'Approved the request and created grant intent for Ada Lovelace. API Management is unchanged; use Plan and apply on the MCPs page to activate it.',
-      )).toBeVisible()
-    })
-
-    it('says approval registers a requester MOSAIC does not know yet', async () => {
-      const user = userEvent.setup()
-      api.listAccessRequests.mockResolvedValue([
-        { ...pendingRequest, requesterObjectId: 'new-object-1', justification: null },
-      ])
-      api.approveAccessRequest.mockResolvedValue({
-        ...pendingRequest, requesterObjectId: 'new-object-1', state: 'approved',
-        requesterPrincipalId: 'principal_new', grantedEntitlementId: 'granted_1',
-      })
-      renderPage()
-
-      const dialog = await openApproval(user)
-      expect(within(dialog).getByText(
-        'Not registered in MOSAIC yet. Approving registers them as a user principal.',
-      )).toBeVisible()
-      expect(within(dialog).getByText('No justification given')).toBeVisible()
-      await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
-
-      // The model API is imported-only here, so nothing prefills and the grant stays desired state.
-      await waitFor(() => expect(api.approveAccessRequest).toHaveBeenCalledWith(pendingRequest.id, {
-        note: null,
-        enforcement: null,
-      }))
-      expect(await screen.findByText(
-        'Approved the request, registered new-object-1 as a user principal, and created their grant intent. The grant is desired state only; MOSAIC does not apply grants for this resource to API Management.',
-      )).toBeVisible()
-      // Include hidden elements: the page stays aria-hidden for a moment after the modal dialog
-      // closes, so a plain role query would pass even if the link were there.
-      expect(screen.queryByRole('link', { name: /Go to review and apply/, hidden: true })).not.toBeInTheDocument()
-    })
-
-    it('keeps a failed approval open in the dialog with the reason', async () => {
-      const user = userEvent.setup()
-      api.listAccessRequests.mockResolvedValue([pendingRequest])
-      api.approveAccessRequest.mockRejectedValue(
-        new Error('An apply or mutation is already running for this publication.'),
-      )
-      renderPage()
-
-      const dialog = await openApproval(user)
-      await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
-
-      expect(await within(dialog).findByText(
-        'An apply or mutation is already running for this publication.',
-      )).toBeVisible()
-      expect(screen.getByRole('dialog')).toBeVisible()
-      expect(screen.queryByText(/Approved the request/)).not.toBeInTheDocument()
-    })
-
-    it('warns instead of approving when the requester already holds a direct grant', async () => {
-      const user = userEvent.setup()
-      api.listEntitlements.mockResolvedValue([directGrant])
-      api.listPublications.mockResolvedValue([modelPublication])
-      api.listModelApis.mockResolvedValue([publishedModelApi])
-      api.listAccessRequests.mockResolvedValue([pendingRequest])
-      renderPage()
-
-      const dialog = await openApproval(user)
-      expect(within(dialog).getByText(
-        'Ada Lovelace already has a direct grant for Chat completions (model API). Deny this request, or change the existing grant instead.',
-      )).toBeVisible()
-      expect(within(dialog).getByRole('button', { name: 'Approve and create grant' })).toBeDisabled()
-      expect(api.approveAccessRequest).not.toHaveBeenCalled()
-    })
-
-    it('names a requester without a label by the recorded object ID when they already hold a direct grant', async () => {
-      const user = userEvent.setup()
-      api.listPrincipals.mockResolvedValue([withoutLabel])
-      api.listEntitlements.mockResolvedValue([directGrant])
-      api.listPublications.mockResolvedValue([modelPublication])
-      api.listModelApis.mockResolvedValue([publishedModelApi])
-      api.listAccessRequests.mockResolvedValue([pendingRequest])
-      renderPage()
-
-      const dialog = await openApproval(user)
-      expect(within(dialog).getByText(
-        'USER-OBJECT-1 already has a direct grant for Chat completions (model API). Deny this request, or change the existing grant instead.',
-      )).toBeVisible()
-    })
-
-    it('denies without a dialog, and says no grant was created', async () => {
-      const user = userEvent.setup()
-      api.listAccessRequests.mockResolvedValue([pendingRequest])
-      api.denyAccessRequest.mockImplementation(async () => {
-        api.listAccessRequests.mockResolvedValue([])
-        return { ...pendingRequest, state: 'denied' }
-      })
-      renderPage('/entitlements?tab=requests')
-
-      const requests = await screen.findByRole('table', { name: 'Pending access requests' })
-      await openRowMenu(user, requests)
-      await user.click(await screen.findByRole('menuitem', { name: 'Deny' }))
-
-      await waitFor(() => expect(api.denyAccessRequest).toHaveBeenCalledWith(pendingRequest.id))
-      expect(await screen.findByText(
-        'Denied the access request. No grant was created, and API Management is unchanged.',
-      )).toBeVisible()
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-      expect(api.approveAccessRequest).not.toHaveBeenCalled()
-    })
+  it('keeps pool grants linked to their owning pool plan', async () => {
+    api.listModelPools.mockResolvedValue([governedAnthropicPool])
+    api.listEntitlements.mockResolvedValue([{
+      ...entitlement, resource: { kind: 'poolModel', id: governedAnthropicPool.models[0].id, scopeId: governedAnthropicPool.id },
+    }])
+    renderPage('/entitlements?selected=entitlement_1')
+    expect((await screen.findAllByText(/Claude Opus 4.5 in Anthropic Claude/)).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/Pool:/).length).toBeGreaterThan(0)
   })
 })
 
-describe('describeLimits', () => {
-  it('does not confuse an absent grant limit with unrestricted gateway access', () => {
-    expect(describeLimits({ ...entitlement, enforcement: null })).toEqual([
-      'No grant-specific limit is configured.',
-    ])
-    expect(describeLimits({ ...entitlement, enforcement: {} })).toEqual([
-      'No grant-specific limit is configured.',
-    ])
-    expect(describeLimits({ enforcement: null }, modelPublication.enforcement)).toEqual([
-      'No grant-specific limit is configured.',
-      'Publication: Limits usage to 12,000 tokens per minute.',
-    ])
+describe('Grant limit wording and validation', () => {
+  it('does not equate absent limits with unrestricted gateway access', () => {
+    expect(describeLimits({ enforcement: null })).toEqual(['No grant-specific limit is configured.'])
   })
-
-  it('says a publication without token enforcement has no token limits, and stays silent when the publication is unknown', () => {
-    expect(describeLimits({ enforcement: null }, null)).toEqual([
-      'No grant-specific limit is configured.',
-      "Publication: Token limits are unavailable for this model on this gateway's tier.",
-    ])
-    expect(describeLimits({ enforcement: null }, undefined)).toEqual([
-      'No grant-specific limit is configured.',
-    ])
-    expect(describePublicationLimits(null)).toEqual([
-      "Token limits are unavailable for this model on this gateway's tier.",
-    ])
-  })
-
-  it('describes request limits separately from token limits', () => {
-    expect(
-      describeLimits({
-        ...entitlement,
-        enforcement: {
-          requests: {
-            counterKeyExpression: '@(context.Subscription?.Key)',
-            calls: 60,
-            renewalPeriodSeconds: 60,
-            callQuota: 100000,
-            callQuotaPeriod: 'Monthly',
-          },
-        },
-      }),
-    ).toEqual(['Limits traffic to 60 calls per minute.', 'Allows 100,000 calls per month.'])
-  })
-})
-
-describe('callRateError', () => {
-  it('refuses a half-filled call rate rather than dropping it silently', () => {
-    // Both halves are needed to build the limit; dropping one would create an unrestricted
-    // grant while the UI reported success.
-    expect(callRateError({ calls: '100', renewalPeriodSeconds: '' })).toBeTruthy()
-    expect(callRateError({ calls: '100', renewalPeriodSeconds: '0' })).toBeTruthy()
-    expect(callRateError({ calls: '0', renewalPeriodSeconds: '60' })).toBeTruthy()
-  })
-
-  it('accepts an empty pair and a complete pair', () => {
-    expect(callRateError({ calls: '', renewalPeriodSeconds: '60' })).toBeNull()
+  it('refuses half-filled call rates', () => {
+    expect(callRateError({ calls: '30', renewalPeriodSeconds: '' })).toMatch(/how many seconds/)
     expect(callRateError({ calls: '', renewalPeriodSeconds: '' })).toBeNull()
-    expect(callRateError({ calls: '100', renewalPeriodSeconds: '60' })).toBeNull()
+    expect(callRateError({ calls: '30', renewalPeriodSeconds: '60' })).toBeNull()
   })
 })

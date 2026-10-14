@@ -35,7 +35,8 @@ export function ModelAccessRecovery({
     },
     onSuccess: async () => {
       if (target === 'pool') {
-        await queryClient.invalidateQueries({ queryKey: ['model-pools'] })
+        // A slow run-history refresh must not hide the diagnostic result.
+        void queryClient.invalidateQueries({ queryKey: ['model-pools'] })
         return
       }
       await Promise.all([

@@ -164,6 +164,19 @@ function renderDialog(onPublished = vi.fn()) {
   )
 }
 
+function renderWorkspace(initialReview?: { publication: McpPublication; plan: PublishPlan }, initialEndpointId?: string) {
+  const onClose = vi.fn()
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(<QueryClientProvider client={queryClient}>
+    <section>
+      <div data-testid="underlying-list">Underlying server list</div>
+      <PublishMcpServerDialog open surface="workspace" initialReview={initialReview}
+        initialEndpointId={initialEndpointId} onClose={onClose} onPublished={vi.fn()} />
+    </section>
+  </QueryClientProvider>)
+  return { onClose, queryClient }
+}
+
 type Review = { publication: McpPublication; plan: PublishPlan; message?: string }
 type Frame = { step?: string; text: string }
 
@@ -254,6 +267,68 @@ describe('PublishMcpServerDialog', () => {
     api.planMcpPublication.mockResolvedValue(plan)
     api.applyMcpPublication.mockResolvedValue(run())
     api.getMcpPublishRun.mockResolvedValue(run())
+  })
+
+  it('reviews all MCP grant changes in a full workspace without applying on open', async () => {
+    renderWorkspace({ publication, plan })
+    expect(await screen.findByRole('heading', { name: 'Review MCP access' })).toBeVisible()
+    expect(screen.getByTestId('underlying-list')).not.toBeVisible()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByText('Preview the changes MOSAIC would apply. Nothing changes until you select Apply plan.')).toBeVisible()
+    expect(screen.getByRole('table', { name: 'All target MCP grants' })).toHaveTextContent('Security readers')
+    expect(screen.getByText('The identity this server uses when it calls a model.')).toBeVisible()
+    expect(api.applyMcpPublication).not.toHaveBeenCalled()
+    expect(api.createMcpPublication).not.toHaveBeenCalled()
+  })
+
+  it('prefills the selected registered server and protects publication preparation when leaving', async () => {
+    const user = userEvent.setup()
+    const { onClose } = renderWorkspace(undefined, 'endpoint_1')
+    expect(await screen.findByRole('checkbox', { name: 'Publish Weather tools' })).toBeChecked()
+    await user.click(screen.getByRole('button', { name: 'Configure' }))
+    await user.type(screen.getByRole('textbox', { name: /Display name/ }), ' draft')
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    expect(await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Stay' }))
+    expect(screen.getByRole('textbox', { name: /Display name/ })).toHaveValue('Weather tools draft')
+    expect(onClose).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    await user.click(await screen.findByRole('button', { name: 'Discard changes' }))
+    expect(onClose).toHaveBeenCalledTimes(1)
+    expect(api.createMcpPublication).not.toHaveBeenCalled()
+  })
+
+  it('keeps workspace apply pending and prevents closing or duplicate apply until its result arrives', async () => {
+    const user = userEvent.setup()
+    let finish!: (result: PublishRun) => void
+    api.applyMcpPublication.mockReturnValueOnce(new Promise<PublishRun>((resolve) => { finish = resolve }))
+    const { onClose } = renderWorkspace({ publication, plan })
+    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    const busy = await screen.findByRole('button', { name: 'Applying…' })
+    await user.click(busy)
+    expect(api.applyMcpPublication).toHaveBeenCalledTimes(1)
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    expect(await screen.findByRole('dialog', { name: 'Operation in progress' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Discard changes' })).not.toBeInTheDocument()
+    expect(onClose).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Stay' }))
+    await act(async () => { finish(run()) })
+    expect(await screen.findByRole('table', { name: 'MCP publish run steps' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('requires the refreshed workspace plan to be reviewed and explicitly applied after a stale-plan refusal', async () => {
+    const user = userEvent.setup()
+    api.applyMcpPublication.mockRejectedValueOnce(Object.assign(new Error('The reviewed plan is stale.'), { status: 409 }))
+    api.planMcpPublication.mockResolvedValueOnce({ ...plan, id: 'fresh-plan', warnings: ['Fresh grant target'] })
+    renderWorkspace({ publication, plan })
+    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    expect(await screen.findByText('Fresh grant target')).toBeVisible()
+    expect(screen.getByText('MOSAIC has already re-planned. Review the fresh plan below before you apply it.')).toBeVisible()
+    expect(api.applyMcpPublication).toHaveBeenCalledTimes(1)
+    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+    await waitFor(() => expect(api.applyMcpPublication).toHaveBeenLastCalledWith('mcp_pub_1', 'fresh-plan'))
   })
 
   it('opens an existing review on its first frame with focus inside the accessible dialog', async () => {
@@ -772,7 +847,7 @@ describe('PublishMcpServerDialog', () => {
 
     expect(
       await screen.findByText(
-        "Calls models as: Docs Search service · aaaabbbb-cccc-dddd-eeee-ffff00001111. The server receives each call's reference to pass on to its model calls.",
+        "Model-calling identity: Docs Search service · aaaabbbb-cccc-dddd-eeee-ffff00001111. The server receives each call's reference to pass on to its model calls.",
       ),
     ).toBeVisible()
 
@@ -786,7 +861,7 @@ describe('PublishMcpServerDialog', () => {
         />
       </QueryClientProvider>,
     )
-    expect(await screen.findByText('Calls models as: none.')).toBeVisible()
+    expect(await screen.findByText('Model-calling identity: none.')).toBeVisible()
   })
 
   it('reuses its draft when a failed plan is retried, rather than creating a duplicate', async () => {

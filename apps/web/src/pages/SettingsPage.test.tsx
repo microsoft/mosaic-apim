@@ -121,7 +121,7 @@ describe('SettingsPage', () => {
     renderSettings()
     const heading = await screen.findByRole('heading', { name: 'Environments' })
     expect(heading).toBeVisible()
-    expect(within(heading.parentElement!).getByText('Live data')).toBeVisible()
+    expect(screen.queryByText('Live data')).not.toBeInTheDocument()
     expect(await screen.findByText('Development')).toBeVisible()
     expect(
       screen.getByText(/3 resources need classification: 1 gateway, 1 model endpoint, 1 MCP server\./),
@@ -143,18 +143,39 @@ describe('SettingsPage', () => {
     expect(screen.getByText('ProfilePhoto.Read.All')).toBeVisible()
     expect(screen.queryByRole('textbox', { name: 'Support destination alias' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Add environment' })).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Integration preview' }))
-    const field = screen.getByRole('textbox', { name: 'Support destination alias' })
-    await user.clear(field)
-    await user.type(field, 'local-draft')
-    await user.click(screen.getByRole('button', { name: 'Save local preview' }))
-    expect(screen.getByText(/Shared MOSAIC runtime configuration was not changed/)).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Budget email' }))
     expect(await screen.findByRole('form', { name: 'Email settings' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Save local preview' })).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Integration preview' }))
-    expect(screen.getByRole('textbox', { name: 'Support destination alias' })).toHaveValue('local-draft')
+    expect(screen.queryByRole('button', { name: 'Integration preview' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Live data')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Appearance' }))
+    expect(screen.getByRole('radiogroup', { name: 'MOSAIC theme preference' })).toBeVisible()
+    expect(screen.getByRole('radio', { name: 'System' })).toBeChecked()
+    expect(screen.queryByRole('form', { name: 'Email settings' })).not.toBeInTheDocument()
     expect(api.saveEmailSettings).not.toHaveBeenCalled()
+  })
+
+  it('opens the real environment settings for a removed integration-preview link', async () => {
+    renderSettings('integrations')
+
+    expect(await screen.findByText('Development')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Environments' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.queryByRole('button', { name: 'Integration preview' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'Support destination alias' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'Observability workspace tag' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'Change template ID' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save local preview' })).not.toBeInTheDocument()
+    expect(api.createEnvironment).not.toHaveBeenCalled()
+    expect(api.saveEmailSettings).not.toHaveBeenCalled()
+  })
+
+  it('keeps real environment errors visible rather than rendering preview data', async () => {
+    api.getEnvironmentCatalog.mockRejectedValue(new Error('Environment catalog unavailable'))
+    renderSettings('integrations')
+
+    expect(await screen.findByText('Environment catalog unavailable')).toBeVisible()
+    expect(screen.queryByText('Development')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Integration preview' })).not.toBeInTheDocument()
   })
 
   it('explains local-authentication directory limitations without an enable switch', async () => {

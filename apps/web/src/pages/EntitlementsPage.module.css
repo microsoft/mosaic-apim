@@ -77,35 +77,27 @@
   min-width: 0;
 }
 
-.tableWrap .grantsTable {
-  min-width: 960px;
-  table-layout: fixed;
-}
-
-.grantsTable :global(th),
-.grantsTable :global(td) {
-  box-sizing: border-box;
-}
-
-.subjectColumn {
-  width: 18%;
-}
-
-.resourceColumn,
-.limitsColumn {
-  width: 20%;
-}
-
-.stateColumn {
-  width: calc(42% - 210px);
-}
-
-.actionsColumn {
-  width: 210px;
-}
-
-.grantsTable .primaryCell {
+.listSummary {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.grantDetail {
+  display: grid;
+  gap: 24px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.grantDetail > section {
+  display: grid;
+  gap: 12px;
+}
+
+.grantDetail h3 {
+  margin: 0;
 }
 
 .resourceMetadata,
@@ -253,22 +245,15 @@
   margin-top: 8px;
 }
 
-/* Long states wrap in the narrow column, so the badge grows with them. */
 .cellStack > .stateBadge {
-  height: auto;
-  min-height: 20px;
-  padding-block: 2px;
-  text-align: center;
+  white-space: nowrap;
   justify-self: start;
 }
 
 /* A subscription name has no spaces to wrap at, so it breaks anywhere to stay in its column. */
 .cellStack > .bindingBadge {
   justify-self: start;
-  height: auto;
-  min-height: 20px;
-  padding-block: 2px;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
 .codeValue {
@@ -285,6 +270,8 @@
 .dialogForm {
   display: grid;
   gap: 16px;
+  max-width: 960px;
+  min-width: 0;
 }
 
 .accessPanel {

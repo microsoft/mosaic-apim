@@ -177,19 +177,17 @@
   gap: 12px;
 }
 
-.detailList div {
+.detailList > div {
   display: grid;
   gap: 4px;
 }
 
-.detailList dt {
+.detailList > div > dt {
   color: var(--mosaic-text-muted);
   font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
 }
 
-.detailList dd {
+.detailList > div > dd {
   margin: 0;
   color: var(--mosaic-text);
 }
@@ -479,4 +477,77 @@
 .pendingBadge {
   background: var(--colorNeutralBackground3);
   color: var(--colorNeutralForeground2);
+}
+
+.resourceRow {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.resourceRow .primaryCell,
+.resourceRow .secondaryCell {
+  overflow-wrap: anywhere;
+}
+
+.resourceBadges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.selectedDetail {
+  display: grid;
+  align-content: start;
+  gap: 20px;
+  min-width: 0;
+}
+
+.selectedDetail .detailList {
+  gap: 0;
+}
+
+.selectedDetail .detailList > div {
+  grid-template-columns: minmax(120px, 0.35fr) minmax(0, 1fr);
+  gap: 16px;
+  padding-block: 12px;
+  border-bottom: 1px solid var(--mosaic-border-soft);
+}
+
+.selectedDetail .detailList > div > dd {
+  overflow-wrap: anywhere;
+}
+
+.detailList > div > dd > :global(.fui-Badge) {
+  white-space: nowrap;
+}
+
+.detailSection {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  padding-block: 24px;
+  border-top: 1px solid var(--mosaic-border-soft);
+  box-shadow: none;
+}
+
+.dialogForm {
+  max-width: 960px;
+  padding: 8px 0 24px;
+}
+
+@media (max-width: 640px) {
+  .selectedDetail .detailList > div {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .settingsList {
+    grid-template-columns: 1fr;
+  }
+
+  .settingsList div {
+    display: grid;
+    gap: 4px;
+  }
 }

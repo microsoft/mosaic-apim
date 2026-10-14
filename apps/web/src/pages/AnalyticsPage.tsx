@@ -6,13 +6,29 @@ import {
   MessageBar,
   MessageBarBody,
   MessageBarTitle,
+  Popover,
+  PopoverSurface,
+  PopoverTrigger,
   Select,
   Spinner,
   Text,
   Title3,
 } from '@fluentui/react-components'
+import {
+  ArrowDownloadRegular,
+  ChartMultipleRegular,
+  CloudDatabaseRegular,
+  DismissRegular,
+  FilterRegular,
+  GaugeRegular,
+  MoneyRegular,
+  PersonAccountsRegular,
+  QuestionCircleRegular,
+  ShieldCheckmarkRegular,
+  ShieldKeyholeRegular,
+} from '@fluentui/react-icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Link as RouterLink, useSearchParams } from 'react-router-dom'
 import { SectionLayout } from '../components/SectionLayout'
 import { ApiError, useMosaicApi } from '../api'
@@ -20,7 +36,7 @@ import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { BarList, type BarListItem } from '../components/charts/BarList'
 import { Histogram } from '../components/charts/Histogram'
 import { TrendChart } from '../components/charts/TrendChart'
-import { DataSourceBadge, PageHeader } from '../components/PageHeader'
+import { PageHeader } from '../components/PageHeader'
 import { formatCost, formatCostCompact, formatRate, formatShare } from '../cost-format'
 import { environmentLabel, useEnvironmentCatalog } from '../environments'
 import { BACKFILL_STATUS_LABELS, ENTITLEMENT_SUBJECT_KIND_LABELS, FRESHNESS_STATUS_LABELS, PRINCIPAL_KIND_LABELS, plural } from '../labels'
@@ -32,7 +48,6 @@ import type {
   AnalyticsCost,
   AnalyticsCostDeploymentRow,
   AnalyticsCostSummary,
-  AnalyticsDataSource,
   AnalyticsDeploymentRow,
   AnalyticsFilters,
   AnalyticsGatewayHealth,
@@ -64,15 +79,28 @@ import styles from './AnalyticsPage.module.css'
 
 type TabKey = 'overview' | 'cost' | 'consumers' | 'models' | 'reliability' | 'limits' | 'hygiene' | 'unattributed'
 
-const tabs: Array<{ key: TabKey; label: string; exports: ExportView[] }> = [
-  { key: 'overview', label: 'Overview', exports: ['trend'] },
-  { key: 'cost', label: 'Cost', exports: ['chargeback', 'costDeployments', 'costCenters'] },
-  { key: 'consumers', label: 'Consumers', exports: ['people', 'applications', 'groups', 'costCenters', 'grants', 'clientApps', 'onBehalf'] },
-  { key: 'models', label: 'Models', exports: ['apis', 'models', 'deployments'] },
-  { key: 'reliability', label: 'Reliability', exports: ['denials', 'apis'] },
-  { key: 'limits', label: 'Limits', exports: ['limits'] },
-  { key: 'hygiene', label: 'Access hygiene', exports: ['unusedGrants', 'unusedKeys', 'untrackedGrants'] },
-  { key: 'unattributed', label: 'Unattributed', exports: ['unattributed'] },
+const tabs: Array<{ key: TabKey; label: string; icon: ReactNode; exports: ExportView[] }> = [
+  { key: 'overview', label: 'Overview', icon: <ChartMultipleRegular />, exports: ['trend'] },
+  { key: 'cost', label: 'Cost', icon: <MoneyRegular />, exports: ['chargeback', 'costDeployments', 'costCenters'] },
+  { key: 'consumers', label: 'Consumers', icon: <PersonAccountsRegular />, exports: ['people', 'applications', 'groups', 'costCenters', 'grants', 'clientApps', 'onBehalf'] },
+  { key: 'models', label: 'Models', icon: <CloudDatabaseRegular />, exports: ['apis', 'models', 'deployments'] },
+  { key: 'reliability', label: 'Reliability', icon: <ShieldCheckmarkRegular />, exports: ['denials', 'apis'] },
+  { key: 'limits', label: 'Limits', icon: <GaugeRegular />, exports: ['limits'] },
+  { key: 'hygiene', label: 'Access hygiene', icon: <ShieldKeyholeRegular />, exports: ['unusedGrants', 'unusedKeys', 'untrackedGrants'] },
+  { key: 'unattributed', label: 'Unattributed', icon: <QuestionCircleRegular />, exports: ['unattributed'] },
+]
+
+const rangeLabels: Record<AnalyticsRange, string> = {
+  '24h': 'Last 24 hours',
+  '7d': 'Last 7 days',
+  '30d': 'Last 30 days',
+  '90d': 'Last 90 days',
+  '12m': 'Last 12 months',
+  custom: 'Custom',
+}
+
+const filterKeys: Array<keyof AnalyticsFilters> = [
+  'range', 'start', 'end', 'gatewayId', 'environment', 'resourceId', 'costCenterId', 'subjectKind',
 ]
 
 const exportLabels: Record<ExportView, string> = {
@@ -184,6 +212,12 @@ function formatDay(value: string) {
   return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' }).format(new Date(`${value}T00:00:00Z`))
 }
 
+function isCalendarDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const date = new Date(`${value}T00:00:00Z`)
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value
+}
+
 function trendLabel(point: { start: string }, granularity: AnalyticsGranularity) {
   const start = new Date(point.start)
   if (granularity === 'month') {
@@ -216,10 +250,6 @@ function tabFromSearch(params: URLSearchParams): TabKey {
   return value && tabs.some((tab) => tab.key === value) ? value : 'overview'
 }
 
-function sourceKind(source: AnalyticsDataSource) {
-  return source === 'logAnalytics' ? 'live' : 'local'
-}
-
 function freshnessText(freshness: UsageFreshness) {
   if (freshness.status === 'notLinked') return 'No gateway is linked.'
   if (freshness.status === 'pending') return "MOSAIC hasn't read the gateways' telemetry yet."
@@ -250,7 +280,6 @@ function DataNotes({ report }: { report: AnalyticsReport }) {
   }
   return (
     <div className={styles.notes}>
-      <DataSourceBadge kind="live" />
       <Text>{freshnessText(report.freshness)}</Text>
       {breakdownCaption(report) && <Text>{breakdownCaption(report)}</Text>}
       {report.notes.map((note) => <Text key={note}>{note}</Text>)}
@@ -839,6 +868,18 @@ export function AnalyticsPage() {
   const [exportStatus, setExportStatus] = useState<string | null>(null)
   const [exportChoice, setExportChoice] = useState<ExportView | null>(null)
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null)
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const [draftFilters, setDraftFilters] = useState<AnalyticsFilters>(filters)
+  const [filterError, setFilterError] = useState<string | null>(null)
+  const filterTrigger = useRef<HTMLButtonElement>(null)
+  const restoreFilterFocus = useRef(false)
+  const filterId = useId()
+  useEffect(() => {
+    if (!filtersOpen && restoreFilterFocus.current) {
+      restoreFilterFocus.current = false
+      filterTrigger.current?.focus()
+    }
+  }, [filtersOpen])
   const catalog = useEnvironmentCatalog()
   const gateways = useQuery({ queryKey: ['gateways'], queryFn: api.listGateways })
   const modelApis = useQuery({ queryKey: ['model-apis'], queryFn: () => api.listModelApis() })
@@ -888,44 +929,187 @@ export function AnalyticsPage() {
     onError: (error) => setExportStatus(error instanceof Error ? error.message : 'Export failed.'),
   })
 
-  function updateFilter(key: keyof AnalyticsFilters | 'tab', value: string) {
-    const next = new URLSearchParams(params)
-    if (value) next.set(key, value)
-    else next.delete(key)
-    if (key === 'range' && value !== 'custom') {
-      next.delete('start')
-      next.delete('end')
+  function selectTab(value: string) {
+    setParams((current) => {
+      const next = new URLSearchParams(current)
+      next.set('tab', value)
+      return next
+    })
+  }
+
+  function closeFilters() {
+    restoreFilterFocus.current = true
+    setFiltersOpen(false)
+  }
+
+  function updateDraftFilter<K extends keyof AnalyticsFilters>(key: K, value: AnalyticsFilters[K]) {
+    setFilterError(null)
+    setDraftFilters((current) => ({
+      ...current,
+      [key]: value || undefined,
+      ...(key === 'range' && value !== 'custom' ? { start: undefined, end: undefined } : {}),
+    }))
+  }
+
+  function applyFilters() {
+    if (draftFilters.range === 'custom') {
+      if (!draftFilters.start || !draftFilters.end) {
+        setFilterError('Choose both a start date and an end date.')
+        return
+      }
+      if (!isCalendarDate(draftFilters.start) || !isCalendarDate(draftFilters.end)) {
+        setFilterError('Choose valid start and end dates.')
+        return
+      }
+      if (draftFilters.start > draftFilters.end) {
+        setFilterError('The end date must be on or after the start date.')
+        return
+      }
     }
-    setParams(next)
+    setParams((current) => {
+      const next = new URLSearchParams(current)
+      for (const key of filterKeys) {
+        const value = draftFilters[key]
+        if ((key === 'start' || key === 'end') && draftFilters.range !== 'custom') next.delete(key)
+        else if (value) next.set(key, value)
+        else next.delete(key)
+      }
+      return next
+    })
+    closeFilters()
   }
 
   const report = reportQuery.data as AnalyticsReport | undefined
-  const activeExports = tabs.find((item) => item.key === tab)?.exports ?? ['trend']
+  const activeTab = tabs.find((item) => item.key === tab)!
+  const activeExports = activeTab.exports
   const exportView = exportChoice && activeExports.includes(exportChoice) ? exportChoice : activeExports[0]
+  const activeFilterCount = Number((filters.range ?? '30d') !== '30d')
+    + [filters.gatewayId, filters.environment, filters.resourceId, filters.costCenterId, filters.subjectKind].filter(Boolean).length
+  const resource = [...(modelApis.data ?? []), ...(modelPools.data ?? []), ...(mcpServers.data ?? [])]
+    .find((item) => item.id === filters.resourceId)
+  const scopeSummary = [
+    filters.range === 'custom'
+      ? filters.start && filters.end ? `${filters.start} to ${filters.end}` : 'Custom date range'
+      : rangeLabels[filters.range ?? '30d'] ?? 'Selected date range',
+    filters.environment ? environmentLabel(catalog.data, filters.environment) : 'All environments',
+    filters.gatewayId ? gateways.data?.find((gateway) => gateway.id === filters.gatewayId)?.name ?? 'Selected gateway' : 'All gateways',
+    filters.resourceId ? resource?.displayName ?? 'Selected resource' : null,
+    filters.costCenterId ? costCenters.data?.find((center) => center.id === filters.costCenterId)?.name ?? 'Selected cost center' : null,
+    filters.subjectKind ? subjectLabels[filters.subjectKind] ?? 'Selected subject kind' : null,
+  ].filter(Boolean).join(' · ')
 
   return (
     <section className={styles.page}>
       <PageHeader
         title="Analytics"
         description="Inspect real gateway usage, reliability, limits, and access hygiene from MOSAIC usage rollups."
-        source={report ? sourceKind(report.dataSource) : undefined}
-        actions={
-          <div className={styles.headerControls}>
-            <label className={styles.filterControl}><span>Range</span><Select value={filters.range ?? '30d'} onChange={(event) => updateFilter('range', event.target.value)}><option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="90d">Last 90 days</option><option value="12m">Last 12 months</option><option value="custom">Custom</option></Select></label>
-            {filters.range === 'custom' && <><label className={styles.filterControl}><span>Start</span><Input type="date" value={filters.start ?? ''} onChange={(event) => updateFilter('start', event.target.value)} /></label><label className={styles.filterControl}><span>End</span><Input type="date" value={filters.end ?? ''} onChange={(event) => updateFilter('end', event.target.value)} /></label></>}
-            <label className={styles.filterControl}><span>Gateway</span><Select value={filters.gatewayId ?? ''} onChange={(event) => updateFilter('gatewayId', event.target.value)}><option value="">All gateways</option>{(gateways.data ?? []).map((gateway: Gateway) => <option key={gateway.id} value={gateway.id}>{gateway.name}</option>)}</Select></label>
-            <label className={styles.filterControl}><span>Environment</span><Select value={filters.environment ?? ''} onChange={(event) => updateFilter('environment', event.target.value)}><option value="">All environments</option>{(catalog.data?.environments ?? []).map((environment) => <option key={environment.key} value={environment.key}>{environmentLabel(catalog.data, environment.key)}</option>)}</Select></label>
-            <label className={`${styles.filterControl} ${styles.resourceControl}`}><span>Resource</span><Select value={filters.resourceId ?? ''} onChange={(event) => updateFilter('resourceId', event.target.value)}><option value="">All APIs and MCP servers</option><ResourceOptions modelApis={modelApis.data} modelPools={modelPools.data} mcpServers={mcpServers.data} /></Select></label>
-            <label className={styles.filterControl}><span>Cost center</span><Select value={filters.costCenterId ?? ''} onChange={(event) => updateFilter('costCenterId', event.target.value)}><option value="">All cost centers</option>{(costCenters.data ?? []).map((costCenter) => <option key={costCenter.id} value={costCenter.id}>{costCenter.name} ({costCenter.code})</option>)}</Select></label>
-            <label className={styles.filterControl}><span>Subject kind</span><Select value={filters.subjectKind ?? ''} onChange={(event) => updateFilter('subjectKind', event.target.value)}><option value="">All subjects</option>{Object.entries(subjectLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</Select></label>
-            <label className={styles.filterControl}><span>Export</span><Select value={exportView} onChange={(event) => setExportChoice(event.target.value as ExportView)}>{activeExports.map((view) => <option key={view} value={view}>{exportLabels[view]}</option>)}</Select></label>
-            <Button appearance="primary" onClick={() => exportCsv.mutate(exportView)} disabled={exportCsv.isPending}>Export CSV</Button>
-          </div>
-        }
       />
 
-      <SectionLayout label="Analytics" sections={tabs.map((item) => ({ value: item.key, label: item.label }))}
-        active={tab} onSelect={(value) => updateFilter('tab', value)}>
+      <SectionLayout label="Analytics" sections={tabs.map((item) => ({ value: item.key, label: item.label, icon: item.icon }))}
+        active={tab} onSelect={selectTab}>
+
+      <div className={styles.toolbar}>
+        <div className={styles.scope}>
+          <Title3 as="h2">{activeTab.label}</Title3>
+          <Text className={styles.scopeSummary} block>{scopeSummary}</Text>
+        </div>
+        <div className={styles.headerControls}>
+          <Popover open={filtersOpen} onOpenChange={(_, data) => {
+            if (data.open) {
+              setDraftFilters({ ...filters })
+              setFilterError(null)
+              setFiltersOpen(true)
+            } else closeFilters()
+          }} positioning={{ position: 'below', align: 'end' }} trapFocus>
+            <PopoverTrigger disableButtonEnhancement>
+              <Button ref={filterTrigger} icon={<FilterRegular />} aria-expanded={filtersOpen}
+                aria-label={activeFilterCount ? `Filters, ${activeFilterCount} active` : 'Filters'}>
+                Filters
+                {activeFilterCount > 0 && <Badge appearance="tint" color="informative" aria-hidden="true">{activeFilterCount}</Badge>}
+              </Button>
+            </PopoverTrigger>
+            <PopoverSurface className={styles.filterPopover} role="dialog" aria-labelledby={`${filterId}-title`}
+              aria-describedby={`${filterId}-description`}>
+              <form noValidate onSubmit={(event) => { event.preventDefault(); applyFilters() }}>
+                <div className={styles.filterHeading}>
+                  <Title3 as="h2" id={`${filterId}-title`}>Filters</Title3>
+                  <Button appearance="subtle" icon={<DismissRegular />} aria-label="Close filters" onClick={closeFilters} />
+                </div>
+                <Text block id={`${filterId}-description`} className={styles.filterDescription}>Choose the scope, then apply it once.</Text>
+                <div className={styles.filterGrid}>
+                  <label className={styles.filterControl}>
+                    <span>Range</span>
+                    <Select value={draftFilters.range ?? '30d'} onChange={(event) => updateDraftFilter('range', event.target.value as AnalyticsRange)}>
+                      {Object.entries(rangeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                    </Select>
+                  </label>
+                  <label className={styles.filterControl}>
+                    <span>Gateway</span>
+                    <Select value={draftFilters.gatewayId ?? ''} onChange={(event) => updateDraftFilter('gatewayId', event.target.value)}>
+                      <option value="">All gateways</option>
+                      {(gateways.data ?? []).map((gateway: Gateway) => <option key={gateway.id} value={gateway.id}>{gateway.name}</option>)}
+                    </Select>
+                  </label>
+                  {draftFilters.range === 'custom' && <>
+                    <label className={styles.filterControl}>
+                      <span>Start</span>
+                      <Input type="date" value={draftFilters.start ?? ''} aria-invalid={Boolean(filterError)}
+                        aria-describedby={filterError ? `${filterId}-error` : undefined}
+                        onChange={(event) => updateDraftFilter('start', event.target.value)} />
+                    </label>
+                    <label className={styles.filterControl}>
+                      <span>End</span>
+                      <Input type="date" value={draftFilters.end ?? ''} aria-invalid={Boolean(filterError)}
+                        aria-describedby={filterError ? `${filterId}-error` : undefined}
+                        onChange={(event) => updateDraftFilter('end', event.target.value)} />
+                    </label>
+                  </>}
+                  <label className={styles.filterControl}>
+                    <span>Environment</span>
+                    <Select value={draftFilters.environment ?? ''} onChange={(event) => updateDraftFilter('environment', event.target.value)}>
+                      <option value="">All environments</option>
+                      {(catalog.data?.environments ?? []).map((environment) => <option key={environment.key} value={environment.key}>{environmentLabel(catalog.data, environment.key)}</option>)}
+                    </Select>
+                  </label>
+                  <label className={styles.filterControl}>
+                    <span>Resource</span>
+                    <Select value={draftFilters.resourceId ?? ''} onChange={(event) => updateDraftFilter('resourceId', event.target.value)}>
+                      <option value="">All APIs and MCP servers</option>
+                      <ResourceOptions modelApis={modelApis.data} modelPools={modelPools.data} mcpServers={mcpServers.data} />
+                    </Select>
+                  </label>
+                  <label className={styles.filterControl}>
+                    <span>Cost center</span>
+                    <Select value={draftFilters.costCenterId ?? ''} onChange={(event) => updateDraftFilter('costCenterId', event.target.value)}>
+                      <option value="">All cost centers</option>
+                      {(costCenters.data ?? []).map((costCenter) => <option key={costCenter.id} value={costCenter.id}>{costCenter.name} ({costCenter.code})</option>)}
+                    </Select>
+                  </label>
+                  <label className={styles.filterControl}>
+                    <span>Subject kind</span>
+                    <Select value={draftFilters.subjectKind ?? ''} onChange={(event) => updateDraftFilter('subjectKind', event.target.value as EntitlementSubjectKind)}>
+                      <option value="">All subjects</option>
+                      {Object.entries(subjectLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+                    </Select>
+                  </label>
+                </div>
+                {filterError && <p className={styles.filterError} role="alert" id={`${filterId}-error`}>{filterError}</p>}
+                <div className={styles.filterActions}>
+                  <Button onClick={() => { setDraftFilters({ range: '30d' }); setFilterError(null) }}>Reset</Button>
+                  <Button type="submit" appearance="primary">Apply filters</Button>
+                </div>
+              </form>
+            </PopoverSurface>
+          </Popover>
+          {activeExports.length > 1 && <Select aria-label="Export" className={styles.exportControl} value={exportView}
+            onChange={(event) => setExportChoice(event.target.value as ExportView)}>
+            {activeExports.map((view) => <option key={view} value={view}>{exportLabels[view]}</option>)}
+          </Select>}
+          <Button icon={<ArrowDownloadRegular />} onClick={() => exportCsv.mutate(exportView)} disabled={exportCsv.isPending}>
+            {exportCsv.isPending ? 'Exporting CSV…' : 'Export CSV'}
+          </Button>
+        </div>
+      </div>
 
       {exportStatus && <div className={styles.exportStatus} role="status">{exportStatus}</div>}
       {refreshMessage && <MessageBar intent="warning"><MessageBarBody>{refreshMessage}</MessageBarBody></MessageBar>}

@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { createMemoryRouter, RouterProvider, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../api'
 import {
@@ -78,14 +78,17 @@ function renderRoute(initial = '/cost-centers') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[initial]}>
-        <Routes>
-          <Route path="/cost-centers" element={<CostCentersPage />} />
-          <Route path="/cost-centers/:costCenterId" element={<CostCenterDetailPage />} />
-        </Routes>
-      </MemoryRouter>
+      <RouterProvider router={createMemoryRouter([
+        { path: '/cost-centers', element: <><CostCentersPage /><LocationProbe /></> },
+        { path: '/cost-centers/:costCenterId', element: <><CostCenterDetailPage /><LocationProbe /></> },
+      ], { initialEntries: [initial] })} />
     </QueryClientProvider>,
   )
+}
+
+function LocationProbe() {
+  const location = useLocation()
+  return <output aria-label="Cost center query">{location.search}</output>
 }
 
 describe('Cost centers pages', () => {
@@ -184,11 +187,11 @@ describe('Cost centers pages', () => {
     api.setOrganizationBudget.mockResolvedValue(organizationBudgetFixture)
     renderRoute()
 
-    const table = await screen.findByRole('table', { name: 'Cost centers' })
-    expect(await within(table).findByText('Blocked')).toBeVisible()
+    const list = await screen.findByRole('list', { name: 'Cost centers' })
+    expect(await within(list).findByText('Blocked')).toBeVisible()
     expect(screen.queryByRole('form', { name: 'Organization budget' })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Organization-wide budget' }))
-    expect(screen.queryByRole('table', { name: 'Cost centers' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: 'Cost centers' })).not.toBeInTheDocument()
     expect(screen.getByText('Warn-only · Never blocks')).toBeVisible()
     const form = screen.getByRole('form', { name: 'Organization budget' })
     expect(within(form).queryByRole('radio')).not.toBeInTheDocument()
@@ -210,16 +213,36 @@ describe('Cost centers pages', () => {
 
   it('lists cost centers and validates codes before creating', async () => {
     const user = userEvent.setup()
+    api.createCostCenter.mockImplementation(async (payload: Pick<CostCenter, 'name' | 'code' | 'description' | 'owners' | 'keysAllowed'>) => {
+      const created = { ...general, ...payload, id: 'cc-support', builtIn: false, isTenantDefault: false, defaultFor: 0, grantCount: 0, enabledGrantCount: 0 }
+      api.listCostCenters.mockResolvedValue([general, created])
+      api.getCostCenter.mockResolvedValue(created)
+      return created
+    })
     renderRoute()
 
-    expect(await screen.findByRole('link', { name: 'General' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: /General/ })).toBeVisible()
+    expect(screen.queryByRole('textbox', { name: 'Name' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'New cost center' }))
+    expect(screen.getByRole('region', { name: 'New cost center' })).toBeVisible()
+    expect(screen.queryByRole('list', { name: 'Cost centers' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     await user.type(screen.getByLabelText('Name'), 'Support')
     await user.type(screen.getByLabelText('Code'), 'bad code')
     expect(screen.getByText('Use only A-Z, a-z, 0-9, dot, underscore, or hyphen.')).toBeVisible()
     await user.clear(screen.getByLabelText('Code'))
     await user.type(screen.getByLabelText('Code'), 'support')
+    await user.type(screen.getByLabelText('Description'), 'Support billing')
+    await user.type(screen.getByLabelText('Owners'), 'owner-one@example.com, owner-two@example.com')
+    await user.click(screen.getByRole('switch', { name: 'Keys allowed' }))
     await user.click(screen.getByRole('button', { name: 'Create cost center' }))
-    await waitFor(() => expect(api.createCostCenter).toHaveBeenCalledWith(expect.objectContaining({ name: 'Support', code: 'support' })))
+    await waitFor(() => expect(api.createCostCenter).toHaveBeenCalledWith({
+      name: 'Support', code: 'support', description: 'Support billing',
+      owners: ['owner-one@example.com', 'owner-two@example.com'], keysAllowed: false,
+    }))
+    expect(await screen.findByRole('button', { name: /Support/, pressed: true })).toBeVisible()
+    expect(screen.getByLabelText('Cost center query')).toHaveTextContent('selected=cc-support')
+    expect(screen.queryByRole('region', { name: 'New cost center' })).not.toBeInTheDocument()
   })
 
   it('shows codeInUse and saves the default setting', async () => {
@@ -227,13 +250,19 @@ describe('Cost centers pages', () => {
     api.createCostCenter.mockRejectedValue(new ApiError('conflict', 409, { details: { reason: 'codeInUse' } }))
     renderRoute()
 
-    await screen.findByRole('link', { name: 'General' })
+    await screen.findByRole('button', { name: /General/ })
+    await user.click(screen.getByRole('button', { name: 'New cost center' }))
     await user.type(screen.getByLabelText('Name'), 'General two')
     await user.type(screen.getByLabelText('Code'), 'general')
     await user.click(screen.getByRole('button', { name: 'Create cost center' }))
     expect(await screen.findByText('That code is already used by another cost center. Choose a unique code.')).toBeVisible()
+    expect(screen.getByLabelText('Name')).toHaveValue('General two')
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    await user.click(await screen.findByRole('button', { name: 'Discard changes' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument())
+    await user.click(await screen.findByText('Tenant default', { selector: 'summary' }))
     const listed = api.listCostCenters.mock.calls.length
-    await user.click(screen.getByRole('button', { name: 'Save default' }))
+    await user.click(await screen.findByRole('button', { name: 'Save default' }))
     await waitFor(() => expect(api.updateCostCenterSettings).toHaveBeenCalledWith({ defaultCostCenterId: 'cc-general' }))
     // Which cost center is badged as the tenant default changes with it.
     await waitFor(() => expect(api.listCostCenters.mock.calls.length).toBeGreaterThan(listed))
@@ -293,6 +322,89 @@ describe('Cost centers pages', () => {
     renderRoute()
 
     expect(await screen.findByText('Recheck pending')).toBeVisible()
+  })
+
+  it('opens persistent cost-center details and edits the complete record in the workspace', async () => {
+    const user = userEvent.setup()
+    const updated = { ...general, description: 'Support billing', owners: ['finance@example.com'], keysAllowed: false }
+    api.updateCostCenter.mockImplementation(async () => {
+      api.getCostCenter.mockResolvedValue(updated)
+      return updated
+    })
+    renderRoute('/cost-centers?scope=kept')
+    await user.click(await screen.findByRole('button', { name: /General/ }))
+    expect(await screen.findByRole('heading', { name: 'General' })).toBeVisible()
+    expect(screen.getByRole('list', { name: 'Cost centers' })).toBeVisible()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Open cost center' })).toHaveAttribute('href', '/cost-centers/cc-general')
+    await user.click(screen.getByRole('button', { name: 'Edit cost center' }))
+    expect(await screen.findByRole('region', { name: 'Edit General' })).toBeVisible()
+    expect(screen.queryByRole('list', { name: 'Cost centers' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Name')).toHaveValue('General')
+    expect(screen.getByLabelText('Code')).toHaveValue('general')
+    await user.type(screen.getByLabelText('Description'), 'Support billing')
+    await user.clear(screen.getByLabelText('Owners'))
+    await user.type(screen.getByLabelText('Owners'), 'finance@example.com')
+    await user.click(screen.getByRole('switch', { name: 'Keys allowed' }))
+    await user.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(api.updateCostCenter).toHaveBeenCalledWith('cc-general', {
+      name: 'General', code: 'general', description: 'Support billing', owners: ['finance@example.com'], keysAllowed: false,
+    }))
+    expect(await screen.findByRole('list', { name: 'Cost centers' })).toBeVisible()
+    expect(screen.getByLabelText('Cost center query')).toHaveTextContent('scope=kept')
+    expect(screen.getByLabelText('Cost center query')).toHaveTextContent('selected=cc-general')
+    expect(screen.getByLabelText('Cost center query')).not.toHaveTextContent('mode=edit')
+  })
+
+  it('guards an unsaved New workspace across section changes and restores its draft', async () => {
+    const user = userEvent.setup()
+    renderRoute('/cost-centers?tab=centers&scope=kept&mode=new')
+    const name = await screen.findByLabelText('Name')
+    await user.type(name, 'Unsaved center')
+    await user.click(screen.getByRole('button', { name: 'Organization-wide budget' }))
+    expect(await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Stay' }))
+    expect(name).toHaveValue('Unsaved center')
+    await waitFor(() => expect(name).toHaveFocus())
+    expect(api.createCostCenter).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Organization-wide budget' }))
+    await user.click(await screen.findByRole('button', { name: 'Discard changes' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument())
+    expect(await screen.findByRole('heading', { name: 'Organization-wide budget' })).toBeVisible()
+    expect(screen.getByLabelText('Cost center query')).toHaveTextContent('scope=kept')
+    expect(screen.getByLabelText('Cost center query')).not.toHaveTextContent('mode=new')
+  })
+
+  it('restores selected details from the URL and keeps nested tabs scoped to the cost center', async () => {
+    const user = userEvent.setup()
+    renderRoute('/cost-centers?tab=centers&selected=cc-general&scope=kept')
+    expect(await screen.findByRole('heading', { name: 'General' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Members' }))
+    expect(await screen.findByRole('table', { name: 'Cost center members' })).toBeVisible()
+    expect(screen.getByLabelText('Cost center query')).toHaveTextContent('selected=cc-general')
+    expect(screen.getByLabelText('Cost center query')).toHaveTextContent('tab=centers')
+    expect(screen.getByLabelText('Cost center query')).toHaveTextContent('centerTab=members')
+    expect(screen.getByRole('list', { name: 'Cost centers' })).toBeVisible()
+  })
+
+  it('discards staged limits only after confirmation and returns to saved limits', async () => {
+    const user = userEvent.setup()
+    renderRoute('/cost-centers/cc-general?tab=limits')
+    await screen.findByRole('heading', { name: 'General' })
+    await user.selectOptions(screen.getByLabelText('Resource'), 'modelApi:model-1')
+    await user.type(screen.getByLabelText('Tokens per minute'), '1000')
+    await user.click(screen.getByRole('button', { name: 'Add limit' }))
+    await user.click(screen.getByRole('button', { name: 'Overview' }))
+    expect(await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Stay' }))
+    expect(screen.getByText('Chat (model API) · 1,000 tokens per minute')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Overview' }))
+    await user.click(await screen.findByRole('button', { name: 'Discard changes' }))
+    expect(await screen.findByRole('heading', { name: 'Summary' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Limits' }))
+    expect(screen.queryByText('Chat (model API) · 1,000 tokens per minute')).not.toBeInTheDocument()
+    expect(screen.getByText('No cost-center defaults are set.')).toBeVisible()
+    expect(api.updateCostCenterLimits).not.toHaveBeenCalled()
   })
 
   it('adds a pool-only limit and refuses an empty limit', async () => {

@@ -37,7 +37,8 @@ uv run --with "playwright>=1.58,<2" python -m scripts.screenshots.capture
 ```
 
 The script starts the demo API and both apps, installs Playwright's Chromium if it is missing,
-captures every shot, and stops the servers again. A full run takes about a minute and a half.
+captures every shot, and stops the servers again. A full run takes several minutes; seeding,
+browser readiness, and the optional navigation checks affect its duration.
 Playwright is needed only here, so `uv run --with` supplies it for the run rather than adding it
 to `uv.lock`. Pillow is an API dependency used for thumbnail validation and screenshot redaction.
 
@@ -48,9 +49,10 @@ If `uv` is available only as a Python module, use `python -m uv run ...` with th
 | `--list` | Print each shot's name, app, theme, and route, then exit |
 | `--only NAME` | Capture only that shot. Repeat it to capture several |
 | `--output DIR` | Write the PNGs somewhere else, for example to compare before and after |
+| `--logs-dir DIR` | Use a new dedicated directory for server logs and unredacted failure captures; keep it outside the repository. A successful run removes it |
 | `--headed` | Show the browser while it captures |
 | `--preview` | Serve production assets after building both apps with `npm run build --prefix apps\web` and `npm run build --prefix apps\portal`; avoids cold dev-server dependency bundling |
-| `--check-navigation` | Also verify desktop collapse, mobile focus/inert behavior, identity drawer drafts/focus/reflow and section-change discard confirmation, forced colors, usage-first portal landing, unchanged list geometry, and drawer/credential teardown against the fictional estate. For each captured portal theme, check all four pages at desktop/mobile widths, glass chrome, opaque panels/drawers, panel spacing, and reduced-transparency/forced-colors/unsupported-blur fallbacks |
+| `--check-navigation` | Also verify all four administrator rail combinations in both themes, full width recovery, single-line controls and document reflow, every Pool section and Pricing at exactly 1440px document width with local table scrolling and `scrollIntoView`, mobile focus/inert behavior, workspace drafts and section-change discard decisions, forced colors, usage-first portal landing, unchanged portal list geometry, and drawer/credential teardown against the fictional estate. For each captured portal theme, check all four pages at desktop/mobile widths, glass chrome, opaque panels/drawers, panel spacing, and reduced-transparency/forced-colors/unsupported-blur fallbacks |
 | `--reuse-servers` | Use a demo API and apps that are already running instead of starting them |
 | `--api-port`, `--console-port`, `--portal-port` | Change the ports, which default to 18000, 15173, and 15174 |
 
@@ -163,7 +165,8 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
 - `capture.py` opens each shot in a fresh Chromium context 1440 pixels wide, with the shot's theme
   set both as the operating-system preference and as MOSAIC's stored preference. It waits for
   every spinner to clear and for the shot's ready text, runs the shot's actions, captures the
-  viewport, and blurs every sensitive region before it saves the PNG. Dates are rendered in UTC,
+  viewport, and blurs every sensitive region before it saves the PNG. Administrator shots fail
+  rather than save clipped content if the document overflows horizontally. Dates are rendered in UTC,
   and they show the day of the capture.
 
 ## Redaction
@@ -248,34 +251,37 @@ to include both the daily trend and the complete last-24-hours chart.
 | --- | --- | --- | --- | --- |
 | `console-dashboard-light`, `console-dashboard-dark` | Console | `/dashboard` | Both | Light and dark: console overview |
 | `portal-catalog-light`, `portal-catalog-dark` | Portal | `/catalog`, model-grouped rows with environment and access filters | Both | Light and dark: portal catalog |
-| `console-gateways` | Console | `/gateways` | Light | Gateways |
+| `console-gateways` | Console | `/gateways`, compact list with selected gateway overview | Light | Gateways |
 | `console-gateway-overview` | Console | Contoso AI Gateway, **Overview** section | Dark | Gateway overview |
 | `console-gateway-apis` | Console | Contoso AI Gateway, **APIs and endpoints** section | Light | APIs and endpoints |
-| `console-models` | Console | `/models` | Dark | Models |
+| `console-models` | Console | `/models`, compact list with selected publication detail | Dark | Models |
 | `console-register-key-endpoint` | Console | `/models?register=1`, **Azure AI with an API key** tab with a pasted, masked key, filled in and never submitted | Light | Register with an API key |
 | `console-key-endpoint` | Console | `/models?tab=endpoints`, Fabrikam partner Foundry selected, scrolled to its **Access** card with **Replace API key** | Dark | Endpoint reached with an API key |
-| `console-pools` | Console | `/pools`, published Anthropic Claude pool and Claude evaluation draft, with separate Suggestions navigation | Light | Model pools |
-| `console-pool-detail` | Console | Anthropic Claude detail, **Models and deployments** section | Dark | A model pool |
-| `console-pool-access` | Console | Anthropic Claude detail, **Access and connection** section | Light | Who can call a pool |
-| `console-pool-health` | Console | Anthropic Claude detail, **Health** section for the last 24 hours | Dark | Pool health |
+| `console-pools` | Console | `/pools`, compact list with Anthropic Claude selected, **Overview** detail and separate Suggestions navigation | Light | Model pools |
+| `console-pool-detail` | Console | Anthropic Claude detail, **Models and deployments** section with both navigation rails compact | Dark | A model pool |
+| `console-pool-access` | Console | Anthropic Claude detail, **Access and connection** section with both navigation rails compact | Light | Who can call a pool |
+| `console-pool-health` | Console | Anthropic Claude detail, **Health** section for the last 24 hours with both navigation rails compact | Dark | Pool health |
 | `console-pool-editor` | Console | `/pools?tab=suggestions`, **Create pool** on the Claude Haiku 4.5 suggestion, **3. Models** step, never saved | Light | Create a pool |
-| `console-endpoint-pools` | Console | `/models?tab=endpoints`, Contoso AI Foundry selected, deployments and **Used by pools** | Dark | Pools on an endpoint |
-| `console-mcps` | Console | `/mcps`, **Published MCP servers** and the application each calls models as | Light | MCP servers |
-| `console-identity` | Console | `/identity?tab=agents` | Dark | Identity |
+| `console-endpoint-pools` | Console | `/models?tab=endpoints`, Contoso AI Foundry selected, scrolled to **Used by pools** dependencies | Dark | Pools on an endpoint |
+| `console-mcps` | Console | `/mcps`, selected published server with its model-calling identity | Light | MCP servers |
+| `console-identity` | Console | `/identity?tab=agents`, selected agent detail beside the list | Dark | Identity |
 | `console-people-search` | Console | `/identity?tab=users`, **Add person**, selected result, never added | Light | Find a person |
-| `console-identity-detail` | Console | `/identity?tab=agents`, selected agent overview drawer | Dark | Identity details |
-| `console-directory-picker` | Console | `/identity?tab=agents`, **Add agent** dialog with query `agent`, selected result, never added | Light | Directory picker |
-| `console-security-group-members` | Console | `/identity?tab=security-groups`, **AI Model Users** overview drawer and membership | Dark | Security group members |
-| `console-entitlements` | Console | `/entitlements`, scrolled to **Grants** | Light | Entitlements |
-| `console-access-requests` | Console | `/entitlements?tab=requests`, pending queue | Light | Access requests |
+| `console-identity-detail` | Console | `/identity?tab=agents`, selected agent overview workspace | Dark | Identity details |
+| `console-directory-picker` | Console | `/identity?tab=agents`, **Add agent** workspace with query `agent`, selected result, never added | Light | Directory picker |
+| `console-security-group-members` | Console | `/identity?tab=security-groups`, **AI Model Users** selected, scrolled to read-only **Security group members** | Dark | Security group members |
+| `console-entitlements` | Console | `/entitlements`, selected grant with detailed state and limits | Light | Entitlements |
+| `console-access-requests` | Console | `/entitlements?tab=requests`, pending queue with the first request selected in **Selected access request** detail | Light | Access requests |
 | `console-model-access-settings` | Console | `/entitlements?tab=settings`, GPT-4o selected | Dark | Model access settings |
 | `console-overlapping-grants` | Console | `/entitlements?tab=effective`, **Overlapping grants** | Dark | Overlapping grants |
-| `console-cost-centers` | Console | `/cost-centers` | Light | Cost centers |
+| `console-cost-centers` | Console | `/cost-centers`, selected detail beside the compact list | Light | Cost centers |
+| `console-new-cost-center` | Console | `/cost-centers`, **New cost center** workspace, never saved | Dark | New cost center |
 | `console-cost-center-detail` | Console | Customer Insights detail, **Members** section | Dark | Cost center members |
-| `console-mcp-publish` | Console | `/mcps`, **Review changes** for the published Docs MCP server, including the shared metadata API, operation, and operation policy | Light | MCP publish review |
-| `console-unpublish-review` | Console | `/models`, **More actions > Unpublish** review for GPT-4o, never confirmed | Light | Unpublish review |
+| `console-mcp-publish` | Console | `/mcps`, full-workspace **Review changes** for the published Docs MCP server, including the shared metadata API, operation, and operation policy, never applied | Light | MCP publish review |
+| `console-unpublish-review` | Console | `/models`, GPT-4o selected, detail **More actions > Unpublish** destructive-confirmation review, never confirmed | Light | Unpublish review |
 | `console-budgets` | Console | Customer Support detail, **Budget** section | Dark | Budgets |
 | `console-analytics` | Console | `/analytics`, **Overview** section | Dark | Analytics |
+| `console-analytics-filters` | Console | `/analytics`, grouped draft **Filters** open, never applied | Light | Analytics filters |
+| `console-request-notifications` | Console | `/dashboard`, pending-request popover open | Light | Request notifications |
 | `console-analytics-cost` | Console | `/analytics?tab=cost` | Light | Cost |
 | `console-pricing` | Console | `/pricing`, **Prices** section filtered to `2024-11-20` | Dark | Pricing |
 | `console-analytics-consumers` | Console | `/analytics?tab=consumers` | Light | Consumers |

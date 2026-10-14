@@ -12,6 +12,7 @@ writes PNGs to ``docs/images/screenshots``. Run it from the repository root; see
 import argparse
 import contextlib
 import io
+import json
 import re
 import shutil
 import socket
@@ -348,10 +349,18 @@ def click_button(name: str) -> Action:
     return act
 
 
-def click_row_menu_action(table_name: str, name: str) -> Action:
+def select_first_resource(list_name: str) -> Action:
     def act(page: Page) -> None:
-        table = page.get_by_role("table", name=table_name, exact=True)
-        table.get_by_role("button", name=re.compile(r"^More actions")).first.click()
+        page.get_by_role("list", name=list_name, exact=True).get_by_role("button").first.click()
+
+    return act
+
+
+def click_detail_menu_action(name: str) -> Action:
+    def act(page: Page) -> None:
+        page.get_by_role("button", name=re.compile(r"^More actions")).filter(
+            visible=True
+        ).first.click()
         page.get_by_role("menuitem", name=name, exact=True).click()
 
     return act
@@ -457,18 +466,9 @@ def scroll_to_text(text: str, margin: int = 24) -> Action:
     return act
 
 
-def scroll_to_table_row(table_name: str, text: str) -> Action:
-    def act(page: Page) -> None:
-        page.get_by_role("table", name=table_name).get_by_role("row").filter(
-            has_text=text
-        ).scroll_into_view_if_needed()
-
-    return act
-
-
 # The README embeds these by name. Keep the two in step: a renamed or removed shot here needs its
 # README reference updated, and a new README screenshot needs an entry here.
-OPEN_GATEWAY = (click_link("Contoso AI Gateway"), wait_for_text("Read-only"))
+OPEN_GATEWAY = (click_button("Contoso AI Gateway"), wait_for_text("Read-only"))
 # The overview's usage panels, gateway health, and pools load after its inventory counts.
 DASHBOARD_LOADED = (
     wait_for_text("Contoso Support Copilot"),
@@ -486,7 +486,7 @@ SHOTS: list[Shot] = [
         "light",
         "MOSAIC groups",
         actions=DASHBOARD_LOADED,
-        height=2150,
+        height=2450,
     ),
     Shot(
         "console-dashboard-dark",
@@ -495,12 +495,13 @@ SHOTS: list[Shot] = [
         "dark",
         "MOSAIC groups",
         actions=DASHBOARD_LOADED,
-        height=2150,
+        height=2450,
     ),
     Shot("portal-catalog-light", "portal", "/catalog", "light", "Docs search MCP", height=1040),
     Shot("portal-catalog-dark", "portal", "/catalog", "dark", "Docs search MCP", height=1040),
     # Capability galleries: light shots sit in the README's left column and dark in its right.
-    Shot("console-gateways", "console", "/gateways", "light", "Partner Gateway"),
+    Shot("console-gateways", "console", "/gateways", "light", "Partner Gateway",
+         actions=OPEN_GATEWAY, height=1600),
     Shot(
         "console-gateway-overview",
         "console",
@@ -508,6 +509,7 @@ SHOTS: list[Shot] = [
         "dark",
         "Contoso AI Gateway",
         actions=OPEN_GATEWAY,
+        height=1600,
     ),
     Shot(
         "console-gateway-apis",
@@ -515,9 +517,14 @@ SHOTS: list[Shot] = [
         "/gateways",
         "light",
         "Contoso AI Gateway",
-        actions=(*OPEN_GATEWAY, click_tab("APIs and endpoints")),
+        actions=(
+            *OPEN_GATEWAY, click_tab("APIs and endpoints"),
+            scroll_to_text("Read-only · Synced from APIM.", margin=110),
+        ),
+        height=1300,
     ),
-    Shot("console-models", "console", "/models", "dark", "GPT-4o mini"),
+    Shot("console-models", "console", "/models", "dark", "GPT-4o mini",
+         actions=(click_button("GPT-4o mini"),)),
     Shot(
         "console-register-key-endpoint",
         "console",
@@ -551,9 +558,8 @@ SHOTS: list[Shot] = [
             wait_for_text("The endpoint accepts the key"),
             scroll_to_text("The endpoint accepts the key", margin=140),
         ),
-        # Tall enough for the key check, each gateway's verdict, and the declared deployments, and
-        # short enough to scroll the endpoints MOSAIC found out of view.
-        height=1100,
+        # Include the key check, gateway verdicts, and declared deployments.
+        height=1650,
     ),
     Shot(
         "console-pools",
@@ -561,10 +567,8 @@ SHOTS: list[Shot] = [
         "/pools",
         "light",
         "Claude evaluation",
-        # The suggestions load after the pools.
-        actions=(),
-        # Tall enough for both pools and, below them, the pool MOSAIC suggests for Claude Haiku 4.5.
-        height=1130,
+        actions=(click_button("Anthropic Claude"),),
+        height=1000,
     ),
     Shot(
         "console-pool-detail",
@@ -572,8 +576,13 @@ SHOTS: list[Shot] = [
         "/pools",
         "dark",
         "Anthropic Claude",
-        actions=(click_link("Anthropic Claude"), click_tab("Models and deployments")),
-        # Tall enough for both models' deployments, ending above the pool's health card.
+        actions=(
+            click_button("Anthropic Claude"),
+            click_button("Collapse Pools sections"), click_button("Collapse navigation"),
+            click_tab("Models and deployments"),
+            scroll_to_text("served by 5 active deployments", margin=160),
+        ),
+        # Include both models' deployments in the selected section.
         height=1482,
     ),
     Shot(
@@ -583,15 +592,16 @@ SHOTS: list[Shot] = [
         "light",
         "Anthropic Claude",
         # The governed Claude pool's access card: how callers sign in, the grants the gateway
-        # enforces on each model, and the cost center's pooled quota. The health card above it
-        # loads first, so the scroll lands where the card finally sits.
+        # enforces on each model, and the cost center's pooled quota.
         actions=(
-            click_link("Anthropic Claude"),
+            click_button("Anthropic Claude"),
+            click_button("Collapse Pools sections"), click_button("Collapse navigation"),
             click_tab("Access and connection"),
             wait_for_text("Grants in force"),
+            scroll_to_text("Who can call it", margin=110),
         ),
-        # Tall enough to end just below the card, after the pooled quotas.
-        height=867,
+        # Include authentication, grants, and pooled quotas in the selected detail.
+        height=1500,
     ),
     Shot(
         "console-pool-health",
@@ -603,13 +613,14 @@ SHOTS: list[Shot] = [
         # how each deployment answered, with North Central US throttling Opus and tripping its
         # breaker while the other regions take the retries.
         actions=(
-            click_link("Anthropic Claude"),
+            click_button("Anthropic Claude"),
+            click_button("Collapse Pools sections"), click_button("Collapse navigation"),
             click_tab("Health"),
             wait_for_text("Breaker tripped"),
             scroll_to_text("calls to each model ended", margin=168),
         ),
-        # Tall enough to end just below the card, after its footnote.
-        height=974,
+        # Include both models' deployment attempts and the health footnote.
+        height=1500,
     ),
     Shot(
         "console-pool-editor",
@@ -621,12 +632,13 @@ SHOTS: list[Shot] = [
         # gateway can use. The shot never saves the pool, so the estate is unchanged for the shots
         # after it.
         actions=(
+            click_button("Anthropic"),
             click_button("Create pool for Anthropic on Contoso AI Gateway"),
             wait_for_text("Create a model pool"),
             click_tab("3. Models"),
             wait_for_text("Name callers send"),
         ),
-        height=1040,
+        height=1200,
     ),
     Shot(
         "console-endpoint-pools",
@@ -634,11 +646,11 @@ SHOTS: list[Shot] = [
         "/models?tab=endpoints",
         "dark",
         "Model endpoints",
-        # Contoso AI Foundry, the endpoint selected first, serves both pools: its deployments with
-        # the pools each one serves, and the card listing those pools.
+        # The selected endpoint serves both pools. Focus on their dependency summaries.
         actions=(
+            click_button("Contoso AI Foundry"),
             wait_for_text("Used by pools"),
-            scroll_to_text("Models on Contoso AI Foundry", margin=110),
+            scroll_to_text("Used by pools", margin=110),
         ),
         # Tall enough to end just below the card listing the pools.
         height=1080,
@@ -649,7 +661,7 @@ SHOTS: list[Shot] = [
         "/mcps",
         "light",
         "Contoso Docs Search",
-        # Tall enough for the published server and every registered server with its environment.
+        actions=(click_button("Contoso Docs Search"),),
         height=1500,
     ),
     Shot(
@@ -658,6 +670,7 @@ SHOTS: list[Shot] = [
         "/identity?tab=agents",
         "dark",
         "Market Research Agent",
+        actions=(click_button("Market Research Agent"),),
         height=1000,
     ),
     Shot(
@@ -693,7 +706,7 @@ SHOTS: list[Shot] = [
         "light",
         "Market Research Agent",
         actions=(
-            # On the Agents tab, the dialog opens with the directory search set to agents.
+            # The onboarding workspace starts with the directory search set to agents.
             click_button("Add agent"),
             fill_text("Directory search", "agent"),
             wait_for_text("Benefits Bot Agent"),
@@ -712,8 +725,9 @@ SHOTS: list[Shot] = [
             click_button("AI Model Users"),
             wait_for_text("Security group members"),
             wait_for_text("Market Research Agent"),
+            scroll_to_text("Security group members", margin=110),
         ),
-        height=1100,
+        height=1300,
     ),
     Shot(
         "console-entitlements",
@@ -721,17 +735,17 @@ SHOTS: list[Shot] = [
         "/entitlements",
         "light",
         "Contoso Support Copilot",
-        actions=(scroll_to_text("Desired intent and last recorded", margin=96),),
-        # Tall enough to include the first APIM binding, on the eighth grant, beside its actions.
-        height=1384,
+        actions=(select_first_resource("Grants"),),
+        height=1100,
     ),
     Shot(
         "console-access-requests",
         "console",
         "/entitlements?tab=requests",
         "light",
-        "Pending access requests",
-        height=1040,
+        "Access requests",
+        actions=(select_first_resource("Access requests"),),
+        height=1250,
     ),
     Shot(
         "console-model-access-settings",
@@ -740,7 +754,7 @@ SHOTS: list[Shot] = [
         "dark",
         "Published model",
         actions=(select_option("Published model", "GPT-4o"),),
-        height=1100,
+        height=1250,
     ),
     Shot(
         "console-overlapping-grants",
@@ -758,9 +772,8 @@ SHOTS: list[Shot] = [
         "/cost-centers",
         "light",
         "Customer Insights",
-        # Tall enough for every cost center, the organization budget below them, the new cost
-        # center form, and the tenant default.
-        height=1190,
+        actions=(click_button("Customer Insights"),),
+        height=1050,
     ),
     Shot(
         "console-cost-center-detail",
@@ -769,11 +782,11 @@ SHOTS: list[Shot] = [
         "dark",
         "Customer Insights",
         actions=(
-            click_link("Customer Insights"),
+            click_button("Customer Insights"),
             click_tab("Members"),
             wait_for_text("Membership"),
         ),
-        height=1100,
+        height=1400,
     ),
     Shot(
         "console-mcp-publish",
@@ -782,12 +795,11 @@ SHOTS: list[Shot] = [
         "light",
         "Published MCP servers",
         actions=(
-            scroll_to_text("Published MCP servers", margin=64),
+            click_button("Contoso Docs Search"),
             click_button("Review changes"),
             wait_for_text("MCP access changes"),
-            scroll_to_table_row("MCP publish plan steps", "Operation policy"),
         ),
-        height=2000,
+        height=3000,
     ),
     Shot(
         "console-unpublish-review",
@@ -798,7 +810,8 @@ SHOTS: list[Shot] = [
         # Unpublish on the first row, GPT-4o, plans the unpublish and opens its review. The shot
         # never confirms it.
         actions=(
-            click_row_menu_action("Published models", "Unpublish"),
+            select_first_resource("Published models"),
+            click_detail_menu_action("Unpublish"),
             wait_for_text("What MOSAIC deletes"),
         ),
         height=1200,
@@ -812,12 +825,39 @@ SHOTS: list[Shot] = [
         # Customer Support's budget, past its limit and blocked: the gateway refusing its calls and
         # this month's emails, beside the amount, thresholds, recipients, and action.
         actions=(
-            click_link("Customer Support"),
+            click_button("Customer Support"),
             click_tab("Budget"),
             wait_for_text("Refusing calls"),
             scroll_to_text("A monthly amount in US dollars", margin=110),
         ),
-        height=900,
+        height=1200,
+    ),
+    Shot(
+        "console-analytics-filters",
+        "console",
+        "/analytics",
+        "light",
+        "Filters",
+        actions=(click_button("Filters"),),
+        height=1000,
+    ),
+    Shot(
+        "console-request-notifications",
+        "console",
+        "/dashboard",
+        "light",
+        "MOSAIC groups",
+        actions=(*DASHBOARD_LOADED, click_button("Notifications")),
+        height=1000,
+    ),
+    Shot(
+        "console-new-cost-center",
+        "console",
+        "/cost-centers",
+        "dark",
+        "Cost centers",
+        actions=(click_button("New cost center"),),
+        height=1000,
     ),
     Shot(
         "console-analytics",
@@ -1131,6 +1171,74 @@ def _settle(page: Page) -> None:
     page.wait_for_timeout(400)
 
 
+def _assert_no_document_overflow(
+    page: Page, context: str, *, expected_width: int | None = None
+) -> None:
+    geometry = page.evaluate(
+        """() => {
+          const root = document.documentElement
+          const width = root.clientWidth
+          const scrollX = window.scrollX
+          if (root.scrollWidth <= width + 1 && scrollX === 0) {
+            return {clientWidth: width, scrollWidth: root.scrollWidth, scrollX, offenders: []}
+          }
+          const offenders = [...document.querySelectorAll('body *')].flatMap(element => {
+            if (!element.getClientRects().length) return []
+            const rect = element.getBoundingClientRect()
+            if (rect.right + scrollX <= width + 1 && rect.left + scrollX >= -1) return []
+            return [{
+              element: element.tagName.toLowerCase() + '.' + [...element.classList].join('.'),
+              left: Math.round(rect.left + scrollX),
+              right: Math.round(rect.right + scrollX),
+            }]
+          }).slice(0, 8)
+          return {clientWidth: width, scrollWidth: root.scrollWidth, scrollX, offenders}
+        }"""
+    )
+    if (
+        geometry["scrollWidth"] > geometry["clientWidth"] + 1
+        or geometry["scrollX"] != 0
+        or expected_width is not None and (
+            geometry["clientWidth"] != expected_width
+            or geometry["scrollWidth"] != expected_width
+        )
+    ):
+        raise CaptureError(
+            f"{context}: document overflows horizontally: {json.dumps(geometry)}"
+        )
+
+
+def _check_local_table_scroll(page: Page, context: str, *, require_scroll: bool = False) -> None:
+    checked = 0
+    for container in page.locator(".table-scroll").all():
+        if not container.is_visible() or not container.evaluate(
+            "(element) => element.scrollWidth > element.clientWidth + 1"
+        ):
+            continue
+        for operation in ("direct scrolling", "scrollIntoView"):
+            container.evaluate(
+                """(element, operation) => {
+                  element.scrollLeft = 0
+                  if (operation === 'direct scrolling') element.scrollLeft = element.scrollWidth
+                  else element.querySelector('table tr:last-child > :last-child')
+                    .scrollIntoView({block: 'nearest', inline: 'end'})
+                }""",
+                operation,
+            )
+            _settle(page)
+            if container.evaluate("(element) => element.scrollLeft") <= 0:
+                raise CaptureError(f"{context}: local table {operation} did not reveal its last column")
+            _assert_no_document_overflow(
+                page, f"{context}: table {operation}", expected_width=1440
+            )
+        container.evaluate("(element) => { element.scrollLeft = 0 }")
+        _assert_no_document_overflow(page, f"{context}: table reset", expected_width=1440)
+        checked += 1
+    if require_scroll and checked == 0:
+        raise CaptureError(f"{context}: expected a locally scrollable table")
+    print(f"verified {context}: document width 1440px; {checked} local tables and scrollIntoView")
+
+
 def _capture_one(
     page: Page, shot: Shot, url: str, literals: list[str], output: Path, logs: Path
 ) -> Path:
@@ -1160,8 +1268,12 @@ def _capture_one(
         for action in shot.actions:
             action(page)
             _settle(page)
+        page.mouse.move(0, 0)
+        _settle(page)
+        if shot.app == "console":
+            _assert_no_document_overflow(page, shot.name, expected_width=shot.width)
     except Exception as error:
-        # Debug artefacts stay in the temporary log directory and are never redacted, so they
+        # Debug artefacts stay in the capture log directory and are never redacted, so they
         # must not be copied into the repository.
         debug = logs / f"{shot.name}.failed.png"
         with contextlib.suppress(Exception):
@@ -1175,10 +1287,12 @@ def _capture_one(
     png = page.screenshot(animations="disabled", caret="hide")
     image = _blur(Image.open(io.BytesIO(png)).convert("RGB"), rects)
     target = output / f"{shot.name}.png"
-    with tempfile.TemporaryDirectory(prefix=f".{shot.name}-", dir=output) as staging:
-        staged = Path(staging) / "capture.png"
+    staged = output / f".{shot.name}.capture.png"
+    try:
         image.save(staged, optimize=True)
         staged.replace(target)
+    finally:
+        staged.unlink(missing_ok=True)
     shown = target.resolve()
     if shown.is_relative_to(REPO_ROOT):
         shown = shown.relative_to(REPO_ROOT)
@@ -1310,11 +1424,18 @@ def _check_navigation(page: Page, app: App) -> None:
     page.set_viewport_size({"width": 1440, "height": 900})
     page.goto(origin + ("/catalog" if app == "portal" else "/dashboard"))
     _settle(page)
+    content_before = page.locator(".content-inner").bounding_box()
     page.get_by_role("button", name="Collapse navigation", exact=True).click()
     sidebar = page.locator(".sidebar")
     collapsed = sidebar.bounding_box()
     if collapsed is None or collapsed["width"] > 90:
         raise CaptureError(f"{app}: collapsed primary navigation is not a compact rail")
+    if app == "console":
+        content_after = page.locator(".content-inner").bounding_box()
+        if content_before is None or content_after is None or (
+            content_after["width"] - content_before["width"] < 120
+        ):
+            raise CaptureError("console: collapsing primary navigation did not release its width")
     page.get_by_role("button", name="Expand navigation", exact=True).click()
     expanded = sidebar.bounding_box()
     if expanded is None or expanded["width"] < 200:
@@ -1386,6 +1507,7 @@ def _check_navigation(page: Page, app: App) -> None:
         if page.evaluate("document.documentElement.scrollWidth > window.innerWidth + 1"):
             raise CaptureError("portal: resource usage overflows the desktop viewport horizontally")
     else:
+        _check_console_reflow(page)
         search = page.get_by_role("textbox", name="Search MOSAIC pages", exact=True)
         search.fill("model endpoints")
         page.get_by_role("link", name="Models · Model endpoints", exact=True).click()
@@ -1432,30 +1554,39 @@ def _check_identity_workspace(page: Page) -> None:
     if page.get_by_role("dialog").count():
         raise CaptureError("console: identity details opened without a selection")
     row.click()
-    drawer = page.get_by_role("dialog", name="Megan Bowen", exact=True)
-    drawer.wait_for()
-    box = drawer.bounding_box()
-    if box is None or box["width"] > 391:
-        raise CaptureError("console: mobile identity drawer exceeds the viewport")
+    page.get_by_role("button", name="Edit local metadata", exact=True).wait_for()
+    if page.get_by_role("dialog").count():
+        raise CaptureError("console: selecting identity details opened a modal")
     if page.get_by_role("textbox", name="Local label", exact=True).count():
         raise CaptureError("console: identity overview immediately exposes an editor")
     page.get_by_role("button", name="Edit local metadata", exact=True).click()
-    label = page.get_by_role("textbox", name="Local label", exact=True)
-    if not label.evaluate("(element) => element === document.activeElement"):
-        raise CaptureError("console: editing did not focus the local label")
+    editor = page.get_by_role("region", name="Edit Megan Bowen", exact=True)
+    editor.wait_for()
+    label = editor.get_by_role("textbox", name="Local label", exact=True)
+    page.wait_for_function(
+        "(element) => element === document.activeElement", arg=label.element_handle()
+    )
     label.fill("Megan Bowen review draft")
-    page.get_by_role("button", name="Close identity details", exact=True).click()
+    page.locator("[data-workspace-editor]").get_by_role("button", name="Back", exact=True).click()
     page.get_by_role("dialog", name="Discard unsaved changes?", exact=True).wait_for()
-    page.get_by_role("button", name="Keep editing", exact=True).click()
+    page.get_by_role("button", name="Stay", exact=True).click()
+    page.get_by_role("dialog", name="Discard unsaved changes?", exact=True).wait_for(
+        state="hidden"
+    )
+    page.wait_for_function(
+        "(element) => element === document.activeElement", arg=label.element_handle()
+    )
     if label.input_value() != "Megan Bowen review draft":
         raise CaptureError("console: keeping identity edits lost the draft")
-    page.get_by_role("button", name="Cancel editing", exact=True).click()
+    editor.get_by_role("button", name="Cancel", exact=True).click()
+    page.get_by_role("dialog", name="Discard unsaved changes?", exact=True).wait_for()
+    page.get_by_role("button", name="Discard changes", exact=True).click()
     overview_action = page.get_by_role("button", name="Edit local metadata", exact=True)
-    if not overview_action.evaluate("(element) => element === document.activeElement"):
-        raise CaptureError("console: cancelling edits did not focus the overview action")
-    page.keyboard.press("Escape")
-    drawer.wait_for(state="hidden")
-    page.locator(".identity-drawer").wait_for(state="hidden")
+    editor.wait_for(state="hidden")
+    page.wait_for_function(
+        "(element) => element === document.activeElement", arg=overview_action.element_handle()
+    )
+    page.get_by_role("button", name="Back to list", exact=True).click()
     page.wait_for_function(
         "(element) => element === document.activeElement", arg=row.element_handle()
     )
@@ -1463,7 +1594,7 @@ def _check_identity_workspace(page: Page) -> None:
         raise CaptureError("console: mobile identity workspace overflows the viewport")
 
     page.get_by_role("button", name="Add person", exact=True).click()
-    add = page.get_by_role("dialog", name="Add person", exact=True)
+    add = page.get_by_role("region", name="Add person", exact=True)
     add.wait_for()
     add.get_by_role("textbox", name="Directory search", exact=True).fill("hen")
     add.get_by_role("button", name="Select Henrietta Mueller", exact=True).click()
@@ -1472,6 +1603,9 @@ def _check_identity_workspace(page: Page) -> None:
     if page.evaluate("document.documentElement.scrollWidth > window.innerWidth + 1"):
         raise CaptureError("console: mobile directory picker overflows the viewport")
     add.get_by_role("button", name="Cancel", exact=True).click()
+    confirmation = page.get_by_role("dialog", name="Discard unsaved changes?", exact=True)
+    confirmation.wait_for()
+    confirmation.get_by_role("button", name="Discard changes", exact=True).click()
     add.wait_for(state="hidden")
 
     for width in (768, 1440):
@@ -1489,24 +1623,26 @@ def _check_identity_workspace(page: Page) -> None:
         page.get_by_role("button", name=edit, exact=True).click()
         draft = page.get_by_role("textbox", name=field_label, exact=True)
         draft.fill(f"{name} section draft")
-        # Exercise both section handlers directly while the modal drawer makes navigation inert.
-        page.get_by_label("Identity section", exact=True).evaluate(
-            """(element) => {
-                element.value = 'agents';
-                element.dispatchEvent(new Event('change', { bubbles: true }));
-            }"""
-        )
+        page.set_viewport_size({"width": 768, "height": 900})
+        page.get_by_label("Identity section", exact=True).select_option("agents")
         page.get_by_role("dialog", name="Discard unsaved changes?", exact=True).wait_for()
-        page.get_by_role("button", name="Keep editing", exact=True).click()
+        page.get_by_role("button", name="Stay", exact=True).click()
+        page.get_by_role("dialog", name="Discard unsaved changes?", exact=True).wait_for(
+            state="hidden"
+        )
+        page.wait_for_function(
+            "(element) => element === document.activeElement", arg=draft.element_handle()
+        )
         if f"tab={section}" not in page.url or draft.input_value() != f"{name} section draft":
             raise CaptureError("console: cancelling a section change lost the section or draft")
-        page.locator('nav[aria-label="Identity sections"] button[title="Agents"]').evaluate(
-            "(element) => element.click()"
-        )
+        page.set_viewport_size({"width": 1440, "height": 900})
+        page.get_by_role("navigation", name="Identity sections", exact=True).get_by_role(
+            "button", name="Agents", exact=True
+        ).click()
         page.get_by_role("dialog", name="Discard unsaved changes?", exact=True).wait_for()
         page.get_by_role("button", name="Discard changes", exact=True).click()
-        page.wait_for_url("**/identity?tab=agents")
-        page.locator(".identity-drawer").wait_for(state="hidden")
+        page.wait_for_function("new URLSearchParams(location.search).get('tab') === 'agents'")
+        page.locator("[data-workspace-editor]").wait_for(state="hidden")
         if page.get_by_role("dialog", name="Discard unsaved changes?", exact=True).count():
             raise CaptureError("console: discarding a section draft left the confirmation open")
 
@@ -1521,6 +1657,147 @@ def _check_identity_workspace(page: Page) -> None:
         "verified identity focus, dirty drafts, section navigation, picker selection, "
         "reflow, and forced colors"
     )
+
+
+def _check_console_reflow(page: Page) -> None:
+    origin = "/".join(page.url.split("/")[:3])
+    page.goto(origin + "/analytics")
+    _settle(page)
+    content_width = "() => document.querySelector('nav[aria-label=\"Analytics sections\"]').parentElement.lastElementChild.getBoundingClientRect().width"
+    wrapped_controls = """() => [...document.querySelectorAll('.fui-Button, .fui-Badge')]
+      .filter(element => element.getClientRects().length && !element.closest('[aria-pressed]')
+        && !element.querySelector('time') && !element.getAttribute('aria-label')?.startsWith('Select '))
+      .flatMap(element => {
+        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+        const failures = []
+        while (walker.nextNode()) {
+          const text = walker.currentNode
+          if (!text.textContent.trim()) continue
+          const range = document.createRange()
+          range.selectNodeContents(text)
+          const tops = [...range.getClientRects()].filter(r => r.width > 0 && r.height > 0)
+            .map(r => Math.round(r.top))
+          if (new Set(tops).size > 1) failures.push(text.textContent.trim())
+        }
+        return failures
+      })"""
+    for theme in ("light", "dark"):
+        page.set_viewport_size({"width": 1440, "height": 900})
+        page.reload()
+        _settle(page)
+        page.get_by_role("group", name="Appearance", exact=True).get_by_role(
+            "button", name=theme.capitalize(), exact=True
+        ).click()
+        page.wait_for_function(
+            "(theme) => document.documentElement.dataset.theme === theme", arg=theme
+        )
+        nav = page.get_by_role("navigation", name="Analytics sections", exact=True)
+        expanded = page.evaluate(content_width)
+        secondary_expanded = nav.bounding_box()
+        primary_expanded = page.locator(".sidebar").bounding_box()
+        page.get_by_role("button", name="Collapse Analytics sections", exact=True).click()
+        collapsed = page.evaluate(content_width)
+        secondary_collapsed = nav.bounding_box()
+        if secondary_expanded is None or secondary_collapsed is None or (
+            collapsed - expanded < 150
+            or abs(collapsed - expanded - (
+                secondary_expanded["width"] - secondary_collapsed["width"]
+            )) > 1
+        ):
+            raise CaptureError(f"console: {theme} secondary collapse did not release its full width")
+        for item in nav.get_by_role("button").all()[1:]:
+            if not item.locator("svg").count() or not item.get_attribute("aria-label"):
+                raise CaptureError("console: collapsed section is missing an icon or accessible label")
+        page.get_by_role("button", name="Collapse navigation", exact=True).click()
+        both = page.evaluate(content_width)
+        primary_collapsed = page.locator(".sidebar").bounding_box()
+        if primary_expanded is None or primary_collapsed is None or (
+            both - collapsed < 120
+            or abs(both - collapsed - (
+                primary_expanded["width"] - primary_collapsed["width"]
+            )) > 1
+        ):
+            raise CaptureError(f"console: {theme} primary collapse did not release its full width")
+        page.get_by_role("button", name="Expand Analytics sections", exact=True).click()
+        primary_only = page.evaluate(content_width)
+        if both - primary_only < 150 or abs(
+            both - primary_only - (collapsed - expanded)
+        ) > 1:
+            raise CaptureError(f"console: {theme} secondary expansion did not restore its width")
+        page.get_by_role("button", name="Expand navigation", exact=True).click()
+        if abs(page.evaluate(content_width) - expanded) > 1:
+            raise CaptureError(f"console: {theme} both expanded rails did not restore the workspace")
+        for width in (1920, 1440, 1280, 768, 720, 390):
+            page.set_viewport_size({"width": width, "height": 900})
+            if page.evaluate("document.documentElement.scrollWidth > window.innerWidth + 1"):
+                raise CaptureError(f"console: {theme} workspace overflows at {width}px")
+            if failures := page.evaluate(wrapped_controls):
+                raise CaptureError(f"console: wrapped controls at {width}px: {failures}")
+    page.set_viewport_size({"width": 1440, "height": 900})
+    for theme in ("light", "dark"):
+        page.goto(origin + "/pools")
+        _settle(page)
+        page.get_by_role("group", name="Appearance", exact=True).get_by_role(
+            "button", name=theme.capitalize(), exact=True
+        ).click()
+        page.wait_for_function(
+            "(theme) => document.documentElement.dataset.theme === theme", arg=theme
+        )
+        primary = page.locator(".sidebar").bounding_box()
+        secondary = page.get_by_role(
+            "navigation", name="Pools sections", exact=True
+        ).bounding_box()
+        if primary is None or primary["width"] < 200 or (
+            secondary is None or secondary["width"] < 200
+        ):
+            raise CaptureError(f"console: {theme} pool checks require both expanded rails")
+        page.get_by_role("list", name="Model pools", exact=True).get_by_role(
+            "button", name=re.compile(r"^Anthropic Claude")
+        ).click()
+        sections = page.get_by_role("navigation", name="Pool sections", exact=True)
+        for section in (
+            "Overview", "Models and deployments", "Access and connection", "Health",
+            "Policy and runs",
+        ):
+            sections.get_by_role("button", name=section, exact=True).click()
+            _settle(page)
+            if section == "Health":
+                wait_for_text("Breaker tripped")(page)
+                scroll_to_text("calls to each model ended", margin=168)(page)
+                _settle(page)
+            _assert_no_document_overflow(
+                page, f"console: {theme} pool {section} with both rails expanded",
+                expected_width=1440,
+            )
+            _check_local_table_scroll(page, f"{theme} pool {section}")
+        page.goto(origin + "/pricing")
+        _settle(page)
+        page.get_by_role("group", name="Appearance", exact=True).get_by_role(
+            "button", name=theme.capitalize(), exact=True
+        ).click()
+        page.wait_for_function(
+            "(theme) => document.documentElement.dataset.theme === theme", arg=theme
+        )
+        page.get_by_role("table", name="Prices", exact=True).wait_for()
+        primary = page.locator(".sidebar").bounding_box()
+        secondary = page.get_by_role(
+            "navigation", name="Pricing sections", exact=True
+        ).bounding_box()
+        if primary is None or primary["width"] < 200 or (
+            secondary is None or secondary["width"] < 200
+        ):
+            raise CaptureError(f"console: {theme} pricing checks require both expanded rails")
+        _assert_no_document_overflow(page, f"{theme} pricing", expected_width=1440)
+        _check_local_table_scroll(page, f"{theme} pricing", require_scroll=True)
+        fill_text("Find a model", "2024-11-20")(page)
+        wait_for_text("Changes ")(page)
+        _settle(page)
+        _assert_no_document_overflow(page, f"{theme} filtered pricing", expected_width=1440)
+        _check_local_table_scroll(page, f"{theme} filtered pricing", require_scroll=True)
+        page.goto(origin + "/analytics")
+        _settle(page)
+    print("verified every pool section, scrolled Health, and Pricing with both expanded rails in both themes")
+    print("verified both themes, all rail combinations, width recovery, reflow, and control lines")
 
 
 def capture(
@@ -1599,6 +1876,10 @@ def main(argv: list[str] | None = None) -> int:
         "--only", action="append", default=[], metavar="SHOT", help="Capture only this shot"
     )
     parser.add_argument("--output", type=Path, default=OUTPUT_DIR)
+    parser.add_argument(
+        "--logs-dir", type=Path,
+        help="Keep server logs and unredacted failure captures in this dedicated directory",
+    )
     parser.add_argument("--api-port", type=int, default=18000)
     parser.add_argument("--console-port", type=int, default=15173)
     parser.add_argument("--portal-port", type=int, default=15174)
@@ -1632,7 +1913,12 @@ def main(argv: list[str] | None = None) -> int:
             if not _port_free(port):
                 parser.error(f"port {port} is in use; pick another with the --*-port options")
 
-    logs = Path(tempfile.mkdtemp(prefix="mosaic-screenshots-")).resolve()
+    logs = (
+        args.logs_dir.resolve()
+        if args.logs_dir else Path(tempfile.mkdtemp(prefix="mosaic-screenshots-")).resolve()
+    )
+    if args.logs_dir:
+        logs.mkdir(parents=True, exist_ok=False)
     _ensure_chromium()
     api = [
         sys.executable,

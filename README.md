@@ -57,13 +57,9 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
     <td><img src="docs/images/screenshots/console-dashboard-dark.png" alt="The console overview in the dark theme"></td>
   </tr>
   <tr>
-    <td colspan="2"><b>Console overview.</b> Live counts of the people, agents, applications and
-    security groups, and MOSAIC groups registered in MOSAIC, each opening its section under Identity.
-    Below them, the last
-    7 days of gateway usage rolled up from Log Analytics: requests, tokens, active callers, errors,
-    and latency, what this month has cost so far with its month-end forecast, the daily trend, how
-    current each gateway's telemetry is, then top models, callers, and APIs, budgets, pools needing
-    attention, and a compact environment inventory.</td>
+    <td colspan="2"><b>Console overview.</b> Registered identity counts open their corresponding
+    Identity sections. Gateway usage, cost and forecast, telemetry freshness, rankings, budgets,
+    pools needing attention, and environment inventory summarize the fictional estate.</td>
   </tr>
   <tr>
     <td><img src="docs/images/screenshots/portal-catalog-light.png" alt="The portal catalog in the light theme"></td>
@@ -81,10 +77,10 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-gateways.png" alt="Registered gateways with their environment, status, AI API counts, and last sync">
-      <p><b>Gateways.</b> Existing API Management services registered by resource ID, each in one
-      environment. MOSAIC reports whether it can read each one, how many APIs front Azure AI
-      backends, and when it last synced.</p>
+      <img src="docs/images/screenshots/console-gateways.png" alt="A compact registered-gateway list beside the selected gateway's overview and inventory counts">
+      <p><b>Gateways.</b> A compact list selects an existing API Management service and opens its
+      overview in the same workspace. The selected gateway shows its environment, read/manage mode,
+      inventory counts, and service details.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-gateway-overview.png" alt="A gateway overview with inventory counts and service details">
@@ -100,15 +96,15 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
       backend it points at, what it exposes, the policies that govern it, and its operations.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-models.png" alt="Published models with status, gateway, API path, and actions">
-      <p><b>Models.</b> Model deployments MOSAIC has planned or published into API Management,
-      with their gateway and API path. Publishing changes APIM only when a reviewed plan is
+      <img src="docs/images/screenshots/console-models.png" alt="A compact published-model list beside selected publication details, gateway state, and actions">
+      <p><b>Models.</b> A compact publication list opens the selected model's gateway state,
+      API path, access settings, and actions in a detail workspace. Publishing changes APIM only when a reviewed plan is
       applied, and only on a gateway in manage mode.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-register-key-endpoint.png" alt="The Register model endpoint dialog on its API key tab, with an endpoint URL, a masked API key, and two declared deployments">
+      <img src="docs/images/screenshots/console-register-key-endpoint.png" alt="The full-workspace Register model endpoint editor on its API key tab, with a masked key and two declared deployments">
       <p><b>Register with an API key.</b> When MOSAIC can't reach a resource with its managed
       identity, such as a Foundry project in another tenant, an administrator gives its URL and its
       API key, which MOSAIC keeps in its own Key Vault, and declares the deployments to publish with
@@ -123,22 +119,21 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-pools.png" alt="Model pools with gateway, models, routing type, active members, access, readiness, and status, and a separate Suggestions section">
-      <p><b>Model pools.</b> Each pool serves one vendor's models from deployments on many
-      endpoints and regions through a single API, with its routing type, how many deployments
-      are active, whether callers need a grant, and whether it is a draft or published. A separate
-      Suggestions section finds models deployed on multiple reachable endpoints without a pool.</p>
+      <img src="docs/images/screenshots/console-pools.png" alt="A compact model-pool list beside the selected published pool's overview, readiness, and routing settings">
+      <p><b>Model pools.</b> A compact list opens a pool's overview, showing its gateway, routing,
+      publication state, and readiness. Suggestions are a separate destination for models deployed
+      on multiple reachable endpoints without a pool.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-pool-detail.png" alt="A breaker pool serving Claude Opus 4.5 and Claude Sonnet 4.5 from five deployments in three regions, with weights, readiness, and drain switches">
-      <p><b>A model pool.</b> The Models and deployments section shows each model's deployments,
-      regions, capacity, readiness, weights, and drain controls. Overview, access, health, and
+      <p><b>A model pool.</b> Compact navigation rails give the Models and deployments section room
+      to show each model's deployments, regions, capacity, readiness, weights, and drain controls. Overview, access, health, and
       policy/run history are separate destinations.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-pool-access.png" alt="A governed pool's Access and connection section, with key and Entra sign-in switches, saved and applied authentication, and the start of its grants table">
+      <img src="docs/images/screenshots/console-pool-access.png" alt="A governed pool's Access and connection section, with key and Entra sign-in switches, saved and applied authentication, grants and pooled quotas, and a redacted connection example">
       <p><b>Who can call a pool.</b> A governed pool admits only callers granted one of its models,
       each charging a cost center and signing in with their own key or a Microsoft Entra token. The
       card lists the grants in force, their limits, and each cost center's pooled quota.</p>
@@ -153,42 +148,42 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-pool-editor.png" alt="The Create a model pool dialog on its Models step, opened from the Claude Haiku 4.5 suggestion, with the name callers send, the display name, and the model's deployments on two Foundry endpoints with their capacity, readiness, weight, and drain switch">
+      <img src="docs/images/screenshots/console-pool-editor.png" alt="The full-workspace Create a model pool editor on its Models step, with declared models and deployment controls">
       <p><b>Create a pool.</b> A suggestion opens the pool editor with the model and every
       deployment the gateway can use already chosen. An administrator names the model for callers
       and for the portal, weights or drains each deployment, and reviews the pool's routing and
       limits before saving it.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-endpoint-pools.png" alt="Contoso AI Foundry's deployments with the pools each one serves, and a Used by pools card listing the two Claude pools with their gateway, the deployments each uses, and status">
-      <p><b>Pools on an endpoint.</b> Each endpoint's deployments list the pools that serve them,
-      and a card names every pool that uses the endpoint. Before removing an endpoint or a
+      <img src="docs/images/screenshots/console-endpoint-pools.png" alt="A selected endpoint's Used by pools card listing two Claude pools, their gateways, deployment dependencies, and publication state">
+      <p><b>Pools on an endpoint.</b> The selected endpoint lists every pool that uses it and the
+      deployments each pool depends on. Before removing an endpoint or a
       deployment, an administrator can see which pools would lose it.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-mcps.png" alt="Published MCP servers with gateway apply state, authentication, and the application each calls models as">
-      <p><b>MCP servers.</b> Published MCP servers show their gateway apply state and the
-      application each calls models as, with separate sections for imported and registered
+      <img src="docs/images/screenshots/console-mcps.png" alt="A published MCP server selected beside a compact list, with gateway state, authentication, and its model-calling identity">
+      <p><b>MCP servers.</b> Selected server details show gateway state, tools, and the
+      model-calling identity, with separate sections for imported and registered
       servers. MOSAIC reads what a server offers and never calls a tool.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-identity.png" alt="The full-width Agents list with identity icons, default cost centers, directory status, and horizontal section navigation">
+      <img src="docs/images/screenshots/console-identity.png" alt="An Agents workbench with a compact selectable identity list and selected identity details">
       <p><b>Identity.</b> The people, agents, applications, and security groups MOSAIC references
-      by Entra object ID, each in its own section, separately from MOSAIC-local groups. The roomy
-      Agents list shows types, local defaults, and verification state; select an identity to inspect it.</p>
+      by Entra object ID, each in its own section, separately from MOSAIC-local groups. A compact
+      list opens the selected identity's defaults, verification state, and actions.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-directory-picker.png" alt="The Add agent dialog with directory results, an explicitly selected identity, already-added badges, and a separate Add action">
+      <img src="docs/images/screenshots/console-directory-picker.png" alt="The full-workspace Add agent editor with directory results, a selected identity, and a separate Add action">
       <p><b>Directory picker.</b> <b>Add agent</b> in the Agents section searches Microsoft Entra for
       agents; the same picker finds people, security groups, applications, and managed identities.
       Select a result and review its default cost center before explicitly adding a MOSAIC reference.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-security-group-members.png" alt="An on-demand security group drawer with members loaded from Microsoft Graph">
+      <img src="docs/images/screenshots/console-security-group-members.png" alt="A selected security group's detail workspace with members loaded from Microsoft Graph">
       <p><b>Security group members.</b> A recorded Entra security group shows its read-only
       Microsoft Graph member list. MOSAIC can show which members are also recorded locally for
       direct grants.</p>
@@ -196,23 +191,22 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-people-search.png" alt="The Add person dialog with a selected Entra search result and explicit Add action">
+      <img src="docs/images/screenshots/console-people-search.png" alt="The full-workspace Add person editor with a selected Entra search result and explicit Add action">
       <p><b>Find a person.</b> Search Microsoft Entra instead of copying object IDs into a form.
       Select an identity, review the local default, and add it without creating or changing an Entra account.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-identity-detail.png" alt="An agent overview drawer beside the full-width identity list">
-      <p><b>Identity details.</b> An on-demand drawer shows an identity's overview and local defaults
-      without squeezing the list. Editing local metadata is an explicit action, and closing or changing sections protects unsaved edits.</p>
+      <img src="docs/images/screenshots/console-identity-detail.png" alt="A selected agent's overview and local defaults beside the compact identity list">
+      <p><b>Identity details.</b> A generous detail workspace shows the selected identity's overview
+      and local defaults. Editing takes over the workspace, and leaving protects unsaved drafts.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-entitlements.png" alt="Grants with subjects, resources, cost centers, environments, limits, desired and applied state, and bindings, filtered by environment and cost center">
-      <p><b>Entitlements.</b> Grants of model APIs and MCP servers to people, agents,
-      applications, MOSAIC groups, and Entra security groups, each charged to a cost center, with
-      its environment, limits, desired and applied state, and APIM binding, filtered by environment
-      and cost center. Gateway enforcement changes only through a reviewed apply.</p>
+      <img src="docs/images/screenshots/console-entitlements.png" alt="A compact grant list beside selected grant limits, desired and applied state, and binding details">
+      <p><b>Entitlements.</b> A compact grant list opens the selected caller's resource, cost center,
+      limits, desired and applied state, and APIM binding. Filters narrow the list; gateway
+      enforcement changes only through a reviewed apply.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-overlapping-grants.png" alt="Overlapping grants showing which grant applies, each grant's limits, and links to the grants">
@@ -224,12 +218,10 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-cost-centers.png" alt="Cost centers with codes, members, grants, key eligibility, owners, and budget badges, alongside creation and tenant-default controls">
-      <p><b>Cost centers.</b> Every grant, and so every call, is charged to a cost center, which
-      spans gateways and has a unique code callers can name in a header, owners, members, and a
-      switch for whether its grants may use keys. Administrators create them here, choose the
-      tenant default that new people are charged to; a separate Organization-wide budget section
-      manages the aggregate warn-only budget while each center's badge shows its own status.</p>
+      <img src="docs/images/screenshots/console-cost-centers.png" alt="A selectable cost-center list and selected center detail, with a separate New cost center action">
+      <p><b>Cost centers.</b> A compact list selects a charge scope and shows its code, ownership,
+      key-access setting, and budget state in detail. New cost centers use a separate editor;
+      organization-wide budgeting has its own section.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-cost-center-detail.png" alt="A selected cost center's Members section with member kinds and default badges, alongside Overview, Limits, and Budget navigation">
@@ -241,11 +233,10 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-mcp-publish.png" alt="MCP publish review with access changes, the application the server calls models as, and plan steps">
-      <p><b>MCP publish review.</b> A MOSAIC-owned MCP server is published through API
-      Management only after the administrator reviews the access snapshot, including the
-      application its tools call models as, and the exact gateway resources that will change.
-      Sign-in metadata uses a dedicated operation and policy on the gateway's shared blank-path API.</p>
+      <img src="docs/images/screenshots/console-mcp-publish.png" alt="A full-workspace MCP publish review with access changes, model-calling identity, and gateway plan steps">
+      <p><b>MCP publish review.</b> A full-workspace review shows the server's access snapshot,
+      model-calling identity, and exact gateway resources that will change. Nothing is applied
+      until the administrator confirms the reviewed plan.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-analytics.png" alt="Analytics with request, token, cost, caller, error, and latency figures, a daily trend, and the top models, callers, and cost centers">
@@ -264,7 +255,7 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
       price shows <b>No price</b>, never $0.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-pricing.png" alt="The Pricing page listing one GPT-4o version's list prices by deployment type and region, each with its source, and a scheduled change">
+      <img src="docs/images/screenshots/console-pricing.png" alt="The Pricing page listing one GPT-4o version's input, cached-input, and output prices by deployment type and region">
       <p><b>Pricing.</b> The list prices MOSAIC turns usage into cost with, for each cloud, each
       linked to its source. Administrators add prices for other clouds and providers, or override
       one from a date without changing the days before it, and see which deployments have no price
@@ -348,8 +339,8 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-access-requests.png" alt="Pending access requests with requester, resource, cost center, justification, and approval or denial actions">
-      <p><b>Access requests.</b> The focused approval queue is reachable from the header's live
+      <img src="docs/images/screenshots/console-access-requests.png" alt="A compact access-request list beside the selected request's resource, cost center, justification, and approval or denial actions">
+      <p><b>Access requests.</b> The focused list-and-detail approval queue is reachable from the header's
       pending count or the Entitlements section menu. Approval saves grant intent; administrators
       still review and apply the gateway changes separately.</p>
     </td>
@@ -358,6 +349,25 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
       <p><b>Model access settings.</b> A dedicated section configures authentication for a
       selected published model, distinct from filtering individual grants. Review includes all
       saved grants and settings for that model and does not apply them automatically.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-analytics-filters.png" alt="A grouped Analytics Filters popover with draft controls, Apply filters, Reset, and Close filters">
+      <p><b>Analytics filters.</b> Change the entire report scope in one grouped filter panel and
+      apply it once. Dismissing the draft leaves the report and CSV export scope unchanged.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-new-cost-center.png" alt="A full-workspace New cost center editor with Back, creation fields, and Create cost center">
+      <p><b>New cost center.</b> Creation uses the full workspace instead of a permanent side form.
+      Back returns to the list and protects unsaved changes.</p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <img src="docs/images/screenshots/console-request-notifications.png" alt="Readable pending-request notifications with requester names, requested models, and a review action">
+      <p><b>Request notifications.</b> Each pending request separates the requester, requested
+      resource, and time. Selecting a notification opens that exact request for review.</p>
     </td>
   </tr>
   <tr>
@@ -636,9 +646,9 @@ workspace, Cost centers and their budgets, Settings → Environments and Email, 
 the Dashboard, Analytics, Pricing, the end-user portal, and the deterministic policy preview use
 live API contracts. Usage figures in
 Azure are measured from gateway logs; only local and test runs simulate the portal's, labeled
-**Sample figures**. Policy metadata and other future operational experiences are interactive
-frontend previews labeled **Sample data** or **Local preview**. They never claim to mutate Azure
-or substitute sample data for a failed API request.
+**Sample figures**. The administrator console contains no sample policy records, invented profile
+activity, mock integrations, or simulated support tickets. Unavailable data remains explicit, and
+reviewing a deterministic policy or enforcement plan never applies it.
 
 Existing deployments need `azd provision` (or a manual role grant) before publishing works: the
 API's identity moves from the API Management reader role to contributor. Until it is granted,
@@ -1692,6 +1702,10 @@ over the pool's resources in reverse, so a backend pool goes before the backends
 key's named value goes last. It refuses with `409` and `planRequired` or `stalePlan` as a
 publication's does. The same guards hold:
 
+- While a pool is applying or its gateway access state is unknown, editing, drain changes, access
+  settings, plan review, unpublishing, and record removal are locked, including direct workspace
+  links. Unknown state offers diagnostic recovery even when run history is unavailable; it does
+  not confirm quiescence or release the write lock.
 - A pool that still owns API Management resources can't be removed, and neither can a gateway with
   published pools.
 - An endpoint, or one of its deployments, can't be removed while a pool may own a backend for it.

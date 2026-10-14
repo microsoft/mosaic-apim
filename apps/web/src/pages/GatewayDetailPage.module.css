@@ -23,6 +23,12 @@
   gap: 10px;
 }
 
+.headerActions :global(.fui-Button),
+.headerActions :global(.fui-Badge) {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .tabPanel {
   display: grid;
   gap: 16px;
@@ -57,6 +63,7 @@
 }
 
 .detailCard {
+  min-width: 0;
   padding: 18px;
   display: grid;
   gap: 10px;
@@ -66,6 +73,7 @@
 }
 
 .apiCard {
+  min-width: 0;
   padding: 18px;
   display: grid;
   gap: 12px;
@@ -156,6 +164,6 @@
 
 .rollupGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
   gap: 8px 16px;
 }

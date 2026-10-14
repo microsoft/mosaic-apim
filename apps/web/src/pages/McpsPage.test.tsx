@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-query'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, useLocation } from 'react-router-dom'
+import { createMemoryRouter, RouterProvider, useLocation, useNavigate } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { McpsPage } from './McpsPage'
 import type { Gateway, McpEndpoint, McpPublication, McpServer, ObservedMcpTool, Principal, PublishPlan, PublishRun } from '../types'
@@ -321,6 +321,8 @@ const api = {
   syncMcpEndpoint: vi.fn(),
   deleteMcpEndpoint: vi.fn(),
   listMcpEndpointTools: vi.fn(),
+  assignEnvironments: vi.fn(),
+  updateMcpServerCatalog: vi.fn(),
 }
 
 vi.mock('../api', () => ({
@@ -330,7 +332,11 @@ vi.mock('../api', () => ({
 
 function LocationProbe() {
   const location = useLocation()
-  return <span data-testid="location">{`${location.pathname}${location.search}`}</span>
+  const navigate = useNavigate()
+  return <><span data-testid="location">{`${location.pathname}${location.search}${location.hash}`}</span>
+    <button onClick={() => navigate(-1)}>History back</button>
+    <button onClick={() => navigate(1)}>History forward</button>
+  </>
 }
 
 function UnrelatedPendingMutation() {
@@ -341,25 +347,39 @@ function UnrelatedPendingMutation() {
   return <button onClick={() => mutation.mutate()}>Start unrelated operation</button>
 }
 
-function renderMcpsPage(entry = '/mcps', includeUnrelatedMutation = false) {
+function renderMcpsPage(entry = '/mcps', includeUnrelatedMutation = false, initialEntries = [entry]) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[entry]}>
+  const router = createMemoryRouter([{ path: '*', element: <>
         <McpsPage />
         {includeUnrelatedMutation && <UnrelatedPendingMutation />}
         <LocationProbe />
-      </MemoryRouter>
+      </> }], { initialEntries })
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
     </QueryClientProvider>,
   )
 }
 
-const renderPage = renderMcpsPage
+function renderPage(entry = '/mcps', includeUnrelatedMutation = false) {
+  const url = new URL(entry, 'https://mosaic.example')
+  if (!url.searchParams.has('selected') && !url.searchParams.has('import')) {
+    const section = url.searchParams.get('tab')
+    url.searchParams.set('selected', section === 'registered' ? 'mcpEndpoint_1' : section === 'imported' ? 'mcpServer_1' : 'mcp_pub_1')
+  }
+  return renderMcpsPage(`${url.pathname}${url.search}`, includeUnrelatedMutation)
+}
 
 async function openRowMenu(user: ReturnType<typeof userEvent.setup>, scope: HTMLElement) {
   await user.click(await within(scope).findByRole('button', { name: /^More actions for/ }))
+}
+
+async function findDetails(name: string) {
+  const region = await screen.findByRole('region', { name })
+  await within(region).findAllByRole('heading', { level: 3 })
+  return region
 }
 
 describe('McpsPage', () => {
@@ -442,6 +462,8 @@ describe('McpsPage', () => {
     api.registerMcpEndpoint.mockResolvedValue(buildMcpEndpoint())
     api.syncMcpEndpoint.mockResolvedValue({ id: 'syncrun_1' })
     api.preflightMcpEndpoint.mockResolvedValue(buildMcpEndpoint())
+    api.assignEnvironments.mockResolvedValue({ results: [], grantsCarried: 0, warnings: [] })
+    api.updateMcpServerCatalog.mockResolvedValue(mcpServer)
   })
 
   it('allows section changes while an unrelated mutation is pending', async () => {
@@ -459,7 +481,7 @@ describe('McpsPage', () => {
     renderPage('/mcps?tab=invalid')
     expect(await screen.findByText('No MCP servers published yet')).toBeVisible()
     expect(api.listMcpEndpoints).not.toHaveBeenCalled()
-    expect(api.listMcpServers).not.toHaveBeenCalled()
+    expect(api.listImportableMcpServers).not.toHaveBeenCalled()
     await user.click(screen.getByRole('button', { name: 'Registered MCP servers' }))
     expect(await screen.findByRole('button', { name: 'Register server' })).toBeVisible()
     expect(screen.queryByRole('heading', { name: 'Published MCP servers' })).not.toBeInTheDocument()
@@ -481,7 +503,7 @@ describe('McpsPage', () => {
 
     renderPage('/mcps?tab=imported')
 
-    const table = await screen.findByRole('table', { name: 'Imported MCP servers' })
+    const table = await findDetails('Imported server details')
     expect(within(table).getByText('Weather MCP')).toBeVisible()
     expect(within(table).getByText('Passthrough · SSE')).toBeVisible()
     expect(within(table).getByRole('link', { name: 'Development gateway' })).toBeVisible()
@@ -493,55 +515,50 @@ describe('McpsPage', () => {
 
     renderPage()
 
-    const table = await screen.findByRole('table', { name: 'Published MCP servers' })
+    const table = await findDetails('Published server details')
     expect(within(table).getByText('Contoso tools')).toBeVisible()
     expect(within(table).getByText('https://apim-contoso-dev.azure-api.net/mosaic/mcp/contoso-tools/mcp')).toBeVisible()
     expect(within(table).getByText('Published')).toBeVisible()
     expect(within(table).getByText('Access applied')).toBeVisible()
 
     await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
-    expect(await screen.findByRole('dialog')).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Review MCP access' })).toBeVisible()
     expect(api.planMcpPublication).toHaveBeenCalledWith('mcp_pub_1')
     expect(await screen.findByRole('table', { name: 'MCP publish plan steps' })).toBeVisible()
-    // Wait through Tabster's delayed modal accessibility update, not just the initial render.
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)) })
-    const dialog = screen.getByRole('dialog', { name: 'Review MCP access' })
-    expect(dialog.closest('[aria-hidden="true"]')).toBeNull()
-    expect(dialog).toContainElement(document.activeElement as HTMLElement)
-    await user.keyboard('{Escape}')
-    await waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull())
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: 'Published MCP servers' })).not.toBeInTheDocument()
+    expect(screen.getByText('Preview the changes MOSAIC would apply. Nothing changes until you select Apply plan.')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Review MCP access' })).not.toBeInTheDocument())
     const opener = screen.getByRole('button', { name: /Review changes|Review publish plan/ })
-    await waitFor(() => expect(opener).toHaveFocus())
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Published server details' })).toHaveFocus())
     await user.click(opener)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus())
-    await user.keyboard('{Enter}')
-    await waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull())
-    await waitFor(() => expect(opener).toHaveFocus())
+    await user.click(await screen.findByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Published server details' })).toHaveFocus())
     expect(api.applyMcpPublication).not.toHaveBeenCalled()
   })
 
-  it('keeps the publication opener focused during planning without requesting a duplicate plan', async () => {
+  it('takes over the workspace while planning and blocks leaving an active plan request', async () => {
     const user = userEvent.setup()
     let finish!: (value: PublishPlan) => void
     api.listMcpPublications.mockResolvedValue([mcpPublication])
     api.planMcpPublication.mockReturnValueOnce(new Promise<PublishPlan>((resolve) => { finish = resolve }))
     renderPage()
     await user.click(await screen.findByRole('button', { name: /Review changes|Review publish plan/ }))
-    const planning = await screen.findByRole('button', { name: 'Planning…' })
-    expect(planning).toHaveFocus()
-    expect(planning).toHaveAttribute('aria-disabled', 'true')
-    expect(planning).not.toBeDisabled()
-    await user.click(planning)
-    await user.keyboard('{Enter}')
+    expect(await screen.findByText('Preparing MCP review')).toBeVisible()
+    expect(screen.queryByRole('list', { name: 'Published MCP servers' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    expect(await screen.findByRole('dialog', { name: 'Operation in progress' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Discard changes' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Stay' }))
     expect(api.planMcpPublication).toHaveBeenCalledTimes(1)
     await act(async () => { finish(mcpPlan) })
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus())
-    await user.keyboard('{Escape}')
-    await waitFor(() => expect(screen.getByRole('button', { name: /Review changes|Review publish plan/ })).toHaveFocus())
+    await user.click(await screen.findByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Published server details' })).toHaveFocus())
     expect(api.applyMcpPublication).not.toHaveBeenCalled()
   })
 
-  it.each(['Publish an MCP server', 'Publish through a gateway'])('restores the %s opener after publishing is dismissed', async (name) => {
+  it.each(['Publish an MCP server', 'Publish through a gateway'])('opens %s in the workspace and returns to its selected detail', async (name) => {
     const user = userEvent.setup()
     api.listMcpEndpoints.mockResolvedValue([buildMcpEndpoint()])
     renderPage(name === 'Publish through a gateway' ? '/mcps?tab=registered' : '/mcps')
@@ -549,10 +566,14 @@ describe('McpsPage', () => {
     const opener = await screen.findByRole('button', { name: fromRow ? /^More actions for/ : name })
     await user.click(opener)
     if (fromRow) await user.click(await screen.findByRole('menuitem', { name }))
-    await waitFor(() => expect(screen.getByRole('dialog')).toContainElement(document.activeElement as HTMLElement))
-    await user.keyboard('{Escape}')
-    await waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull())
-    await waitFor(() => expect(opener).toHaveFocus())
+    expect(await screen.findByRole('heading', { name: 'Publish an MCP server' })).toBeVisible()
+    expect(screen.queryByRole('list', { name: fromRow ? 'Registered MCP servers' : 'Published MCP servers' })).not.toBeInTheDocument()
+    if (fromRow) expect(await screen.findByRole('checkbox', { name: 'Publish Contoso tools' })).toBeChecked()
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    if (fromRow) {
+      await user.click(await screen.findByRole('button', { name: 'Discard changes' }))
+    }
+    await waitFor(() => expect(screen.getByRole('region', { name: fromRow ? 'Registered server details' : 'Published server details' })).toHaveFocus())
   })
 
   it('shows the applied model caller for a published MCP server', async () => {
@@ -572,8 +593,8 @@ describe('McpsPage', () => {
 
     renderPage()
 
-    const table = await screen.findByRole('table', { name: 'Published MCP servers' })
-    expect(within(table).getByText('Calls models as')).toBeVisible()
+    const table = await findDetails('Published server details')
+    expect(within(table).getByText('Model-calling identity')).toBeVisible()
     expect(within(table).getByText('Support bot')).toBeVisible()
     expect(within(table).getByText('Applied')).toBeVisible()
   })
@@ -595,7 +616,7 @@ describe('McpsPage', () => {
 
     renderPage()
 
-    const table = await screen.findByRole('table', { name: 'Published MCP servers' })
+    const table = await findDetails('Published server details')
     expect(within(table).getByText(/Not applied yet/)).toBeVisible()
     expect(within(table).getByText('Still live as Old bot. Review changes and apply the plan to switch.')).toBeVisible()
     expect(within(table).getByRole('button', { name: /Review changes|Review publish plan/ })).toBeVisible()
@@ -619,14 +640,17 @@ describe('McpsPage', () => {
 
     renderPage()
 
-    const table = await screen.findByRole('table', { name: 'Published MCP servers' })
-    const [named, cleared, none] = within(table).getAllByRole('row').slice(1)
+    const named = await findDetails('Published server details')
     expect(within(named).getByText('Not applied yet')).toBeVisible()
     expect(within(named).getByText('Review changes and apply the plan to start attributing its model calls.')).toBeVisible()
+    await userEvent.click(screen.getByRole('button', { name: /^Contoso Search/ }))
+    const cleared = screen.getByRole('region', { name: 'Published server details' })
     expect(within(cleared).getByText('None')).toBeVisible()
     expect(
       within(cleared).getByText('Still live as Support bot. Review changes and apply the plan to stop attributing its model calls.'),
     ).toBeVisible()
+    await userEvent.click(screen.getByRole('button', { name: /^Contoso Files/ }))
+    const none = screen.getByRole('region', { name: 'Published server details' })
     expect(within(none).getAllByText('None')).toHaveLength(1)
     expect(within(none).queryByText('Not applied yet')).not.toBeInTheDocument()
     expect(within(none).queryByRole('button', { name: /^More model caller actions for/ })).not.toBeInTheDocument()
@@ -639,9 +663,10 @@ describe('McpsPage', () => {
 
     renderPage()
 
-    const table = await screen.findByRole('table', { name: 'Published MCP servers' })
+    const table = await findDetails('Published server details')
     await user.click(within(table).getByRole('button', { name: 'Choose' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Calls models as' })
+    const dialog = await screen.findByRole('region', { name: 'Model-calling identity' })
+    expect(screen.queryByRole('list', { name: 'Published MCP servers' })).not.toBeInTheDocument()
     expect(within(dialog).getByRole('option', { name: /Support bot/ })).toBeVisible()
     expect(within(dialog).queryByRole('option', { name: /Adele Vance/ })).not.toBeInTheDocument()
 
@@ -657,9 +682,10 @@ describe('McpsPage', () => {
 
     renderPage()
 
-    const table = await screen.findByRole('table', { name: 'Published MCP servers' })
-    await user.click(within(table).getByRole('button', { name: /^More model caller actions for/ }))
-    await user.click(await screen.findByRole('menuitem', { name: 'Clear' }))
+    const table = await findDetails('Published server details')
+    await user.click(within(table).getByRole('button', { name: 'Change' }))
+    await user.selectOptions(await screen.findByRole('combobox', { name: 'Application principal' }), '')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() => expect(api.clearMcpModelCaller).toHaveBeenCalledWith('mcp_pub_1'))
   })
@@ -672,9 +698,9 @@ describe('McpsPage', () => {
 
     renderPage()
 
-    const table = await screen.findByRole('table', { name: 'Published MCP servers' })
+    const table = await findDetails('Published server details')
     await user.click(within(table).getByRole('button', { name: 'Choose' }))
-    await user.click(within(await screen.findByRole('dialog', { name: 'Calls models as' })).getByRole('button', { name: 'Save' }))
+    await user.click(within(await screen.findByRole('region', { name: 'Model-calling identity' })).getByRole('button', { name: 'Save' }))
 
     expect((await screen.findAllByText('Only applications can call models for an MCP server.')).length).toBeGreaterThan(0)
   })
@@ -684,7 +710,7 @@ describe('McpsPage', () => {
     api.listMcpPublications.mockResolvedValue([mcpPublication])
 
     renderPage()
-    const table = await screen.findByRole('table', { name: 'Published MCP servers' })
+    const table = await findDetails('Published server details')
     await openRowMenu(user, table)
     await user.click(await screen.findByRole('menuitem', { name: 'Unpublish' }))
 
@@ -716,7 +742,7 @@ describe('McpsPage', () => {
 
     renderPage()
 
-    const table = await screen.findByRole('table', { name: 'Published MCP servers' })
+    const table = await findDetails('Published server details')
     expect(within(table).getByText('Unpublished')).toBeVisible()
     expect(within(table).getByText(`Unpublished ${new Date(unpublishedAt).toLocaleString()}`)).toBeVisible()
     expect(within(table).queryByText('Access applied')).not.toBeInTheDocument()
@@ -733,12 +759,12 @@ describe('McpsPage', () => {
 
     renderPage('/mcps?tab=imported')
 
-    const table = await screen.findByRole('table', { name: 'Imported MCP servers' })
-    const [, published, imported] = within(table).getAllByRole('row')
+    const published = await findDetails('Imported server details')
     expect(
       await within(published).findByText("Hidden from the portal catalog while it isn't published."),
     ).toBeVisible()
-    expect(within(imported).queryByText(/Hidden from the portal catalog/)).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /^Orders MCP/ }))
+    expect(within(screen.getByRole('region', { name: 'Imported server details' })).queryByText(/Hidden from the portal catalog/)).not.toBeInTheDocument()
   })
 
   it('marks MOSAIC-published imported rows and points deletion to the publication', async () => {
@@ -746,7 +772,7 @@ describe('McpsPage', () => {
 
     renderPage('/mcps?tab=imported')
 
-    const table = await screen.findByRole('table', { name: 'Imported MCP servers' })
+    const table = await findDetails('Imported server details')
     expect(within(table).getByText('Published by MOSAIC')).toBeVisible()
     expect(within(table).getByText('Remove the publication record instead.')).toBeVisible()
     expect(within(table).queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
@@ -755,10 +781,111 @@ describe('McpsPage', () => {
   it('opens the import dialog from the gateway query', async () => {
     renderPage('/mcps?import=gateway_1')
 
-    expect(await screen.findByRole('dialog')).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Import MCP servers from a gateway' })).toBeVisible()
     const orders = await screen.findByRole('checkbox', { name: 'Import Orders MCP' })
     // Detection pre-checks the list once it arrives, so the check lands a render later.
     await waitFor(() => expect(orders).toBeChecked())
+  })
+
+  it('canonicalizes a legacy MCP import link without losing gateway preselection or unrelated URL state', async () => {
+    api.listGateways.mockResolvedValue([
+      buildGateway({ id: 'other-gateway', name: 'Other gateway' }),
+      buildGateway(),
+    ])
+    renderMcpsPage('/mcps?import=gateway_1&environment=development&scope=kept#details')
+    const gateway = await screen.findByRole('combobox', { name: 'Gateway to import from' })
+    await waitFor(() => expect(gateway).toHaveValue('gateway_1'))
+    const params = new URL(screen.getByTestId('location').textContent!, 'https://mosaic.example').searchParams
+    expect(params.has('import')).toBe(false)
+    expect(params.get('tab')).toBe('imported')
+    expect(params.get('mode')).toBe('import')
+    expect(params.get('importGateway')).toBe('gateway_1')
+    expect(params.get('environment')).toBe('development')
+    expect(params.get('scope')).toBe('kept')
+    expect(screen.getByTestId('location')).toHaveTextContent('#details')
+    expect(api.listImportableMcpServers).toHaveBeenCalledWith('gateway_1')
+  })
+
+  it.each([
+    ['Registered MCP servers', 'registered', 'Register server'],
+    ['Published MCP servers', 'published', 'Publish an MCP server'],
+  ])('allows leaving a consumed MCP import link for %s without reopening Import', async (sectionLabel, tab, action) => {
+    const user = userEvent.setup()
+    renderMcpsPage('/mcps?import=gateway_1&scope=kept')
+    await screen.findByRole('checkbox', { name: 'Import Orders MCP' })
+    await user.click(screen.getByRole('button', { name: sectionLabel }))
+    expect(await screen.findByRole('button', { name: action })).toBeVisible()
+    await waitFor(() => expect(new URL(screen.getByTestId('location').textContent!, 'https://mosaic.example').searchParams.get('tab')).toBe(tab))
+    expect(screen.queryByRole('heading', { name: 'Import MCP servers from a gateway' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('location')).toHaveTextContent('scope=kept')
+    expect(api.importMcpServers).not.toHaveBeenCalled()
+  })
+
+  it('honors Stay and confirmed discard when switching sections from a consumed MCP import draft', async () => {
+    const user = userEvent.setup()
+    renderMcpsPage('/mcps?import=gateway_1&scope=kept')
+    const orders = await screen.findByRole('checkbox', { name: 'Import Orders MCP' })
+    await waitFor(() => expect(orders).toBeChecked())
+    await user.click(orders)
+    await user.click(screen.getByRole('button', { name: 'Registered MCP servers' }))
+    expect(await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Stay' }))
+    expect(screen.getByRole('heading', { name: 'Import MCP servers from a gateway' })).toBeVisible()
+    expect(orders).not.toBeChecked()
+    await user.click(screen.getByRole('button', { name: 'Registered MCP servers' }))
+    await user.click(await screen.findByRole('button', { name: 'Discard changes' }))
+    expect(await screen.findByRole('button', { name: 'Register server' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Import MCP servers from a gateway' })).not.toBeInTheDocument()
+    expect(api.importMcpServers).not.toHaveBeenCalled()
+  })
+
+  it.each(['Cancel', 'Back'])('keeps a consumed MCP import link closed after workspace %s and later section changes', async (action) => {
+    const user = userEvent.setup()
+    renderMcpsPage('/mcps?import=gateway_1&scope=kept')
+    await screen.findByRole('checkbox', { name: 'Import Orders MCP' })
+    await user.click(screen.getByRole('button', { name: action }))
+    expect(await screen.findByRole('button', { name: 'Import from gateway' })).toBeVisible()
+    const params = new URL(screen.getByTestId('location').textContent!, 'https://mosaic.example').searchParams
+    expect(params.has('import')).toBe(false)
+    expect(params.has('importGateway')).toBe(false)
+    expect(params.has('mode')).toBe(false)
+    await user.click(screen.getByRole('button', { name: 'Published MCP servers' }))
+    expect(await screen.findByRole('button', { name: 'Publish an MCP server' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Imported MCP servers' }))
+    expect(await screen.findByRole('button', { name: 'Import from gateway' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Import MCP servers from a gateway' })).not.toBeInTheDocument()
+    expect(api.importMcpServers).not.toHaveBeenCalled()
+  })
+
+  it('restores gateway preselection from a canonical MCP import workspace URL', async () => {
+    api.listGateways.mockResolvedValue([
+      buildGateway({ id: 'other-gateway', name: 'Other gateway' }),
+      buildGateway(),
+    ])
+    renderMcpsPage('/mcps?tab=imported&mode=import&importGateway=gateway_1&scope=kept')
+    const gateway = await screen.findByRole('combobox', { name: 'Gateway to import from' })
+    await waitFor(() => expect(gateway).toHaveValue('gateway_1'))
+    const orders = await screen.findByRole('checkbox', { name: 'Import Orders MCP' })
+    await waitFor(() => expect(orders).toBeChecked())
+    expect(screen.getByText('Orders MCP')).toBeVisible()
+    expect(screen.getByTestId('location')).toHaveTextContent('scope=kept')
+    expect(api.importMcpServers).not.toHaveBeenCalled()
+  })
+
+  it('replaces a legacy MCP import history entry so Back and Forward after cancel do not reopen Import', async () => {
+    const user = userEvent.setup()
+    const legacy = '/mcps?import=gateway_1&scope=kept'
+    renderMcpsPage(legacy, false, ['/mcps?tab=registered', legacy])
+    await screen.findByRole('checkbox', { name: 'Import Orders MCP' })
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(await screen.findByRole('button', { name: 'Import from gateway' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'History back' }))
+    expect(await screen.findByRole('button', { name: 'Register server' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'History forward' }))
+    expect(await screen.findByRole('button', { name: 'Import from gateway' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Import MCP servers from a gateway' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('location')).toHaveTextContent('scope=kept')
+    expect(api.importMcpServers).not.toHaveBeenCalled()
   })
 
   it('does not offer a server that is already governed', async () => {
@@ -784,6 +911,8 @@ describe('McpsPage', () => {
     await waitFor(() => {
       expect(api.importMcpServers).toHaveBeenCalledWith('gateway_1', ['orders-mcp'])
     })
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('selected=mcpServer_1'))
+    expect(screen.getByTestId('location')).not.toHaveTextContent('import=')
   })
 
   it('explains when a gateway cannot host MCP servers', async () => {
@@ -810,9 +939,205 @@ describe('McpsPage', () => {
     expect(await screen.findByText('Not synchronised')).toBeVisible()
   })
 
+  it('keeps registration metadata out of compact rows until a server is selected', async () => {
+    const user = userEvent.setup()
+    api.listMcpEndpoints.mockResolvedValue([buildMcpEndpoint()])
+    renderMcpsPage('/mcps?tab=registered')
+    const list = await screen.findByRole('list', { name: 'Registered MCP servers' })
+    expect(await within(list).findByText('Contoso tools')).toBeVisible()
+    expect(within(list).getByText(/2 tools/)).toBeVisible()
+    expect(within(list).queryByText('https://mcp.contoso.com/mcp')).not.toBeInTheDocument()
+    expect(within(list).queryByText(/Protocol/)).not.toBeInTheDocument()
+    expect(api.listMcpEndpointTools).not.toHaveBeenCalled()
+    await user.click(within(list).getByRole('button', { name: /^Contoso tools/ }))
+    expect(await screen.findByText('https://mcp.contoso.com/mcp')).toBeVisible()
+    await waitFor(() => expect(api.listMcpEndpointTools).toHaveBeenCalledWith('mcpEndpoint_1'))
+  })
+
+  it('preserves section and environment filters through selection and browser history', async () => {
+    const user = userEvent.setup()
+    api.listMcpEndpoints.mockResolvedValue([
+      buildMcpEndpoint({ environment: 'development' }),
+      buildMcpEndpoint({ id: 'second', name: 'Orders tools', environment: 'development' }),
+    ])
+    renderMcpsPage('/mcps?tab=registered&environment=development&scope=kept')
+    await user.click(await screen.findByRole('button', { name: /^Contoso tools/ }))
+    await user.click(screen.getByRole('button', { name: /^Orders tools/ }))
+    const params = () => new URL(screen.getByTestId('location').textContent!, 'https://mosaic.example').searchParams
+    expect(params().get('tab')).toBe('registered')
+    expect(params().get('environment')).toBe('development')
+    expect(params().get('scope')).toBe('kept')
+    expect(params().get('selected')).toBe('second')
+    await user.click(screen.getByRole('button', { name: 'History back' }))
+    await waitFor(() => expect(params().get('selected')).toBe('mcpEndpoint_1'))
+    await user.click(screen.getByRole('button', { name: 'History forward' }))
+    await waitFor(() => expect(params().get('selected')).toBe('second'))
+  })
+
+  it('protects a registration draft across section changes and restores its draft on Stay', async () => {
+    const user = userEvent.setup()
+    renderMcpsPage('/mcps?tab=registered&environment=development')
+    await user.click(await screen.findByRole('button', { name: 'Register server' }))
+    expect(screen.queryByRole('list', { name: 'Registered MCP servers' })).not.toBeInTheDocument()
+    await user.type(screen.getByRole('textbox', { name: /Server URL/ }), 'https://draft.example/mcp')
+    await user.click(screen.getByRole('button', { name: 'Imported MCP servers' }))
+    expect(await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Stay' }))
+    expect(screen.getByRole('textbox', { name: /Server URL/ })).toHaveValue('https://draft.example/mcp')
+    expect(api.registerMcpEndpoint).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    await user.click(await screen.findByRole('button', { name: 'Discard changes' }))
+    expect(await screen.findByRole('button', { name: 'Register server' })).toBeVisible()
+    expect(screen.getByTestId('location')).toHaveTextContent('environment=development')
+  })
+
+  it('guards pending registration and returns with the saved resource selected without persisting its credentials', async () => {
+    const user = userEvent.setup()
+    let finish!: (endpoint: McpEndpoint) => void
+    api.registerMcpEndpoint.mockReturnValueOnce(new Promise<McpEndpoint>((resolve) => { finish = resolve }))
+    renderMcpsPage('/mcps?tab=registered&environment=development')
+    await user.click(await screen.findByRole('button', { name: 'Register server' }))
+    await user.type(screen.getByRole('textbox', { name: /Server URL/ }), 'https://a.example/mcp')
+    await user.click(screen.getByRole('tab', { name: 'Key Vault secret' }))
+    await user.type(screen.getByRole('textbox', { name: /Key Vault secret URI/ }), 'https://my-vault.vault.azure.net/secrets/mcp-token')
+    await user.click(screen.getByRole('button', { name: 'Register' }))
+    await waitFor(() => expect(api.registerMcpEndpoint).toHaveBeenCalledWith(expect.objectContaining({
+      authMode: 'apiKey', credentialSecretUri: 'https://my-vault.vault.azure.net/secrets/mcp-token',
+    })))
+    expect(screen.getByTestId('location')).not.toHaveTextContent('my-vault')
+    expect(screen.getByTestId('location')).not.toHaveTextContent('a.example')
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    expect(await screen.findByRole('dialog', { name: 'Operation in progress' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Stay' }))
+    const saved = buildMcpEndpoint({ environment: 'development' })
+    api.listMcpEndpoints.mockResolvedValue([saved])
+    await act(async () => { finish(saved) })
+    expect(await screen.findByRole('button', { name: 'Register server' })).toBeVisible()
+    expect(screen.queryByRole('dialog', { name: 'Discard unsaved changes?' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('location')).toHaveTextContent('selected=mcpEndpoint_1')
+    expect(screen.getByTestId('location')).toHaveTextContent('environment=development')
+  })
+
+  it('edits a registered environment in the workspace without changing credentials or its server', async () => {
+    const user = userEvent.setup()
+    api.listMcpEndpoints.mockResolvedValue([buildMcpEndpoint()])
+    renderPage('/mcps?tab=registered')
+    await openRowMenu(user, await findDetails('Registered server details'))
+    await user.click(await screen.findByRole('menuitem', { name: 'Change environment' }))
+    expect(await screen.findByRole('heading', { name: 'Edit Contoso tools' })).toBeVisible()
+    expect(screen.queryByRole('list', { name: 'Registered MCP servers' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('combobox', { name: 'Environment' }))
+    await user.click(await screen.findByRole('option', { name: 'Development' }))
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.assignEnvironments).toHaveBeenCalledWith({
+      assignments: [{ resourceKind: 'mcpEndpoint', resourceId: 'mcpEndpoint_1', environment: 'development' }],
+      acknowledgeGrants: false,
+    }))
+    expect(api.registerMcpEndpoint).not.toHaveBeenCalled()
+    expect(api.syncMcpEndpoint).not.toHaveBeenCalled()
+    await waitFor(() => expect(new URL(screen.getByTestId('location').textContent!, 'https://mosaic.example').searchParams.get('mode')).toBeNull())
+    expect(await screen.findByRole('button', { name: 'Register server' })).toBeVisible()
+  })
+
+  it.each([
+    { status: 'applying', accessState: 'applied' },
+    { status: 'published', accessState: 'applying' },
+    { status: 'published', accessState: 'unknown' },
+  ] as const)('keeps publication and identity operations locked for $status / $accessState', async (state) => {
+    api.listMcpPublications.mockResolvedValue([{ ...mcpPublication, ...state }])
+    api.listPrincipals.mockResolvedValue([supportBot])
+    renderPage()
+    const detail = await findDetails('Published server details')
+    expect(within(detail).getByRole('button', { name: /Review changes|Review publish plan/ })).toBeDisabled()
+    expect(within(detail).getByRole('button', { name: 'Choose' })).toBeDisabled()
+    await openRowMenu(userEvent.setup(), detail)
+    expect(await screen.findByRole('menuitem', { name: 'Unpublish' })).toHaveAttribute('aria-disabled', 'true')
+    expect(api.planMcpPublication).not.toHaveBeenCalled()
+    expect(api.applyMcpPublication).not.toHaveBeenCalled()
+  })
+
+  it('requires explicit acknowledgment before carrying active grants during an MCP environment edit', async () => {
+    const user = userEvent.setup()
+    api.listMcpEndpoints.mockResolvedValue([buildMcpEndpoint()])
+    api.assignEnvironments.mockRejectedValueOnce(Object.assign(new Error('Acknowledge the grants.'), {
+      body: { details: {
+        reason: 'grantsAcknowledgmentRequired', grants: [], grantCount: 1, principalCount: 1, truncated: false,
+      } },
+    }))
+    renderPage('/mcps?tab=registered')
+    await openRowMenu(user, await findDetails('Registered server details'))
+    await user.click(await screen.findByRole('menuitem', { name: 'Change environment' }))
+    await user.click(await screen.findByRole('combobox', { name: 'Environment' }))
+    await user.click(await screen.findByRole('option', { name: 'Development' }))
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('Active grants will carry across environments')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Confirm and save' })).toBeDisabled()
+    expect(api.assignEnvironments).toHaveBeenCalledTimes(1)
+    await user.click(screen.getByRole('checkbox', { name: 'I understand these active grants will carry to the new environment.' }))
+    await user.click(screen.getByRole('button', { name: 'Confirm and save' }))
+    await waitFor(() => expect(api.assignEnvironments).toHaveBeenLastCalledWith({
+      assignments: [{ resourceKind: 'mcpEndpoint', resourceId: 'mcpEndpoint_1', environment: 'development' }],
+      acknowledgeGrants: true,
+    }))
+  })
+
+  it('preserves the reviewed environment-pair refusal and explicit companion assignment', async () => {
+    const user = userEvent.setup()
+    api.listMcpEndpoints.mockResolvedValue([buildMcpEndpoint()])
+    const suggestion = { resourceKind: 'gateway', resourceId: 'gateway_1', environment: 'development' }
+    api.assignEnvironments.mockRejectedValueOnce(Object.assign(new Error('Pair is blocked.'), {
+      body: { details: {
+        reason: 'publicationsBlocked', suggestedAssignments: [suggestion],
+        publications: [{
+          kind: 'mcp', publicationId: mcpPublication.id, displayName: mcpPublication.displayName,
+          gatewayId: 'gateway_1', gatewayName: 'Development gateway', gatewayEnvironment: null,
+          mcpEndpointId: 'mcpEndpoint_1', mcpEndpointName: 'Contoso tools', endpointEnvironment: null,
+          verdict: { level: 'blocked', reason: 'The endpoint and gateway must be classified together.' },
+        }],
+      } },
+    }))
+    renderPage('/mcps?tab=registered')
+    await openRowMenu(user, await findDetails('Registered server details'))
+    await user.click(await screen.findByRole('menuitem', { name: 'Change environment' }))
+    await user.click(await screen.findByRole('combobox', { name: 'Environment' }))
+    await user.click(await screen.findByRole('option', { name: 'Development' }))
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByRole('table', { name: 'Blocked publications' })).toHaveTextContent('The endpoint and gateway must be classified together.')
+    expect(api.assignEnvironments).toHaveBeenCalledTimes(1)
+    await user.click(screen.getByRole('button', { name: 'Also classify this resource as Development' }))
+    await waitFor(() => expect(api.assignEnvironments).toHaveBeenLastCalledWith({
+      assignments: [
+        { resourceKind: 'mcpEndpoint', resourceId: 'mcpEndpoint_1', environment: 'development' }, suggestion,
+      ],
+      acknowledgeGrants: undefined,
+    }))
+  })
+
+  it('loads a direct review link without applying anything', async () => {
+    api.listMcpPublications.mockResolvedValue([mcpPublication])
+    renderMcpsPage('/mcps?tab=published&selected=mcp_pub_1&mode=review&scope=kept')
+    expect(await screen.findByRole('table', { name: 'MCP publish plan steps' })).toBeVisible()
+    expect(api.planMcpPublication).toHaveBeenCalledWith('mcp_pub_1')
+    expect(api.applyMcpPublication).not.toHaveBeenCalled()
+    expect(screen.queryByRole('list', { name: 'Published MCP servers' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('location')).toHaveTextContent('scope=kept')
+  })
+
+  it('updates catalog discovery separately from imported server authorization and removal', async () => {
+    const user = userEvent.setup()
+    api.listMcpServers.mockResolvedValue([mcpServer])
+    renderPage('/mcps?tab=imported')
+    const detail = await findDetails('Imported server details')
+    await user.selectOptions(within(detail).getByRole('combobox', { name: 'Catalog visibility for Weather MCP' }), 'private')
+    await waitFor(() => expect(api.updateMcpServerCatalog).toHaveBeenCalledWith('mcpServer_1', { visibility: 'private' }))
+    expect(api.applyMcpPublication).not.toHaveBeenCalled()
+    await user.click(within(detail).getByRole('button', { name: 'Remove import' }))
+    await waitFor(() => expect(api.deleteMcpServer).toHaveBeenCalledWith('mcpServer_1'))
+  })
+
   describe('registered servers', () => {
     function renderPage(entry = '/mcps?tab=registered') {
-      return renderMcpsPage(entry)
+      return renderMcpsPage(`${entry}&selected=mcpEndpoint_1`)
     }
     it('invites a registration when nothing is registered yet', async () => {
       renderPage()
@@ -825,7 +1150,7 @@ describe('McpsPage', () => {
 
       renderPage()
 
-      const table = await screen.findByRole('table', { name: 'Registered MCP servers' })
+      const table = await findDetails('Registered server details')
       expect(within(table).getByText('Contoso tools')).toBeVisible()
       expect(within(table).getByText('Connected')).toBeVisible()
       expect(within(table).getByText(/Protocol 2025-11-25/)).toBeVisible()
@@ -878,6 +1203,21 @@ describe('McpsPage', () => {
       }, { timeout: 5000 })
     })
 
+    it('does not register missing authentication inputs or a blank URL', async () => {
+      const user = userEvent.setup()
+      renderPage()
+      await user.click(await screen.findByRole('button', { name: 'Register server' }))
+      await user.click(screen.getByRole('button', { name: 'Register' }))
+      expect(api.registerMcpEndpoint).not.toHaveBeenCalled()
+      await user.type(screen.getByRole('textbox', { name: /Server URL/ }), 'https://a.example/mcp')
+      await user.click(screen.getByRole('tab', { name: 'Managed identity' }))
+      await user.click(screen.getByRole('button', { name: 'Register' }))
+      expect(api.registerMcpEndpoint).not.toHaveBeenCalled()
+      await user.click(screen.getByRole('tab', { name: 'Key Vault secret' }))
+      await user.click(screen.getByRole('button', { name: 'Register' }))
+      expect(api.registerMcpEndpoint).not.toHaveBeenCalled()
+    })
+
     it('will not offer a sync until the server is reachable', async () => {
       api.listMcpEndpoints.mockResolvedValue([
         buildMcpEndpoint({
@@ -898,7 +1238,7 @@ describe('McpsPage', () => {
 
       renderPage()
 
-      const table = await screen.findByRole('table', { name: 'Registered MCP servers' })
+      const table = await findDetails('Registered server details')
       await openRowMenu(userEvent.setup(), table)
       expect(await screen.findByRole('menuitem', { name: 'Sync tools' })).toHaveAttribute('aria-disabled', 'true')
     })
@@ -923,7 +1263,7 @@ describe('McpsPage', () => {
       ])
 
       renderPage()
-      await user.click(await screen.findByRole('button', { name: 'Contoso tools' }))
+      await user.click(await screen.findByRole('button', { name: /^Contoso tools/ }))
 
       // The status also appears as a badge in the table, so scope to the notice itself.
       const notice = await screen.findByText(
@@ -943,7 +1283,7 @@ describe('McpsPage', () => {
 
       renderPage()
 
-      const table = await screen.findByRole('table', { name: 'Registered MCP servers' })
+      const table = await findDetails('Registered server details')
       expect(within(table).getByText('Protocol not supported')).toBeVisible()
     })
 
@@ -953,7 +1293,7 @@ describe('McpsPage', () => {
       api.listMcpEndpointTools.mockResolvedValue([readOnlyTool, unannotatedTool])
 
       renderPage()
-      await user.click(await screen.findByRole('button', { name: 'Contoso tools' }))
+      await user.click(await screen.findByRole('button', { name: /^Contoso tools/ }))
 
       const table = await screen.findByRole('table', { name: 'Tools on Contoso tools' })
       // The description is unique to this row; the tool name appears twice because an unannotated
@@ -974,7 +1314,7 @@ describe('McpsPage', () => {
       api.listMcpEndpointTools.mockResolvedValue([readOnlyTool])
 
       renderPage()
-      await user.click(await screen.findByRole('button', { name: 'Contoso tools' }))
+      await user.click(await screen.findByRole('button', { name: /^Contoso tools/ }))
 
       const table = await screen.findByRole('table', { name: 'Tools on Contoso tools' })
       expect(within(table).getByText('Read only: yes')).toBeVisible()
@@ -989,7 +1329,7 @@ describe('McpsPage', () => {
       api.listMcpEndpointTools.mockResolvedValue([readOnlyTool])
 
       renderPage()
-      await user.click(await screen.findByRole('button', { name: 'Contoso tools' }))
+      await user.click(await screen.findByRole('button', { name: /^Contoso tools/ }))
 
       expect(
         await screen.findByText(/requires clients to treat tool annotations as untrusted/),
@@ -1009,7 +1349,7 @@ describe('McpsPage', () => {
       ])
 
       renderPage()
-      await user.click(await screen.findByRole('button', { name: 'Contoso tools' }))
+      await user.click(await screen.findByRole('button', { name: /^Contoso tools/ }))
 
       expect(
         await screen.findByText(/did not advertise a tools capability/),
@@ -1022,7 +1362,7 @@ describe('McpsPage', () => {
       api.deleteMcpEndpoint.mockResolvedValue(undefined)
 
       renderPage()
-      const table = await screen.findByRole('table', { name: 'Registered MCP servers' })
+      const table = await findDetails('Registered server details')
 
       await openRowMenu(user, table)
       await user.click(await screen.findByRole('menuitem', { name: 'Sync tools' }))
@@ -1031,7 +1371,7 @@ describe('McpsPage', () => {
       })
 
       await openRowMenu(user, table)
-      await user.click(await screen.findByRole('menuitem', { name: 'Remove' }))
+      await user.click(await screen.findByRole('menuitem', { name: 'Remove MOSAIC record' }))
       await waitFor(() => expect(api.deleteMcpEndpoint).toHaveBeenCalledWith('mcpEndpoint_1'), {
         timeout: 5000,
       })
