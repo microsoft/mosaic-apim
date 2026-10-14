@@ -374,6 +374,9 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
 
 ### End-user portal
 
+The portal shares the console's light and dark palette, glass navigation, and rounded panels.
+Resource lists, forms, and connection drawers remain solid for readability.
+
 <table>
   <tr>
     <td width="50%" valign="top">
@@ -414,7 +417,7 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/portal-usage-resources.png" alt="Usage by granted resource with requests, tokens, estimated cost, quotas, rate limits, and usage tracking">
-      <p><b>Usage by resource.</b> Model-first rows retain each offering and show its grant's
+      <p><b>Usage by resource.</b> A scrollable table retains each offering and shows its grant's
       requests, tokens, estimated cost or <b>No price</b>, quota use, busiest minute, and attribution.
       Overview and breakdowns share the same period and resource/environment filters.</p>
     </td>

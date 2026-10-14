@@ -50,7 +50,7 @@ If `uv` is available only as a Python module, use `python -m uv run ...` with th
 | `--output DIR` | Write the PNGs somewhere else, for example to compare before and after |
 | `--headed` | Show the browser while it captures |
 | `--preview` | Serve production assets after building both apps with `npm run build --prefix apps\web` and `npm run build --prefix apps\portal`; avoids cold dev-server dependency bundling |
-| `--check-navigation` | Also verify desktop collapse, mobile focus/inert behavior, identity drawer drafts/focus/reflow and section-change discard confirmation, forced colors, usage-first portal landing, unchanged list geometry, and drawer/credential teardown against the fictional estate |
+| `--check-navigation` | Also verify desktop collapse, mobile focus/inert behavior, identity drawer drafts/focus/reflow and section-change discard confirmation, forced colors, usage-first portal landing, unchanged list geometry, and drawer/credential teardown against the fictional estate. For each captured portal theme, check all four pages at desktop/mobile widths, glass chrome, opaque panels/drawers, panel spacing, and reduced-transparency/forced-colors/unsupported-blur fallbacks |
 | `--reuse-servers` | Use a demo API and apps that are already running instead of starting them |
 | `--api-port`, `--console-port`, `--portal-port` | Change the ports, which default to 18000, 15173, and 15174 |
 
@@ -239,6 +239,10 @@ shows both themes. Keep new shots in that pattern.
   after a failed one.
 
 ## Shot inventory
+
+The portal shots use the console's cool light/dark palette and glass navigation, with opaque
+resource lists, forms, and connection drawers. The Usage & cost overview uses a taller viewport
+to include both the daily trend and the complete last-24-hours chart.
 
 | Shot | App | Route and state | Theme | README entry |
 | --- | --- | --- | --- | --- |
