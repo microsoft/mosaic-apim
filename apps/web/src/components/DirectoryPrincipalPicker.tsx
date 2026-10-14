@@ -29,7 +29,7 @@ const searchKindLabels: Record<DirectorySearchKind, string> = {
 function directoryErrorMessage(error: unknown) {
   if (error instanceof ApiError) {
     if (error.status === 409 && error.body?.code === 'directory_disabled') {
-      return 'Directory search is off. Use manual entry instead.'
+      return 'Directory lookup requires Entra authentication. Use manual entry instead.'
     }
     if (error.status === 403 && error.body?.code === 'directory_forbidden') {
       return error.message

@@ -9,6 +9,7 @@ import { IdentityPage } from './IdentityPage'
 const mocks = vi.hoisted(() => ({
   lookupEnabled: true,
   statusError: false,
+  getDirectoryStatus: vi.fn(),
   principals: [] as Principal[],
   groups: [] as Group[],
   mcpPublications: [] as Array<{ id: string; displayName: string; modelCallerId?: string | null }>,
@@ -22,13 +23,7 @@ vi.mock('../api', () => ({
   ApiError: class ApiError extends Error {},
   useMosaicApi: () => ({
     listPrincipals: async () => [...mocks.principals],
-    getDirectoryStatus: async () => {
-      if (mocks.statusError) throw new Error('Directory status unavailable')
-      return {
-      lookupEnabled: mocks.lookupEnabled,
-      groupClaimsEnabled: false,
-      }
-    },
+    getDirectoryStatus: mocks.getDirectoryStatus,
     searchDirectory: mocks.searchDirectory,
     listPrincipalMembers: async () => ({
       groupObjectId: 'security-group-object',
@@ -157,6 +152,10 @@ describe('IdentityPage', () => {
     vi.resetAllMocks()
     mocks.lookupEnabled = true
     mocks.statusError = false
+    mocks.getDirectoryStatus.mockImplementation(async () => {
+      if (mocks.statusError) throw new Error('Directory status unavailable')
+      return { lookupEnabled: mocks.lookupEnabled, groupClaimsEnabled: false }
+    })
     mocks.principals = seedPrincipals()
     mocks.groups = []
     mocks.mcpPublications = []
@@ -484,7 +483,20 @@ describe('IdentityPage', () => {
     expect(screen.queryByRole('heading', { name: 'Agents' })).not.toBeInTheDocument()
   })
 
-  it('keeps Add person search-first with explicit manual fallback when directory lookup is off', async () => {
+  it('does not claim directory lookup is unavailable while checking its status', async () => {
+    mocks.getDirectoryStatus.mockReturnValue(new Promise(() => {}))
+    const user = userEvent.setup()
+    renderPage()
+    expect((await screen.findAllByText('Alex User')).length).toBeGreaterThan(0)
+
+    await user.click(screen.getByRole('button', { name: 'Add person' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Add person' })
+    expect(within(dialog).getByText('Checking directory lookup availability')).toBeVisible()
+    expect(within(dialog).queryByText(/Directory lookup requires Entra authentication/)).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: 'Use manual entry' })).not.toBeInTheDocument()
+  })
+
+  it('keeps Add person search-first with explicit manual fallback for local authentication', async () => {
     mocks.lookupEnabled = false
     const user = userEvent.setup()
     renderPage()
@@ -492,7 +504,8 @@ describe('IdentityPage', () => {
 
     await user.click(screen.getByRole('button', { name: 'Add person' }))
     const dialog = await screen.findByRole('dialog', { name: 'Add person' })
-    expect(await within(dialog).findByText(/Directory lookup is disabled/)).toBeVisible()
+    expect(await within(dialog).findByText(/Directory lookup requires Entra authentication/)).toBeVisible()
+    expect(within(dialog).queryByText(/MOSAIC_ENTRA_DIRECTORY_LOOKUP/)).not.toBeInTheDocument()
     expect(within(dialog).queryByRole('textbox', { name: /Entra object ID/ })).not.toBeInTheDocument()
     await user.click(within(dialog).getByRole('button', { name: 'Use manual entry' }))
     expect(within(dialog).getByRole('textbox', { name: /Entra object ID/ })).toBeVisible()

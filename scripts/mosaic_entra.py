@@ -47,7 +47,6 @@ MODEL_CLIENT_NOTES = (
     "it to get delegated model-runtime tokens."
 )
 MODEL_CLIENT_TOGGLE = "MOSAIC_ENTRA_MODEL_CLIENT"
-DIRECTORY_LOOKUP_TOGGLE = "MOSAIC_ENTRA_DIRECTORY_LOOKUP"
 GROUP_CLAIMS_TOGGLE = "MOSAIC_ENTRA_GROUP_CLAIMS"
 # Loopback redirect; Entra accepts any port for http://localhost on public clients.
 MODEL_CLIENT_REDIRECT_URI = "http://localhost"
@@ -275,10 +274,6 @@ def parse_default_true_toggle(name: str) -> bool:
 
 def model_client_enabled() -> bool:
     return parse_default_true_toggle(MODEL_CLIENT_TOGGLE)
-
-
-def directory_lookup_enabled() -> bool:
-    return parse_default_true_toggle(DIRECTORY_LOOKUP_TOGGLE)
 
 
 def group_claims_enabled() -> bool:
@@ -838,29 +833,22 @@ def postprovision(
             file=sys.stderr,
         )
 
-    if directory_lookup_enabled():
-        api_managed_identity_principal_id = os.environ.get("API_APP_PRINCIPAL_ID")
-        if runner.dry_run and not api_managed_identity_principal_id:
-            api_managed_identity_principal_id = deterministic_guid(
-                f"dry-run/api-managed-identity/{context.environment_name}"
-            )
-        if not api_managed_identity_principal_id:
-            raise OperationFailed(
-                "Operation grant Microsoft Graph application permissions failed: "
-                "API_APP_PRINCIPAL_ID was not available from the azd environment. "
-                "Remediation: ensure infra/main.bicep outputs API_APP_PRINCIPAL_ID and rerun "
-                "`azd provision`."
-            )
-        ensure_api_managed_identity_graph_permissions(
-            runner,
-            managed_identity_principal_id=api_managed_identity_principal_id,
+    api_managed_identity_principal_id = os.environ.get("API_APP_PRINCIPAL_ID")
+    if runner.dry_run and not api_managed_identity_principal_id:
+        api_managed_identity_principal_id = deterministic_guid(
+            f"dry-run/api-managed-identity/{context.environment_name}"
         )
-    else:
-        print(
-            f"{DIRECTORY_LOOKUP_TOGGLE} is false; skipping Microsoft Graph application "
-            "permission grants for the MOSAIC API managed identity.",
-            file=sys.stderr,
+    if not api_managed_identity_principal_id:
+        raise OperationFailed(
+            "Operation grant Microsoft Graph application permissions failed: "
+            "API_APP_PRINCIPAL_ID was not available from the azd environment. "
+            "Remediation: ensure infra/main.bicep outputs API_APP_PRINCIPAL_ID and rerun "
+            "`azd provision`."
         )
+    ensure_api_managed_identity_graph_permissions(
+        runner,
+        managed_identity_principal_id=api_managed_identity_principal_id,
+    )
 
 
 def patch_deployed_redirect(

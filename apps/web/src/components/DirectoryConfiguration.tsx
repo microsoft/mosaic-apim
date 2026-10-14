@@ -15,8 +15,8 @@ export function DirectoryConfiguration() {
         <MessageBar intent={status.data.lookupEnabled ? 'info' : 'warning'}>
           <MessageBarBody>
             {status.data.lookupEnabled
-              ? 'Directory lookup is configured. A successful search confirms access for that identity type; this setting does not verify Graph consent.'
-              : 'Directory lookup is disabled. Enable MOSAIC_ENTRA_DIRECTORY_LOOKUP in the deployment, using Entra authentication, to search identities.'}
+              ? 'Directory lookup is available automatically with Entra authentication. A successful search confirms access for that identity type; availability alone does not verify Graph consent.'
+              : 'Directory lookup requires Entra authentication and is unavailable with local authentication. Use manual entry to record identities without directory verification.'}
           </MessageBarBody>
         </MessageBar>
       )}

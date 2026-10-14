@@ -1271,9 +1271,9 @@ export function IdentityPage() {
               <DialogTitle>{principalDialogTitle}</DialogTitle>
               <DialogContent className={styles.dialogForm}>
                 <Text className={styles.muted}>{principalCreateHint}</Text>
-                {!directoryLookupEnabled && <MessageBar intent={directoryStatus.isError ? 'error' : 'warning'}>
+                {!directoryStatus.isPending && !directoryLookupEnabled && <MessageBar intent={directoryStatus.isError ? 'error' : 'warning'}>
                   <MessageBarBody>
-                    {directoryStatus.isError ? 'Could not check directory availability.' : 'Directory lookup is disabled; entries are recorded without directory verification.'}
+                    {directoryStatus.isError ? 'Could not check directory availability.' : 'Directory lookup requires Entra authentication. Manual entries are recorded without directory verification.'}
                     {' '}<a href="/settings?tab=runtime">Check directory configuration</a>
                     <Button onClick={() => directoryStatus.refetch()} disabled={directoryStatus.isFetching}>Retry directory availability</Button>
                   </MessageBarBody>
