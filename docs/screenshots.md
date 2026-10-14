@@ -52,7 +52,7 @@ If `uv` is available only as a Python module, use `python -m uv run ...` with th
 | `--logs-dir DIR` | Use a new dedicated directory for server logs and unredacted failure captures; keep it outside the repository. A successful run removes it |
 | `--headed` | Show the browser while it captures |
 | `--preview` | Serve production assets after building both apps with `npm run build --prefix apps\web` and `npm run build --prefix apps\portal`; avoids cold dev-server dependency bundling |
-| `--check-navigation` | Also verify all four administrator rail combinations in both themes, full width recovery, single-line controls and document reflow, every Pool section and Pricing at exactly 1440px document width with local table scrolling and `scrollIntoView`, mobile focus/inert behavior, workspace drafts and section-change discard decisions, forced colors, usage-first portal landing, unchanged portal list geometry, and drawer/credential teardown against the fictional estate. For each captured portal theme, check all four pages at desktop/mobile widths, glass chrome, opaque panels/drawers, panel spacing, and reduced-transparency/forced-colors/unsupported-blur fallbacks |
+| `--check-navigation` | Also verify all four administrator rail combinations in both themes, full width recovery, single-line controls and document reflow, every Pool section and Pricing at exactly 1440px document width with local table scrolling and `scrollIntoView`, mobile focus/inert behavior, workspace drafts and section-change discard decisions, forced colors, usage-first portal landing, portal primary/section rail width recovery, expanded/compact appearance controls, unchanged portal list geometry, and drawer/credential teardown against the fictional estate. For each captured portal theme, check all four pages at desktop/mobile widths, glass chrome, opaque panels/drawers, panel spacing, and reduced-transparency/forced-colors/unsupported-blur fallbacks |
 | `--reuse-servers` | Use a demo API and apps that are already running instead of starting them |
 | `--api-port`, `--console-port`, `--portal-port` | Change the ports, which default to 18000, 15173, and 15174 |
 
@@ -250,7 +250,7 @@ to include both the daily trend and the complete last-24-hours chart.
 | Shot | App | Route and state | Theme | README entry |
 | --- | --- | --- | --- | --- |
 | `console-dashboard-light`, `console-dashboard-dark` | Console | `/dashboard` | Both | Light and dark: console overview |
-| `portal-catalog-light`, `portal-catalog-dark` | Portal | `/catalog`, model-grouped rows with environment and access filters | Both | Light and dark: portal catalog |
+| `portal-catalog-light`, `portal-catalog-dark` | Portal | `/catalog`, full-width model-grouped rows with filters, blue-tinted glass navigation, and appearance controls | Both | Light and dark: portal catalog |
 | `console-gateways` | Console | `/gateways`, compact list with selected gateway overview | Light | Gateways |
 | `console-gateway-overview` | Console | Contoso AI Gateway, **Overview** section | Dark | Gateway overview |
 | `console-gateway-apis` | Console | Contoso AI Gateway, **APIs and endpoints** section | Light | APIs and endpoints |
@@ -299,7 +299,7 @@ to include both the daily trend and the complete last-24-hours chart.
 | `portal-pool-connection` | Portal | `/access`, Claude Sonnet 4.5 selected, **Connection details** drawer scrolled to **Authentication** and the shared-key note | Dark | Models that share a key |
 | `portal-mcp-connection` | Portal | `/access`, with an enforced MCP grant's **Connection details** open | Dark | MCP connection |
 | `portal-requests` | Portal | `/requests`, model-first cards with offering and version context | Dark | My requests |
-| `portal-usage` | Portal | `/usage`, the default portal landing page | Light | Usage & cost |
+| `portal-usage` | Portal | `/usage`, the default portal landing page with icon-based, collapsible section navigation | Light | Usage & cost |
 | `portal-usage-resources` | Portal | `/usage?tab=resources`, **By resource** with exact offering context | Dark | Usage by resource |
 | `portal-usage-breakdowns` | Portal | `/usage?tab=breakdowns`, **Cost centers** and pooled quotas | Light | Usage breakdowns |
 | `portal-budget-banner` | Portal | `/access`, with the budget banner for Customer Insights | Light | Budget banner |

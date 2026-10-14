@@ -62,13 +62,17 @@ export function MosaicThemeProvider({ children }: PropsWithChildren) {
         colorNeutralStroke1: '#536479',
         colorNeutralStroke2: '#354354',
         colorBrandBackground: '#005faa',
+        borderRadiusMedium: '8px',
+        borderRadiusLarge: '12px',
       } : {
         ...webLightTheme,
         colorNeutralBackground2: '#f5f7fa',
         colorNeutralBackground3: '#e8edf4',
         colorNeutralStroke1: '#c6cfdb',
-        colorNeutralStroke2: '#e1e7ef',
+        colorNeutralStroke2: '#dce5ef',
         colorBrandBackground: '#005faa',
+        borderRadiusMedium: '8px',
+        borderRadiusLarge: '12px',
       }}>
         {children}
       </FluentProvider>

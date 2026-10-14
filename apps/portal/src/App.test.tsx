@@ -69,6 +69,7 @@ describe('App', () => {
     const links = within(screen.getByRole('navigation', { name: 'Primary navigation' })).getAllByRole('link')
     expect(links.map((link) => link.textContent)).toEqual(['Usage & cost', 'Catalog', 'My access', 'My requests'])
     expect(links[0]).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('group', { name: 'Appearance' })).toBeVisible()
     expect(screen.queryByText('Personal view')).not.toBeInTheDocument()
   })
   it('renders the portal no-role explanation on a 403 profile response', async () => {
