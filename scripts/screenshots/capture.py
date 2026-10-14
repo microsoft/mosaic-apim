@@ -1442,7 +1442,7 @@ def _check_navigation(page: Page, app: App) -> None:
     if app == "portal":
         appearance = page.get_by_role("button", name=re.compile("^Appearance: "))
         appearance.click()
-        page.get_by_role("menuitem", name="Dark", exact=True).click()
+        page.get_by_role("menuitem", name=re.compile(r"^Dark(?: \(selected\))?$")).click()
         if page.locator("html").get_attribute("data-theme") != "dark":
             raise CaptureError("portal: compact appearance control did not select dark")
     page.get_by_role("button", name="Expand navigation", exact=True).click()
