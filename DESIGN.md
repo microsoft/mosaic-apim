@@ -16,10 +16,10 @@ browser history. Both rails use meaningful icons, tooltips, accessible names, an
 collapse state. Collapsing either rail releases its full width to the workspace; content has no
 fixed maximum width. At constrained workspace widths, a labeled selector replaces the section rail.
 
-The administrator rail exposes Light, Dark, and System next to the account menu, with a compact
-menu when collapsed. It shares the browser preference with Settings. Both apps use a cool-neutral
+Both primary rails expose Light, Dark, and System next to the account menu, with a compact
+menu when collapsed. They use the same preference key as administrator Settings. Both apps use a cool-neutral
 light/dark palette and restrained translucent navigation rails and top bars. The admin chrome
-adds soft blue-tinted glass; data panels, forms, menus, and portal drawers stay opaque. Rounded
+uses soft blue-tinted glass, as does the portal; data panels, forms, menus, and portal drawers stay opaque. Rounded
 panels, soft borders, and Fluent theme overrides keep those surfaces consistent. Unsupported blur,
 reduced transparency, and forced colors use solid navigation surfaces.
 

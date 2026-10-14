@@ -1331,7 +1331,10 @@ def _check_portal_appearance(page: Page, theme: Theme) -> None:
                             glass };
                         }"""
                     )
-                    if chrome["blur"] != "blur(16px)" or chrome["background"] != chrome["glass"]:
+                    if (
+                        chrome["blur"] != "blur(20px) saturate(1.4)"
+                        or chrome["background"] != chrome["glass"]
+                    ):
                         raise CaptureError(
                             f"portal: {route} {selector} does not use {theme} glass chrome: "
                             f"{chrome}"
@@ -1421,6 +1424,7 @@ def _check_portal_appearance(page: Page, theme: Theme) -> None:
 def _check_navigation(page: Page, app: App) -> None:
     """Exercise shell geometry and focus using the same fictional estate as the captures."""
     origin = "/".join(page.url.split("/")[:3])
+    original_preference = page.evaluate("localStorage.getItem('mosaic-theme')")
     page.set_viewport_size({"width": 1440, "height": 900})
     page.goto(origin + ("/catalog" if app == "portal" else "/dashboard"))
     _settle(page)
@@ -1430,18 +1434,43 @@ def _check_navigation(page: Page, app: App) -> None:
     collapsed = sidebar.bounding_box()
     if collapsed is None or collapsed["width"] > 90:
         raise CaptureError(f"{app}: collapsed primary navigation is not a compact rail")
-    if app == "console":
-        content_after = page.locator(".content-inner").bounding_box()
-        if content_before is None or content_after is None or (
-            content_after["width"] - content_before["width"] < 120
-        ):
-            raise CaptureError("console: collapsing primary navigation did not release its width")
+    content_after = page.locator(".content-inner").bounding_box()
+    if content_before is None or content_after is None or (
+        content_after["width"] - content_before["width"] < 120
+    ):
+        raise CaptureError(f"{app}: collapsing primary navigation did not release its width")
+    if app == "portal":
+        appearance = page.get_by_role("button", name=re.compile("^Appearance: "))
+        appearance.click()
+        page.get_by_role("menuitem", name="Dark", exact=True).click()
+        if page.locator("html").get_attribute("data-theme") != "dark":
+            raise CaptureError("portal: compact appearance control did not select dark")
     page.get_by_role("button", name="Expand navigation", exact=True).click()
     expanded = sidebar.bounding_box()
     if expanded is None or expanded["width"] < 200:
         raise CaptureError(f"{app}: expanding primary navigation did not restore its labels")
 
     if app == "portal":
+        appearance = page.get_by_role("group", name="Appearance")
+        for preference in ("Light", "Dark", "System"):
+            appearance.get_by_role("button", name=preference, exact=True).click()
+            if page.evaluate("localStorage.getItem('mosaic-theme')") != preference.lower():
+                raise CaptureError(f"portal: appearance did not persist {preference}")
+        page.goto(origin + "/usage")
+        _settle(page)
+        section_navigation = page.get_by_role("navigation", name="Usage sections")
+        section_content = section_navigation.locator("..").locator("> div").last
+        before = section_content.bounding_box()
+        page.get_by_role("button", name="Collapse Usage sections", exact=True).click()
+        after = section_content.bounding_box()
+        if before is None or after is None or after["width"] - before["width"] < 150:
+            raise CaptureError("portal: collapsing usage sections did not release its width")
+        page.get_by_role("button", name="Expand Usage sections", exact=True).click()
+        if original_preference:
+            page.evaluate(
+                "preference => localStorage.setItem('mosaic-theme', preference)",
+                original_preference,
+            )
         page.goto(origin + "/")
         page.wait_for_url(origin + "/usage")
         page.goto(origin + "/access")

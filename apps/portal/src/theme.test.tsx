@@ -44,6 +44,9 @@ describe('MosaicThemeProvider', () => {
     expect(themeValue('colorNeutralBackground2')).toBe(subtle)
     expect(themeValue('colorNeutralStroke1')).toBe(border)
     expect(themeValue('colorBrandBackground')).toBe('#005faa')
+    expect(themeValue('colorNeutralStroke2')).toBe(preference === 'light' ? '#dce5ef' : '#354354')
+    expect(themeValue('borderRadiusMedium')).toBe('8px')
+    expect(themeValue('borderRadiusLarge')).toBe('12px')
     expect(document.documentElement.dataset.theme).toBe(preference)
   })
 

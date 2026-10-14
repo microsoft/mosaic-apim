@@ -1,4 +1,4 @@
-import { Button } from '@fluentui/react-components'
+import { Button, Tooltip } from '@fluentui/react-components'
 import { ChevronLeftRegular, ChevronRightRegular } from '@fluentui/react-icons'
 import { type ReactNode, useCallback, useId, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -8,6 +8,7 @@ export interface PageSection {
   value: string
   label: string
   description?: string
+  icon?: ReactNode
 }
 
 export function usePageSection(sections: readonly PageSection[], defaultValue = sections[0].value, parameter = 'tab') {
@@ -51,13 +52,15 @@ export function SectionLayout({
           aria-label={collapsed ? `Expand ${label} sections` : `Collapse ${label} sections`}
           aria-expanded={!collapsed} onClick={toggle} />
         {sections.map((section) => (
-          <button key={section.value} type="button"
+          <Tooltip key={section.value} content={section.label} relationship="label">
+          <button type="button"
             className={active === section.value ? styles.active : ''}
             aria-current={active === section.value ? 'page' : undefined}
-            title={section.label} onClick={() => onSelect(section.value)}>
-            {collapsed ? <span aria-hidden="true">{section.label.slice(0, 2)}</span> : section.label}
-            {collapsed && <span className="sr-only">{section.label}</span>}
+            title={section.label} aria-label={section.label} onClick={() => onSelect(section.value)}>
+            <span className={styles.icon} aria-hidden="true">{section.icon}</span>
+            <span className={collapsed ? 'sr-only' : styles.label}>{section.label}</span>
           </button>
+          </Tooltip>
         ))}
       </nav>
       <div className={styles.compact}>

@@ -384,8 +384,9 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
 
 ### End-user portal
 
-The portal shares the console's light and dark palette, glass navigation, and rounded panels.
-Resource lists, forms, and connection drawers remain solid for readability.
+The portal shares the console's cool-neutral palette, blue-tinted glass navigation, rounded
+controls, and full-width workspace. Choose Light, Dark, or System beside the account menu;
+resource lists, forms, and connection drawers remain solid for readability.
 
 <table>
   <tr>

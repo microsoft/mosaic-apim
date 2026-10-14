@@ -27,6 +27,7 @@ import { NavLink, Navigate, Outlet, Route, Routes } from 'react-router-dom'
 import { usePortalApi } from './api'
 import { AuthGate } from './auth'
 import { ErrorState, Loading } from './components/AsyncState'
+import { AppearanceControl } from './components/AppearanceControl'
 import { initialsFor } from './initials'
 import { CatalogPage } from './pages/CatalogPage'
 import { MyAccessPage } from './pages/MyAccessPage'
@@ -128,6 +129,7 @@ function PortalShell() {
           <NavigationLinks onNavigate={closeNavigation} />
         </nav>
         <div className="utility-navigation">
+          <AppearanceControl />
           <Menu>
             <MenuTrigger disableButtonEnhancement>
               <Button className="profile-quick-link" appearance="subtle" aria-label={`Account menu for ${accountName}`} title={accountName}>

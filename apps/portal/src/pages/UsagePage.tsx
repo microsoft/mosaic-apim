@@ -9,6 +9,7 @@ import {
   Text,
 } from '@fluentui/react-components'
 import { useQuery } from '@tanstack/react-query'
+import { DataUsageRegular, ChartMultipleRegular, AppsListRegular } from '@fluentui/react-icons'
 import { type ReactNode, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { usePortalApi } from '../api'
@@ -637,9 +638,9 @@ function ResourceTable({
 
 export function UsagePage() {
   const sections = [
-    { value: 'overview', label: 'Overview & trends', description: 'Your calls over time. The period, environment and resource filters apply to every view.' },
-    { value: 'resources', label: 'Resources & limits', description: 'Usage and configured limits for each grant. Reported usage may be delayed; it is not a live quota counter.' },
-    { value: 'breakdowns', label: 'Usage breakdowns', description: 'Understand where calls are attributed, by environment and cost center.' },
+    { value: 'overview', label: 'Overview & trends', icon: <DataUsageRegular />, description: 'Your calls over time. The period, environment and resource filters apply to every view.' },
+    { value: 'resources', label: 'Resources & limits', icon: <AppsListRegular />, description: 'Usage and configured limits for each grant. Reported usage may be delayed; it is not a live quota counter.' },
+    { value: 'breakdowns', label: 'Usage breakdowns', icon: <ChartMultipleRegular />, description: 'Understand where calls are attributed, by environment and cost center.' },
   ]
   const [section, selectSection] = usePageSection(sections)
   const api = usePortalApi()
