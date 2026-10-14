@@ -30,9 +30,6 @@ param modelRuntimeClientId string = ''
 @description('Optional GUID of the public client people sign in with to get delegated model-runtime tokens. Must differ from the API and model-runtime client IDs.')
 param modelClientId string = ''
 
-@description('Whether MOSAIC API should use Microsoft Graph directory lookup.')
-param entraDirectoryLookup string = 'true'
-
 @description('Whether Entra bootstrap should configure group claims for MOSAIC audiences.')
 param entraGroupClaims string = 'true'
 
@@ -173,10 +170,6 @@ var apiAppSettings = concat([
   {
     name: 'MOSAIC_MODEL_CLIENT_ID'
     value: modelClientId
-  }
-  {
-    name: 'MOSAIC_ENTRA_DIRECTORY_LOOKUP'
-    value: entraDirectoryLookup
   }
   {
     name: 'MOSAIC_ENTRA_GROUP_CLAIMS'

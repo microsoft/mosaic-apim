@@ -17,9 +17,11 @@ collapse state. Collapsing either rail releases its full width to the workspace;
 fixed maximum width. At constrained workspace widths, a labeled selector replaces the section rail.
 
 The administrator rail exposes Light, Dark, and System next to the account menu, with a compact
-menu when collapsed. It shares the browser preference with Settings. The admin chrome uses
-soft blue-tinted glass, rounded edges, and quiet borders; data and forms stay opaque. Unsupported blur, reduced
-transparency, and forced colors use solid surfaces.
+menu when collapsed. It shares the browser preference with Settings. Both apps use a cool-neutral
+light/dark palette and restrained translucent navigation rails and top bars. The admin chrome
+adds soft blue-tinted glass; data panels, forms, menus, and portal drawers stay opaque. Rounded
+panels, soft borders, and Fluent theme overrides keep those surfaces consistent. Unsupported blur,
+reduced transparency, and forced colors use solid navigation surfaces.
 
 Primary mobile navigation is modal, traps focus, restores the opener, and makes the underlying
 header/content inert. The portal opens on Usage & cost, followed by Catalog, My access, and My

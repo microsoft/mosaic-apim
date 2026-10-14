@@ -136,13 +136,6 @@ class Settings(BaseSettings):
         ),
     )
     mcp_discovery_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
-    entra_directory_lookup: bool = Field(
-        default=True,
-        description=(
-            "MOSAIC reads Microsoft Graph with its managed identity, read-only, to search the "
-            "directory and verify principals."
-        ),
-    )
     entra_group_claims: bool = Field(
         default=True,
         description=(

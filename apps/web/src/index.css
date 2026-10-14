@@ -351,6 +351,8 @@ code,
 
 .directory-configuration {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 16px;
   margin-top: 24px;
   padding-top: 24px;

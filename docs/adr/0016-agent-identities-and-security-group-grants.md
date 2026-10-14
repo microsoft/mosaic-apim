@@ -36,8 +36,10 @@ uses application permissions `User.ReadBasic.All`, `GroupMember.Read.All` and
 `AgentIdentity.Read.All`. MOSAIC uses Graph to search directory objects, verify a principal when it
 is added, list security-group members, resolve administrator-entered IDs, explain group access in
 the console and detect overlapping grants. It never writes to Entra, and the API Management gateway
-never calls Graph. Operators can set `MOSAIC_ENTRA_DIRECTORY_LOOKUP=false` to disable lookup; then
-administrators type object IDs and MOSAIC records unverified principals.
+never calls Graph. Directory lookup is always available with Entra authentication, without a
+deployment switch, and still requires tenant-administrator consent for its Graph permissions.
+Local authentication has no live directory lookup; administrators type object IDs and MOSAIC
+records unverified principals.
 
 **Application lookup is an optional read-only extension.** The console can search application
 service principals and Azure managed identities using the Microsoft Graph v1.0

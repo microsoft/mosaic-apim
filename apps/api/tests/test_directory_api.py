@@ -8,15 +8,16 @@ from conftest import install_directory_lookup
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import Request
 from fastapi.testclient import TestClient
-from mosaic_api.auth import AuthContext, EntraAuthenticator
-from mosaic_api.config import AuthMode
+from mosaic_api.auth import AuthContext, EntraAuthenticator, LocalAuthenticator
+from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
 from mosaic_api.domain import DirectoryObject, PrincipalKind
 from mosaic_api.errors import (
     DirectoryError,
     DirectoryForbiddenError,
     DirectoryThrottledError,
 )
-from mosaic_api.integrations.graph import DirectoryPhoto, FakeDirectoryLookup
+from mosaic_api.integrations.graph import DirectoryPhoto, FakeDirectoryLookup, GraphDirectoryLookup
+from mosaic_api.main import create_app
 from photo_double import photo_image
 
 USER_ID = "11111111-1111-1111-1111-111111111111"
@@ -142,9 +143,6 @@ def test_uniqueness_and_reference_validation(client: TestClient) -> None:
 
 
 def test_entra_mode_requires_bearer_token() -> None:
-    from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
-    from mosaic_api.main import create_app
-
     settings = Settings(
         environment=Environment.TEST,
         auth_mode=AuthMode.ENTRA,
@@ -157,6 +155,33 @@ def test_entra_mode_requires_bearer_token() -> None:
         response = entra_client.get("/api/v1/groups")
         assert response.status_code == 401
         assert response.headers["www-authenticate"] == "Bearer"
+
+
+@pytest.mark.parametrize("legacy_value", [None, "false", "true", "invalid"])
+def test_entra_directory_lookup_is_always_available(
+    monkeypatch: pytest.MonkeyPatch, legacy_value: str | None
+) -> None:
+    if legacy_value is None:
+        monkeypatch.delenv("MOSAIC_ENTRA_DIRECTORY_LOOKUP", raising=False)
+    else:
+        monkeypatch.setenv("MOSAIC_ENTRA_DIRECTORY_LOOKUP", legacy_value)
+    settings = Settings(
+        _env_file=None,
+        environment=Environment.TEST,
+        auth_mode=AuthMode.ENTRA,
+        repository_backend=RepositoryBackend.MEMORY,
+        tenant_id="tenant-test",
+        api_client_id="api-client",
+    )
+    with TestClient(create_app(settings)) as entra_client:
+        assert isinstance(entra_client.app.state.directory_lookup, GraphDirectoryLookup)
+        assert isinstance(entra_client.app.state.authenticator, EntraAuthenticator)
+        # Authenticate only this status request locally; it must never contact Graph for consent.
+        entra_client.app.state.authenticator = LocalAuthenticator(settings.tenant_id, ["Admin"])
+        response = entra_client.get("/api/v1/directory/status")
+        assert response.status_code == 200
+        assert response.json()["lookupEnabled"] is True
+        assert response.json()["message"] is None
 
 
 def test_policy_preview_validation_returns_422(client: TestClient) -> None:
@@ -185,17 +210,19 @@ def test_principal_update_rejects_null_kind(client: TestClient) -> None:
     assert response.status_code == 422
 
 
-def test_directory_search_when_lookup_is_off(client: TestClient) -> None:
+def test_local_authentication_has_no_live_directory_lookup(client: TestClient) -> None:
+    assert client.app.state.directory_lookup is None
     status_response = client.get("/api/v1/directory/status")
     assert status_response.status_code == 200
     assert status_response.json()["lookupEnabled"] is False
     assert status_response.json()["message"] == (
-        "Directory search is off, so enter Entra object IDs by hand."
+        "Directory lookup requires Entra authentication. Use manual entry instead."
     )
 
     response = client.get("/api/v1/directory/search", params={"kind": "user", "q": "Ada"})
     assert response.status_code == 409
     assert response.json()["code"] == "directory_disabled"
+    assert response.json()["message"] == status_response.json()["message"]
 
 
 def test_directory_search_when_lookup_is_on_and_principal_annotation(

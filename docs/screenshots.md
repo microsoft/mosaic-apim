@@ -52,7 +52,7 @@ If `uv` is available only as a Python module, use `python -m uv run ...` with th
 | `--logs-dir DIR` | Use a new dedicated directory for server logs and unredacted failure captures; keep it outside the repository. A successful run removes it |
 | `--headed` | Show the browser while it captures |
 | `--preview` | Serve production assets after building both apps with `npm run build --prefix apps\web` and `npm run build --prefix apps\portal`; avoids cold dev-server dependency bundling |
-| `--check-navigation` | Also verify all four administrator rail combinations in both themes, full width recovery, single-line controls and document reflow, every Pool section and Pricing at exactly 1440px document width with local table scrolling and `scrollIntoView`, mobile navigation focus/inert behavior, workspace drafts and section-change discard decisions, forced colors, usage-first portal landing, and unchanged portal drawer/credential teardown against the fictional estate |
+| `--check-navigation` | Also verify all four administrator rail combinations in both themes, full width recovery, single-line controls and document reflow, every Pool section and Pricing at exactly 1440px document width with local table scrolling and `scrollIntoView`, mobile focus/inert behavior, workspace drafts and section-change discard decisions, forced colors, usage-first portal landing, unchanged portal list geometry, and drawer/credential teardown against the fictional estate. For each captured portal theme, check all four pages at desktop/mobile widths, glass chrome, opaque panels/drawers, panel spacing, and reduced-transparency/forced-colors/unsupported-blur fallbacks |
 | `--reuse-servers` | Use a demo API and apps that are already running instead of starting them |
 | `--api-port`, `--console-port`, `--portal-port` | Change the ports, which default to 18000, 15173, and 15174 |
 
@@ -192,6 +192,9 @@ where they do not contain an endpoint, account name, or identifier.
 People avatars, including profile images and initials, are blurred as whole regions. Demo photos
 are synthetic fixtures; the capture never loads a real directory image.
 
+Runtime configuration also blurs the administrator context, tenant ID, and API base URL values
+by their field labels, even when the demo shows generic placeholders rather than GUIDs.
+
 Redaction reads the page's text. It can't see text drawn in an image or a canvas. If a shot shows
 something identifying that isn't text, or the rules miss something, add a literal or a pattern
 rather than editing the image by hand. Then capture the shot again and check it.
@@ -240,6 +243,10 @@ shows both themes. Keep new shots in that pattern.
 
 ## Shot inventory
 
+The portal shots use the console's cool light/dark palette and glass navigation, with opaque
+resource lists, forms, and connection drawers. The Usage & cost overview uses a taller viewport
+to include both the daily trend and the complete last-24-hours chart.
+
 | Shot | App | Route and state | Theme | README entry |
 | --- | --- | --- | --- | --- |
 | `console-dashboard-light`, `console-dashboard-dark` | Console | `/dashboard` | Both | Light and dark: console overview |
@@ -284,6 +291,7 @@ shows both themes. Keep new shots in that pattern.
 | `console-analytics-reliability` | Console | `/analytics?tab=reliability` | Dark | Reliability |
 | `console-environments` | Console | `/settings` | Light | Environments |
 | `console-environment-findings` | Console | `/settings?tab=findings` | Dark | Environment findings |
+| `console-runtime-configuration` | Console | `/settings?tab=runtime`, read-only deployment details and directory availability/Graph permissions; local demo authentication with a fictional directory double | Light | Runtime configuration |
 | `console-email-settings` | Console | `/settings?tab=email` | Light | Budget email |
 | `portal-request-access` | Portal | `/catalog`, GPT-4o mini access options in an overlay drawer | Light | Request access |
 | `portal-access` | Portal | `/access`, grouped model rows and an exact grant's **Connection details** open in a drawer | Light | My access |

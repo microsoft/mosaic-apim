@@ -370,9 +370,22 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
       resource, and time. Selecting a notification opens that exact request for review.</p>
     </td>
   </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-runtime-configuration.png" alt="Runtime configuration in Settings with read-only deployment details, directory availability, and required and optional Microsoft Graph permissions">
+      <p><b>Runtime configuration.</b> Read-only deployment details and directory availability sit
+      alongside the required and optional Microsoft Graph permissions. Entra authentication
+      provides directory lookup automatically; a successful search, not this status, confirms
+      access for an identity type.</p>
+    </td>
+    <td width="50%" valign="top"></td>
+  </tr>
 </table>
 
 ### End-user portal
+
+The portal shares the console's light and dark palette, glass navigation, and rounded panels.
+Resource lists, forms, and connection drawers remain solid for readability.
 
 <table>
   <tr>
@@ -414,7 +427,7 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/portal-usage-resources.png" alt="Usage by granted resource with requests, tokens, estimated cost, quotas, rate limits, and usage tracking">
-      <p><b>Usage by resource.</b> Model-first rows retain each offering and show its grant's
+      <p><b>Usage by resource.</b> A scrollable table retains each offering and shows its grant's
       requests, tokens, estimated cost or <b>No price</b>, quota use, busiest minute, and attribution.
       Overview and breakdowns share the same period and resource/environment filters.</p>
     </td>
@@ -691,11 +704,16 @@ Local authentication grants both the `Admin` and `User` app roles by default. Se
 `MOSAIC_LOCAL_ROLES` to narrow it — `'["User"]'` simulates an end user who must not reach an
 administrative route. The setting is rejected outside local and test environments.
 
-Directory lookup and group-claim enforcement have explicit switches:
+Directory lookup is available automatically with Entra authentication; no environment-variable
+switch is required or supported. The API reads Microsoft Graph through its Azure credential,
+using its managed identity in Azure, and still needs tenant-administrator consent for the
+permissions listed above. Local authentication has no live directory lookup, so administrators
+use manual entry instead.
+
+Group-claim enforcement has its own setting:
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `MOSAIC_ENTRA_DIRECTORY_LOOKUP` | `true` | Enables read-only Microsoft Graph lookup and verification for users, agent identities, agent users and Entra security groups. Set to `false` to require administrators to type object IDs. |
 | `MOSAIC_ENTRA_GROUP_CLAIMS` | `true` | Records whether bootstrap configures `groupMembershipClaims: SecurityGroup` on the runtime/API registrations. Set to `false` only when group grants should be stored but not matched at the gateway. |
 
 Usage figures have their own settings. See [Usage analytics](docs/usage-analytics.md).
