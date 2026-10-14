@@ -35,11 +35,13 @@ import {
 } from '../components/ApproveAccessRequestDialog'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { PageHeader } from '../components/PageHeader'
+import { RowActions } from '../components/RowActions'
 import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { EntitlementAccessState } from '../components/EntitlementAccessState'
 import { EntitlementConnectionDialog } from '../components/EntitlementConnectionDialog'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PrincipalKindBadge } from '../components/PrincipalKindBadge'
+import { IdentityAvatar } from '../components/IdentityAvatar'
 import { ModelAccessSettingsPanel } from '../components/ModelAccessSettingsPanel'
 import { PublishModelDialog } from '../components/PublishModelDialog'
 import {
@@ -256,11 +258,39 @@ function PoolGrantKey({ entitlement }: { entitlement: Entitlement }) {
         shape="rounded"
         className={`${runtime.keyExists ? styles.statusReady : styles.statusAttention} ${styles.bindingBadge}`}
       >
-        {runtime.subscriptionName}
+        Subscription key
       </Badge>
       <Text className={styles.secondaryCell}>
         {runtime.keyExists ? 'Pool key' : 'Pool key, created when the plan applies'}
       </Text>
+      <details className={styles.technicalDetails}>
+        <summary>Subscription details</summary>
+        <Text block className={styles.secondaryCell}>{runtime.subscriptionName}</Text>
+      </details>
+    </div>
+  )
+}
+
+function GrantBinding({ entitlement }: { entitlement: Entitlement }) {
+  if (entitlement.resource.kind === 'poolModel') return <PoolGrantKey entitlement={entitlement} />
+  if (!entitlement.binding) {
+    return <Badge appearance="tint" className={styles.statusAttention}>Not bound</Badge>
+  }
+  return (
+    <div className={styles.cellStack}>
+      <Badge
+        appearance="tint"
+        shape="rounded"
+        className={`${styles.statusReady} ${styles.bindingBadge}`}
+      >
+        {entitlement.binding.apimSubscriptionName ? 'APIM subscription' :
+          (entitlement.binding.attributionKey ? 'Gateway log' : 'Recorded')}
+      </Badge>
+      <details className={styles.technicalDetails}>
+        <summary>Binding details</summary>
+        {entitlement.binding.apimSubscriptionName && <Text block className={styles.secondaryCell}>{entitlement.binding.apimSubscriptionName}</Text>}
+        <Text block className={styles.secondaryCell}>{entitlement.binding.source}</Text>
+      </details>
     </div>
   )
 }
@@ -737,7 +767,7 @@ export function EntitlementsPage() {
         </MessageBar>
       )}
 
-      <SectionLayout label="Entitlements" sections={ACCESS_SECTIONS} active={activeSection} onSelect={selectSection}>
+      <SectionLayout label="Entitlements" sections={ACCESS_SECTIONS} active={activeSection} onSelect={selectSection} orientation="horizontal">
       {activeSection === 'settings' && <Card className={styles.detailCard} id="governed-model-access">
         <Title3 as="h2">Model access settings</Title3>
         <Text>Choose a successfully published MOSAIC model. Direct grants to people, agents, and applications, and Entra security-group grants, are applied; MOSAIC groups and imported-only APIs are not orchestrated.</Text>
@@ -776,21 +806,21 @@ export function EntitlementsPage() {
         {reviewMutation.isError && <ErrorState error={reviewMutation.error} />}
       </Card>}
 
-      {activeSection === 'grants' && <div className={styles.summaryGrid}>
-        <Card className={styles.summaryCard}>
-          <Text size={200}>Grants</Text>
-          <strong>{entitlements.isSuccess ? rows.length : '—'}</strong>
-        </Card>
-        <Card className={styles.summaryCard}>
-          <Text size={200}>Desired enabled</Text>
-          <strong>{entitlements.isSuccess ? rows.filter((item) => item.enabled).length : '—'}</strong>
-        </Card>
-        <Card className={styles.summaryCard}>
-          <Text size={200}>Without a binding</Text>
-          <strong>{entitlements.isSuccess ? unbound : '—'}</strong>
-          <Text size={200}>Consumption cannot be attributed until one is recorded.</Text>
-        </Card>
-      </div>}
+      {activeSection === 'grants' && <dl className={styles.summaryStrip}>
+        <div>
+          <dt>Grants</dt>
+          <dd>{entitlements.isSuccess ? rows.length : '—'}</dd>
+        </div>
+        <div>
+          <dt>Desired enabled</dt>
+          <dd>{entitlements.isSuccess ? rows.filter((item) => item.enabled).length : '—'}</dd>
+        </div>
+        <div>
+          <dt>Without a binding</dt>
+          <dd>{entitlements.isSuccess ? unbound : '—'}</dd>
+          <dd className={styles.summaryNote}>Consumption cannot be attributed until one is recorded.</dd>
+        </div>
+      </dl>}
 
       {activeSection === 'grants' && <Card className={styles.tableCard}>
         <div className={styles.tableHeader}>
@@ -852,17 +882,14 @@ export function EntitlementsPage() {
                 Change the environment filter to see other saved grants.
               </EmptyState>
             ) : (
-              <Table aria-label="Entitlements">
+              <Table aria-label="Entitlements" className={styles.grantsTable}>
                 <TableHeader>
                   <TableRow>
-                    <TableHeaderCell>Subject</TableHeaderCell>
-                    <TableHeaderCell>Resource</TableHeaderCell>
-                    <TableHeaderCell>Cost center</TableHeaderCell>
-                    <TableHeaderCell>Environment</TableHeaderCell>
-                    <TableHeaderCell>Limits</TableHeaderCell>
-                    <TableHeaderCell>Desired / applied</TableHeaderCell>
-                    <TableHeaderCell>Binding</TableHeaderCell>
-                    <TableHeaderCell>Actions</TableHeaderCell>
+                    <TableHeaderCell className={styles.subjectColumn}>Subject</TableHeaderCell>
+                    <TableHeaderCell className={styles.resourceColumn}>Resource</TableHeaderCell>
+                    <TableHeaderCell className={styles.limitsColumn}>Limits &amp; binding</TableHeaderCell>
+                    <TableHeaderCell className={styles.stateColumn}>Desired / applied</TableHeaderCell>
+                    <TableHeaderCell className={styles.actionsColumn}>Actions</TableHeaderCell>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -880,6 +907,14 @@ export function EntitlementsPage() {
                       (grant) => grant.entitlementId === entitlement.id,
                     )
                     const managed = managedGrant(entitlement)
+                    const subjectPrincipal = principals.data?.find((item) => item.id === entitlement.subject.id)
+                    const connectionAvailable = (managed && Boolean(entitlement.runtime)) || entitlement.resource.kind === 'mcpServer'
+                    const primaryAction = !managed ? 'toggle'
+                      : !entitlement.enabled ? 'enable'
+                      : connectionAvailable ? 'connection'
+                      : relatedPublication ? 'model'
+                      : entitlement.resource.kind === 'poolModel' && relatedPool ? 'pool'
+                      : null
                     return (
                       <TableRow
                         key={entitlement.id}
@@ -888,27 +923,32 @@ export function EntitlementsPage() {
                         className={entitlement.id === highlightedGrantId ? styles.selectedRow : undefined}
                       >
                       <TableCell>
-                        <div className={styles.cellStack}>
-                          <Text className={styles.primaryCell}>
-                            {labels.get(entitlement.subject.id) ?? entitlement.subject.id}
-                          </Text>
-                          <div className={styles.rowActions}>
-                            {(() => {
-                              const principal = principals.data?.find((item) => item.id === entitlement.subject.id)
-                              return principal ? (
-                                <PrincipalKindBadge kind={principal.kind} />
+                        <div className={styles.identityCell}>
+                          {subjectPrincipal && <IdentityAvatar
+                            name={labels.get(entitlement.subject.id) ?? entitlement.subject.id}
+                            kind={subjectPrincipal.kind}
+                            objectId={subjectPrincipal.objectId}
+                            size={32}
+                          />}
+                          <div className={styles.cellStack}>
+                            <Text className={styles.primaryCell}>
+                              {labels.get(entitlement.subject.id) ?? entitlement.subject.id}
+                            </Text>
+                            <div className={styles.rowActions}>
+                              {subjectPrincipal ? (
+                                <PrincipalKindBadge kind={subjectPrincipal.kind} />
                               ) : (
                                 <Badge appearance="tint">
                                   {ENTITLEMENT_SUBJECT_KIND_LABELS[entitlement.subject.kind]}
                                 </Badge>
-                              )
-                            })()}
+                              )}
+                            </div>
+                            {entitlement.subject.kind === 'securityGroup' && (
+                              <Text className={styles.secondaryCell}>
+                                Entra tokens only · limits apply to each member
+                              </Text>
+                            )}
                           </div>
-                          {entitlement.subject.kind === 'securityGroup' && (
-                            <Text className={styles.secondaryCell}>
-                              Entra tokens only · limits apply to each member
-                            </Text>
-                          )}
                         </div>
                       </TableCell>
                       <TableCell>
@@ -917,24 +957,25 @@ export function EntitlementsPage() {
                             {resourceLabel(entitlement.resource) ?? entitlement.resource.id}
                           </Text>
                           <Text className={styles.secondaryCell}>{entitlement.resource.kind}</Text>
+                          <div role="group" aria-label="Environment">
+                            <EnvironmentBadge environment={environment} catalog={environmentCatalog.data} />
+                          </div>
+                          <div className={styles.resourceMetadata} role="group" aria-label="Cost center">
+                            <Text size={200} weight="semibold">Cost center</Text>
+                            {(() => {
+                              const costCenter = entitlement.costCenter ?? (entitlement.costCenterId ? costCenterById.get(entitlement.costCenterId) : undefined)
+                              return costCenter ? (
+                                <div className={styles.cellStack}>
+                                  <Text className={styles.secondaryCell}>{costCenter.name}</Text>
+                                  <Text className={styles.secondaryCell}>{costCenter.code}</Text>
+                                </div>
+                              ) : '—'
+                            })()}
+                          </div>
                         </div>
                       </TableCell>
                       <TableCell>
-                        {(() => {
-                          const costCenter = entitlement.costCenter ?? (entitlement.costCenterId ? costCenterById.get(entitlement.costCenterId) : undefined)
-                          return costCenter ? (
-                            <div className={styles.cellStack}>
-                              <Text className={styles.primaryCell}>{costCenter.name}</Text>
-                              <Text className={styles.secondaryCell}>{costCenter.code}</Text>
-                            </div>
-                          ) : '—'
-                        })()}
-                      </TableCell>
-                      <TableCell>
-                        <EnvironmentBadge environment={environment} catalog={environmentCatalog.data} />
-                      </TableCell>
-                      <TableCell>
-                        <div className={styles.cellStack}>
+                        <div className={styles.cellStack} role="group" aria-label="Limits">
                           <Text size={200} weight="semibold">Desired limits</Text>
                           {describeLimits(entitlement, relatedPublication?.enforcement).map((sentence) => (
                             <Text key={sentence} className={styles.secondaryCell}>
@@ -949,35 +990,44 @@ export function EntitlementsPage() {
                               Pool: {sentence}
                             </Text>
                           ))}
-                          {appliedGrant && (
-                            <>
-                              <Text size={200} weight="semibold">Last applied limits {appliedGrant.enabled ? '' : '(grant disabled)'}</Text>
-                              {describeLimits(appliedGrant, relatedPublication?.appliedAccess?.publicationEnforcement).map((sentence) => (
-                                <Text key={`applied:${sentence}`} className={styles.secondaryCell}>{sentence}</Text>
-                              ))}
-                            </>
-                          )}
-                          {appliedMcpGrant && (
-                            <>
-                              <Text size={200} weight="semibold">Last applied MCP limits {appliedMcpGrant.enabled ? '' : '(grant disabled)'}</Text>
-                              {describeLimits(appliedMcpGrant).map((sentence) => (
-                                <Text key={`mcp-applied:${sentence}`} className={styles.secondaryCell}>{sentence}</Text>
-                              ))}
-                            </>
-                          )}
-                          {appliedPoolGrant && (
-                            <>
-                              <Text size={200} weight="semibold">Last applied limits {appliedPoolGrant.enabled ? '' : '(grant disabled)'}</Text>
-                              {describeLimits(appliedPoolGrant).map((sentence) => (
-                                <Text key={`pool-applied:${sentence}`} className={styles.secondaryCell}>{sentence}</Text>
-                              ))}
-                              {appliedPoolGrant.keysAllowed === false && (
-                                <Text className={styles.secondaryCell}>
-                                  Its cost center turned keys off, so only Entra tokens work.
-                                </Text>
+                          {(appliedGrant || appliedMcpGrant || appliedPoolGrant) && <details className={styles.technicalDetails}>
+                            <summary>Last applied limit details</summary>
+                            <div className={styles.cellStack}>
+                              {appliedGrant && (
+                                <>
+                                  <Text size={200} weight="semibold">Last applied limits {appliedGrant.enabled ? '' : '(grant disabled)'}</Text>
+                                  {describeLimits(appliedGrant, relatedPublication?.appliedAccess?.publicationEnforcement).map((sentence) => (
+                                    <Text key={`applied:${sentence}`} className={styles.secondaryCell}>{sentence}</Text>
+                                  ))}
+                                </>
                               )}
-                            </>
+                              {appliedMcpGrant && (
+                                <>
+                                  <Text size={200} weight="semibold">Last applied MCP limits {appliedMcpGrant.enabled ? '' : '(grant disabled)'}</Text>
+                                  {describeLimits(appliedMcpGrant).map((sentence) => (
+                                    <Text key={`mcp-applied:${sentence}`} className={styles.secondaryCell}>{sentence}</Text>
+                                  ))}
+                                </>
+                              )}
+                              {appliedPoolGrant && (
+                                <>
+                                  <Text size={200} weight="semibold">Last applied limits {appliedPoolGrant.enabled ? '' : '(grant disabled)'}</Text>
+                                  {describeLimits(appliedPoolGrant).map((sentence) => (
+                                    <Text key={`pool-applied:${sentence}`} className={styles.secondaryCell}>{sentence}</Text>
+                                  ))}
+                                </>
+                              )}
+                            </div>
+                          </details>}
+                          {appliedPoolGrant?.keysAllowed === false && (
+                            <Text className={styles.secondaryCell}>
+                              Its cost center turned keys off, so only Entra tokens work.
+                            </Text>
                           )}
+                        </div>
+                        <div className={styles.bindingGroup} role="group" aria-label="Binding">
+                          <Text size={200} weight="semibold">Binding</Text>
+                          <GrantBinding entitlement={entitlement} />
                         </div>
                       </TableCell>
                       <TableCell>
@@ -991,29 +1041,9 @@ export function EntitlementsPage() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        {entitlement.resource.kind === 'poolModel' ? (
-                          <PoolGrantKey entitlement={entitlement} />
-                        ) : entitlement.binding ? (
-                          <div className={styles.cellStack}>
-                            <Badge
-                              appearance="tint"
-                              shape="rounded"
-                              className={`${styles.statusReady} ${styles.bindingBadge}`}
-                            >
-                              {entitlement.binding.apimSubscriptionName ??
-                                (entitlement.binding.attributionKey ? 'Gateway log' : 'Recorded')}
-                            </Badge>
-                            <Text className={styles.secondaryCell}>{entitlement.binding.source}</Text>
-                          </div>
-                        ) : (
-                          <Badge appearance="tint" className={styles.statusAttention}>
-                            Not bound
-                          </Badge>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <div className={styles.rowActions}>
-                          {!managed && <Switch
+                        <RowActions
+                          label={`More actions for ${labels.get(entitlement.subject.id) ?? entitlement.subject.id} on ${resourceLabel(entitlement.resource) ?? entitlement.resource.id}`}
+                          primary={primaryAction === 'toggle' ? <Switch
                             checked={entitlement.enabled}
                             label={entitlement.enabled ? 'Enabled' : 'Disabled'}
                             disabled={toggleMutation.isPending}
@@ -1023,33 +1053,41 @@ export function EntitlementsPage() {
                                 enabled: data.checked,
                               })
                             }
-                          />}
-                          {managed && !entitlement.enabled && (
+                          /> : primaryAction === 'enable' ? (
                             <Button disabled={toggleMutation.isPending} onClick={() => toggleMutation.mutate({ id: entitlement.id, enabled: true })}>
                               Re-enable
                             </Button>
-                          )}
-                          <Button
-                            appearance="subtle"
-                            disabled={revokeMutation.isPending || toggleMutation.isPending || (managed && !entitlement.enabled)}
-                            onClick={() => {
+                          ) : primaryAction === 'connection' ? (
+                            <Button onClick={() => setConnectionGrantId(entitlement.id)}>Connection info</Button>
+                          ) : primaryAction === 'model' && relatedPublication ? (
+                            <Button onClick={() => setSelectedPublicationId(relatedPublication.id)}>Manage model</Button>
+                          ) : primaryAction === 'pool' && relatedPool ? (
+                            <Button onClick={() => navigate(`/pools/${relatedPool.id}`)}>Manage pool</Button>
+                          ) : null}
+                          actions={[
+                            ...(managed && relatedPublication && primaryAction !== 'model' ? [{
+                              label: 'Manage model',
+                              onClick: () => setSelectedPublicationId(relatedPublication.id),
+                            }] : []),
+                            ...(entitlement.resource.kind === 'poolModel' && relatedPool && primaryAction !== 'pool' ? [{
+                              label: 'Manage pool',
+                              onClick: () => navigate(`/pools/${relatedPool.id}`),
+                            }] : []),
+                            ...(connectionAvailable && primaryAction !== 'connection' ? [{
+                              label: 'Connection info',
+                              onClick: () => setConnectionGrantId(entitlement.id),
+                            }] : []),
+                          ]}
+                          destructiveActions={[{
+                            label: 'Revoke',
+                            disabled: revokeMutation.isPending || toggleMutation.isPending || (managed && !entitlement.enabled),
+                            onClick: () => {
                               setConnectionGrantId(null)
                               if (managed) toggleMutation.mutate({ id: entitlement.id, enabled: false })
                               else revokeMutation.mutate(entitlement.id)
-                            }}
-                          >
-                            Revoke
-                          </Button>
-                          {managed && relatedPublication && (
-                            <Button appearance="subtle" onClick={() => setSelectedPublicationId(relatedPublication.id)}>Manage model</Button>
-                          )}
-                          {entitlement.resource.kind === 'poolModel' && relatedPool && (
-                            <Button appearance="subtle" onClick={() => navigate(`/pools/${relatedPool.id}`)}>Manage pool</Button>
-                          )}
-                          {(managed && entitlement.runtime) || entitlement.resource.kind === 'mcpServer' ? (
-                            <Button onClick={() => setConnectionGrantId(entitlement.id)}>Connection info</Button>
-                          ) : null}
-                        </div>
+                            },
+                          }]}
+                        />
                       </TableCell>
                       </TableRow>
                     )
@@ -1262,25 +1300,22 @@ export function EntitlementsPage() {
                         </TableCell>
                         <TableCell><Badge appearance="tint">{accessRequest.state}</Badge></TableCell>
                         <TableCell>
-                          {/* Small: at 1280 px this column is narrower than a medium button's 96 px minimum width. */}
-                          <div className={styles.rowActions}>
-                            <Button
+                          <RowActions
+                            label={`More actions for request from ${requestingPrincipal(accessRequest, principals.data)?.label ?? accessRequest.requesterObjectId}`}
+                            primary={<Button
                               appearance="primary"
                               size="small"
                               disabled={accessRequest.state !== 'pending' || !approvalReady || approveMutation.isPending || denyMutation.isPending}
                               onClick={() => openApproval(accessRequest)}
                             >
                               Approve
-                            </Button>
-                            <Button
-                              appearance="subtle"
-                              size="small"
-                              disabled={accessRequest.state !== 'pending' || approveMutation.isPending || denyMutation.isPending}
-                              onClick={() => denyMutation.mutate(accessRequest.id)}
-                            >
-                              Deny
-                            </Button>
-                          </div>
+                            </Button>}
+                            destructiveActions={[{
+                              label: 'Deny',
+                              disabled: accessRequest.state !== 'pending' || approveMutation.isPending || denyMutation.isPending,
+                              onClick: () => denyMutation.mutate(accessRequest.id),
+                            }]}
+                          />
                         </TableCell>
                       </TableRow>
                     ))}

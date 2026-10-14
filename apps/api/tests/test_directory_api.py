@@ -1,7 +1,23 @@
+import asyncio
+import time
+
+import httpx
+import jwt
+import pytest
 from conftest import install_directory_lookup
+from cryptography.hazmat.primitives.asymmetric import rsa
+from fastapi import Request
 from fastapi.testclient import TestClient
+from mosaic_api.auth import AuthContext, EntraAuthenticator
+from mosaic_api.config import AuthMode
 from mosaic_api.domain import DirectoryObject, PrincipalKind
-from mosaic_api.integrations.graph import FakeDirectoryLookup
+from mosaic_api.errors import (
+    DirectoryError,
+    DirectoryForbiddenError,
+    DirectoryThrottledError,
+)
+from mosaic_api.integrations.graph import DirectoryPhoto, FakeDirectoryLookup
+from photo_double import photo_image
 
 USER_ID = "11111111-1111-1111-1111-111111111111"
 AGENT_USER_ID = "22222222-2222-2222-2222-222222222222"
@@ -333,3 +349,213 @@ def test_kind_change_rules_allow_same_subject_family(directory_client: TestClien
 
     assert response.status_code == 422
     assert "agent user" in response.json()["message"]
+
+
+@pytest.mark.parametrize("format", ["PNG", "JPEG"])
+def test_photo_endpoint_returns_authenticated_binary_without_registering_user(
+    directory_client: TestClient, format: str
+) -> None:
+    photo = photo_image(format)
+    install_directory_lookup(
+        directory_client.app,
+        FakeDirectoryLookup(
+            [DirectoryObject(object_id=USER_ID, kind=PrincipalKind.USER)],
+            photos={USER_ID: photo},
+        ),
+    )
+    response = directory_client.get(f"/api/v1/directory/objects/{USER_ID.upper()}/photo")
+    assert response.status_code == 200
+    assert response.content == photo.content
+    assert response.headers["Content-Type"] == photo.content_type
+    assert response.headers["Cache-Control"] == "no-store, private"
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert directory_client.get("/api/v1/principals").json() == []
+    assert not directory_client.app.state.repository.audit_events
+
+
+@pytest.mark.parametrize("object_id", [USER_ID, AGENT_USER_ID, AGENT_ID, GROUP_ID, MISSING_ID])
+def test_photo_missing_or_non_person_is_expected_not_found(
+    directory_client: TestClient, object_id: str
+) -> None:
+    lookup = _lookup()
+    lookup.photos = {key: photo_image() for key in [AGENT_USER_ID, AGENT_ID, GROUP_ID]}
+    install_directory_lookup(directory_client.app, lookup)
+    response = directory_client.get(f"/api/v1/directory/objects/{object_id}/photo")
+    assert response.status_code == 404
+    assert response.json()["code"] == "not_found"
+
+
+def test_photo_disabled_does_not_disable_manual_directory_onboarding(client: TestClient) -> None:
+    response = client.get(f"/api/v1/directory/objects/{USER_ID}/photo")
+    assert response.status_code == 409
+    assert response.json()["code"] == "directory_disabled"
+    assert client.post(
+        "/api/v1/principals", json={"objectId": USER_ID, "kind": "user"}
+    ).status_code == 201
+
+
+@pytest.mark.parametrize(
+    ("error", "status", "code"),
+    [
+        (
+            DirectoryForbiddenError("Consent ProfilePhoto.Read.All separately"),
+            403,
+            "directory_forbidden",
+        ),
+        (DirectoryError("Invalid photo"), 502, "directory_unavailable"),
+        (
+            DirectoryThrottledError("Photo read throttled", retry_after=23),
+            429,
+            "directory_throttled",
+        ),
+    ],
+)
+def test_photo_errors_do_not_affect_onboarding(
+    directory_client: TestClient,
+    error: DirectoryError | DirectoryForbiddenError,
+    status: int,
+    code: str,
+) -> None:
+    class PhotoFailure(FakeDirectoryLookup):
+        async def user_photo(self, tenant_id: str, object_id: str) -> DirectoryPhoto | None:
+            raise error
+
+    lookup = PhotoFailure(
+        [DirectoryObject(object_id=USER_ID, kind=PrincipalKind.USER, display_name="Ada")]
+    )
+    install_directory_lookup(directory_client.app, lookup)
+    response = directory_client.get(f"/api/v1/directory/objects/{USER_ID}/photo")
+    assert response.status_code == status
+    assert response.json()["code"] == code
+    if status == 429:
+        assert response.headers["Retry-After"] == "23"
+        assert response.json()["details"]["retryAfter"] == 23
+    assert directory_client.get(
+        "/api/v1/directory/search", params={"kind": "user", "q": "Ada"}
+    ).status_code == 200
+    created = directory_client.post(
+        "/api/v1/principals", json={"objectId": USER_ID, "kind": "user"}
+    )
+    assert created.status_code == 201
+    assert created.json()["directoryVerifiedAt"] is not None
+    for kind in ["servicePrincipal", "managedIdentity"]:
+        application = directory_client.post(
+            "/api/v1/principals", json={"objectId": f"legacy-{kind}", "kind": kind}
+        )
+        assert application.status_code == 201
+        assert application.json()["directoryVerifiedAt"] is None
+
+
+@pytest.mark.parametrize("object_id", ["not-a-guid", "https:%2F%2Fexternal.example"])
+def test_photo_rejects_non_object_id_without_lookup(
+    directory_client: TestClient, object_id: str
+) -> None:
+    class NeverRead(FakeDirectoryLookup):
+        async def user_photo(self, tenant_id: str, object_id: str) -> DirectoryPhoto | None:
+            pytest.fail("Invalid object IDs must not reach Graph")
+
+    install_directory_lookup(directory_client.app, NeverRead([]))
+    response = directory_client.get(f"/api/v1/directory/objects/{object_id}/photo")
+    assert response.status_code in {404, 422}
+
+
+@pytest.mark.parametrize(
+    ("tenant_id", "roles"), [("tenant-test", ["User"]), ("other-tenant", ["Admin"])]
+)
+def test_photo_admin_and_tenant_gates_precede_lookup(
+    directory_client: TestClient, tenant_id: str, roles: list[str]
+) -> None:
+    class NeverRead(FakeDirectoryLookup):
+        async def user_photo(self, tenant_id: str, object_id: str) -> DirectoryPhoto | None:
+            pytest.fail("Unauthorized callers must not reach the photo reader")
+
+    class Caller:
+        async def authenticate(self, _request: Request) -> AuthContext:
+            return AuthContext(
+                object_id=USER_ID, tenant_id=tenant_id, roles=frozenset(roles)
+            )
+
+    install_directory_lookup(directory_client.app, NeverRead([]))
+    directory_client.app.state.authenticator = Caller()
+    response = directory_client.get(f"/api/v1/directory/objects/{USER_ID}/photo")
+    assert response.status_code == 403
+
+
+def test_photo_requires_bearer_auth_before_graph_in_entra_mode() -> None:
+    from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
+    from mosaic_api.main import create_app
+
+    settings = Settings(
+        environment=Environment.TEST,
+        auth_mode=AuthMode.ENTRA,
+        repository_backend=RepositoryBackend.MEMORY,
+        tenant_id="tenant-test",
+        api_client_id="api-client",
+    )
+    with TestClient(create_app(settings)) as client:
+        response = client.get(f"/api/v1/directory/objects/{USER_ID}/photo")
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+
+
+def test_photo_rejects_signed_foreign_tenant_token_before_lookup(
+    directory_client: TestClient,
+) -> None:
+    class NeverRead(FakeDirectoryLookup):
+        async def user_photo(self, tenant_id: str, object_id: str) -> DirectoryPhoto | None:
+            pytest.fail("A foreign-tenant token must not reach the photo reader")
+
+    settings = directory_client.app.state.settings.model_copy(
+        update={"auth_mode": AuthMode.ENTRA, "api_client_id": "photo-client"}
+    )
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _request: httpx.Response(500))
+    )
+    authenticator = EntraAuthenticator(settings, client=http_client)
+    authenticator._keys = {"photo-key": key.public_key()}
+    authenticator._expires_at = time.monotonic() + 3600
+    directory_client.app.state.authenticator = authenticator
+    directory_client.app.state.settings = settings
+    install_directory_lookup(directory_client.app, NeverRead([]))
+    now = int(time.time())
+    token = jwt.encode(
+        {
+            "iss": settings.issuer,
+            "aud": settings.api_client_id,
+            "tid": "foreign-tenant",
+            "oid": USER_ID,
+            "iat": now,
+            "exp": now + 600,
+            "roles": ["Admin"],
+        },
+        key,
+        algorithm="RS256",
+        headers={"kid": "photo-key"},
+    )
+    try:
+        response = directory_client.get(
+            f"/api/v1/directory/objects/{USER_ID}/photo",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    finally:
+        asyncio.run(http_client.aclose())
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Access token tenant is not allowed"
+
+
+def test_photo_throttle_header_is_exposed_to_configured_console_origin(
+    directory_client: TestClient,
+) -> None:
+    class Throttled(FakeDirectoryLookup):
+        async def user_photo(self, tenant_id: str, object_id: str) -> DirectoryPhoto | None:
+            raise DirectoryThrottledError("Photo throttled", retry_after=12)
+
+    install_directory_lookup(directory_client.app, Throttled([]))
+    response = directory_client.get(
+        f"/api/v1/directory/objects/{USER_ID}/photo",
+        headers={"Origin": "http://localhost:5173"},
+    )
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "12"
+    assert "Retry-After" in response.headers["Access-Control-Expose-Headers"]

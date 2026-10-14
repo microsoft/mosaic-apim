@@ -13,9 +13,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import { ApiError, useMosaicApi } from '../api'
 import { PRINCIPAL_KIND_LABELS } from '../labels'
-import type { DirectoryObject, DirectorySearchKind, Principal, PrincipalKind } from '../types'
+import type { DirectoryObject, DirectorySearchKind, Principal } from '../types'
 import { ErrorState, Loading } from './AsyncState'
 import { PrincipalKindBadge } from './PrincipalKindBadge'
+import { IdentityAvatar } from './IdentityAvatar'
 import styles from './DirectoryPrincipalPicker.module.css'
 
 const searchKindLabels: Record<DirectorySearchKind, string> = {
@@ -35,6 +36,9 @@ function directoryErrorMessage(error: unknown) {
     }
     if (error.status === 502) {
       return "Couldn't reach Microsoft Graph. Try again."
+    }
+    if (error.status === 429) {
+      return 'Microsoft Graph is limiting requests. Wait a moment, then retry.'
     }
   }
   return error instanceof Error ? error.message : 'Directory search failed.'
@@ -64,6 +68,7 @@ export function DirectoryPrincipalPicker({
   const kind = selectedKind ?? ownKind
   const [query, setQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
+  const [selection, setSelection] = useState<{ kind: DirectorySearchKind; query: string; result: DirectoryObject } | null>(null)
 
   useEffect(() => {
     const handle = window.setTimeout(() => setDebouncedQuery(query.trim()), 300)
@@ -77,6 +82,9 @@ export function DirectoryPrincipalPicker({
   })
 
   const currentResults = query.trim() === debouncedQuery && debouncedQuery.length >= 2
+  const selected = currentResults && selection?.kind === kind && selection.query === debouncedQuery
+    ? search.data?.find((item) => item.objectId === selection.result.objectId && item.kind === selection.result.kind)
+    : undefined
 
   const createPrincipal = useMutation({
     mutationFn: (result: DirectoryObject) =>
@@ -123,9 +131,11 @@ export function DirectoryPrincipalPicker({
         <Field label="Search for">
           <Select
             value={kind}
+            disabled={createPrincipal.isPending}
             aria-label="Directory search kind"
             onChange={(_, data) => {
               const nextKind = data.value as DirectorySearchKind
+              setSelection(null)
               setOwnKind(nextKind)
               onKindChange?.(nextKind)
             }}
@@ -140,9 +150,13 @@ export function DirectoryPrincipalPicker({
         <Field label="Directory search">
           <Input
             value={query}
+            disabled={createPrincipal.isPending}
             aria-label="Directory search"
             placeholder={kind === 'application' ? 'Type a name prefix, object ID, or app ID' : 'Type a name, UPN, app ID, or mail nickname'}
-            onChange={(_, data) => setQuery(data.value)}
+            onChange={(_, data) => {
+              setSelection(null)
+              setQuery(data.value)
+            }}
           />
         </Field>
       </div>
@@ -184,11 +198,17 @@ export function DirectoryPrincipalPicker({
                   type="button"
                   className={styles.resultButton}
                   disabled={alreadyAdded || createPrincipal.isPending}
-                  aria-label={`${alreadyAdded ? 'Already added: ' : 'Add '}${choiceLabel}`}
-                  onClick={() => add(result)}
+                  aria-label={`${alreadyAdded ? 'Already added: ' : 'Select '}${choiceLabel}`}
+                  aria-pressed={selected?.objectId === result.objectId && selected?.kind === result.kind}
+                  onClick={() => {
+                    createPrincipal.reset()
+                    setSelection({ kind, query: debouncedQuery, result })
+                  }}
                 >
+                  <IdentityAvatar name={resultLabel(result)} kind={result.kind} objectId={result.objectId} />
+                  <span className={styles.resultContent}>
                   <span className={styles.resultHeader}>
-                    <PrincipalKindBadge kind={result.kind as PrincipalKind} />
+                    <PrincipalKindBadge kind={result.kind} />
                     {alreadyAdded && <Badge appearance="tint">Already added</Badge>}
                     <span className={styles.resultName}>{resultLabel(result)}</span>
                   </span>
@@ -201,6 +221,7 @@ export function DirectoryPrincipalPicker({
                   {result.blueprintId && (
                     <span className={styles.secondary}>Blueprint {result.blueprintId}</span>
                   )}
+                  </span>
                 </button>
                 <details className={styles.secondary}>
                   <summary>Technical details for {resultLabel(result)}</summary>
@@ -213,8 +234,14 @@ export function DirectoryPrincipalPicker({
         </ul>
       )}
 
+      {selected && !selected.principalId && <div className={styles.selection}>
+        <Text>Selected: <strong>{resultLabel(selected)}</strong>. Adds a reference in MOSAIC; Entra remains unchanged.</Text>
+        <Button appearance="primary" disabled={createPrincipal.isPending || search.isFetching}
+          onClick={() => add(selected)}>Add {resultLabel(selected)}</Button>
+      </div>}
+
       {onManualFallback && <Button
-        appearance="secondary"
+        appearance="subtle"
         type="button"
         className={styles.manualEntry}
         onClick={onManualFallback}

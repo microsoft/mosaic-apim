@@ -39,6 +39,17 @@ export function field(scope: Page | Locator, label: string): Locator {
   return scope.getByLabel(new RegExp(`^${escapeRegExp(label)}(\\s*\\*)?$`))
 }
 
+/** Chooses a row's primary action or opens its secondary-action menu. */
+export async function clickRowAction(page: Page, row: Locator, name: string | RegExp): Promise<void> {
+  const primary = row.getByRole('button', { name, exact: true })
+  if (await primary.isVisible()) {
+    await primary.click()
+    return
+  }
+  await row.getByRole('button', { name: /^More actions/ }).click()
+  await page.getByRole('menuitem', { name, exact: true }).click()
+}
+
 /** A success or error banner. The same text can stay from an earlier action, so actions also check their response. */
 export function banner(page: Page | Locator, text: string | RegExp): Locator {
   return page.getByText(text).first()

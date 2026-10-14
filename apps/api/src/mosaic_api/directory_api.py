@@ -1,6 +1,6 @@
 from typing import Annotated, cast
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from mosaic_api.auth import AuthContext, require_admin
 from mosaic_api.domain import (
@@ -49,6 +49,28 @@ async def search_directory(
 @directory_router.get("/directory/objects/{object_id}", response_model=DirectoryObject)
 async def get_directory_object(request: Request, auth: Admin, object_id: str) -> DirectoryObject:
     return await _service(request).get_directory_object(_actor(auth), object_id)
+
+
+@directory_router.get(
+    "/directory/objects/{object_id}/photo",
+    response_class=Response,
+    responses={
+        200: {"content": {"image/jpeg": {}, "image/png": {}}, "description": "Person thumbnail"},
+        404: {"description": "No ordinary user photo is available"},
+    },
+)
+async def directory_photo(request: Request, auth: Admin, object_id: str) -> Response:
+    # A Graph app-only token belongs to this deployment's tenant, not a requested tenant.
+    if auth.tenant_id.casefold() != request.app.state.settings.tenant_id.casefold():
+        raise HTTPException(
+            status_code=403, detail="Directory photos are restricted to this tenant"
+        )
+    photo = await _service(request).directory_photo(_actor(auth), object_id)
+    return Response(
+        content=photo.content,
+        media_type=photo.content_type,
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @directory_router.get("/principals/{principal_id}/members", response_model=DirectoryMemberPage)

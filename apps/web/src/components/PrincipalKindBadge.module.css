@@ -1,3 +1,8 @@
 .badge {
   white-space: nowrap;
 }
+
+.badge:global(.fui-Badge) {
+  color: var(--mosaic-text-muted);
+  border-color: var(--mosaic-border);
+}

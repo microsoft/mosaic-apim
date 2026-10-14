@@ -284,13 +284,15 @@ function TelemetrySection({ gatewayId }: { gatewayId: string }) {
         <Button appearance="secondary" disabled={refresh.isPending} onClick={() => refresh.mutate()}>
           {refresh.isPending ? 'Refreshing…' : 'Refresh now'}
         </Button>
-        <label className={styles.daysControl}>
-          <span>Backfill days</span>
-          <Input type="number" min={1} max={730} value={days} onChange={(event) => setDays(event.target.value)} />
-        </label>
-        <Button appearance="secondary" disabled={backfill.isPending} onClick={() => backfill.mutate()}>
-          {backfill.isPending ? 'Starting…' : 'Backfill'}
-        </Button>
+        <div className={styles.backfillActions}>
+          <label className={styles.daysControl}>
+            <span>Backfill days</span>
+            <Input type="number" min={1} max={730} value={days} onChange={(event) => setDays(event.target.value)} />
+          </label>
+          <Button appearance="secondary" disabled={backfill.isPending} onClick={() => backfill.mutate()}>
+            {backfill.isPending ? 'Starting…' : 'Backfill'}
+          </Button>
+        </div>
       </div>
       <div className="table-scroll">
         <table aria-label="Telemetry checks">
@@ -301,7 +303,10 @@ function TelemetrySection({ gatewayId }: { gatewayId: string }) {
                 <td>{check.title}</td>
                 <td><Badge color={checkColor(check.status)}>{TELEMETRY_CHECK_STATUS_LABELS[check.status]}</Badge></td>
                 <td>{check.detail}</td>
-                <td>{check.command ? <code className={styles.command}>{check.command}</code> : '—'}</td>
+                <td>{check.command ? <details className={styles.technicalDetails}>
+                  <summary>Recovery command</summary>
+                  <code className={styles.command}>{check.command}</code>
+                </details> : '—'}</td>
               </tr>
             ))}
           </tbody>

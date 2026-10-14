@@ -358,6 +358,10 @@ function renderMcpsPage(entry = '/mcps', includeUnrelatedMutation = false) {
 
 const renderPage = renderMcpsPage
 
+async function openRowMenu(user: ReturnType<typeof userEvent.setup>, scope: HTMLElement) {
+  await user.click(await within(scope).findByRole('button', { name: /^More actions for/ }))
+}
+
 describe('McpsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -541,8 +545,10 @@ describe('McpsPage', () => {
     const user = userEvent.setup()
     api.listMcpEndpoints.mockResolvedValue([buildMcpEndpoint()])
     renderPage(name === 'Publish through a gateway' ? '/mcps?tab=registered' : '/mcps')
-    const opener = await screen.findByRole('button', { name })
+    const fromRow = name === 'Publish through a gateway'
+    const opener = await screen.findByRole('button', { name: fromRow ? /^More actions for/ : name })
     await user.click(opener)
+    if (fromRow) await user.click(await screen.findByRole('menuitem', { name }))
     await waitFor(() => expect(screen.getByRole('dialog')).toContainElement(document.activeElement as HTMLElement))
     await user.keyboard('{Escape}')
     await waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull())
@@ -623,7 +629,7 @@ describe('McpsPage', () => {
     ).toBeVisible()
     expect(within(none).getAllByText('None')).toHaveLength(1)
     expect(within(none).queryByText('Not applied yet')).not.toBeInTheDocument()
-    expect(within(none).queryByRole('button', { name: 'Clear' })).not.toBeInTheDocument()
+    expect(within(none).queryByRole('button', { name: /^More model caller actions for/ })).not.toBeInTheDocument()
   })
 
   it('sets a model caller from application principals only', async () => {
@@ -652,7 +658,8 @@ describe('McpsPage', () => {
     renderPage()
 
     const table = await screen.findByRole('table', { name: 'Published MCP servers' })
-    await user.click(within(table).getByRole('button', { name: 'Clear' }))
+    await user.click(within(table).getByRole('button', { name: /^More model caller actions for/ }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Clear' }))
 
     await waitFor(() => expect(api.clearMcpModelCaller).toHaveBeenCalledWith('mcp_pub_1'))
   })
@@ -678,7 +685,8 @@ describe('McpsPage', () => {
 
     renderPage()
     const table = await screen.findByRole('table', { name: 'Published MCP servers' })
-    await user.click(within(table).getByRole('button', { name: 'Unpublish' }))
+    await openRowMenu(user, table)
+    await user.click(await screen.findByRole('menuitem', { name: 'Unpublish' }))
 
     const dialog = await screen.findByRole('alertdialog', { name: 'Unpublish Contoso tools?' })
     expect(await within(dialog).findByText('1 grant loses access. The gateway refuses its Entra tokens.')).toBeVisible()
@@ -688,8 +696,8 @@ describe('McpsPage', () => {
     )
     expect(api.planUnpublishMcpPublication).toHaveBeenCalledWith('mcp_pub_1')
     expect(api.unpublishMcpPublication).not.toHaveBeenCalled()
-    // Fluent returns focus to the button that opened the dialog when it closes.
-    expect(within(table).getByRole('button', { name: 'Unpublish', hidden: true })).toHaveAttribute(
+    // Restore dialog focus to the persistent overflow trigger.
+    expect(within(table).getByRole('button', { name: /^More actions for/, hidden: true })).toHaveAttribute(
       'data-tabster',
       expect.stringContaining('restorer'),
     )
@@ -891,7 +899,8 @@ describe('McpsPage', () => {
       renderPage()
 
       const table = await screen.findByRole('table', { name: 'Registered MCP servers' })
-      expect(within(table).getByRole('button', { name: 'Sync tools' })).toBeDisabled()
+      await openRowMenu(userEvent.setup(), table)
+      expect(await screen.findByRole('menuitem', { name: 'Sync tools' })).toHaveAttribute('aria-disabled', 'true')
     })
 
     it('reports what a 401 asked for instead of calling the server unreachable', async () => {
@@ -1015,12 +1024,14 @@ describe('McpsPage', () => {
       renderPage()
       const table = await screen.findByRole('table', { name: 'Registered MCP servers' })
 
-      await user.click(within(table).getByRole('button', { name: 'Sync tools' }))
+      await openRowMenu(user, table)
+      await user.click(await screen.findByRole('menuitem', { name: 'Sync tools' }))
       await waitFor(() => expect(api.syncMcpEndpoint).toHaveBeenCalledWith('mcpEndpoint_1'), {
         timeout: 5000,
       })
 
-      await user.click(within(table).getByRole('button', { name: 'Remove' }))
+      await openRowMenu(user, table)
+      await user.click(await screen.findByRole('menuitem', { name: 'Remove' }))
       await waitFor(() => expect(api.deleteMcpEndpoint).toHaveBeenCalledWith('mcpEndpoint_1'), {
         timeout: 5000,
       })

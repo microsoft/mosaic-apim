@@ -16,6 +16,40 @@ describe('useMosaicApi', () => {
     vi.unstubAllGlobals()
   })
 
+  it('fetches photos as no-store images without credentials in the URL', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('thumbnail', {
+      headers: { 'Content-Type': 'image/png' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useMosaicApi())
+    const photo = await result.current.getDirectoryPhoto('object 1')
+    expect(photo?.type).toBe('image/png')
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toContain('/api/v1/directory/objects/object%201/photo')
+    expect(options.cache).toBe('no-store')
+    expect((options.headers as Headers).get('Accept')).toBe('image/jpeg, image/png')
+    expect(url).not.toContain('token')
+  })
+
+  it('treats absent photos as optional but reports permission failures', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: 'Missing photo consent', code: 'directory_forbidden' }), { status: 403 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useMosaicApi())
+    expect(await result.current.getDirectoryPhoto('user')).toBeNull()
+    await expect(result.current.getDirectoryPhoto('user')).rejects.toThrow('Missing photo consent')
+  })
+
+  it.each([
+    new Response('html', { headers: { 'Content-Type': 'text/html' } }),
+    new Response(new Uint8Array(262_145), { headers: { 'Content-Type': 'image/png' } }),
+  ])('rejects an invalid photo response', async (response) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response))
+    const { result } = renderHook(() => useMosaicApi())
+    await expect(result.current.getDirectoryPhoto('user')).rejects.toThrow('not a supported thumbnail')
+  })
+
   it('sends the policy preview contract to the live API', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(

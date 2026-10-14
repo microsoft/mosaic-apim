@@ -183,6 +183,9 @@ async function openApproval(user: ReturnType<typeof userEvent.setup>) {
 
 /** Each body row's cell under the named column header, in row order. */
 function columnCells(table: HTMLElement, header: string) {
+  if (['Cost center', 'Environment', 'Limits', 'Binding'].includes(header)) {
+    return within(table).getAllByRole('group', { name: header })
+  }
   const column = within(table).getAllByRole('columnheader').findIndex((cell) => cell.textContent === header)
   return within(table).getAllByRole('row').slice(1).map((row) => within(row).getAllByRole('cell')[column])
 }
@@ -215,6 +218,10 @@ function renderPage(initial = '/entitlements') {
     </QueryClientProvider>,
   )
   return queryClient
+}
+
+async function openRowMenu(user: ReturnType<typeof userEvent.setup>, scope: HTMLElement) {
+  await user.click(await within(scope).findByRole('button', { name: /^More actions for/ }))
 }
 
 describe('EntitlementsPage', () => {
@@ -293,7 +300,8 @@ describe('EntitlementsPage', () => {
     const table = await screen.findByRole('table', { name: 'Access requests' })
     expect(within(table).getByText('approved')).toBeVisible()
     expect(within(table).getByRole('button', { name: 'Approve' })).toBeDisabled()
-    expect(within(table).getByRole('button', { name: 'Deny' })).toBeDisabled()
+    await openRowMenu(user, table)
+    expect(await screen.findByRole('menuitem', { name: 'Deny' })).toHaveAttribute('aria-disabled', 'true')
     expect(api.listAccessRequests).toHaveBeenCalledWith('approved')
   })
 
@@ -307,7 +315,8 @@ describe('EntitlementsPage', () => {
     expect(screen.queryByText('No pending requests')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Retry requests' }))
     const table = await screen.findByRole('table', { name: 'Pending access requests' })
-    await user.click(within(table).getByRole('button', { name: 'Deny' }))
+    await openRowMenu(user, table)
+    await user.click(await screen.findByRole('menuitem', { name: 'Deny' }))
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['access-requests'] }))
     expect(queryClient.getQueryData(['access-requests', 'pending'])).toBeDefined()
   })
@@ -322,7 +331,8 @@ describe('EntitlementsPage', () => {
     const queryClient = renderPage('/entitlements?tab=requests')
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     const table = await screen.findByRole('table', { name: 'Pending access requests' })
-    await user.click(within(table).getByRole('button', { name: 'Deny' }))
+    await openRowMenu(user, table)
+    await user.click(await screen.findByRole('menuitem', { name: 'Deny' }))
     expect(await screen.findByText(status === 409 ? 'This request has already been decided.' : 'You are not authorized to decide requests.')).toBeVisible()
     expect(screen.queryByText(/Denied the access request/)).not.toBeInTheDocument()
     if (status === 409) {
@@ -342,10 +352,12 @@ describe('EntitlementsPage', () => {
     const row = within(table).getAllByRole('row').find((item) => item.textContent?.includes('Engineering'))
     await waitFor(() => expect(row).toHaveTextContent('Support'))
     expect(row).toHaveTextContent('support')
-    // The cost center sits under its own heading, not under Resource.
-    const headings = within(table).getAllByRole('columnheader').map((cell) => cell.textContent)
-    const cells = within(row as HTMLElement).getAllByRole('cell')
-    expect(cells[headings.indexOf('Cost center')]).toHaveTextContent('Supportsupport')
+    const costCenter = within(row as HTMLElement).getByRole('group', { name: 'Cost center' })
+    expect(costCenter).toHaveTextContent('Supportsupport')
+    expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
+      'Subject', 'Resource', 'Limits & binding', 'Desired / applied', 'Actions',
+    ])
+    expect(screen.queryByRole('button', { name: 'Collapse Entitlements sections' })).not.toBeInTheDocument()
   })
 
   it('filters grants by cost center from the query string and from the filter', async () => {
@@ -392,9 +404,8 @@ describe('EntitlementsPage', () => {
     expect(await screen.findByText('Revoked when its subject left the cost center.')).toBeVisible()
   })
 
-  it('keeps the whole APIM subscription name in the binding cell, with its source on a line of its own', async () => {
-    // A managed subscription name is long and has no spaces. Administrators look the subscription
-    // up by this name, so the cell must hold all of it rather than a shortened form.
+  it('keeps the whole APIM subscription name and source in explicit binding details', async () => {
+    const user = userEvent.setup()
     const subscriptionName = 'mosaic-grant-0123456789abcdef0123456789abcdef'
     api.listEntitlements.mockResolvedValue([
       {
@@ -408,12 +419,15 @@ describe('EntitlementsPage', () => {
 
     const table = await screen.findByRole('table', { name: 'Entitlements' })
     const [named, recorded, unbound] = columnCells(table, 'Binding')
+    expect(within(named).getByText('APIM subscription')).toBeVisible()
+    expect(within(named).getByText(subscriptionName)).not.toBeVisible()
+    await user.click(within(named).getByText('Binding details'))
     expect(within(named).getByText(subscriptionName)).toBeVisible()
     expect(within(named).getByText('orchestrated')).toBeVisible()
-    expect(named).toHaveAccessibleName(`${subscriptionName} orchestrated`)
     expect(within(recorded).getByText('Recorded')).toBeVisible()
+    await user.click(within(recorded).getByText('Binding details'))
     expect(within(recorded).getByText('manual')).toBeVisible()
-    expect(unbound).toHaveTextContent(/^Not bound$/)
+    expect(within(unbound).getByText('Not bound')).toBeVisible()
   })
 
   it('filters grants by environment, including deployment grants from their endpoint', async () => {
@@ -502,7 +516,8 @@ describe('EntitlementsPage', () => {
     })
     renderPage()
 
-    await user.click(await screen.findByRole('button', { name: 'Revoke' }))
+    await openRowMenu(user, await screen.findByRole('table', { name: 'Entitlements' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Revoke' }))
     expect(api.updateEntitlement).toHaveBeenCalledWith(directGrant.id, { enabled: false })
     expect(api.deleteEntitlement).not.toHaveBeenCalled()
     expect(await screen.findByText('Revocation pending')).toBeVisible()
@@ -518,13 +533,15 @@ describe('EntitlementsPage', () => {
     api.deleteEntitlement.mockResolvedValue(undefined)
     renderPage()
     expect(await screen.findByText('Desired state only')).toBeVisible()
-    await user.click(screen.getByRole('button', { name: 'Revoke' }))
+    await openRowMenu(user, screen.getByRole('table', { name: 'Entitlements' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Revoke' }))
     expect(api.deleteEntitlement).toHaveBeenCalledWith(entitlement.id)
     expect(api.updateEntitlement).not.toHaveBeenCalled()
     expect(await screen.findByText('Removed the desired-state grant. API Management is unchanged.')).toBeVisible()
   })
 
   it('keeps imported direct and MCP grants desired-only', async () => {
+    const user = userEvent.setup()
     api.listEntitlements.mockResolvedValue([
       { ...directGrant, binding: { gatewayId: 'gateway_1', source: 'manual', attributionKey: 'grant:direct_grant' }, runtime: null },
       { ...directGrant, id: 'mcp-grant', resource: { kind: 'mcpServer', id: 'mcp_1' }, binding: null, runtime: null },
@@ -534,9 +551,12 @@ describe('EntitlementsPage', () => {
     expect(screen.getByText('Recorded, not enforced')).toBeVisible()
     const [gatewayLog] = columnCells(screen.getByRole('table', { name: 'Entitlements' }), 'Binding')
     expect(within(gatewayLog).getByText('Gateway log')).toBeVisible()
+    await user.click(within(gatewayLog).getByText('Binding details'))
     expect(within(gatewayLog).getByText('manual')).toBeVisible()
     expect(screen.getByText(/doesn't enforce it for an imported MCP server/)).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Connection info' })).toBeVisible()
+    const mcpRow = screen.getByText('Recorded, not enforced').closest('tr') as HTMLElement
+    await openRowMenu(user, mcpRow)
+    expect(await screen.findByRole('menuitem', { name: 'Connection info' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Manage model' })).not.toBeInTheDocument()
     expect(api.applyPublishPlan).not.toHaveBeenCalled()
   })
@@ -789,10 +809,14 @@ describe('EntitlementsPage', () => {
       const [meganLimits, researchLimits] = columnCells(table, 'Limits')
       expect(within(meganLimits).getAllByText('Limits usage to 20,000 tokens per minute.')).toHaveLength(2)
       expect(within(meganLimits).getByText('Pool: Every caller shares 200,000 tokens per minute.')).toBeVisible()
+      await user.click(within(meganLimits).getByText('Last applied limit details'))
       expect(within(meganLimits).getByText(/Last applied limits/)).toBeVisible()
       expect(within(researchLimits).getAllByText('No grant-specific limit is configured.')).toHaveLength(2)
 
       const [meganKey, researchKey] = columnCells(table, 'Binding')
+      expect(within(meganKey).getByText('Subscription key')).toBeVisible()
+      expect(within(meganKey).getByText('mosaic-pool-anthropic-claude-megan')).not.toBeVisible()
+      await user.click(within(meganKey).getByText('Subscription details'))
       expect(within(meganKey).getByText('mosaic-pool-anthropic-claude-megan')).toBeVisible()
       expect(within(meganKey).getByText('Pool key')).toBeVisible()
       expect(within(researchKey).getByText('Entra token')).toBeVisible()
@@ -803,7 +827,8 @@ describe('EntitlementsPage', () => {
       expect(within(unbound).getByText('0')).toBeVisible()
 
       const [meganActions] = columnCells(table, 'Actions')
-      await user.click(within(meganActions).getByRole('button', { name: 'Manage pool' }))
+      await openRowMenu(user, meganActions)
+      await user.click(await screen.findByRole('menuitem', { name: 'Manage pool' }))
       expect(screen.getByRole('status', { name: 'Current location' })).toHaveTextContent(
         `/pools/${governedAnthropicPool.id}`,
       )
@@ -1271,7 +1296,8 @@ describe('EntitlementsPage', () => {
       renderPage('/entitlements?tab=requests')
 
       const requests = await screen.findByRole('table', { name: 'Pending access requests' })
-      await user.click(within(requests).getByRole('button', { name: 'Deny' }))
+      await openRowMenu(user, requests)
+      await user.click(await screen.findByRole('menuitem', { name: 'Deny' }))
 
       await waitFor(() => expect(api.denyAccessRequest).toHaveBeenCalledWith(pendingRequest.id))
       expect(await screen.findByText(

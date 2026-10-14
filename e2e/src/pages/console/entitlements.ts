@@ -1,7 +1,7 @@
 import { type Locator, type Page, type Response, expect } from '@playwright/test'
 import type { SuiteLimits, Targets } from '../../config.ts'
 import type { PersonaPool } from '../../fixtures.ts'
-import { banner, exactly, expectNoLoadError, field, noStore, responseTo, secretKept, secretLength } from '../common.ts'
+import { banner, clickRowAction, exactly, expectNoLoadError, field, noStore, responseTo, secretKept, secretLength } from '../common.ts'
 import { PublishDialog } from './publish-dialog.ts'
 
 const publicationPath = /^\/api\/v1\/publications\/[^/]+$/
@@ -156,26 +156,26 @@ export class EntitlementsPage {
   /** Revokes a grant MOSAIC applies, which saves disabled intent until the model's plan is applied. */
   disable(entitlementId: string): Promise<Response> {
     return this.#respond('PATCH', entitlementPath, () =>
-      this.grantRow(entitlementId).getByRole('button', { name: 'Revoke', exact: true }).click(),
+      clickRowAction(this.page, this.grantRow(entitlementId), 'Revoke'),
     )
   }
 
   /** Revokes a grant MOSAIC no longer applies, such as one whose model was unpublished, which removes it. */
   remove(entitlementId: string): Promise<Response> {
     return this.#respond('DELETE', entitlementPath, () =>
-      this.grantRow(entitlementId).getByRole('button', { name: 'Revoke', exact: true }).click(),
+      clickRowAction(this.page, this.grantRow(entitlementId), 'Revoke'),
     )
   }
 
   reEnable(entitlementId: string): Promise<Response> {
     return this.#respond('PATCH', entitlementPath, () =>
-      this.grantRow(entitlementId).getByRole('button', { name: 'Re-enable', exact: true }).click(),
+      clickRowAction(this.page, this.grantRow(entitlementId), 'Re-enable'),
     )
   }
 
   async connectionInfo(entitlementId: string): Promise<ConnectionDialog> {
     await this.selectSection('grants')
-    await this.grantRow(entitlementId).getByRole('button', { name: 'Connection info', exact: true }).click()
+    await clickRowAction(this.page, this.grantRow(entitlementId), 'Connection info')
     const dialog = new ConnectionDialog(this.page, this.targets)
     await expect(dialog.root).toBeVisible()
     return dialog
@@ -193,7 +193,7 @@ export class EntitlementsPage {
   }
 
   async approve(row: Locator): Promise<ApproveRequestDialog> {
-    await row.getByRole('button', { name: 'Approve', exact: true }).click()
+    await clickRowAction(this.page, row, 'Approve')
     const dialog = new ApproveRequestDialog(this.page, this.targets)
     await expect(dialog.root).toBeVisible()
     return dialog
@@ -202,7 +202,7 @@ export class EntitlementsPage {
   /** Denies a request at once: the console asks for no confirmation. */
   deny(row: Locator): Promise<Response> {
     return this.#respond('POST', /^\/api\/v1\/access-requests\/[^/]+\/deny$/, () =>
-      row.getByRole('button', { name: 'Deny', exact: true }).click(),
+      clickRowAction(this.page, row, 'Deny'),
     )
   }
 }

@@ -413,6 +413,8 @@ describe('GatewayDetailPage management mode', () => {
     expect(within(checks).getByText('OK')).toBeVisible()
     expect(within(checks).getByText('Error')).toBeVisible()
     expect(screen.getByText('Logs sent to Log Analytics')).toBeVisible()
+    expect(screen.getByText(/az monitor diagnostic-settings create/)).not.toBeVisible()
+    await user.click(screen.getByText('Recovery command'))
     expect(screen.getByText(/az monitor diagnostic-settings create/)).toBeVisible()
     const apis = screen.getByRole('table', { name: 'API diagnostics readiness' })
     expect(within(apis).getByText('Model API')).toBeVisible()

@@ -117,6 +117,17 @@ class DirectoryError(DomainError):
     code = "directory_unavailable"
 
 
+class DirectoryThrottledError(DirectoryError):
+    """Microsoft Graph asked the optional photo reader to wait."""
+
+    status_code = 429
+    code = "directory_throttled"
+
+    def __init__(self, message: str, *, retry_after: int) -> None:
+        self.retry_after = min(max(retry_after, 1), 300)
+        super().__init__(message, details={"retryAfter": self.retry_after})
+
+
 class ErrorBody(BaseModel):
     model_config = ConfigDict(serialize_by_alias=True)
 
@@ -131,6 +142,11 @@ async def domain_error_handler(_request: Request, exc: Exception) -> JSONRespons
     return JSONResponse(
         status_code=exc.status_code,
         content=ErrorBody(code=exc.code, message=exc.message, details=exc.details).model_dump(),
+        headers=(
+            {"Retry-After": str(exc.retry_after)}
+            if isinstance(exc, DirectoryThrottledError)
+            else None
+        ),
     )
 
 

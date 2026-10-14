@@ -30,7 +30,7 @@ import {
   StackRegular,
 } from '@fluentui/react-icons'
 import { useMsal } from '@azure/msal-react'
-import { type ReactNode, useCallback, useMemo, useState } from 'react'
+import { type ReactNode, useCallback, useState } from 'react'
 import {
   NavLink,
   Navigate,
@@ -41,7 +41,6 @@ import {
 } from 'react-router-dom'
 import { AuthGate } from './auth'
 import { ConsoleAccessGate } from './console-access'
-import { initialsFor } from './initials'
 import { AdminProfilePage } from './pages/AdminProfilePage'
 import { AnalyticsPage } from './pages/AnalyticsPage'
 import { CostCenterDetailPage, CostCentersPage } from './pages/CostCentersPage'
@@ -64,6 +63,8 @@ import { MosaicMark } from './components/MosaicMark'
 import { PageSearch } from './components/PageSearch'
 import { RequestNotifications } from './components/RequestNotifications'
 import { useNavigationDrawer } from './components/useNavigationDrawer'
+import { AppearanceControl } from './components/AppearanceControl'
+import { IdentityAvatar } from './components/IdentityAvatar'
 import './index.css'
 
 interface NavigationItem {
@@ -119,7 +120,7 @@ function AdminShell() {
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('mosaic.primary.collapsed') === 'true')
   const accountName = accounts[0]?.name ?? 'MOSAIC administrator'
-  const initials = useMemo(() => initialsFor(accountName), [accountName])
+  const accountObjectId = accounts[0]?.localAccountId
 
   const closeNavigation = useCallback(() => setMobileNavigationOpen(false), [])
   const navigationRef = useNavigationDrawer(mobileNavigationOpen, closeNavigation)
@@ -168,10 +169,11 @@ function AdminShell() {
         </nav>
         <nav className="utility-navigation" aria-label="Utility navigation">
           <NavigationLinks items={utilityNavigation} onNavigate={closeNavigation} />
+          <AppearanceControl />
           <Menu>
             <MenuTrigger disableButtonEnhancement>
           <button className="profile-quick-link" aria-label={`Account menu for ${accountName}`} title={accountName}>
-            <span className="avatar">{initials}</span>
+            <IdentityAvatar name={accountName} objectId={accountObjectId} size={32} />
             <span>
               <strong>{accountName}</strong>
               {/* In Entra mode ConsoleAccessGate renders the shell only once the API confirms the Admin role. */}

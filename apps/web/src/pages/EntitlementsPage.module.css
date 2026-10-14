@@ -1,27 +1,40 @@
 .page {
   display: grid;
   gap: 20px;
+  min-width: 0;
 }
 
-.summaryGrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 14px;
+.summaryStrip {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px 32px;
 }
 
-.summaryCard {
-  padding: 12px 16px;
-  display: grid;
-  gap: 4px;
-  border: 1px solid var(--mosaic-border);
-  background: var(--mosaic-surface);
-  box-shadow: var(--mosaic-shadow);
+.summaryStrip > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 12px;
 }
 
-.summaryCard strong {
-  font-size: 24px;
-  line-height: 1.1;
-  color: var(--mosaic-text);
+.summaryStrip dt {
+  color: var(--mosaic-text-muted);
+  font-size: 13px;
+}
+
+.summaryStrip dd {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.summaryStrip .summaryNote {
+  max-width: 48ch;
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+  font-weight: 400;
 }
 
 .contentGrid {
@@ -59,26 +72,65 @@
 }
 
 .tableWrap {
-  padding: 16px 20px 20px;
+  padding: 16px 0 20px;
   overflow: auto;
+  min-width: 0;
+}
+
+.tableWrap .grantsTable {
+  min-width: 960px;
+  table-layout: fixed;
+}
+
+.grantsTable :global(th),
+.grantsTable :global(td) {
+  box-sizing: border-box;
+}
+
+.subjectColumn {
+  width: 18%;
+}
+
+.resourceColumn,
+.limitsColumn {
+  width: 20%;
+}
+
+.stateColumn {
+  width: calc(42% - 210px);
+}
+
+.actionsColumn {
+  width: 210px;
+}
+
+.grantsTable .primaryCell {
+  overflow-wrap: anywhere;
+}
+
+.resourceMetadata,
+.bindingGroup {
+  margin-top: 12px;
+  display: grid;
+  gap: 4px;
 }
 
 .tableWrap :global(table) {
   width: 100%;
+  table-layout: auto;
 }
 
 .tableWrap :global(th) {
   background: var(--mosaic-surface-subtle);
   color: var(--mosaic-text-muted);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
 }
 
 .tableWrap :global(th),
 .tableWrap :global(td) {
-  padding: 10px 12px;
+  padding: 16px 18px;
   border-bottom: 1px solid var(--mosaic-border-soft);
   vertical-align: top;
 }
@@ -177,6 +229,28 @@
 .cellStack {
   display: grid;
   gap: 4px;
+  min-width: 0;
+}
+
+.identityCell {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.technicalDetails {
+  min-width: 0;
+  max-width: 36ch;
+}
+
+.technicalDetails summary {
+  cursor: pointer;
+  color: var(--mosaic-primary);
+  font-size: 12px;
+}
+
+.technicalDetails[open] > :not(summary) {
+  margin-top: 8px;
 }
 
 /* Long states wrap in the narrow column, so the badge grows with them. */
@@ -185,6 +259,7 @@
   min-height: 20px;
   padding-block: 2px;
   text-align: center;
+  justify-self: start;
 }
 
 /* A subscription name has no spaces to wrap at, so it breaks anywhere to stay in its column. */
@@ -204,7 +279,7 @@
 .rowActions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
 }
 
 .dialogForm {

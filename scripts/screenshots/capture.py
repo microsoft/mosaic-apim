@@ -5,7 +5,7 @@ with Playwright, blurs anything that looks like an endpoint, identifier, address
 writes PNGs to ``docs/images/screenshots``. Run it from the repository root; see
 ``docs/screenshots.md`` for the workflow::
 
-    uv run --with "playwright>=1.58,<2" --with "pillow>=11,<12" \\
+    uv run --with "playwright>=1.58,<2" \\
         python -m scripts.screenshots.capture
 """
 
@@ -31,6 +31,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from scripts.screenshots.demo_api import (
     EXTRA_DIRECTORY_OBJECTS,
+    GROUPS,
     PARTNER_FOUNDRY_DEMO_KEY,
     PARTNER_FOUNDRY_URL,
     PEOPLE,
@@ -50,12 +51,22 @@ RESOURCE_NAMES = [
     *(person.label for person in PEOPLE),
     *(person.label.lower().replace(" ", "-") for person in PEOPLE),
     *(person.display_name for person in EXTRA_DIRECTORY_OBJECTS),
+    *(name for name, _description, _members in GROUPS),
     "Contoso AI Gateway",
     "Contoso AI Dev Gateway",
     "Partner Gateway",
     "Contoso AI Foundry",
     "Contoso Azure OpenAI",
     "Fabrikam partner Foundry",
+    "Contoso Docs Search",
+    "IT Service Desk",
+    "Sales CRM",
+    "Docs search MCP",
+    "Docs MCP",
+    "Orders MCP",
+    "contoso-docs",
+    "contoso-servicedesk",
+    "contoso-crm",
     "mosaic-mcp-metadata",
     "mosaic-blocked-cost-centers",
     "ai-starter",
@@ -276,6 +287,11 @@ FIND_SENSITIVE_TEXT = """
     const text = field.selectedOptions[0]?.text
     if (text && spans(text).length > 0) keep(field.getBoundingClientRect(), field)
   }
+  for (const avatar of document.querySelectorAll('.identity-avatar-user, .topbar-avatar')) {
+    if (avatar.getClientRects().length > 0 && !collapsed(avatar)) {
+      keep(avatar.getBoundingClientRect(), avatar)
+    }
+  }
   return rects
 }
 """
@@ -315,6 +331,15 @@ def click_tab(name: str) -> Action:
 def click_button(name: str) -> Action:
     def act(page: Page) -> None:
         page.get_by_role("button", name=name).filter(visible=True).first.click()
+
+    return act
+
+
+def click_row_menu_action(table_name: str, name: str) -> Action:
+    def act(page: Page) -> None:
+        table = page.get_by_role("table", name=table_name, exact=True)
+        table.get_by_role("button", name=re.compile(r"^More actions")).first.click()
+        page.get_by_role("menuitem", name=name, exact=True).click()
 
     return act
 
@@ -620,8 +645,33 @@ SHOTS: list[Shot] = [
         "/identity?tab=agents",
         "dark",
         "Market Research Agent",
-        # Tall enough for all four seeded agents, ending just below the detail panel's type field.
-        height=1012,
+        height=1000,
+    ),
+    Shot(
+        "console-people-search",
+        "console",
+        "/identity?tab=users",
+        "light",
+        "Megan Bowen",
+        actions=(
+            click_button("Add person"),
+            fill_text("Directory search", "hen"),
+            click_button("Select Henrietta Mueller"),
+            wait_for_text("Selected:"),
+        ),
+        height=1000,
+    ),
+    Shot(
+        "console-identity-detail",
+        "console",
+        "/identity?tab=agents",
+        "dark",
+        "Market Research Agent",
+        actions=(
+            click_button("Market Research Agent"),
+            wait_for_text("Edit local metadata"),
+        ),
+        height=1000,
     ),
     Shot(
         "console-directory-picker",
@@ -634,6 +684,7 @@ SHOTS: list[Shot] = [
             click_button("Add agent"),
             fill_text("Directory search", "agent"),
             wait_for_text("Benefits Bot Agent"),
+            click_button("Select Benefits Bot Agent"),
         ),
         height=1040,
     ),
@@ -645,11 +696,11 @@ SHOTS: list[Shot] = [
         "Entra security groups",
         actions=(
             fill_text("Filter by label, detail, object ID, or kind", "AI Model Users"),
+            click_button("AI Model Users"),
             wait_for_text("Security group members"),
             wait_for_text("Market Research Agent"),
         ),
-        # The Graph member list sits below the local label form, so the viewport takes the page.
-        height=1776,
+        height=1100,
     ),
     Shot(
         "console-entitlements",
@@ -733,7 +784,10 @@ SHOTS: list[Shot] = [
         "GPT-4o mini",
         # Unpublish on the first row, GPT-4o, plans the unpublish and opens its review. The shot
         # never confirms it.
-        actions=(click_button("Unpublish"), wait_for_text("What MOSAIC deletes")),
+        actions=(
+            click_row_menu_action("Published models", "Unpublish"),
+            wait_for_text("What MOSAIC deletes"),
+        ),
         height=1200,
     ),
     Shot(
@@ -1100,7 +1154,10 @@ def _capture_one(
     png = page.screenshot(animations="disabled", caret="hide")
     image = _blur(Image.open(io.BytesIO(png)).convert("RGB"), rects)
     target = output / f"{shot.name}.png"
-    image.save(target, optimize=True)
+    with tempfile.TemporaryDirectory(prefix=f".{shot.name}-", dir=output) as staging:
+        staged = Path(staging) / "capture.png"
+        image.save(staged, optimize=True)
+        staged.replace(target)
     shown = target.resolve()
     if shown.is_relative_to(REPO_ROOT):
         shown = shown.relative_to(REPO_ROOT)
@@ -1203,7 +1260,9 @@ def _check_navigation(page: Page, app: App) -> None:
         raise CaptureError(f"{app}: closing mobile navigation did not restore focus")
     if page.evaluate("document.documentElement.scrollWidth > window.innerWidth + 1"):
         raise CaptureError(f"{app}: the mobile shell overflows the viewport horizontally")
-    if app == "portal":
+    if app == "console":
+        _check_identity_workspace(page)
+    elif app == "portal":
         page.goto(origin + "/catalog")
         _settle(page)
         page.get_by_role("button", name=re.compile("^View access options for ")).first.click()
@@ -1219,6 +1278,106 @@ def _check_navigation(page: Page, app: App) -> None:
     print(f"verified {app} desktop collapse, mobile navigation, and contextual layout")
 
 
+def _check_identity_workspace(page: Page) -> None:
+    origin = "/".join(page.url.split("/")[:3])
+    page.goto(origin + "/identity?tab=users")
+    _settle(page)
+    row = page.get_by_role("button", name=re.compile(r"^Megan Bowen"))
+    row.wait_for()
+    if page.get_by_role("dialog").count():
+        raise CaptureError("console: identity details opened without a selection")
+    row.click()
+    drawer = page.get_by_role("dialog", name="Megan Bowen", exact=True)
+    drawer.wait_for()
+    box = drawer.bounding_box()
+    if box is None or box["width"] > 391:
+        raise CaptureError("console: mobile identity drawer exceeds the viewport")
+    if page.get_by_role("textbox", name="Local label", exact=True).count():
+        raise CaptureError("console: identity overview immediately exposes an editor")
+    page.get_by_role("button", name="Edit local metadata", exact=True).click()
+    label = page.get_by_role("textbox", name="Local label", exact=True)
+    if not label.evaluate("(element) => element === document.activeElement"):
+        raise CaptureError("console: editing did not focus the local label")
+    label.fill("Megan Bowen review draft")
+    page.get_by_role("button", name="Close identity details", exact=True).click()
+    page.get_by_role("dialog", name="Discard unsaved changes?", exact=True).wait_for()
+    page.get_by_role("button", name="Keep editing", exact=True).click()
+    if label.input_value() != "Megan Bowen review draft":
+        raise CaptureError("console: keeping identity edits lost the draft")
+    page.get_by_role("button", name="Cancel editing", exact=True).click()
+    overview_action = page.get_by_role("button", name="Edit local metadata", exact=True)
+    if not overview_action.evaluate("(element) => element === document.activeElement"):
+        raise CaptureError("console: cancelling edits did not focus the overview action")
+    page.keyboard.press("Escape")
+    drawer.wait_for(state="hidden")
+    page.locator(".identity-drawer").wait_for(state="hidden")
+    page.wait_for_function(
+        "(element) => element === document.activeElement", arg=row.element_handle()
+    )
+    if page.evaluate("document.documentElement.scrollWidth > window.innerWidth + 1"):
+        raise CaptureError("console: mobile identity workspace overflows the viewport")
+
+    page.get_by_role("button", name="Add person", exact=True).click()
+    add = page.get_by_role("dialog", name="Add person", exact=True)
+    add.wait_for()
+    add.get_by_role("textbox", name="Directory search", exact=True).fill("hen")
+    add.get_by_role("button", name="Select Henrietta Mueller", exact=True).click()
+    add.get_by_role("button", name="Add Henrietta Mueller", exact=True).wait_for()
+    add.locator(".identity-avatar-user img").first.wait_for()
+    if page.evaluate("document.documentElement.scrollWidth > window.innerWidth + 1"):
+        raise CaptureError("console: mobile directory picker overflows the viewport")
+    add.get_by_role("button", name="Cancel", exact=True).click()
+    add.wait_for(state="hidden")
+
+    for width in (768, 1440):
+        page.set_viewport_size({"width": width, "height": 900})
+        if page.evaluate("document.documentElement.scrollWidth > window.innerWidth + 1"):
+            raise CaptureError(f"console: identity workspace overflows at {width}px")
+
+    for section, name, edit, field_label in (
+        ("users", "Megan Bowen", "Edit local metadata", "Local label"),
+        ("groups", "Data Science", "Edit group", "Description"),
+    ):
+        page.goto(origin + f"/identity?tab={section}")
+        _settle(page)
+        page.get_by_role("button", name=re.compile(r"^" + re.escape(name))).click()
+        page.get_by_role("button", name=edit, exact=True).click()
+        draft = page.get_by_role("textbox", name=field_label, exact=True)
+        draft.fill(f"{name} section draft")
+        # Exercise both section handlers directly while the modal drawer makes navigation inert.
+        page.get_by_label("Identity section", exact=True).evaluate(
+            """(element) => {
+                element.value = 'agents';
+                element.dispatchEvent(new Event('change', { bubbles: true }));
+            }"""
+        )
+        page.get_by_role("dialog", name="Discard unsaved changes?", exact=True).wait_for()
+        page.get_by_role("button", name="Keep editing", exact=True).click()
+        if f"tab={section}" not in page.url or draft.input_value() != f"{name} section draft":
+            raise CaptureError("console: cancelling a section change lost the section or draft")
+        page.locator('nav[aria-label="Identity sections"] button[title="Agents"]').evaluate(
+            "(element) => element.click()"
+        )
+        page.get_by_role("dialog", name="Discard unsaved changes?", exact=True).wait_for()
+        page.get_by_role("button", name="Discard changes", exact=True).click()
+        page.wait_for_url("**/identity?tab=agents")
+        page.locator(".identity-drawer").wait_for(state="hidden")
+        if page.get_by_role("dialog", name="Discard unsaved changes?", exact=True).count():
+            raise CaptureError("console: discarding a section draft left the confirmation open")
+
+    page.emulate_media(forced_colors="active")
+    glass = page.locator(".sidebar").evaluate(
+        "(element) => getComputedStyle(element).backdropFilter"
+    )
+    if glass != "none":
+        raise CaptureError("console: forced colors did not disable translucent navigation")
+    page.emulate_media(forced_colors="none")
+    print(
+        "verified identity focus, dirty drafts, section navigation, picker selection, "
+        "reflow, and forced colors"
+    )
+
+
 def capture(
     shots: Sequence[Shot],
     *,
@@ -1230,7 +1389,15 @@ def capture(
     check_navigation: bool = False,
 ) -> list[Path]:
     output.mkdir(parents=True, exist_ok=True)
-    literals = sorted({*SENSITIVE_LITERALS, *RESOURCE_NAMES}, key=len, reverse=True)
+    literals = sorted(
+        {
+            *SENSITIVE_LITERALS,
+            *RESOURCE_NAMES,
+            *(name.lower().replace(" ", "-") for name in RESOURCE_NAMES),
+        },
+        key=len,
+        reverse=True,
+    )
     written: list[Path] = []
     failures: list[CaptureError] = []
     verified: set[App] = set()

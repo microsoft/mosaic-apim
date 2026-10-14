@@ -29,6 +29,7 @@ import { SectionLayout } from '../components/SectionLayout'
 import { ApiError, useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { PageHeader } from '../components/PageHeader'
+import { RowActions } from '../components/RowActions'
 import { formatRate } from '../cost-format'
 import { plural } from '../labels'
 import type {
@@ -291,15 +292,15 @@ function PriceTable({ lines, onOverride }: { lines: PriceLineView[]; onOverride:
                     </Badge>
                   </td>
                   <td className={styles.actions}>
-                    <Button size="small" onClick={() => onOverride(price)}>Override</Button>
-                    <Button
-                      size="small"
-                      appearance="subtle"
-                      aria-expanded={expanded}
-                      onClick={() => setOpen(expanded ? null : line.lineId)}
-                    >
-                      {expanded ? 'Hide history' : `History (${line.versions})`}
-                    </Button>
+                    <RowActions
+                      label={`More actions for ${price.model === '*' ? 'Every model' : price.model}`}
+                      primary={<Button size="small" onClick={() => onOverride(price)}>Override</Button>}
+                      actions={[{
+                        label: expanded ? 'Hide history' : `History (${line.versions})`,
+                        'aria-expanded': expanded,
+                        onClick: () => setOpen(expanded ? null : line.lineId),
+                      }]}
+                    />
                   </td>
                 </tr>
                 {expanded && <HistoryRows lineId={line.lineId} columns={columns} />}

@@ -17,13 +17,16 @@ import {
   Text,
   Textarea,
   Title3,
+  useRestoreFocusTarget,
 } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
+import { type FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { DirectoryPrincipalPicker } from '../components/DirectoryPrincipalPicker'
+import { IdentityAvatar } from '../components/IdentityAvatar'
+import { IdentityDetailsDrawer } from '../components/IdentityDetailsDrawer'
 import { PageHeader } from '../components/PageHeader'
 import { PrincipalKindBadge } from '../components/PrincipalKindBadge'
 import { SectionLayout } from '../components/SectionLayout'
@@ -173,7 +176,7 @@ function formatTimestamp(value: string) {
 
 function LiveBadge() {
   return (
-    <Badge appearance="tint" className={styles.liveBadge}>
+    <Badge appearance="outline">
       MOSAIC record
     </Badge>
   )
@@ -184,6 +187,7 @@ export function IdentityPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const location = useLocation()
+  const restoreFocus = useRestoreFocusTarget()
   const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search])
   const rawTab = searchParams.get('tab')
   const activeTab: IdentityTab = rawTab === 'workloads' ? 'applications' : isIdentityTab(rawTab) ? rawTab : 'users'
@@ -208,6 +212,24 @@ export function IdentityPage() {
   const [groupDraftDescription, setGroupDraftDescription] = useState('')
   const [principalToAdd, setPrincipalToAdd] = useState('')
   const [confirmation, setConfirmation] = useState<ConfirmationState>(null)
+  const [detailEditing, setDetailEditing] = useState(false)
+  const [discardOpen, setDiscardOpen] = useState(false)
+  const [pendingTab, setPendingTab] = useState<IdentityTab | null>(null)
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  const editButtonRef = useRef<HTMLButtonElement>(null)
+  const editFormRef = useRef<HTMLFormElement>(null)
+  const previousEditing = useRef(false)
+
+  useLayoutEffect(() => {
+    if (detailsOpen && !discardOpen) {
+      if (detailEditing) {
+        editFormRef.current?.querySelector<HTMLInputElement | HTMLTextAreaElement>('input, textarea')?.focus()
+      } else if (previousEditing.current) {
+        editButtonRef.current?.focus()
+      }
+    }
+    previousEditing.current = detailEditing
+  }, [detailEditing, detailsOpen, discardOpen])
 
   const principals = useQuery({ queryKey: ['principals'], queryFn: api.listPrincipals })
   const costCenters = useQuery({ queryKey: ['cost-centers'], queryFn: api.listCostCenters })
@@ -229,6 +251,10 @@ export function IdentityPage() {
 
   const updateTab = useCallback(
     (nextTab: IdentityTab, replace = false) => {
+      setSelectedPrincipalId('')
+      setSelectedGroupId('')
+      setDetailEditing(false)
+      setDetailsOpen(false)
       const nextParams = new URLSearchParams(location.search)
       nextParams.set('tab', nextTab)
       navigate(
@@ -257,6 +283,7 @@ export function IdentityPage() {
         updateTab(nextTab, true)
       }
       setSelectedPrincipalId(principal.id)
+      setDetailEditing(false)
     },
     [activeTab, updateTab],
   )
@@ -291,6 +318,8 @@ export function IdentityPage() {
     mutationFn: api.deletePrincipal,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['principals'] })
+      setSelectedPrincipalId('')
+      setDetailsOpen(false)
     },
   })
 
@@ -300,9 +329,9 @@ export function IdentityPage() {
       setCreateGroupName('')
       setCreateGroupDescription('')
       setCreateGroupOpen(false)
-      setSelectedGroupId(group.id)
       await queryClient.invalidateQueries({ queryKey: ['groups'] })
       updateTab('groups', true)
+      setSelectedGroupId(group.id)
     },
   })
 
@@ -316,6 +345,7 @@ export function IdentityPage() {
     }) => api.updateGroup(groupId, payload),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['groups'] })
+      setDetailEditing(false)
     },
   })
 
@@ -326,6 +356,8 @@ export function IdentityPage() {
       if (selectedGroupId) {
         await queryClient.removeQueries({ queryKey: ['memberships', selectedGroupId] })
       }
+      setSelectedGroupId('')
+      setDetailsOpen(false)
     },
   })
 
@@ -378,22 +410,7 @@ export function IdentityPage() {
     [costCenters.data],
   )
 
-  // Show the requested record while it's on this tab and passes the filter, and the first row
-  // otherwise. Deriving it, rather than resetting the request, keeps a record that was just added
-  // or moved selected even when its tab opens in a later render than the request.
-  const selectedPrincipalId = visiblePrincipals.some((principal) => principal.id === requestedPrincipalId)
-    ? requestedPrincipalId
-    : (visiblePrincipals[0]?.id ?? '')
-
-  useEffect(() => {
-    if (!filteredGroups.length) {
-      setSelectedGroupId('')
-      return
-    }
-    if (!filteredGroups.some((group) => group.id === selectedGroupId)) {
-      setSelectedGroupId(filteredGroups[0].id)
-    }
-  }, [filteredGroups, selectedGroupId])
+  const selectedPrincipalId = requestedPrincipalId
 
   const selectedPrincipal = principals.data?.find((principal) => principal.id === selectedPrincipalId)
   const selectedGroup = groups.data?.find((group) => group.id === selectedGroupId)
@@ -462,8 +479,7 @@ export function IdentityPage() {
   )
 
   const directoryLookupEnabled = directoryStatus.data?.lookupEnabled === true
-  const effectivePrincipalDialogView =
-    principalDialogView === 'search' && (directoryLookupEnabled || directoryStatus.isPending) ? 'search' : 'manual'
+  const effectivePrincipalDialogView = principalDialogView
   // The title names what the dialog will add, so it follows the search or type choice.
   const principalDialogTitle =
     effectivePrincipalDialogView === 'search'
@@ -489,6 +505,35 @@ export function IdentityPage() {
   const groupDetailHasChanges =
     selectedGroup !== undefined &&
     groupDraftDescription.trim() !== (selectedGroup.description ?? '')
+
+  function cancelEditing() {
+    setPrincipalDraftLabel(selectedPrincipal?.label ?? '')
+    setPrincipalDraftKind(selectedPrincipal?.kind ?? 'user')
+    setPrincipalDraftDefaultCostCenterId(selectedPrincipal?.defaultCostCenterId ?? '')
+    setGroupDraftDescription(selectedGroup?.description ?? '')
+    setDetailEditing(false)
+  }
+
+  function keepEditing() {
+    setDiscardOpen(false)
+    setPendingTab(null)
+  }
+
+  function closeDetails(discard = false, nextTab: IdentityTab | null = null) {
+    if (updatePrincipal.isPending || updateGroup.isPending) return
+    if (!discard && detailEditing && (principalDetailHasChanges || groupDetailHasChanges)) {
+      setPendingTab(nextTab)
+      setDiscardOpen(true)
+      return
+    }
+    cancelEditing()
+    setDiscardOpen(false)
+    setPendingTab(null)
+    setDetailsOpen(false)
+    setSelectedPrincipalId('')
+    setSelectedGroupId('')
+    if (nextTab) updateTab(nextTab)
+  }
 
   const principalDetailError = updatePrincipal.error ?? deletePrincipal.error
   const groupDetailError =
@@ -612,8 +657,8 @@ export function IdentityPage() {
         </MessageBar>
       )}
 
-      <SectionLayout label="Identity" sections={IDENTITY_SECTIONS} active={activeTab}
-        onSelect={(value) => isIdentityTab(value) && updateTab(value)}>
+      <SectionLayout label="Identity" orientation="horizontal" sections={IDENTITY_SECTIONS} active={activeTab}
+        onSelect={(value) => isIdentityTab(value) && value !== activeTab && closeDetails(false, value)}>
       <div className={styles.toolbar}>
         <div className={styles.toolbarControls}>
           <Input
@@ -674,6 +719,7 @@ export function IdentityPage() {
                     const isSelected = group.id === selectedGroupId
                     return (
                       <button
+                        {...restoreFocus}
                         key={group.id}
                         type="button"
                         className={
@@ -681,7 +727,7 @@ export function IdentityPage() {
                             ? `${styles.groupListItem} ${styles.groupListItemSelected}`
                             : styles.groupListItem
                         }
-                        onClick={() => setSelectedGroupId(group.id)}
+                        onClick={() => { setSelectedGroupId(group.id); setDetailEditing(false); setDetailsOpen(true) }}
                       >
                         <span className={styles.groupListTitle}>{group.name}</span>
                         <span className={styles.groupListDescription}>
@@ -700,12 +746,13 @@ export function IdentityPage() {
               )}
             </Card>
 
-            <Card className={styles.detailCard}>
+            <IdentityDetailsDrawer open={detailsOpen && Boolean(selectedGroup)} title={selectedGroup?.name ?? 'Group details'} onClose={() => closeDetails()}>
+            <div className={styles.detailCard}>
               {selectedGroup ? (
                 <>
                   <div className={styles.detailHeader}>
                     <div className={styles.detailTitleBlock}>
-                      <Title3 as="h2">{selectedGroup.name}</Title3>
+                      <IdentityAvatar name={selectedGroup.name} kind="securityGroup" size={48} />
                       <Text className={styles.muted}>
                         Organize identities in MOSAIC. The gateway doesn&apos;t enforce these
                         groups; to control access for a group, add an Entra security group and grant it.
@@ -716,6 +763,7 @@ export function IdentityPage() {
                           {memberships.data?.length ?? 0} member{memberships.data?.length === 1 ? '' : 's'}
                         </Badge>
                       </div>
+                      {!detailEditing && <Button ref={editButtonRef} appearance="secondary" onClick={() => setDetailEditing(true)}>Edit group</Button>}
                     </div>
                     <Button
                       appearance="subtle"
@@ -746,7 +794,7 @@ export function IdentityPage() {
                     </MessageBar>
                   )}
 
-                  <form className={styles.detailSection} onSubmit={submitGroupDetails}>
+                  <form ref={editFormRef} className={styles.detailSection} onSubmit={submitGroupDetails}>
                     <div className={styles.readOnlyPanel}>
                       <Text className={styles.readOnlyLabel}>Authoritative source</Text>
                       <Text block className={styles.muted}>
@@ -754,14 +802,14 @@ export function IdentityPage() {
                       </Text>
                     </div>
 
-                    <Field label="Description">
+                    {detailEditing ? <Field label="Description">
                       <Textarea
                         value={groupDraftDescription}
                         onChange={(_, data) => setGroupDraftDescription(data.value)}
                       />
-                    </Field>
+                    </Field> : <Text>{selectedGroup.description || 'No description'}</Text>}
 
-                    <div className={styles.formActions}>
+                    {detailEditing && <div className={styles.formActions}>
                       <Text className={styles.helperText}>
                         Group names are set at creation time. Delete is disabled while members remain.
                       </Text>
@@ -772,13 +820,14 @@ export function IdentityPage() {
                       >
                         Save changes
                       </Button>
-                    </div>
+                      <Button onClick={cancelEditing}>Cancel editing</Button>
+                    </div>}
                   </form>
 
                   <div className={styles.detailSection}>
                     <Title3 as="h3">Memberships</Title3>
 
-                    <form className={styles.inlineForm} onSubmit={submitAddMembership}>
+                    {detailEditing && <form className={styles.inlineForm} onSubmit={submitAddMembership}>
                       <Field className={styles.memberField} label="Add principal">
                         <Select
                           value={principalToAdd}
@@ -801,7 +850,7 @@ export function IdentityPage() {
                       >
                         Add member
                       </Button>
-                    </form>
+                    </form>}
                     {!(principals.data?.length ?? 0) ? (
                       <Text className={styles.helperText}>
                         Register a person, agent, application, or managed identity before adding group members.
@@ -840,7 +889,7 @@ export function IdentityPage() {
                                   {principal?.objectId ?? membership.principalId}
                                 </code>
                               </div>
-                              <Button
+                              {detailEditing && <Button
                                 appearance="subtle"
                                 className={styles.dangerButton}
                                 onClick={() =>
@@ -854,7 +903,7 @@ export function IdentityPage() {
                                 }
                               >
                                 Remove
-                              </Button>
+                              </Button>}
                             </div>
                           )
                         })}
@@ -882,7 +931,8 @@ export function IdentityPage() {
                   Choose a group to edit its description and memberships.
                 </EmptyState>
               )}
-            </Card>
+            </div>
+            </IdentityDetailsDrawer>
           </div>
         )
       ) : principals.isLoading ? (
@@ -910,7 +960,7 @@ export function IdentityPage() {
                     <tr>
                       <th scope="col">Identity</th>
                       <th scope="col">Type</th>
-                      <th scope="col">Technical details</th>
+                      <th scope="col">Default cost center</th>
                       <th scope="col">Status</th>
                     </tr>
                   </thead>
@@ -929,14 +979,18 @@ export function IdentityPage() {
                         >
                           <td>
                             <button
+                              {...restoreFocus}
                               type="button"
                               className={styles.rowButton}
                               aria-pressed={isSelected}
-                              onClick={() => setSelectedPrincipalId(principal.id)}
+                              onClick={() => { setSelectedPrincipalId(principal.id); setDetailEditing(false); setDetailsOpen(true) }}
                             >
+                              <IdentityAvatar name={getPrincipalName(principal)} kind={principal.kind} objectId={principal.objectId} />
+                              <span className={styles.rowName}>
                               <span className={styles.rowPrimary}>{getPrincipalName(principal)}</span>
                               <span className={styles.rowSecondary}>
                                 {principal.detail ?? principal.objectId}
+                              </span>
                               </span>
                             </button>
                           </td>
@@ -945,7 +999,9 @@ export function IdentityPage() {
                           </td>
                           <td>
                             <div className={styles.memberMeta}>
-                              <code className={styles.monospace}>{principal.objectId}</code>
+                              <span>{principal.defaultCostCenterId
+                                ? costCenterById.get(principal.defaultCostCenterId)?.name ?? 'Recorded cost center'
+                                : principal.kind === 'securityGroup' ? 'Not applicable' : 'Tenant default'}</span>
                               {principal.kind === 'agentUser' && (
                                 <span className={styles.rowSecondary}>
                                   Parent agent {principals.data?.find((item) => item.objectId === principal.identityParentId)?.label ?? principal.identityParentId ?? 'not recorded'}
@@ -991,12 +1047,13 @@ export function IdentityPage() {
             )}
           </Card>
 
-          <Card className={styles.detailCard}>
+          <IdentityDetailsDrawer open={detailsOpen && Boolean(selectedPrincipal)} title={selectedPrincipal ? getPrincipalName(selectedPrincipal) : 'Identity details'} onClose={() => closeDetails()}>
+          <div className={styles.detailCard}>
             {selectedPrincipal ? (
               <>
                 <div className={styles.detailHeader}>
                   <div className={styles.detailTitleBlock}>
-                    <Title3 as="h2">{getPrincipalName(selectedPrincipal)}</Title3>
+                    <IdentityAvatar name={getPrincipalName(selectedPrincipal)} kind={selectedPrincipal.kind} objectId={selectedPrincipal.objectId} size={56} />
                     <div className={styles.badgeRow}>
                       <LiveBadge />
                       <PrincipalKindBadge kind={selectedPrincipal.kind} />
@@ -1006,6 +1063,7 @@ export function IdentityPage() {
                         </Badge>
                       )}
                     </div>
+                    {!detailEditing && <Button ref={editButtonRef} appearance="secondary" onClick={() => setDetailEditing(true)}>Edit local metadata</Button>}
                   </div>
                   <Button
                     appearance="subtle"
@@ -1032,7 +1090,9 @@ export function IdentityPage() {
                   </MessageBar>
                 )}
 
-                <form className={styles.detailSection} onSubmit={submitPrincipalDetails}>
+                <form ref={editFormRef} className={styles.detailSection} onSubmit={submitPrincipalDetails}>
+                  <details className={styles.technicalDetails}>
+                  <summary>Technical details</summary>
                   <div className={styles.readOnlyPanel}>
                     <Text className={styles.readOnlyLabel}>Entra object ID</Text>
                     <code className={styles.monospace}>{selectedPrincipal.objectId}</code>
@@ -1059,6 +1119,7 @@ export function IdentityPage() {
                       <code className={styles.monospace}>{selectedPrincipal.blueprintId}</code>
                     </div>
                   )}
+                  </details>
                   {selectedPrincipal.kind !== 'securityGroup' && (
                     <div className={styles.readOnlyPanel}>
                       <Text className={styles.readOnlyLabel}>Default cost center</Text>
@@ -1070,6 +1131,7 @@ export function IdentityPage() {
                     </div>
                   )}
 
+                  {detailEditing && <>
                   <Field label="Local label">
                     <Input
                       value={principalDraftLabel}
@@ -1121,7 +1183,9 @@ export function IdentityPage() {
                     >
                       Save changes
                     </Button>
+                    <Button onClick={cancelEditing}>Cancel editing</Button>
                   </div>
+                  </>}
                 </form>
 
                 <div className={styles.metadataGrid}>
@@ -1167,6 +1231,7 @@ export function IdentityPage() {
                           <div className={styles.memberList}>
                             {selectedPrincipalMembers.data.members.map((member) => (
                               <div key={`${member.kind}:${member.objectId}`} className={styles.memberRow}>
+                                <IdentityAvatar name={member.displayName ?? 'Directory member'} kind={member.kind} objectId={member.objectId} />
                                 <div className={styles.memberMeta}>
                                   <Text className={styles.memberName}>
                                     {member.displayName ?? member.objectId}
@@ -1192,14 +1257,15 @@ export function IdentityPage() {
                 Choose a record to inspect and edit its local metadata.
               </EmptyState>
             )}
-          </Card>
+          </div>
+          </IdentityDetailsDrawer>
         </div>
       )}
 
       </SectionLayout>
 
       <Dialog open={principalDialogOpen} onOpenChange={(_, data) => !data.open && closePrincipalDialog()}>
-        <DialogSurface>
+        <DialogSurface className={styles.addDialog}>
           {effectivePrincipalDialogView === 'search' ? (
             <DialogBody>
               <DialogTitle>{principalDialogTitle}</DialogTitle>
@@ -1227,7 +1293,7 @@ export function IdentityPage() {
                     </Select>
                   </Field>
                 )}
-                {directoryStatus.isPending ? <Loading label="Checking directory lookup availability" /> : <DirectoryPrincipalPicker
+                {directoryStatus.isPending ? <Loading label="Checking directory lookup availability" /> : directoryLookupEnabled ? <DirectoryPrincipalPicker
                   kind={directoryKind}
                   onKindChange={setDirectoryKind}
                   defaultCostCenterId={directoryKind === 'group' ? null : createPrincipalDefaultCostCenterId}
@@ -1239,7 +1305,10 @@ export function IdentityPage() {
                     setCreatePrincipalKind(MANUAL_KIND_FOR_SEARCH[directoryKind])
                     setPrincipalDialogView('manual')
                   }}
-                />}
+                /> : <Button appearance="subtle" onClick={() => {
+                  setCreatePrincipalKind(MANUAL_KIND_FOR_SEARCH[directoryKind])
+                  setPrincipalDialogView('manual')
+                }}>Use manual entry</Button>}
               </DialogContent>
               <DialogActions>
                 <Button appearance="secondary" type="button" onClick={closePrincipalDialog}>
@@ -1317,13 +1386,13 @@ export function IdentityPage() {
                     />
                   </Field>
                 </DialogContent>
-                {directoryLookupEnabled && (
+                {
                   <DialogActions position="start">
                     <Button appearance="subtle" type="button" onClick={() => setPrincipalDialogView('search')}>
                       Search the directory
                     </Button>
                   </DialogActions>
-                )}
+                }
                 <DialogActions>
                   <Button appearance="secondary" type="button" onClick={closePrincipalDialog}>
                     Cancel
@@ -1339,6 +1408,19 @@ export function IdentityPage() {
               </DialogBody>
             </form>
           )}
+        </DialogSurface>
+      </Dialog>
+
+      <Dialog open={discardOpen} onOpenChange={(_, data) => !data.open && keepEditing()}>
+        <DialogSurface>
+          <DialogBody>
+            <DialogTitle>Discard unsaved changes?</DialogTitle>
+            <DialogContent>Your local edits have not been saved. Keep editing or discard them to {pendingTab ? 'switch sections' : 'close the details'}.</DialogContent>
+            <DialogActions>
+              <Button onClick={keepEditing}>Keep editing</Button>
+              <Button appearance="primary" onClick={() => closeDetails(true, pendingTab)}>Discard changes</Button>
+            </DialogActions>
+          </DialogBody>
         </DialogSurface>
       </Dialog>
 

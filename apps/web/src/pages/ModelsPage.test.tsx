@@ -281,6 +281,10 @@ function renderModelsPage(entry = '/models', includeUnrelatedMutation = false) {
 
 const renderPage = renderModelsPage
 
+async function openRowMenu(user: ReturnType<typeof userEvent.setup>, scope: HTMLElement) {
+  await user.click(await within(scope).findByRole('button', { name: /^More actions for/ }))
+}
+
 describe('ModelsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -721,7 +725,8 @@ describe('ModelsPage', () => {
     renderPage()
 
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByText('Remove MOSAIC record'))
+    await openRowMenu(user, table)
+    await user.click(await screen.findByRole('menuitem', { name: 'Remove MOSAIC record' }))
 
     const dialog = await screen.findByRole('alertdialog', { name: 'Remove GPT-4o production?' })
     expect(dialog).toHaveTextContent(
@@ -735,7 +740,8 @@ describe('ModelsPage', () => {
 
     // The rest of the page stays hidden from assistive technology for a moment after the modal
     // dialog is gone, so the first role query outside it has to wait.
-    await user.click(await within(table).findByRole('button', { name: 'Remove MOSAIC record' }))
+    await openRowMenu(user, table)
+    await user.click(await screen.findByRole('menuitem', { name: 'Remove MOSAIC record' }))
     await user.click(
       within(await screen.findByRole('alertdialog')).getByRole('button', {
         name: 'Remove publication',
@@ -751,6 +757,20 @@ describe('ModelsPage', () => {
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
   })
 
+  it('keeps publication write blockers in the secondary action menu', async () => {
+    const user = userEvent.setup()
+    api.listPublications.mockResolvedValue([{ ...publication, accessState: 'unknown' }])
+    renderPage()
+    const table = await screen.findByRole('table', { name: 'Published models' })
+    expect(within(table).getByRole('button', { name: 'Review changes' })).toBeDisabled()
+    await openRowMenu(user, table)
+    const unpublish = await screen.findByRole('menuitem', { name: 'Unpublish' })
+    expect(unpublish).toHaveAttribute('aria-disabled', 'true')
+    await user.click(unpublish)
+    expect(api.planUnpublishPublication).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  })
+
   it('surfaces the conflict message when removing a publication that still owns resources', async () => {
     const user = userEvent.setup()
     api.listPublications.mockResolvedValue([publication])
@@ -761,7 +781,8 @@ describe('ModelsPage', () => {
     renderPage()
 
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByText('Remove MOSAIC record'))
+    await openRowMenu(user, table)
+    await user.click(await screen.findByRole('menuitem', { name: 'Remove MOSAIC record' }))
     const dialog = await screen.findByRole('alertdialog')
     await user.click(within(dialog).getByRole('button', { name: 'Remove publication' }))
 
@@ -778,7 +799,8 @@ describe('ModelsPage', () => {
     renderPage()
 
     const table = await screen.findByRole('table', { name: 'Published models' })
-    await user.click(within(table).getByRole('button', { name: 'Unpublish' }))
+    await openRowMenu(user, table)
+    await user.click(await screen.findByRole('menuitem', { name: 'Unpublish' }))
 
     const dialog = await screen.findByRole('alertdialog', { name: 'Unpublish GPT-4o production?' })
     expect(await within(dialog).findByRole('table', { name: 'Unpublish plan steps' })).toHaveTextContent(
@@ -790,14 +812,15 @@ describe('ModelsPage', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(api.unpublishPublication).not.toHaveBeenCalled()
-    // Fluent returns focus to the button that opened the dialog when it closes, as it does for Remove.
-    expect(within(table).getByRole('button', { name: 'Unpublish', hidden: true })).toHaveAttribute(
+    // The persistent overflow trigger, not the unmounted menu item, restores dialog focus.
+    expect(within(table).getByRole('button', { name: /^More actions for/, hidden: true })).toHaveAttribute(
       'data-tabster',
       expect.stringContaining('restorer'),
     )
 
     // The page stays hidden from assistive technology for a moment after the modal closes.
-    await user.click(await within(table).findByRole('button', { name: 'Unpublish' }))
+    await openRowMenu(user, table)
+    await user.click(await screen.findByRole('menuitem', { name: 'Unpublish' }))
     const reopened = await screen.findByRole('alertdialog')
     await user.click(await within(reopened).findByRole('button', { name: 'Unpublish model' }))
 
@@ -1126,7 +1149,8 @@ describe('ModelsPage model endpoints', () => {
     renderPage()
 
     const table = await screen.findByRole('table', { name: 'Registered model endpoints' })
-    await user.click(within(table).getByText('Remove'))
+    await openRowMenu(user, table)
+    await user.click(await screen.findByRole('menuitem', { name: 'Remove' }))
 
     const dialog = await screen.findByRole('alertdialog', { name: 'Remove Contoso models?' })
     expect(dialog).toHaveTextContent(
@@ -1141,7 +1165,8 @@ describe('ModelsPage model endpoints', () => {
 
     // The rest of the page stays hidden from assistive technology for a moment after the modal
     // dialog is gone, so the first role query outside it has to wait.
-    await user.click(await within(table).findByRole('button', { name: 'Remove' }))
+    await openRowMenu(user, table)
+    await user.click(await screen.findByRole('menuitem', { name: 'Remove' }))
     await user.click(
       within(await screen.findByRole('alertdialog')).getByRole('button', {
         name: 'Remove endpoint',
@@ -1179,7 +1204,8 @@ describe('ModelsPage model endpoints', () => {
     renderPage()
 
     const table = await screen.findByRole('table', { name: 'Registered model endpoints' })
-    await user.click(within(table).getByText('Remove'))
+    await openRowMenu(user, table)
+    await user.click(await screen.findByRole('menuitem', { name: 'Remove' }))
     const dialog = await screen.findByRole('alertdialog')
     await user.click(within(dialog).getByRole('button', { name: 'Remove endpoint' }))
 
@@ -2444,6 +2470,7 @@ describe('ModelsPage model endpoints', () => {
     })
 
     it('shows the key path, what to grant, and the declared deployments', async () => {
+      const user = userEvent.setup()
       api.listModelEndpoints.mockResolvedValue([keyEndpoint()])
 
       renderPage()
@@ -2453,7 +2480,9 @@ describe('ModelsPage model endpoints', () => {
       expect(within(row).getByText('API key from Key Vault')).toBeVisible()
       expect(within(row).getByText('1 declared')).toBeVisible()
       // An API key can't list deployments, so there is nothing to sync.
-      expect(within(row).queryByRole('button', { name: 'Sync models' })).not.toBeInTheDocument()
+      await openRowMenu(user, row)
+      expect(screen.queryByRole('menuitem', { name: 'Sync models' })).not.toBeInTheDocument()
+      await user.keyboard('{Escape}')
       expect(within(row).getByRole('button', { name: 'Check access' })).toBeVisible()
 
       expect(screen.getByText('The endpoint accepts the key')).toBeVisible()
@@ -2941,6 +2970,7 @@ describe('ModelsPage model endpoints', () => {
     })
 
     it("says MOSAIC doesn't check the key with AWS, and lists the declared models", async () => {
+      const user = userEvent.setup()
       api.listModelEndpoints.mockResolvedValue([bedrockEndpoint()])
 
       renderPage()
@@ -2952,7 +2982,9 @@ describe('ModelsPage model endpoints', () => {
       expect(within(row).getByText('1 declared')).toBeVisible()
       expect(within(row).getByText('Not checked')).toBeVisible()
       // A Bedrock API key can't list models, so there is nothing to sync.
-      expect(within(row).queryByRole('button', { name: 'Sync models' })).not.toBeInTheDocument()
+      await openRowMenu(user, row)
+      expect(screen.queryByRole('menuitem', { name: 'Sync models' })).not.toBeInTheDocument()
+      await user.keyboard('{Escape}')
 
       expect(screen.getByText("MOSAIC doesn't check Bedrock keys with AWS")).toBeVisible()
       expect(screen.getByText(/It doesn't send keys to AWS to check them/)).toBeVisible()
@@ -3154,7 +3186,8 @@ describe('ModelsPage model endpoints', () => {
       renderPage()
 
       const table = await screen.findByRole('table', { name: 'Registered model endpoints' })
-      await user.click(within(table).getByText('Remove'))
+      await openRowMenu(user, table)
+      await user.click(await screen.findByRole('menuitem', { name: 'Remove' }))
       const dialog = await screen.findByRole('alertdialog', { name: 'Remove Bedrock us-east-1?' })
       expect(dialog).toHaveTextContent(
         'MOSAIC deletes its record of this endpoint and the 1 model declared on it, and the Key ' +
@@ -3201,7 +3234,8 @@ describe('ModelsPage model endpoints', () => {
       renderPage()
 
       const table = await screen.findByRole('table', { name: 'Registered model endpoints' })
-      await user.click(within(table).getByText('Remove'))
+      await openRowMenu(user, table)
+      await user.click(await screen.findByRole('menuitem', { name: 'Remove' }))
       const dialog = await screen.findByRole('alertdialog')
       await user.click(within(dialog).getByRole('button', { name: 'Remove endpoint' }))
 

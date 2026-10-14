@@ -33,13 +33,13 @@ npm ci --prefix apps\portal
 Then, from the repository root:
 
 ```powershell
-uv run --with "playwright>=1.58,<2" --with "pillow>=11,<12" python -m scripts.screenshots.capture
+uv run --with "playwright>=1.58,<2" python -m scripts.screenshots.capture
 ```
 
 The script starts the demo API and both apps, installs Playwright's Chromium if it is missing,
 captures every shot, and stops the servers again. A full run takes about a minute and a half.
-Playwright and Pillow are needed only here, so `uv run --with` supplies them for the run rather
-than adding them to `uv.lock`.
+Playwright is needed only here, so `uv run --with` supplies it for the run rather than adding it
+to `uv.lock`. Pillow is an API dependency used for thumbnail validation and screenshot redaction.
 
 If `uv` is available only as a Python module, use `python -m uv run ...` with the same arguments.
 
@@ -50,7 +50,7 @@ If `uv` is available only as a Python module, use `python -m uv run ...` with th
 | `--output DIR` | Write the PNGs somewhere else, for example to compare before and after |
 | `--headed` | Show the browser while it captures |
 | `--preview` | Serve production assets after building both apps with `npm run build --prefix apps\web` and `npm run build --prefix apps\portal`; avoids cold dev-server dependency bundling |
-| `--check-navigation` | Also verify desktop collapse, mobile focus/inert behavior, usage-first landing, unchanged list geometry, and drawer/credential teardown against the fictional estate |
+| `--check-navigation` | Also verify desktop collapse, mobile focus/inert behavior, identity drawer drafts/focus/reflow and section-change discard confirmation, forced colors, usage-first portal landing, unchanged list geometry, and drawer/credential teardown against the fictional estate |
 | `--reuse-servers` | Use a demo API and apps that are already running instead of starting them |
 | `--api-port`, `--console-port`, `--portal-port` | Change the ports, which default to 18000, 15173, and 15174 |
 
@@ -59,7 +59,7 @@ host, point uv at a mirror for the run and leave the lock file alone:
 
 ```powershell
 $env:UV_INDEX_URL = "https://<your-mirror>/simple/"
-uv run --frozen --with "playwright>=1.58,<2" --with "pillow>=11,<12" python -m scripts.screenshots.capture
+uv run --frozen --with "playwright>=1.58,<2" python -m scripts.screenshots.capture
 ```
 
 If Playwright can't download Chromium, set `PLAYWRIGHT_DOWNLOAD_HOST` to a mirror as well.
@@ -86,7 +86,7 @@ npm run dev -- --port 15174 --strictPort --host 127.0.0.1
 Then capture against them, as often as you like:
 
 ```powershell
-uv run --with "playwright>=1.58,<2" --with "pillow>=11,<12" python -m scripts.screenshots.capture --reuse-servers --only console-models --headed
+uv run --with "playwright>=1.58,<2" python -m scripts.screenshots.capture --reuse-servers --only console-models --headed
 ```
 
 The demo API keeps its state in memory. If a shot's actions submit anything, restart the API to
@@ -173,7 +173,8 @@ against these rules. Anything that matches is pixelated and then blurred, so no 
 survives to be read back.
 
 - `SENSITIVE_LITERALS` in `demo_api.py`: the demo tenant, client, and object IDs.
-- `RESOURCE_NAMES` in `capture.py`: the demo's gateway, resource group, account, and vault names.
+- `RESOURCE_NAMES` in `capture.py`: the demo's gateway, resource group, account, vault, MCP, and
+  local-group names, including their hyphenated aliases wherever they appear in an API path.
 - The shared MCP metadata API, readable MOSAIC-owned APIM resource names, product names, and
   fictional person/workload/gateway names and directory aliases are redacted too.
 - Exact offering names in `.resource-offering` text are blurred, independently of literal matches.
@@ -184,6 +185,9 @@ survives to be read back.
 Fictional people, workload identities, directory results, and gateway/account display names are
 also blurred. Public model names, API paths, deployment names, limits, and dates stay readable
 where they do not contain an endpoint, account name, or identifier.
+
+People avatars, including profile images and initials, are blurred as whole regions. Demo photos
+are synthetic fixtures; the capture never loads a real directory image.
 
 Redaction reads the page's text. It can't see text drawn in an image or a canvas. If a shot shows
 something identifying that isn't text, or the rules miss something, add a literal or a pattern
@@ -251,8 +255,10 @@ shows both themes. Keep new shots in that pattern.
 | `console-endpoint-pools` | Console | `/models?tab=endpoints`, Contoso AI Foundry selected, deployments and **Used by pools** | Dark | Pools on an endpoint |
 | `console-mcps` | Console | `/mcps`, **Published MCP servers** and the application each calls models as | Light | MCP servers |
 | `console-identity` | Console | `/identity?tab=agents` | Dark | Identity |
-| `console-directory-picker` | Console | `/identity?tab=agents`, **Add agent** dialog with query `agent` | Light | Directory picker |
-| `console-security-group-members` | Console | `/identity?tab=security-groups`, filtered to **AI Model Users** | Dark | Security group members |
+| `console-people-search` | Console | `/identity?tab=users`, **Add person**, selected result, never added | Light | Find a person |
+| `console-identity-detail` | Console | `/identity?tab=agents`, selected agent overview drawer | Dark | Identity details |
+| `console-directory-picker` | Console | `/identity?tab=agents`, **Add agent** dialog with query `agent`, selected result, never added | Light | Directory picker |
+| `console-security-group-members` | Console | `/identity?tab=security-groups`, **AI Model Users** overview drawer and membership | Dark | Security group members |
 | `console-entitlements` | Console | `/entitlements`, scrolled to **Grants** | Light | Entitlements |
 | `console-access-requests` | Console | `/entitlements?tab=requests`, pending queue | Light | Access requests |
 | `console-model-access-settings` | Console | `/entitlements?tab=settings`, GPT-4o selected | Dark | Model access settings |
@@ -260,7 +266,7 @@ shows both themes. Keep new shots in that pattern.
 | `console-cost-centers` | Console | `/cost-centers` | Light | Cost centers |
 | `console-cost-center-detail` | Console | Customer Insights detail, **Members** section | Dark | Cost center members |
 | `console-mcp-publish` | Console | `/mcps`, **Review changes** for the published Docs MCP server, including the shared metadata API, operation, and operation policy | Light | MCP publish review |
-| `console-unpublish-review` | Console | `/models`, **Unpublish** review for GPT-4o, never confirmed | Light | Unpublish review |
+| `console-unpublish-review` | Console | `/models`, **More actions > Unpublish** review for GPT-4o, never confirmed | Light | Unpublish review |
 | `console-budgets` | Console | Customer Support detail, **Budget** section | Dark | Budgets |
 | `console-analytics` | Console | `/analytics`, **Overview** section | Dark | Analytics |
 | `console-analytics-cost` | Console | `/analytics?tab=cost` | Light | Cost |

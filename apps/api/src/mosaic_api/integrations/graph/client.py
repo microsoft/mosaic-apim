@@ -1,11 +1,19 @@
 import asyncio
+import json
+import math
 import re
+import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Sequence
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
+import jwt
 import structlog
 from azure.core.credentials_async import AsyncTokenCredential
+from azure.core.exceptions import AzureError
 
 from mosaic_api.domain import (
     DirectoryMemberPage,
@@ -13,7 +21,13 @@ from mosaic_api.domain import (
     DirectorySearchKind,
     PrincipalKind,
 )
-from mosaic_api.errors import DirectoryError, DirectoryForbiddenError, ValidationError
+from mosaic_api.errors import (
+    DirectoryError,
+    DirectoryForbiddenError,
+    DirectoryThrottledError,
+    ValidationError,
+)
+from mosaic_api.integrations.graph.photos import PHOTO_MAX_BYTES, DirectoryPhoto, validate_photo
 
 logger = structlog.get_logger()
 
@@ -38,6 +52,10 @@ class GraphDirectoryLookup:
         endpoint: str,
         client: httpx.AsyncClient | None = None,
         sleep: Sleep = asyncio.sleep,
+        tenant_id: str | None = None,
+        photo_cache_entries: int = 128,
+        photo_cache_seconds: float = 120,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._credential = credential
         self._endpoint = str(endpoint).rstrip("/")
@@ -45,10 +63,151 @@ class GraphDirectoryLookup:
         self._client = client or httpx.AsyncClient(timeout=10, follow_redirects=False)
         self._owns_client = client is None
         self._sleep = sleep
+        self._tenant_id = tenant_id.casefold() if tenant_id else None
+        self._photo_cache_entries = min(max(photo_cache_entries, 0), 128)
+        self._photo_cache_seconds = min(max(photo_cache_seconds, 0), 120)
+        self._photo_clock = clock
+        self._photo_cache: OrderedDict[
+            tuple[str, str], tuple[float, DirectoryPhoto | None]
+        ] = OrderedDict()
+        # Fixed striped locks coalesce identical requests and cap concurrent Graph photo reads.
+        self._photo_locks = tuple(asyncio.Lock() for _ in range(4))
 
     async def close(self) -> None:
+        self._photo_cache.clear()
         if self._owns_client:
             await self._client.aclose()
+
+    async def user_photo(self, tenant_id: str, object_id: str) -> DirectoryPhoto | None:
+        if not self._tenant_id or tenant_id.casefold() != self._tenant_id:
+            raise DirectoryForbiddenError("Directory photos are restricted to this tenant")
+        if not _is_guid(object_id):
+            raise ValidationError("Photo object ID must be a GUID")
+        key = (tenant_id.casefold(), object_id.strip().lower())
+        async with self._photo_locks[hash(key) % len(self._photo_locks)]:
+            now = self._photo_clock()
+            for expired_key, (expires_at, _) in list(self._photo_cache.items()):
+                if expires_at <= now:
+                    del self._photo_cache[expired_key]
+            if key in self._photo_cache:
+                self._photo_cache.move_to_end(key)
+                return self._photo_cache[key][1]
+            try:
+                async with asyncio.timeout(30):
+                    photo = await self._fetch_user_photo(*key)
+            except (TimeoutError, AzureError, httpx.HTTPError) as exc:
+                raise DirectoryError("Microsoft Graph photo read could not be completed") from exc
+            if self._photo_cache_entries:
+                ttl = self._photo_cache_seconds if photo else min(self._photo_cache_seconds, 30)
+                self._photo_cache[key] = (self._photo_clock() + ttl, photo)
+                while len(self._photo_cache) > self._photo_cache_entries:
+                    self._photo_cache.popitem(last=False)
+            return photo
+
+    async def _fetch_user_photo(self, tenant_id: str, object_id: str) -> DirectoryPhoto | None:
+        token = await self._credential.get_token(self._scope, tenant_id=tenant_id)
+        # This is a defensive check on a token from our trusted Azure credential, not caller
+        # authentication. Never send a developer's wrong-tenant or delegated token to Graph.
+        try:
+            claims = jwt.decode(token.token, options={"verify_signature": False})
+        except jwt.PyJWTError as exc:
+            raise DirectoryForbiddenError(
+                "The Graph photo credential could not be verified"
+            ) from exc
+        if (
+            str(claims.get("tid", "")).casefold() != tenant_id
+            or claims.get("scp")
+            or claims.get("idtyp") not in {None, "app"}
+            or not (claims.get("idtyp") == "app" or isinstance(claims.get("roles"), list))
+        ):
+            raise DirectoryForbiddenError(
+                "Directory photos require MOSAIC's app-only Graph credential in this tenant"
+            )
+        headers = {
+            "Authorization": f"Bearer {token.token}",
+            "Accept-Encoding": "identity",
+        }
+        # /users verifies a person without probing groups/applications or needing their consent.
+        user = await self._photo_resource(
+            "photo_user",
+            f"/users/{object_id}",
+            headers=headers,
+            permission="User.ReadBasic.All",
+            params={"$select": "id"},
+        )
+        if user is None:
+            return None
+        try:
+            data = json.loads(user[0])
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise DirectoryError("Microsoft Graph returned malformed photo user data") from exc
+        if not isinstance(data, dict) or str(data.get("id", "")).casefold() != object_id:
+            raise DirectoryError("Microsoft Graph returned unexpected photo user data")
+        odata_type = str(data.get("@odata.type", "")).casefold()
+        if odata_type not in {"", "#microsoft.graph.user"}:
+            return None
+        result = await self._photo_resource(
+            "user_photo",
+            f"/users/{object_id}/photos/96x96/$value",
+            headers=headers,
+            permission="ProfilePhoto.Read.All",
+        )
+        return validate_photo(*result) if result else None
+
+    async def _photo_resource(
+        self,
+        operation: str,
+        path: str,
+        *,
+        headers: dict[str, str],
+        permission: str,
+        params: dict[str, str] | None = None,
+    ) -> tuple[bytes, str] | None:
+        for attempt in range(2):
+            async with self._client.stream(
+                "GET",
+                f"{self._endpoint}/v1.0{path}",
+                headers=headers,
+                params=params,
+                follow_redirects=False,
+                timeout=10,
+            ) as response:
+                if response.status_code in {429, 503} and attempt == 0:
+                    await self._sleep(min(_photo_retry_after(response), 5))
+                    continue
+                if response.status_code != 200:
+                    _log_graph_status(operation, response)
+                if response.status_code in {401, 403}:
+                    raise DirectoryForbiddenError(
+                        f"Microsoft Graph refused the photo read; grant {permission}."
+                    )
+                if response.status_code == 404:
+                    return None
+                if response.status_code == 429:
+                    raise DirectoryThrottledError(
+                        "Microsoft Graph throttled the photo read",
+                        retry_after=_photo_retry_after(response),
+                    )
+                if response.status_code != 200:
+                    raise DirectoryError("Microsoft Graph photo read failed")
+                if response.headers.get("Content-Encoding", "identity").casefold() != "identity":
+                    raise DirectoryError("Microsoft Graph returned an encoded photo response")
+                length = response.headers.get("Content-Length")
+                if length is not None:
+                    try:
+                        if not 0 <= int(length) <= PHOTO_MAX_BYTES:
+                            raise ValueError("Oversized response")
+                    except ValueError as exc:
+                        raise DirectoryError(
+                            "Microsoft Graph returned an invalid or oversized photo response"
+                        ) from exc
+                content = bytearray()
+                async for chunk in response.aiter_bytes(chunk_size=8192):
+                    if len(content) + len(chunk) > PHOTO_MAX_BYTES:
+                        raise DirectoryError("Microsoft Graph returned an oversized photo response")
+                    content.extend(chunk)
+                return bytes(content), response.headers.get("Content-Type", "")
+        raise DirectoryError("Microsoft Graph photo read failed after retry")
 
     async def search(
         self, kind: DirectorySearchKind, query: str, *, limit: int = 20
@@ -547,6 +706,20 @@ def _retry_after(response: httpx.Response) -> float:
         return min(max(float(raw), 0.0), 5.0)
     except ValueError:
         return 0.0
+
+
+def _photo_retry_after(response: httpx.Response) -> int:
+    raw = response.headers.get("Retry-After", "1")
+    try:
+        seconds = float(raw)
+        if not math.isfinite(seconds):
+            return 1
+    except ValueError:
+        try:
+            seconds = (parsedate_to_datetime(raw) - datetime.now(UTC)).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return 1
+    return min(max(math.ceil(seconds), 1), 300)
 
 
 def _log_graph_status(operation: str, response: httpx.Response) -> None:

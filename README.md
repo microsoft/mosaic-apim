@@ -45,7 +45,7 @@ separate administrative workflows; the portal opens on Usage & cost, with model-
 and accessible detail drawers that leave the page layout in place.
 
 Both apps follow the operating system's light or dark setting, and the console can pin either
-one under **Settings > Appearance**.
+one using the sidebar's **Light / Dark / System** controls or **Settings > Appearance**.
 
 <table>
   <tr>
@@ -174,26 +174,36 @@ one under **Settings > Appearance**.
       servers. MOSAIC reads what a server offers and never calls a tool.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-identity.png" alt="The Identity page's Agents section listing agent identities and an agent user, with a detail panel that shows the agent's default cost center">
+      <img src="docs/images/screenshots/console-identity.png" alt="The full-width Agents list with identity icons, default cost centers, directory status, and horizontal section navigation">
       <p><b>Identity.</b> The people, agents, applications, and security groups MOSAIC references
-      by Entra object ID, each on its own section, separately from MOSAIC-local groups. The Agents section shows each agent's blueprint or
-      parent agent; Entra stays the source of truth, and MOSAIC keeps only a local label, a type,
-      and the default cost center a principal's calls are charged to.</p>
+      by Entra object ID, each in its own section, separately from MOSAIC-local groups. The roomy
+      Agents list shows types, local defaults, and verification state; select an identity to inspect it.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-directory-picker.png" alt="The Add agent dialog with a default cost center, agent search results, and already-added badges">
+      <img src="docs/images/screenshots/console-directory-picker.png" alt="The Add agent dialog with directory results, an explicitly selected identity, already-added badges, and a separate Add action">
       <p><b>Directory picker.</b> <b>Add agent</b> in the Agents section searches Microsoft Entra for
-      agents, and the same picker finds people and security groups. Results show what is already
-      in MOSAIC and what can still be added, and whoever is added gets the default cost center
-      chosen above them: the tenant's, unless the administrator picks another.</p>
+      agents; the same picker finds people, security groups, applications, and managed identities.
+      Select a result and review its default cost center before explicitly adding a MOSAIC reference.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-security-group-members.png" alt="A security group detail page with members loaded from Microsoft Graph">
+      <img src="docs/images/screenshots/console-security-group-members.png" alt="An on-demand security group drawer with members loaded from Microsoft Graph">
       <p><b>Security group members.</b> A recorded Entra security group shows its read-only
       Microsoft Graph member list. MOSAIC can show which members are also recorded locally for
       direct grants.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-people-search.png" alt="The Add person dialog with a selected Entra search result and explicit Add action">
+      <p><b>Find a person.</b> Search Microsoft Entra instead of copying object IDs into a form.
+      Select an identity, review the local default, and add it without creating or changing an Entra account.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-identity-detail.png" alt="An agent overview drawer beside the full-width identity list">
+      <p><b>Identity details.</b> An on-demand drawer shows an identity's overview and local defaults
+      without squeezing the list. Editing local metadata is an explicit action, and closing or changing sections protects unsaved edits.</p>
     </td>
   </tr>
   <tr>
@@ -634,7 +644,10 @@ then turn email on in **Settings > Email**. See [Budgets and alerts](docs/budget
   Administrator or broader), assigning the initial app role, and granting the model client's
   tenant-wide consent. Agent identity and security-group lookup also need a privileged
   administrator to consent the API managed identity's Microsoft Graph application permissions:
-  `User.ReadBasic.All`, `GroupMember.Read.All` and `AgentIdentity.Read.All`.
+  `User.ReadBasic.All`, `GroupMember.Read.All` and `AgentIdentity.Read.All`. Application and
+  managed-identity search optionally uses `Application.Read.All`; person thumbnails optionally
+  use separately consented `ProfilePhoto.Read.All`. Neither optional permission is required for
+  onboarding people or agents. See [Optional Entra person photos](docs/identity-photos.md).
 - [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli)
 - [Azure Developer CLI](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd)
 - Python 3.12 and [uv](https://docs.astral.sh/uv/)
@@ -816,7 +829,10 @@ web redirect and the deployed portal redirect, the latter from the `PORTAL_APP_U
 the portal App Service. A directory authorization failure stops deployment and identifies the
 failed operation; identity setup is never skipped. Graph directory lookup needs admin consent for
 `User.ReadBasic.All`, `GroupMember.Read.All` and `AgentIdentity.Read.All` on the API managed
-identity. The model client's delegated consent also needs Cloud Application Administrator,
+identity. Application and managed-identity search additionally needs `Application.Read.All`;
+optional people and administrator photos need `ProfilePhoto.Read.All`. Neither additional
+permission is granted automatically; see [identity photos and permissions](docs/identity-photos.md).
+The model client's delegated consent also needs Cloud Application Administrator,
 Application Administrator or Privileged Role Administrator. Without one of those roles the hook
 prints warnings with exact commands for an administrator, and deployment continues. People can't
 get tokens with the model client until its consent exists, and directory lookup stays degraded
@@ -953,8 +969,10 @@ measured scale, not speculation.
   `DefaultAzureCredential`; Azure uses `ManagedIdentityCredential`.
 - MOSAIC reads Microsoft Graph only through its managed identity and only for directory lookup,
   principal verification, security-group members, group-based access explanation and overlapping
-  grant detection. It needs `User.ReadBasic.All`, `GroupMember.Read.All` and
-  `AgentIdentity.Read.All`, and never writes to Entra. API Management never calls Graph.
+  grant detection, and optional person thumbnails. It needs `User.ReadBasic.All`,
+  `GroupMember.Read.All` and `AgentIdentity.Read.All`; optional application search uses
+  `Application.Read.All`, and optional person photos use `ProfilePhoto.Read.All`. MOSAIC never
+  writes to Entra or grants Graph permissions. API Management never calls Graph.
 - Cosmos local/key authentication and ACR admin credentials are disabled.
 - Key Vault uses RBAC, soft delete, and purge protection.
 - Backend access is scoped to Cosmos data contributor, Key Vault Secrets User, Key Vault Secrets

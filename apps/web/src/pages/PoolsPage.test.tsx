@@ -100,6 +100,10 @@ describe('PoolsPage', () => {
 
     const table = await screen.findByRole('table', { name: 'Model pools' })
     expect(screen.getByRole('heading', { name: 'Model pools', level: 1 })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Collapse Pools sections' })).not.toBeInTheDocument()
+    const sections = screen.getByRole('navigation', { name: 'Pools sections' })
+    expect(within(sections).getByRole('button', { name: 'Pools' })).toHaveAttribute('aria-current', 'page')
+    expect(within(sections).getByRole('button', { name: 'Suggested pools' })).toBeVisible()
     expect(screen.getByText('2 of 2 pools')).toBeVisible()
     const [, published, draft] = within(table).getAllByRole('row')
 

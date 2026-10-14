@@ -27,6 +27,8 @@ import { BUDGET_LEVEL_LABELS, budgetBadgeColor } from '../budgets'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { BudgetDetails, BudgetForm, BudgetMeter } from '../components/BudgetEditor'
 import { PageHeader } from '../components/PageHeader'
+import { RowActions } from '../components/RowActions'
+import { IdentityAvatar } from '../components/IdentityAvatar'
 import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { PRINCIPAL_KIND_LABELS } from '../labels'
 import type { BudgetUpdate, BudgetView, CostCenter, CostCenterLimit, QuotaPeriod } from '../types'
@@ -719,28 +721,44 @@ export function CostCenterDetailPage() {
           )}
           <div className={styles.tableWrap}>
             <table aria-label="Cost center members">
-              <thead><tr><th>Member</th><th>Kind</th><th>Object ID</th><th>Membership</th><th>Actions</th></tr></thead>
+              <thead><tr><th>Member</th><th>Kind</th><th>Membership</th><th>Actions</th></tr></thead>
               <tbody>
                 {data.memberDetails.length === 0 ? (
-                  <tr><td colSpan={5}><EmptyState title="No members">Add a principal or security group to let it charge this cost center.</EmptyState></td></tr>
+                  <tr><td colSpan={4}><EmptyState title="No members">Add a principal or security group to let it charge this cost center.</EmptyState></td></tr>
                 ) : data.memberDetails.map((member) => (
                   <tr key={`${member.principalId}:${member.explicit}`}>
                     <td>
-                      <span className={styles.primary}>{member.label ?? member.principalId}</span>
-                      {member.isDefault && <div><Badge appearance="tint" color="brand">Default</Badge></div>}
+                      <div className={styles.identityCell}>
+                        {member.kind && <IdentityAvatar
+                          name={member.label ?? member.principalId}
+                          kind={member.kind}
+                          objectId={member.objectId ?? undefined}
+                          size={32}
+                        />}
+                        <div>
+                          <span className={styles.primary}>{member.label ?? member.principalId}</span>
+                          {member.isDefault && <div><Badge appearance="tint" color="brand">Default</Badge></div>}
+                          <details className={styles.technicalDetails}>
+                            <summary>Object ID</summary>
+                            <code className={styles.code}>{member.objectId ?? '—'}</code>
+                          </details>
+                        </div>
+                      </div>
                     </td>
                     <td>{member.kind ? PRINCIPAL_KIND_LABELS[member.kind] : 'Unknown'}</td>
-                    <td><code className={styles.code}>{member.objectId ?? '—'}</code></td>
                     <td>{member.explicit ? 'Listed' : 'Default only'}</td>
                     <td>
                       {member.explicit && (
-                        <Button
-                          appearance="subtle"
-                          className={styles.dangerButton}
-                          onClick={() => setRemoveMember({ id: member.principalId, label: member.label ?? member.principalId, securityGroup: member.kind === 'securityGroup' })}
-                        >
-                          Remove
-                        </Button>
+                        <RowActions
+                          label={`More actions for ${member.label ?? member.principalId}`}
+                          primary={<Button
+                            appearance="subtle"
+                            className={styles.dangerButton}
+                            onClick={() => setRemoveMember({ id: member.principalId, label: member.label ?? member.principalId, securityGroup: member.kind === 'securityGroup' })}
+                          >
+                            Remove
+                          </Button>}
+                        />
                       )}
                     </td>
                   </tr>
