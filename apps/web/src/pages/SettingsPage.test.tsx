@@ -138,6 +138,8 @@ describe('SettingsPage', () => {
     await user.click(screen.getByRole('button', { name: 'Runtime configuration' }))
     expect(screen.getByRole('heading', { name: 'Runtime identity and configuration' })).toBeVisible()
     expect(await screen.findByText(/does not verify Graph consent/)).toBeVisible()
+    expect(screen.getByText(/Directory lookup is available automatically with Entra authentication/)).toBeVisible()
+    expect(screen.queryByText(/MOSAIC_ENTRA_DIRECTORY_LOOKUP/)).not.toBeInTheDocument()
     expect(screen.getByText('ProfilePhoto.Read.All')).toBeVisible()
     expect(screen.queryByRole('textbox', { name: 'Support destination alias' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Add environment' })).not.toBeInTheDocument()
@@ -153,6 +155,27 @@ describe('SettingsPage', () => {
     await user.click(screen.getByRole('button', { name: 'Integration preview' }))
     expect(screen.getByRole('textbox', { name: 'Support destination alias' })).toHaveValue('local-draft')
     expect(api.saveEmailSettings).not.toHaveBeenCalled()
+  })
+
+  it('explains local-authentication directory limitations without an enable switch', async () => {
+    api.getDirectoryStatus.mockResolvedValue({ lookupEnabled: false, groupClaimsEnabled: true })
+    renderSettings('runtime')
+    expect(await screen.findByText(/Directory lookup requires Entra authentication/)).toBeVisible()
+    expect(screen.getByText(/Use manual entry to record identities without directory verification/)).toBeVisible()
+    expect(screen.getByText('User.ReadBasic.All')).toBeVisible()
+    expect(screen.queryByText(/MOSAIC_ENTRA_DIRECTORY_LOOKUP/)).not.toBeInTheDocument()
+  })
+
+  it('keeps directory status failures distinct from local-authentication limitations', async () => {
+    const user = userEvent.setup()
+    api.getDirectoryStatus.mockRejectedValue(new Error('Directory status could not be read'))
+    renderSettings('runtime')
+    expect(await screen.findByText('Directory configuration unavailable')).toBeVisible()
+    expect(screen.getByText('Directory status could not be read')).toBeVisible()
+    expect(screen.queryByText(/Directory lookup requires Entra authentication/)).not.toBeInTheDocument()
+    api.getDirectoryStatus.mockResolvedValue({ lookupEnabled: true, groupClaimsEnabled: true })
+    await user.click(screen.getByRole('button', { name: 'Refresh directory configuration' }))
+    expect(await screen.findByText(/Directory lookup is available automatically/)).toBeVisible()
   })
 
   it('validates create keys before calling the API', async () => {

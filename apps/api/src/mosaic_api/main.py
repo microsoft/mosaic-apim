@@ -225,7 +225,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 endpoint=str(app_settings.graph_endpoint),
                 tenant_id=app_settings.tenant_id,
             )
-            if app_settings.entra_directory_lookup and app_settings.auth_mode is AuthMode.ENTRA
+            if app_settings.auth_mode is AuthMode.ENTRA
             else None
         )
         arm_client = ArmClient(credential)

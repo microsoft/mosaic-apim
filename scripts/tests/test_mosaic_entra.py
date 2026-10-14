@@ -646,6 +646,9 @@ class MosaicEntraTests(unittest.TestCase):
                 "resourceAccess": [{"id": "e1fe6dd8-ba31-4d61-89e7-88639da4683d", "type": "Scope"}],
             }
         )
+        os.environ["PORTAL_APP_URL"] = "https://mosaic-portal.example.com"
+        with redirect_stderr(StringIO()):
+            mosaic_entra.postprovision(runner, "mosaic-test", "https://mosaic-spa.example.com")
         original_objects = deepcopy(runner._dry_run_objects)
         original_assignments = deepcopy(runner._dry_run_role_assignments)
         original_environment = dict(os.environ)
@@ -678,12 +681,16 @@ class MosaicEntraTests(unittest.TestCase):
             self.assertIn("api", selection.split(","))
             self.assertIn("requiredResourceAccess", selection.split(","))
             self.assertIn("publicClient", selection.split(","))
-        os.environ["PORTAL_APP_URL"] = "https://mosaic-portal.example.com"
-        os.environ["MOSAIC_ENTRA_DIRECTORY_LOOKUP"] = "false"
-        with redirect_stderr(StringIO()):
+        with (
+            mock.patch.object(runner, "az_json", wraps=runner.az_json) as az_json,
+            redirect_stderr(StringIO()),
+        ):
             mosaic_entra.postprovision(runner, "mosaic-test", "https://mosaic-spa.example.com")
         self.assertEqual(runner._dry_run_objects, original_objects)
         self.assertEqual(runner._dry_run_role_assignments, original_assignments)
+        self.assertFalse(
+            any(call.args[0][:3] == ["rest", "--method", "POST"] for call in az_json.call_args_list)
+        )
 
     @mock.patch.dict(os.environ, {}, clear=True)
     def test_dry_run_commands_support_arbitrary_environment_and_deployed_redirects(self) -> None:
@@ -1070,7 +1077,7 @@ class MosaicEntraTests(unittest.TestCase):
         },
         clear=True,
     )
-    def test_postprovision_directory_lookup_toggle_skips_graph_permission_grants(self) -> None:
+    def test_postprovision_ignores_obsolete_directory_lookup_toggle(self) -> None:
         runner = mosaic_entra.CliRunner(dry_run=True)
         output = StringIO()
         with (
@@ -1078,13 +1085,21 @@ class MosaicEntraTests(unittest.TestCase):
             redirect_stderr(output),
         ):
             mosaic_entra.postprovision(runner, "mosaic-test", "https://mosaic-spa.example.com")
-        self.assertIn("MOSAIC_ENTRA_DIRECTORY_LOOKUP is false", output.getvalue())
-        self.assertFalse(
-            any(
-                len(call.args[0]) > 4 and "appRoleAssignments" in call.args[0][4]
-                for call in az_json.call_args_list
-            )
+        self.assertNotIn("MOSAIC_ENTRA_DIRECTORY_LOOKUP", output.getvalue())
+        assignments = [
+            json.loads(call.args[0][call.args[0].index("--body") + 1])
+            for call in az_json.call_args_list
+            if call.args[0][:3] == ["rest", "--method", "POST"]
+            and call.args[0][4].endswith("/appRoleAssignments")
+        ]
+        self.assertEqual(
+            {assignment["appRoleId"] for assignment in assignments},
+            {
+                mosaic_entra.deterministic_guid(f"dry-run/graph-app-role/{value}")
+                for value in mosaic_entra.GRAPH_APPLICATION_PERMISSION_VALUES
+            },
         )
+        self.assertEqual(len(assignments), len(mosaic_entra.GRAPH_APPLICATION_PERMISSION_VALUES))
 
     def test_model_client_infrastructure_wiring_is_optional(self) -> None:
         root = Path(__file__).resolve().parents[2]
@@ -1092,10 +1107,7 @@ class MosaicEntraTests(unittest.TestCase):
         self.assertEqual(
             parameters["parameters"]["modelClientId"]["value"], "${MOSAIC_MODEL_CLIENT_ID}"
         )
-        self.assertEqual(
-            parameters["parameters"]["entraDirectoryLookup"]["value"],
-            "${MOSAIC_ENTRA_DIRECTORY_LOOKUP=true}",
-        )
+        self.assertNotIn("entraDirectoryLookup", parameters["parameters"])
         self.assertEqual(
             parameters["parameters"]["entraGroupClaims"]["value"],
             "${MOSAIC_ENTRA_GROUP_CLAIMS=true}",
@@ -1103,11 +1115,9 @@ class MosaicEntraTests(unittest.TestCase):
         template = root.joinpath("infra", "main.bicep").read_text()
         self.assertIn("param modelClientId string = ''", template)
         self.assertIn("name: 'MOSAIC_MODEL_CLIENT_ID'\n    value: modelClientId", template)
-        self.assertIn("param entraDirectoryLookup string = 'true'", template)
+        self.assertNotIn("entraDirectoryLookup", template)
         self.assertIn("param entraGroupClaims string = 'true'", template)
-        self.assertIn(
-            "name: 'MOSAIC_ENTRA_DIRECTORY_LOOKUP'\n    value: entraDirectoryLookup", template
-        )
+        self.assertNotIn("MOSAIC_ENTRA_DIRECTORY_LOOKUP", template)
         self.assertIn("name: 'MOSAIC_ENTRA_GROUP_CLAIMS'\n    value: entraGroupClaims", template)
         self.assertIn("output MOSAIC_MODEL_CLIENT_ID string = modelClientId", template)
         example = root.joinpath("apps", "api", ".env.example").read_text()

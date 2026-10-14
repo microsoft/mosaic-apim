@@ -174,7 +174,7 @@ class DirectoryService:
 
     async def directory_status(self, _actor: Actor) -> DirectoryStatus:
         if not self._directory:
-            message = "Directory search is off, so enter Entra object IDs by hand."
+            message = "Directory lookup requires Entra authentication. Use manual entry instead."
         elif not self._group_claims_enabled:
             message = (
                 "Security-group grants are recorded, but the gateway can't match them until "
@@ -192,14 +192,18 @@ class DirectoryService:
         self, actor: Actor, kind: DirectorySearchKind, query: str, limit: int
     ) -> list[DirectoryObject]:
         if not self._directory:
-            raise DirectoryDisabledError("Directory search is off, so enter object IDs by hand.")
+            raise DirectoryDisabledError(
+                "Directory lookup requires Entra authentication. Use manual entry instead."
+            )
         return await self._annotate_directory_objects(
             actor, await self._directory.search(kind, query, limit=limit)
         )
 
     async def get_directory_object(self, actor: Actor, object_id: str) -> DirectoryObject:
         if not self._directory:
-            raise DirectoryDisabledError("Directory search is off, so enter object IDs by hand.")
+            raise DirectoryDisabledError(
+                "Directory lookup requires Entra authentication. Use manual entry instead."
+            )
         item = await self._directory.get_object(object_id)
         if not item:
             raise NotFoundError("Directory object was not found", details={"objectId": object_id})
@@ -207,7 +211,7 @@ class DirectoryService:
 
     async def directory_photo(self, actor: Actor, object_id: str) -> DirectoryPhoto:
         if not self._directory:
-            raise DirectoryDisabledError("Directory photos are off in this deployment.")
+            raise DirectoryDisabledError("Directory photos require Entra authentication.")
         normalized = _canonical_guid(object_id, "objectId")
         photo = await self._directory.user_photo(actor.tenant_id, normalized)
         if photo is None:
@@ -224,7 +228,9 @@ class DirectoryService:
                 details={"principalId": principal_id},
             )
         if not self._directory:
-            raise DirectoryDisabledError("Directory search is off, so enter object IDs by hand.")
+            raise DirectoryDisabledError(
+                "Directory lookup requires Entra authentication. Use manual entry instead."
+            )
         page = await self._directory.group_members(principal.object_id, limit=limit)
         return DirectoryMemberPage(
             group_object_id=page.group_object_id,

@@ -9,8 +9,9 @@ use type icons instead.
 ## Consent and configuration
 
 Photos use the API's existing Azure credential: its managed identity in Azure, not the
-administrator's delegated Microsoft Graph token. The deployment must use Entra authentication
-and have `MOSAIC_ENTRA_DIRECTORY_LOOKUP` enabled. Configuration alone does not prove consent.
+administrator's delegated Microsoft Graph token. Directory lookup is available automatically
+with Entra authentication; no environment-variable switch is needed. Local authentication has
+no live directory lookup or photos. Availability alone does not prove consent.
 
 Microsoft Graph requires separately administrator-consented **application**
 `ProfilePhoto.Read.All` for user photos. The existing `User.ReadBasic.All` permission verifies
@@ -34,7 +35,7 @@ access token or image-size parameter is accepted.
 | --- | --- | --- |
 | Photo | 200 | Binary `image/jpeg` or `image/png` |
 | Missing user/photo or unsupported kind | 404 | Existing `not_found` coded error |
-| Directory lookup off | 409 | `directory_disabled` |
+| Live directory lookup unavailable with local authentication | 409 | `directory_disabled` |
 | Missing authentication | 401 | Existing bearer authentication response |
 | Caller lacks administrator role or belongs to another tenant | 403 | Existing authorization response |
 | Graph refuses consent/credential | 403 | `directory_forbidden`; message names the permission when Graph denied a read |
