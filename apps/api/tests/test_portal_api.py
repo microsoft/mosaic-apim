@@ -93,6 +93,7 @@ class Harness:
             self.entitlements,
             directory_repository=self.directory,
             gateway_repository=self.gateways,
+            endpoint_repository=self.endpoints,
         )
 
     async def add_gateway(self) -> Gateway:

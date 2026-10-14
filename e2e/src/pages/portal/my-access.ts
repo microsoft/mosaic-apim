@@ -5,7 +5,7 @@ import { escapeRegExp, expectNoLoadError, noStore, responseTo, secretKept, secre
 
 export type KeySlot = 'primary' | 'secondary'
 
-/** The badge a My access card shows for each runtime state. */
+/** The badge an exact grant's drawer shows for each runtime state. */
 export const runtimeBadges = {
   pending: 'APIM changes pending',
   applying: 'Applying to APIM',
@@ -33,7 +33,7 @@ export class MyAccessPage {
   }
 
   async loaded(): Promise<void> {
-    await expect(this.page.getByRole('heading', { level: 1, name: 'My access', exact: true })).toBeVisible()
+    await expect(this.page.getByRole('heading', { level: 1, name: 'My access', exact: true, includeHidden: true })).toBeVisible()
     await expect(this.cards.first().or(this.empty)).toBeVisible()
     await expectNoLoadError(this.page)
   }
@@ -44,24 +44,24 @@ export class MyAccessPage {
   }
 
   get cards(): Locator {
-    return this.page.locator('.access-card')
+    return this.page.locator('.access-list > .resource-row')
   }
 
   get empty(): Locator {
     return this.page.getByRole('heading', { name: 'No access granted yet', exact: true })
   }
 
-  /** A grant's card, by the model's name. The heading can also hold a "No longer available" badge. */
+  /** A model row; choose the exact grant before checking limits or connection details. */
   card(displayName: string): Locator {
     const heading = new RegExp(`^${escapeRegExp(displayName)}\\s*(No longer available)?$`)
-    return this.cards.filter({ has: this.page.getByRole('heading', { level: 2, name: heading }) })
+    return this.cards.filter({ has: this.page.getByRole('heading', { level: 2, name: heading, includeHidden: true }) })
   }
 
-  runtime(card: Locator, status: keyof typeof runtimeBadges): Locator {
-    return card.getByText(runtimeBadges[status], { exact: true })
+  runtime(_card: Locator, status: keyof typeof runtimeBadges): Locator {
+    return this.page.getByRole('dialog').getByText(runtimeBadges[status], { exact: true })
   }
 
-  /** The limits a card lists, one per item, in the words limitLines() predicts. */
+  /** The selected grant's limits, in the words limitLines() predicts. */
   limits(_card: Locator): Locator {
     return this.page.getByRole('heading', { name: 'Configured grant limits', exact: true }).locator('..').getByRole('listitem')
   }
@@ -70,13 +70,39 @@ export class MyAccessPage {
     return this.page.getByRole('heading', { name: 'Usage attribution', exact: true })
   }
 
-  async grantDetails(card: Locator): Promise<void> {
-    await card.getByRole('button', { name: 'View grant details', exact: true }).click()
+  async grantDetails(card: Locator, grantId?: string): Promise<void> {
+    const dialog = this.page.getByRole('dialog')
+    if (await dialog.isVisible()) {
+      await dialog.getByRole('button', { name: 'Close details', exact: true }).click()
+      await expect(dialog).toHaveCount(0)
+    }
+    await card.getByRole('button', { name: /^View access for / }).click()
+    await expect(dialog).toBeVisible()
+    const grants = dialog.getByRole('combobox', { name: 'Grant', exact: true })
+    if (await grants.count()) {
+      if (!grantId) throw new Error('An exact grant ID is required to select grouped access.')
+      await grants.selectOption(grantId)
+    }
     await expect(this.page.getByRole('heading', { name: 'Configured grant limits', exact: true })).toBeVisible()
+    if (grantId) await expect.poll(() => new URL(this.page.url()).searchParams.get('grant')).toBe(grantId)
   }
 
-  async connectionDetails(card: Locator): Promise<ConnectionPanel> {
-    await this.grantDetails(card)
+  async connectionDetails(card: Locator, grantId?: string): Promise<ConnectionPanel> {
+    await this.grantDetails(card, grantId)
+    return this.#expandConnection()
+  }
+
+  async connectionForGrant(grantId: string): Promise<ConnectionPanel> {
+    const url = new URL(this.page.url())
+    url.searchParams.delete('resource')
+    url.searchParams.set('grant', grantId)
+    await this.page.goto(url.href)
+    await expect(this.page.getByRole('heading', { name: 'Configured grant limits', exact: true })).toBeVisible()
+    await expect.poll(() => new URL(this.page.url()).searchParams.get('grant')).toBe(grantId)
+    return this.#expandConnection()
+  }
+
+  async #expandConnection(): Promise<ConnectionPanel> {
     const toggle = this.page.getByRole('button', { name: 'Connection details', exact: true })
     if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click()
     await expect(toggle).toHaveAttribute('aria-expanded', 'true')

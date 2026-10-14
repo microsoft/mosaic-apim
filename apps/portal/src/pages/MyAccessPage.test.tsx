@@ -1,6 +1,8 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, within } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { FluentProvider, webLightTheme } from '@fluentui/react-components'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
+import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import type { PortalApi } from '../api'
 import type {
@@ -11,6 +13,7 @@ import type {
   ResourceSummary,
 } from '../types'
 import { MyAccessPage } from './MyAccessPage'
+import { connection, directResolved, revealedPrimary } from '../test/connection'
 
 const mocks = vi.hoisted(() => ({
   api: {} as PortalApi,
@@ -80,10 +83,21 @@ const baseSummary: ResourceSummary = {
 const research = { id: 'cc-research', name: 'Research', code: 'RES' }
 const finance = { id: 'cc-finance', name: 'Finance', code: 'FIN' }
 
+function HistoryControls() {
+  const navigate = useNavigate()
+  const location = useLocation()
+  return <>
+    <button onClick={() => void navigate(-1)}>History back</button>
+    <button onClick={() => void navigate(1)}>History forward</button>
+    <span data-testid="route" data-search={location.search} />
+  </>
+}
+
 function renderPage(
   entitlements: ResolvedEntitlement[],
   profileOverride: Partial<PortalProfile> = {},
   budgets: PortalBudgetAlert[] = [],
+  initialRoute?: string,
 ) {
   const api = {
     getProfile: async () => ({ ...profile, ...profileOverride }),
@@ -99,11 +113,14 @@ function renderPage(
   mocks.api = api as unknown as PortalApi
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const rendered = render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[`/access${entitlements.length === 1 ? `?grant=${encodeURIComponent(entitlements[0].entitlement.id)}` : ''}`]}>
-        <MyAccessPage />
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <FluentProvider theme={webLightTheme}>
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[initialRoute ?? `/access${entitlements.length === 1 ? `?grant=${encodeURIComponent(entitlements[0].entitlement.id)}` : ''}`]}>
+          {initialRoute && <HistoryControls />}
+          <MyAccessPage />
+        </MemoryRouter>
+      </QueryClientProvider>
+    </FluentProvider>,
   )
   return { ...api, ...rendered }
 }
@@ -175,16 +192,16 @@ describe('MyAccessPage', () => {
 
     expect(await screen.findByText('Chat completions')).toBeVisible()
     expect(screen.getByText('Model API · Granted through Platform engineering')).toBeVisible()
-    expect(screen.getByText('Production')).toBeVisible()
+    expect(within(screen.getByRole('dialog')).getByText('Production')).toBeVisible()
     expect(screen.getByText('Production gateway')).toBeVisible()
     expect(screen.getByText('10,000 tokens per minute')).toBeVisible()
     expect(screen.getByText('600 calls per 60 seconds')).toBeVisible()
     expect(screen.getByText('100,000 calls per month')).toBeVisible()
     expect(screen.getByText("Usage can't be measured for this grant yet.")).toBeVisible()
-    expect(screen.getByText('Recorded grant')).toBeVisible()
+    expect(within(screen.getByRole('dialog')).getByText('Recorded grant')).toBeVisible()
   })
 
-  it('shows one card for each cost center grant and keeps matching resources adjacent', async () => {
+  it('groups a resource once and keeps its cost-center grants separate in the drawer', async () => {
     renderPage([
       {
         entitlement: { ...baseEntitlement, id: 'finance-grant', costCenterId: finance.id },
@@ -204,10 +221,103 @@ describe('MyAccessPage', () => {
       },
     ])
 
-    expect(await screen.findAllByRole('heading', { level: 2, name: 'Chat completions' })).toHaveLength(2)
-    const cards = Array.from(document.querySelectorAll('.access-card')) as HTMLElement[]
-    expect(within(cards[0]).getByText('Finance · FIN')).toBeVisible()
-    expect(within(cards[1]).getByText('Research · RES')).toBeVisible()
+    expect(await screen.findAllByRole('heading', { level: 2, name: 'Chat completions' })).toHaveLength(1)
+    await userEvent.click(screen.getByRole('button', { name: 'View access for Chat completions' }))
+    const selector = screen.getByRole('combobox', { name: 'Grant' })
+    expect(selector).toHaveValue('')
+    expect(screen.queryByRole('button', { name: 'Connection details' })).not.toBeInTheDocument()
+    await userEvent.selectOptions(selector, 'finance-grant')
+    expect(within(screen.getByRole('dialog')).getByText('Finance · FIN')).toBeVisible()
+    await userEvent.selectOptions(selector, 'research-grant')
+    expect(within(screen.getByRole('dialog')).getByText('Research · RES')).toBeVisible()
+  })
+
+  it('groups known models across resources while retaining searchable environment and cost-center context', async () => {
+    renderPage([
+      {
+        ...directResolved,
+        model: { name: 'gpt-4o', format: 'OpenAI', version: null },
+        resourceSummary: { ...baseSummary, displayName: 'Production chat' },
+        costCenter: research,
+      },
+      {
+        ...directResolved,
+        entitlement: { ...directResolved.entitlement, id: 'development-grant', resource: { kind: 'modelApi', id: 'development-api', scopeId: null } },
+        model: { name: 'gpt-4o', format: 'OpenAI', version: null },
+        resourceSummary: { ...baseSummary, id: 'development-api', displayName: 'Development chat', environment: 'development' },
+        costCenter: finance,
+      },
+    ])
+    expect(await screen.findByText('1 resource · 2 grants')).toBeVisible()
+    const list = screen.getByRole('list')
+    expect(within(list).getAllByRole('heading', { level: 2 })).toHaveLength(1)
+    await userEvent.type(screen.getByRole('textbox', { name: 'Search my access' }), 'development chat')
+    expect(screen.getByText('1 resource · 1 grant')).toBeVisible()
+    expect(within(list).getByText('Finance · FIN', { exact: false })).toBeVisible()
+    await userEvent.clear(screen.getByRole('textbox', { name: 'Search my access' }))
+    await userEvent.selectOptions(screen.getByLabelText('Environment'), 'production')
+    expect(screen.getByText('1 resource · 1 grant')).toBeVisible()
+    await userEvent.selectOptions(screen.getByLabelText('Cost center'), finance.id)
+    expect(screen.getByText('No access matches these filters')).toBeVisible()
+    await userEvent.click(screen.getByRole('button', { name: 'Clear filters' }))
+    expect(screen.getByText('1 resource · 2 grants')).toBeVisible()
+  })
+
+  it('keeps an exact grant deep link and browser history, without dropping unrelated parameters', async () => {
+    const rows: ResolvedEntitlement[] = [
+      { ...directResolved, entitlement: { ...directResolved.entitlement, id: 'research-grant' }, costCenter: research },
+      { ...directResolved, entitlement: { ...directResolved.entitlement, id: 'finance-grant' }, costCenter: finance },
+    ]
+    renderPage(rows, {}, [], '/access?grant=research-grant&view=all')
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByRole('combobox', { name: 'Grant' })).toHaveValue('research-grant')
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Grant' }), 'finance-grant')
+    expect(screen.getByTestId('route')).toHaveAttribute('data-search', '?grant=finance-grant&view=all')
+    fireEvent.click(screen.getByText('History back'))
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Grant' })).toHaveValue('research-grant'))
+    fireEvent.click(screen.getByText('History forward'))
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Grant' })).toHaveValue('finance-grant'))
+    await userEvent.click(screen.getByRole('button', { name: 'Close details' }))
+    expect(screen.getByTestId('route')).toHaveAttribute('data-search', '?view=all')
+  })
+
+  it('reports an invalid grant link and dismisses only the selection', async () => {
+    renderPage([directResolved], {}, [], '/access?grant=missing&view=all')
+    expect(await screen.findByText('This grant is not in your current access.')).toBeVisible()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(screen.getByTestId('route')).toHaveAttribute('data-search', '?view=all')
+  })
+
+  it('unmounts revealed credentials when switching and closing grants and never fetches before expansion', async () => {
+    const rows: ResolvedEntitlement[] = [
+      { ...directResolved, costCenter: research },
+      { ...directResolved, entitlement: { ...directResolved.entitlement, id: 'other-grant' }, costCenter: finance },
+    ]
+    const api = renderPage(rows)
+    api.getMyEntitlementConnection.mockResolvedValue(connection)
+    api.revealMyEntitlementKey.mockResolvedValue(revealedPrimary)
+    const opener = await screen.findByRole('button', { name: 'View access for Chat model API' })
+    await userEvent.click(opener)
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Grant' }), directResolved.entitlement.id)
+    expect(api.getMyEntitlementConnection).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'Connection details' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Show primary key' }))
+    expect(await screen.findByText(revealedPrimary.key)).toBeVisible()
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Grant' }), 'other-grant')
+    expect(screen.queryByText(revealedPrimary.key)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Connection details' })).toHaveAttribute('aria-expanded', 'false')
+    expect(api.getMyEntitlementConnection).toHaveBeenCalledOnce()
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Grant' }), directResolved.entitlement.id)
+    await userEvent.click(screen.getByRole('button', { name: 'Connection details' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Show primary key' }))
+    expect(await screen.findByText(revealedPrimary.key)).toBeVisible()
+    await userEvent.click(screen.getByRole('button', { name: 'Close details' }))
+    expect(screen.queryByText(revealedPrimary.key)).not.toBeInTheDocument()
+    await userEvent.click(opener)
+    expect(screen.getByRole('combobox', { name: 'Grant' })).toHaveValue('')
+    expect(screen.queryByRole('button', { name: 'Connection details' })).not.toBeInTheDocument()
+    expect(api.revealMyEntitlementKey).toHaveBeenCalledTimes(2)
   })
 
   it('renders security group attribution and per-person limit guidance', async () => {
@@ -327,7 +437,7 @@ describe('MyAccessPage', () => {
       viaGroupId: null,
       viaGroupName: null,
     }])
-    expect(await screen.findByText(label)).toBeVisible()
+    expect(await within(await screen.findByRole('dialog')).findByText(label)).toBeVisible()
     expect(
       screen.getByText('Linked through APIM subscription grant-subscription in product model-product.'),
     ).toBeVisible()
@@ -340,6 +450,7 @@ describe('MyAccessPage', () => {
         entitlement: {
           ...baseEntitlement,
           id: 'per-person',
+          resource: { ...baseEntitlement.resource, id: 'team' },
           subject: { kind: 'securityGroup', id: 'security-group-1' },
           binding: {
             gatewayId: 'gateway-1',
@@ -359,6 +470,7 @@ describe('MyAccessPage', () => {
         entitlement: {
           ...baseEntitlement,
           id: 'gateway-grant',
+          resource: { ...baseEntitlement.resource, id: 'gateway' },
           binding: {
             gatewayId: 'gateway-1',
             apimProductName: null,
@@ -377,6 +489,7 @@ describe('MyAccessPage', () => {
         entitlement: {
           ...baseEntitlement,
           id: 'subscription-grant',
+          resource: { ...baseEntitlement.resource, id: 'subscription' },
           binding: {
             gatewayId: 'gateway-1',
             apimProductName: 'model-product',
@@ -393,6 +506,7 @@ describe('MyAccessPage', () => {
         entitlement: {
           ...baseEntitlement,
           id: 'gateway-only',
+          resource: { ...baseEntitlement.resource, id: 'pending' },
           binding: {
             gatewayId: 'gateway-1',
             apimProductName: null,
@@ -408,18 +522,18 @@ describe('MyAccessPage', () => {
     ])
 
     expect(await screen.findByText('Team chat')).toBeVisible()
-    fireEvent.click(within(screen.getByText('Team chat').closest('.access-card') as HTMLElement).getByRole('button', { name: 'View grant details' }))
+    fireEvent.click(screen.getByRole('button', { name: 'View access for Team chat' }))
     expect(screen.getByText('The gateway records each call you make with this grant, so your own usage can be measured.')).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: 'Close details' }))
-    fireEvent.click(within(screen.getByText('Gateway chat').closest('.access-card') as HTMLElement).getByRole('button', { name: 'View grant details' }))
+    fireEvent.click(screen.getByRole('button', { name: 'View access for Gateway chat' }))
     expect(screen.getByText('The gateway records each call made with this grant, so its usage can be measured.')).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: 'Close details' }))
-    fireEvent.click(within(screen.getByText('Subscription chat').closest('.access-card') as HTMLElement).getByRole('button', { name: 'View grant details' }))
+    fireEvent.click(screen.getByRole('button', { name: 'View access for Subscription chat' }))
     expect(
       screen.getByText('Linked through APIM subscription grant-subscription in product model-product.'),
     ).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: 'Close details' }))
-    fireEvent.click(within(screen.getByText('Pending chat').closest('.access-card') as HTMLElement).getByRole('button', { name: 'View grant details' }))
+    fireEvent.click(screen.getByRole('button', { name: 'View access for Pending chat' }))
     expect(screen.getByText("Usage can't be measured for this grant yet.")).toBeVisible()
     expect(screen.queryByText('Gateway attribution configured')).not.toBeInTheDocument()
   })
@@ -457,7 +571,7 @@ describe('MyAccessPage', () => {
     expect(screen.getByText('Docs MCP')).toBeVisible()
     expect(screen.getByText('Recorded, not enforced by MOSAIC')).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Connection details' })).not.toBeInTheDocument()
-    fireEvent.click(within(screen.getByText('Chat completions').closest('.access-card') as HTMLElement).getByRole('button', { name: 'View grant details' }))
+    fireEvent.click(screen.getByRole('button', { name: 'View access for Chat completions' }))
     expect(screen.getByRole('button', { name: 'Connection details' })).toHaveAttribute('aria-expanded', 'false')
     expect(api.getMyEntitlementConnection).not.toHaveBeenCalled()
     expect(api.getMcpConnection).not.toHaveBeenCalled()
@@ -524,7 +638,7 @@ describe('MyAccessPage', () => {
       viaGroupName: null,
     }])
 
-    expect(await screen.findByText(label)).toBeVisible()
+    expect(await within(await screen.findByRole('dialog')).findByText(label)).toBeVisible()
   })
 
   it('uses live summaries for removed resources without rendering raw resource IDs', async () => {
@@ -545,10 +659,10 @@ describe('MyAccessPage', () => {
       resourceDisplayName: null,
     }])
 
-    const card = (await screen.findByText('Retired chat')).closest('.access-card')
+    const card = (await screen.findByText('Retired chat')).closest('.resource-row')
     expect(card).not.toBeNull()
     expect(within(card as HTMLElement).getByText('No longer available')).toBeVisible()
-    expect(within(card as HTMLElement).getByText('Model API · Granted directly to you')).toBeVisible()
+    expect(within(screen.getByRole('dialog')).getByText('Model API · Granted directly to you')).toBeVisible()
     expect(screen.queryByText(/modelApi_removed_123/)).not.toBeInTheDocument()
   })
 
@@ -583,8 +697,11 @@ describe('MyAccessPage', () => {
     ])
 
     expect(await screen.findByRole('heading', { level: 2, name: 'Chat model' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'View access for Chat model' }))
     expect(screen.getByText('Model API · Granted through Platform engineering')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Close details' }))
     expect(screen.getByRole('heading', { level: 2, name: 'Docs search' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'View access for Docs search' }))
     expect(screen.getByText('MCP server · Granted directly to you')).toBeVisible()
     expect(screen.queryByText(/chat-completions|docs-mcp/)).not.toBeInTheDocument()
   })

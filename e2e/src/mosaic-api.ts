@@ -193,15 +193,19 @@ export interface ApiResolvedEntitlement {
   effective?: boolean
   resourceDisplayName?: string | null
   resourceSummary?: { displayName?: string | null; available?: boolean } | null
+  model?: { name: string; format?: string | null; version?: string | null } | null
 }
 
 export interface ApiCatalogEntry {
   kind: string
   id: string
+  scopeId?: string | null
   displayName: string
   gatewayName: string | null
   entitled: boolean
+  entitledCostCenterIds?: string[]
   requestState: ApiAccessRequest['state'] | null
+  model?: ApiResolvedEntitlement['model']
 }
 
 export interface ApiUsageReport {
@@ -263,7 +267,7 @@ function tap(context: BrowserContext, apiOrigin: string): Tapped {
 
 /** The app a persona signs in to: the console for admins, the portal for everyone else. */
 export function homeApp(targets: Targets, personaKey: string): { app: AppName; path: string } {
-  return persona(targets, personaKey).expectedRole === 'Admin' ? { app: 'web', path: '/models' } : { app: 'portal', path: '/access' }
+  return persona(targets, personaKey).expectedRole === 'Admin' ? { app: 'web', path: '/models' } : { app: 'portal', path: '/usage' }
 }
 
 /**

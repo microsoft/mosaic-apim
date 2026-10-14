@@ -87,11 +87,8 @@ export async function prepareModelRun(personas: PersonaPool, targets: Targets, j
   const { centers, publication } = prepared!
   for (const g of modelGrants(scope)) {
     const center = centers.get(g.costCenterId)!
-    // Same-model cards are disambiguated by cost center before their connection panels open.
     const access = await MyAccessPage.open(personas, targets, g.persona)
-    const card = access.card(publication.displayName).filter({ hasText: `${center.name} · ${center.code}` })
-    await expect(card).toHaveCount(1)
-    const panel = await access.connectionDetails(card)
+    const panel = await access.connectionForGrant(g.id)
     await expect(panel.section('Cost center header')).toBeVisible()
     await expect(panel.root.getByText(center.code, { exact: true }).first()).toBeVisible()
   }

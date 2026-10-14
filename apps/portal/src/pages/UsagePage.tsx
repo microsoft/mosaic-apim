@@ -19,7 +19,7 @@ import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader } from '../components/PageHeader'
 import { RecentHoursChart, UsageTrendChart } from '../components/UsageTrendChart'
 import { environmentLabel } from '../environments'
-import { formatNumber, gatewayLabel, resourceLabel } from '../entitlement-format'
+import { formatNumber, gatewayLabel } from '../entitlement-format'
 import { usePortalEnvironments } from '../environments'
 import type {
   MyUsageReport,
@@ -51,6 +51,7 @@ import {
   rateLimitPeakLabel,
   relativeTime,
   rowLabel,
+  rowContextLabel,
   matchesEnvironmentFilter,
   usageTrackingLabel,
 } from '../usage-format'
@@ -465,8 +466,7 @@ function OnBehalfUsageSection({
               <tr key={row.key}>
                 <th scope="row">{row.mcpServer.displayName ?? 'MCP server'}</th>
                 <td>
-                  <span className="resource-name">{row.resource.displayName ?? 'Model'}</span>
-                  {row.model && <small>{row.model}</small>}
+                  <span className="resource-name">{row.model ?? row.resource.displayName ?? 'Model'}</span>
                 </td>
                 <td>{formatNumber(row.requests)}</td>
                 <td>
@@ -539,7 +539,7 @@ function ResourceTable({
               <tr key={row.entitlementId}>
                 <th scope="row">
                   <span className="resource-name">
-                    {resourceLabel(row.resource, row.resourceSummary)}
+                    {rowLabel(row)}
                     {row.resourceSummary.available === false && (
                       <Badge appearance="outline" color="warning">
                         No longer available
@@ -676,7 +676,7 @@ export function UsagePage() {
     <>
       <PageHeader
         title="Usage & cost"
-        description="Review your calls, tokens, and limits across granted resources, and their cost where MOSAIC has prices."
+        description="Your calls, tokens, and estimated spend."
         actions={
           usage.data?.dataSource === 'simulated' ? (
             <Badge appearance="filled">Sample figures</Badge>
@@ -753,7 +753,7 @@ export function UsagePage() {
                 <option value="all">All resources</option>
                 {usage.data.byResource.map((row) => (
                   <option key={row.entitlementId} value={row.entitlementId}>
-                    {rowLabel(row)}
+                    {rowContextLabel(row, environments.data)}
                   </option>
                 ))}
               </select>

@@ -29,9 +29,7 @@ test.describe('55 isolated model cost centers and budgets', { tag: ['@model-budg
       const connection = run.connections.get(grant.id)!
       test.skip(!connection.keyExists, 'NOT RUN: create an isolated key through UI only after separate owner approval')
       const access = await MyAccessPage.open(personas, targets, grant.persona)
-      const center = run.centers.get(grant.costCenterId)!
-      const card = access.cards.filter({ hasText: `${center.name} · ${center.code}` })
-      const panel = await access.connectionDetails(card)
+      const panel = await access.connectionForGrant(grant.id)
       await run.guard()
       const shown = await panel.keys.show('primary')
       if (!shown.response.ok() || !shown.noStore || shown.keptIn.length || shown.shownLength < 8) throw new Error('Key reveal failed its secret-hygiene checks')

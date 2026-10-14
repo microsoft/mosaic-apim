@@ -335,7 +335,18 @@ export function environmentSort(
 }
 
 export function rowLabel(row: UsageResourceRow) {
-  return resourceLabel(row.resource, row.resourceSummary)
+  return ['modelApi', 'poolModel', 'modelDeployment'].includes(row.resource.kind) && row.model?.trim()
+    ? row.model.trim()
+    : resourceLabel(row.resource, row.resourceSummary)
+}
+
+export function rowContextLabel(row: UsageResourceRow, environments?: PortalEnvironment[]) {
+  return [
+    rowLabel(row),
+    row.costCenter?.name,
+    environmentLabel(environments, row.environment),
+    row.resourceSummary.gatewayName,
+  ].filter(Boolean).join(' · ')
 }
 
 export function accessLabel(row: UsageResourceRow) {

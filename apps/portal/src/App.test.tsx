@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import type { PortalApi } from './api'
@@ -30,11 +30,11 @@ vi.mock('./api', () => ({
   usePortalApi: () => mocks.api,
 }))
 
-function renderApp() {
+function renderApp(path = '/access') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/access']}>
+      <MemoryRouter initialEntries={[path]}>
         <App />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -57,6 +57,20 @@ function portalProfile(overrides: Partial<PortalProfile> = {}): PortalProfile {
 }
 
 describe('App', () => {
+  it.each(['/', '/unknown-page'])('lands %s on usage and orders end-user navigation', async (path) => {
+    mocks.api = {
+      getProfile: async () => portalProfile(),
+      getMyUsage: async () => ({ byResource: [] }),
+      getMyBudgets: async () => [],
+      listEnvironments: async () => [],
+    } as unknown as PortalApi
+    renderApp(path)
+    expect(await screen.findByRole('heading', { name: 'Usage & cost' })).toBeVisible()
+    const links = within(screen.getByRole('navigation', { name: 'Primary navigation' })).getAllByRole('link')
+    expect(links.map((link) => link.textContent)).toEqual(['Usage & cost', 'Catalog', 'My access', 'My requests'])
+    expect(links[0]).toHaveAttribute('aria-current', 'page')
+    expect(screen.queryByText('Personal view')).not.toBeInTheDocument()
+  })
   it('renders the portal no-role explanation on a 403 profile response', async () => {
     mocks.api = {
       getProfile: async () => {

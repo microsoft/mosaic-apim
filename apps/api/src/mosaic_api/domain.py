@@ -2152,6 +2152,14 @@ class CatalogEntryKind(StrEnum):
     POOL_MODEL = "poolModel"
 
 
+class PortalModel(MosaicModel):
+    """Model identity for portal presentation, never an endpoint or a permission."""
+
+    name: str
+    format: str | None = None
+    version: str | None = None
+
+
 class CatalogEntry(MosaicModel):
     """One governed resource as an end user sees it.
 
@@ -2166,6 +2174,7 @@ class CatalogEntry(MosaicModel):
     # The pool, for a pool model: a request for it names the pool as its resource's scope.
     scope_id: str | None = None
     display_name: str
+    model: PortalModel | None = None
     summary: str | None = None
     gateway_id: str
     gateway_name: str | None = None
@@ -2197,6 +2206,7 @@ class PortalResolvedEntitlement(ResolvedEntitlement):
     """
 
     resource_display_name: str | None = None
+    model: PortalModel | None = None
 
 
 class PortalAccessRequest(AccessRequest):
@@ -2210,6 +2220,7 @@ class PortalAccessRequest(AccessRequest):
     """
 
     resource_display_name: str | None = None
+    model: PortalModel | None = None
     resource_summary: ResourceSummary | None = None
     cost_center: CostCenterRef | None = None
 

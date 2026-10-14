@@ -366,8 +366,14 @@ async function openSection(label: string) {
 }
 
 async function findResourceRow(name: string) {
-  const matches = await screen.findAllByText(name)
-  const row = matches.map((match) => match.closest('tr')).find(Boolean)
+  const table = await screen.findByRole('table', { name: 'Usage by resource' })
+  const headers = within(table).getAllByRole('rowheader')
+  const title = name === 'Docs MCP' ? name : 'gpt-4o'
+  const context = name === 'Development chat' ? 'Development'
+    : name === 'Retired chat' ? 'No longer available'
+      : name === 'Chat completions' ? 'Research · RES' : ''
+  const row = headers.find((header) =>
+    header.textContent?.includes(title) && header.closest('tr')?.textContent?.includes(context))?.closest('tr')
   expect(row).toBeTruthy()
   return row as HTMLElement
 }
@@ -525,8 +531,8 @@ describe('UsagePage', () => {
       ),
     ).toBeVisible()
     expect(within(table).getByText('Support bot')).toBeVisible()
-    expect(within(table).getByText('Contoso chat')).toBeVisible()
     expect(within(table).getByText('gpt-4o-mini')).toBeVisible()
+    expect(within(table).queryByText('Contoso chat')).not.toBeInTheDocument()
     expect(within(table).getByText('Support ·')).toBeVisible()
     expect(within(table).getByText('SUP')).toBeVisible()
   })
@@ -753,7 +759,7 @@ describe('UsagePage', () => {
     await user.selectOptions(screen.getByLabelText('Environment'), 'all')
     await user.selectOptions(screen.getByLabelText('Resource'), 'grant-model')
     table = screen.getByRole('table', { name: 'Usage by resource' })
-    expect(within(table).getByText('Chat completions')).toBeVisible()
+    expect(within(table).getByText('gpt-4o')).toBeVisible()
     expect(within(table).queryByText('Docs MCP')).not.toBeInTheDocument()
     expect(screen.getAllByText('100')[0]).toBeVisible()
   })

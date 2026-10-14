@@ -6,7 +6,8 @@ import { usePortalApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader } from '../components/PageHeader'
-import { gatewayLabel, requestStateLabel, resourceTitle, withResourceKind } from '../entitlement-format'
+import { gatewayLabel, requestStateLabel, withResourceKind } from '../entitlement-format'
+import { modelTitle } from '../model-presentation'
 import { usePortalEnvironments } from '../environments'
 import type { AccessRequest, ResourceSummary } from '../types'
 
@@ -64,7 +65,7 @@ export function MyRequestsPage() {
     <>
       <PageHeader
         title="My requests"
-        description="Access requests you opened and any decision notes returned by administrators."
+        description="Track access requests and decisions."
       />
       {requests.isLoading && <Loading label="Loading your requests" />}
       {requests.isError && <ErrorState error={requests.error} />}
@@ -87,7 +88,6 @@ export function MyRequestsPage() {
             <option value="completed">Approved or denied</option>
             <option value="withdrawn">Withdrawn</option>
           </select>
-          <Text>Approval creates a grant; gateway access may still need to be applied.</Text>
         </div>
         {visible.length === 0 && <EmptyState title="No requests match this status">Choose another status to see your requests.</EmptyState>}
         <div className="request-list">
@@ -96,10 +96,11 @@ export function MyRequestsPage() {
               <CardHeader
                 header={
                   <h2>
-                    {resourceTitle(
+                    {modelTitle(
                       request.resource,
                       request.resourceDisplayName,
                       headingSummary(request),
+                      request.model,
                     )}
                     {request.resourceSummary?.available === false && (
                       <Badge className="inline-status-badge" appearance="outline" color="warning">
@@ -135,14 +136,14 @@ export function MyRequestsPage() {
                     </dd>
                   </div>
                 )}
-                <div>
+                {request.justification && <div>
                   <dt>Justification</dt>
-                  <dd>{request.justification || 'No justification provided.'}</dd>
-                </div>
-                <div>
+                  <dd>{request.justification}</dd>
+                </div>}
+                {request.decisionNote && <div>
                   <dt>Decision note</dt>
-                  <dd>{request.decisionNote || 'No decision note.'}</dd>
-                </div>
+                  <dd>{request.decisionNote}</dd>
+                </div>}
                 {request.state === 'approved' && (
                   <div>
                     <dt>Grant</dt>

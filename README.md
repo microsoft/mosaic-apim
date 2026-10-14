@@ -41,8 +41,8 @@ changes, regenerate them and update their descriptions as described in
 ### Light and dark
 
 The blue mosaic-tile mark anchors collapsible primary navigation in both apps. Section menus
-separate administrative workflows, while portal details dock beside the list on wide screens
-and open in an accessible drawer on smaller ones.
+separate administrative workflows; the portal opens on Usage & cost, with model-first lists
+and accessible detail drawers that leave the page layout in place.
 
 Both apps follow the operating system's light or dark setting, and the console can pin either
 one under **Settings > Appearance**.
@@ -70,10 +70,9 @@ one under **Settings > Appearance**.
     <td><img src="docs/images/screenshots/portal-catalog-dark.png" alt="The portal catalog in the dark theme"></td>
   </tr>
   <tr>
-    <td colspan="2"><b>Portal catalog.</b> The model APIs and MCP servers published to portal
-    users, each labelled with its environment and, for an MCP server, whether the gateway enforces
-    it. Search and environment/type filters narrow the catalog; each card opens access options
-    in a contextual panel without mixing the request form into the resource list.</td>
+    <td colspan="2"><b>Portal catalog.</b> Model-first rows group known offerings and show their
+    environments and existing access. Search and environment/type filters narrow the list;
+    access options open in an overlay drawer without rearranging the catalog.</td>
   </tr>
 </table>
 
@@ -359,11 +358,9 @@ one under **Settings > Appearance**.
   <tr>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/portal-access.png" alt="A model grant with its cost center, environment, limits, and expanded connection details">
-      <p><b>My access.</b> Compact grant summaries show cost center, environment, and gateway
-      readiness, while a selected grant's contextual panel shows limits and usage attribution.
-      Its connection section shows the endpoint,
-      operations, cost-center header, accepted credentials, and Entra details, with code samples
-      and its key below.</p>
+      <p><b>My access.</b> Models and servers appear once in a searchable list, with environments,
+      cost centers, and gateway state. Choose an exact grant in the overlay drawer to see its
+      limits, attribution, and connection instructions.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/portal-mcp-connection.png" alt="An enforced MCP grant with VS Code mcp.json connection details">
@@ -374,11 +371,11 @@ one under **Settings > Appearance**.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-connection-cost-center.png" alt="A grant's cost-center header with its name and value, a curl sample that sends it with an Entra token, the response headers that report what's left, and a Create key button">
+      <img src="docs/images/screenshots/portal-connection-cost-center.png" alt="A grant's cost-center header, a curl sample that sends it with an Entra token, and response headers that report remaining limits">
       <p><b>Choosing a cost center.</b> Each grant names the cost center it charges and the
       <code>x-mosaic-cost-center</code> header that picks it on a call, with a copy-ready curl for a
-      Microsoft Entra token and the response headers that say what's left of each limit. Keys are
-      created on request, so a grant without one offers <b>Create key</b>.</p>
+      Microsoft Entra token and the response headers that say what's left of each limit. The
+      header lets the caller charge that grant instead of their default cost center.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/portal-requests.png" alt="Approved, denied, and pending access requests with their environments and cost centers">
@@ -390,10 +387,9 @@ one under **Settings > Appearance**.
   <tr>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/portal-usage.png" alt="A budget banner, then measured requests, tokens, errors and throttling, estimated cost, and busiest resource, with a daily trend and the last 24 hours">
-      <p><b>Usage &amp; cost.</b> A person's own requests, tokens, errors and throttling, what they
-      cost at list price, and their busiest resource, measured from the gateway's logs across
-      everything they hold. A daily trend by environment or resource and the last 24 hours by hour
-      show when they used it.</p>
+      <p><b>Usage &amp; cost.</b> The portal's landing page shows a person's requests, tokens,
+      errors, throttling, and estimated cost, measured from gateway logs. Daily trends and the
+      last 24 hours show when they used their resources.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/portal-usage-resources.png" alt="Usage by granted resource with requests, tokens, estimated cost, quotas, rate limits, and usage tracking">
@@ -410,18 +406,18 @@ one under **Settings > Appearance**.
       shows the cost center's total against its budget, never anyone's own share.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-pool-connection.png" alt="A selected Claude Sonnet 4.5 grant's contextual connection details, with one base URL, the model name to send, the cost-center header, and a curl sample">
-      <p><b>Models that share a key.</b> A model served from several deployments shows one base URL
-      and the model name to send, never the deployments behind it. One key serves every such model
-      a person holds there under the same cost center, and the portal names the others it covers.</p>
+      <img src="docs/images/screenshots/portal-pool-connection.png" alt="Claude Sonnet authentication, key controls, the other model covered by its key, and call samples">
+      <p><b>Models that share a key.</b> A model's connection drawer names the other models its key
+      covers under the same cost center. Authentication instructions and call samples show the
+      public model endpoint, never the deployments behind it.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/portal-request-access.png" alt="The catalog with a contextual access request panel for a selected model">
-      <p><b>Request access.</b> Select a catalog resource to choose the cost center charged
-      for calls, check existing access or requests, and add a justification. The focused form
-      keeps discovery separate from requesting access.</p>
+      <p><b>Request access.</b> Open a model's options without shifting the catalog, then choose
+      the exact offering and cost center for a request. The drawer shows existing access or
+      pending requests and lets the person add a justification.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/portal-usage-breakdowns.png" alt="Usage breakdowns with aggregate cost-center totals and pooled quotas">

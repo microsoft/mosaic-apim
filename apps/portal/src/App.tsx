@@ -46,9 +46,9 @@ interface NavigationItem {
 }
 
 const navigation: NavigationItem[] = [
-  { to: '/access', label: 'My access', icon: <HomeRegular /> },
   { to: '/usage', label: 'Usage & cost', icon: <DataUsageRegular /> },
   { to: '/catalog', label: 'Catalog', icon: <BookInformationRegular /> },
+  { to: '/access', label: 'My access', icon: <HomeRegular /> },
   { to: '/requests', label: 'My requests', icon: <PersonCircleRegular /> },
 ]
 
@@ -155,7 +155,7 @@ function PortalShell() {
         />
         <div className="signed-in-summary">
           <span>
-            <strong>Your AI service access</strong>
+            <strong>Your workspace</strong>
             <small>{profile.isLoading ? 'Checking access' : `${grants} · ${pendingRequests}`}</small>
           </span>
         </div>
@@ -180,12 +180,12 @@ export default function App() {
       <AuthGate>
         <Routes>
           <Route element={<PortalShell />}>
-            <Route index element={<Navigate to="/access" replace />} />
+            <Route index element={<Navigate to="/usage" replace />} />
             <Route path="/access" element={<MyAccessPage />} />
             <Route path="/usage" element={<UsagePage />} />
             <Route path="/catalog" element={<CatalogPage />} />
             <Route path="/requests" element={<MyRequestsPage />} />
-            <Route path="*" element={<Navigate to="/access" replace />} />
+            <Route path="*" element={<Navigate to="/usage" replace />} />
           </Route>
         </Routes>
       </AuthGate>

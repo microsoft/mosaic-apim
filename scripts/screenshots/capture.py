@@ -78,6 +78,10 @@ RESOURCE_NAMES = [
     "partner-models",
     "log-contoso-ai",
     "api://contoso-servicedesk",
+    "Contoso Docs Search",
+    "Docs search MCP",
+    "Orders MCP",
+    "IT service desk MCP",
 ]
 
 # JavaScript regular expressions, matched case-insensitively against every visible text node and
@@ -282,6 +286,7 @@ class Shot:
     ready: str
     actions: Sequence[Action] = field(default_factory=tuple)
     height: int = 900
+    width: int = 1440
 
 
 class CaptureError(RuntimeError):
@@ -352,35 +357,29 @@ def fill_labelled(pattern: str, text: str) -> Action:
     return act
 
 
-def click_card_button_matching(texts: Sequence[str], button_name: str) -> Action:
+def open_grant_connection(model: str, cost_center: str) -> Action:
     def act(page: Page) -> None:
-        card = _card_matching(page, texts)
-        if button_name == "Connection details":
-            card.get_by_role("button", name="View grant details", exact=True).click()
-            page.get_by_role("button", name=button_name, exact=True).click()
-        else:
-            card.get_by_role("button", name=button_name).click()
+        page.get_by_role("button", name=f"View access for {model}", exact=True).click()
+        _settle(page)
+        dialog = page.get_by_role("dialog")
+        select = dialog.get_by_role("combobox", name="Grant", exact=True)
+        if select.count():
+            choices = [
+                text.strip()
+                for text in select.locator("option").all_inner_texts()
+                if text.startswith(cost_center + " ·")
+                and "Granted directly to you" in text
+                and "Applied to APIM" in text
+            ]
+            if len(choices) != 1:
+                raise CaptureError(f"Expected one applied direct {model} grant in {cost_center}")
+            select.select_option(label=choices[0])
+        dialog.get_by_text(re.compile(rf"^{re.escape(cost_center)} ·")).filter(
+            visible=True
+        ).first.wait_for()
+        dialog.get_by_role("button", name="Connection details", exact=True).click()
 
     return act
-
-
-def scroll_to_card_matching(texts: Sequence[str], margin: int = 24) -> Action:
-    """Scroll the window so the first access card with all ``texts`` sits below the top."""
-
-    def act(page: Page) -> None:
-        box = _card_matching(page, texts).bounding_box()
-        if box is None:
-            raise CaptureError(f"No access card with {texts!r} has a layout box to scroll to")
-        page.evaluate("(top) => window.scrollBy(0, top)", box["y"] - margin)
-
-    return act
-
-
-def _card_matching(page: Page, texts: Sequence[str]) -> Locator:
-    cards = page.locator(".access-card")
-    for text in texts:
-        cards = cards.filter(has_text=text)
-    return cards.first
 
 
 def wait_for_text(text: str) -> Action:
@@ -391,13 +390,25 @@ def wait_for_text(text: str) -> Action:
 
 
 def scroll_to_text(text: str, margin: int = 24) -> Action:
-    """Scroll the window so the first visible match sits ``margin`` pixels below the top."""
+    """Scroll the window or open drawer so the text sits below its header."""
 
     def act(page: Page) -> None:
         box = _visible_text(page, text).bounding_box()
         if box is None:
             raise CaptureError(f"{text!r} has no layout box to scroll to")
-        page.evaluate("(top) => window.scrollBy(0, top)", box["y"] - margin)
+        target = _visible_text(page, text)
+        target.evaluate(
+            """(element, margin) => {
+              const drawer = element.closest('.resource-drawer-body')
+              if (drawer) {
+                drawer.scrollBy(0, element.getBoundingClientRect().top
+                  - drawer.getBoundingClientRect().top - margin)
+              } else {
+                window.scrollBy(0, element.getBoundingClientRect().top - margin)
+              }
+            }""",
+            margin,
+        )
 
     return act
 
@@ -846,7 +857,7 @@ SHOTS: list[Shot] = [
         "/catalog",
         "light",
         "Docs search MCP",
-        actions=(click_button("View access options for GPT-4o mini"),),
+        actions=(click_button("View access options for gpt-4o-mini"),),
         height=1100,
     ),
     Shot(
@@ -857,7 +868,7 @@ SHOTS: list[Shot] = [
         "My access",
         # Megan's GPT-4o grant under Customer Insights, the first applied model grant on the page.
         actions=(
-            click_card_button_matching(("Model API", "Applied to APIM"), "Connection details"),
+            open_grant_connection("gpt-4o", "Customer Insights"),
             wait_for_text("Base URL"),
         ),
     ),
@@ -867,10 +878,9 @@ SHOTS: list[Shot] = [
         "/access",
         "light",
         "My access",
-        # Megan's own GPT-4o grant under General, which has no key yet: the cost-center header,
-        # the key she can create, and samples that name the cost center.
+        # Megan's own GPT-4o grant under General: the cost-center header and token call sample.
         actions=(
-            click_card_button_matching(("GPT-4o", "General · general"), "Connection details"),
+            open_grant_connection("gpt-4o", "General"),
             wait_for_text("Cost center header"),
             scroll_to_text("Cost center header", margin=96),
         ),
@@ -882,16 +892,14 @@ SHOTS: list[Shot] = [
         "/access",
         "dark",
         "My access",
-        # Megan's Claude Sonnet 4.5 grant, served by the Anthropic Claude pool: the base URL and
-        # the model name she sends, and the key she also uses for Claude Opus 4.5. Nothing on it
-        # names the pool, its deployments, or their regions.
+        # Authentication, the key also used for Claude Opus 4.5, and call samples. Nothing names
+        # the pool, its deployments, or their regions.
         actions=(
-            click_card_button_matching(
-                ("Claude Sonnet 4.5", "Applied to APIM"), "Connection details"
-            ),
+            open_grant_connection("claude-sonnet-4-5", "Customer Insights"),
             wait_for_text("This key also works for"),
+            scroll_to_text("Authentication", margin=24),
         ),
-        # Tall enough to end on the note naming the other model the key works for.
+        # The shared-key note and the curl and Python examples.
         height=1700,
     ),
     Shot(
@@ -901,7 +909,7 @@ SHOTS: list[Shot] = [
         "dark",
         "Applied to APIM",
         actions=(
-            click_card_button_matching(("MCP server", "Applied to APIM"), "Connection details"),
+            open_grant_connection("Contoso Docs Search", "Customer Insights"),
             wait_for_text("VS Code"),
         ),
         height=1240,
@@ -1096,6 +1104,10 @@ def _capture_one(
 
 def _check_navigation(page: Page, app: App) -> None:
     """Exercise shell geometry and focus using the same fictional estate as the captures."""
+    origin = "/".join(page.url.split("/")[:3])
+    page.set_viewport_size({"width": 1440, "height": 900})
+    page.goto(origin + ("/catalog" if app == "portal" else "/dashboard"))
+    _settle(page)
     page.get_by_role("button", name="Collapse navigation", exact=True).click()
     sidebar = page.locator(".sidebar")
     collapsed = sidebar.bounding_box()
@@ -1107,14 +1119,60 @@ def _check_navigation(page: Page, app: App) -> None:
         raise CaptureError(f"{app}: expanding primary navigation did not restore its labels")
 
     if app == "portal":
-        origin = "/".join(page.url.split("/")[:3])
+        page.goto(origin + "/")
+        page.wait_for_url(origin + "/usage")
         page.goto(origin + "/access")
-        page.get_by_role("button", name="View grant details", exact=True).first.click()
-        panel = page.locator(".detail-panel").bounding_box()
-        cards = page.locator(".access-list").bounding_box()
-        if panel is None or cards is None or panel["x"] < cards["x"] + cards["width"] - 1:
-            raise CaptureError("portal: grant details are not docked beside the access list")
+        _settle(page)
+        rows = page.locator(".access-list")
+        before = rows.bounding_box()
+        grant_opener = page.get_by_role("button", name=re.compile("^View access for ")).first
+        grant_opener.click()
+        dialog = page.get_by_role("dialog")
+        dialog.wait_for()
+        after = rows.bounding_box()
+        if before is None or after is None or any(
+            abs(before[axis] - after[axis]) > 1 for axis in ("x", "y", "width", "height")
+        ):
+            raise CaptureError("portal: opening grant details moved the access list")
+        if not dialog.evaluate("(element) => element.contains(document.activeElement)"):
+            raise CaptureError("portal: opening grant details did not move focus inside")
+        page.keyboard.press("Escape")
+        dialog.wait_for(state="hidden")
+        page.wait_for_function(
+            "(element) => element === document.activeElement", arg=grant_opener.element_handle()
+        )
+        if rows.bounding_box() != before:
+            raise CaptureError("portal: closing grant details changed the access list")
+        open_grant_connection("gpt-4o", "Customer Insights")(page)
+        page.get_by_role("button", name="Show primary key", exact=True).click()
+        page.locator("[data-secret]").wait_for()
+        select = page.get_by_role("combobox", name="Grant", exact=True)
+        selected_grant = select.input_value()
+        general = next(
+            text.strip()
+            for text in select.locator("option").all_inner_texts()
+            if text.startswith("General ·")
+        )
+        select.select_option(label=general)
+        _settle(page)
+        if page.locator("[data-secret]").count() or page.get_by_role(
+            "button", name="Connection details", exact=True
+        ).get_attribute("aria-expanded") != "false":
+            raise CaptureError("portal: switching grants retained connection details or a key")
+        select.select_option(value=selected_grant)
+        page.get_by_role("button", name="Connection details", exact=True).click()
+        page.get_by_role("button", name="Show primary key", exact=True).click()
+        page.locator("[data-secret]").wait_for()
         page.get_by_role("button", name="Close details", exact=True).click()
+        page.get_by_role("dialog").wait_for(state="hidden")
+        if page.locator("[data-secret]").count():
+            raise CaptureError("portal: closing grant details retained a key")
+        page.get_by_role("button", name="View access for gpt-4o", exact=True).click()
+        _settle(page)
+        if page.get_by_role("combobox", name="Grant", exact=True).input_value() != "":
+            raise CaptureError("portal: reopening grant details retained the previous selection")
+        page.keyboard.press("Escape")
+        page.get_by_role("dialog").wait_for(state="hidden")
         page.goto(origin + "/usage?tab=resources")
         page.get_by_role("table", name="Usage by resource", exact=True).wait_for()
         if page.evaluate("document.documentElement.scrollWidth > window.innerWidth + 1"):
@@ -1139,6 +1197,19 @@ def _check_navigation(page: Page, app: App) -> None:
         raise CaptureError(f"{app}: closing mobile navigation did not restore focus")
     if page.evaluate("document.documentElement.scrollWidth > window.innerWidth + 1"):
         raise CaptureError(f"{app}: the mobile shell overflows the viewport horizontally")
+    if app == "portal":
+        page.goto(origin + "/catalog")
+        _settle(page)
+        page.get_by_role("button", name=re.compile("^View access options for ")).first.click()
+        dialog = page.get_by_role("dialog")
+        dialog.wait_for()
+        box = dialog.bounding_box()
+        if box is None or box["x"] < -1 or box["width"] > 391:
+            raise CaptureError("portal: mobile access options do not fit the viewport")
+        if dialog.evaluate("(element) => element.scrollWidth > element.clientWidth + 1"):
+            raise CaptureError("portal: mobile access options overflow horizontally")
+        page.keyboard.press("Escape")
+        dialog.wait_for(state="hidden")
     print(f"verified {app} desktop collapse, mobile navigation, and contextual layout")
 
 
@@ -1162,7 +1233,7 @@ def capture(
         try:
             for shot in shots:
                 context = browser.new_context(
-                    viewport={"width": 1440, "height": shot.height},
+                    viewport={"width": shot.width, "height": shot.height},
                     device_scale_factor=1,
                     color_scheme=shot.theme,
                     reduced_motion="reduce",
@@ -1182,10 +1253,10 @@ def capture(
                     page.set_default_navigation_timeout(60_000)
                     written.append(_capture_one(page, shot, urls[shot.app], literals, output, logs))
                     if check_navigation and shot.app not in verified:
-                        _check_navigation(page, shot.app)
                         verified.add(shot.app)
-                except CaptureError as error:
-                    failures.append(error)
+                        _check_navigation(page, shot.app)
+                except (CaptureError, PlaywrightTimeoutError) as error:
+                    failures.append(CaptureError(str(error)))
                     print(f"FAILED {error}", file=sys.stderr)
                 finally:
                     context.close()

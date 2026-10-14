@@ -19,7 +19,7 @@ import { GatewayPage } from '../src/pages/console/gateways.ts'
 import { ModelsPage } from '../src/pages/console/models.ts'
 import { CatalogPage } from '../src/pages/portal/catalog.ts'
 import { replanProblems } from '../src/plan-scope.ts'
-import { isDisposableName, keptModels } from '../src/suite.ts'
+import { isDisposableName, keptModels, portalCatalogGroupKey, portalCatalogTitle } from '../src/suite.ts'
 
 /**
  * Publishing, journeys A7 to A9: the suite's gateway is managed, every model the manifest keeps is published and
@@ -85,14 +85,13 @@ test.describe('20 publish', { tag: '@console' }, () => {
       await expect.soft(models.visibility(modelApi.displayName)).toHaveValue(modelApi.visibility)
       if (modelApi.visibility === 'catalog') {
         expect.soft(listed.has(modelApi.id), `${targets.roles.user}'s catalog to list ${label}`).toBe(true)
-        await expect.soft(portal.card(modelApi.displayName).first()).toBeVisible()
+        const entry = catalog.find((item) => item.id === modelApi.id && item.kind === 'modelApi')
+        if (entry) await expect.soft(portal.card(portalCatalogTitle(entry)).first()).toBeVisible()
       } else {
         expect.soft(listed.has(modelApi.id), `${targets.roles.user}'s catalog to leave out ${label}, which is private`).toBe(false)
-        if (!catalog.some((entry) => entry.displayName === modelApi.displayName)) {
-          await expect.soft(portal.card(modelApi.displayName)).toHaveCount(0)
-        }
       }
     }
+    await expect(portal.cards).toHaveCount(new Set(catalog.map(portalCatalogGroupKey)).size)
   })
 
   test.describe('A8 publishing the disposable model', { tag: '@writes' }, () => {
@@ -157,7 +156,8 @@ test.describe('20 publish', { tag: '@console' }, () => {
           await expectOk(await models.setVisibility(modelApi.displayName, 'private'), `Hiding ${label} from the catalog`)
           await expect.poll(listed, { message: `${disposable.requester}'s catalog to leave out ${label}`, timeout: 60_000 }).toBe(false)
           const catalog = await CatalogPage.open(personas, targets, disposable.requester)
-          await expect(catalog.card(modelApi.displayName)).toHaveCount(0)
+          const entries = await requester.portalCatalog()
+          await expect(catalog.cards).toHaveCount(new Set(entries.map(portalCatalogGroupKey)).size)
         },
         async () => {
           await models.reload()
@@ -170,7 +170,9 @@ test.describe('20 publish', { tag: '@console' }, () => {
 
       await expect.poll(listed, { message: `${disposable.requester}'s catalog to list ${label} again`, timeout: 60_000 }).toBe(true)
       const catalog = await CatalogPage.open(personas, targets, disposable.requester)
-      await expect(catalog.card(modelApi.displayName)).toHaveCount(1)
+      const entry = (await requester.portalCatalog()).find((item) => item.id === modelApi.id && item.kind === 'modelApi')
+      if (!entry) throw new Error(`${disposable.requester}'s catalog doesn't list ${label} after restoring visibility.`)
+      await expect(catalog.card(portalCatalogTitle(entry)).first()).toBeVisible()
     })
   })
 })

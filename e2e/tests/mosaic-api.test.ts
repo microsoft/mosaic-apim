@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { type ApiPrincipal, findWorkloadPrincipal } from '../src/mosaic-api.ts'
+import { type ApiPrincipal, findWorkloadPrincipal, homeApp } from '../src/mosaic-api.ts'
+import { modelTargets } from './model-fixtures.ts'
 
 const principals: ApiPrincipal[] = [
   { id: 'p_person', objectId: '33333333-0000-0000-0000-000000000001', kind: 'user', label: 'contoso-workload' },
@@ -19,4 +20,10 @@ test('without an object ID, only a label equal to the app name matches, and neve
   assert.equal(findWorkloadPrincipal(principals, { displayName: 'contoso-workload' })?.id, 'p_named')
   assert.equal(findWorkloadPrincipal(principals.slice(0, 3), { displayName: 'contoso-workload' }), undefined)
   assert.equal(findWorkloadPrincipal(principals, { displayName: 'x', objectId: '33333333-0000-0000-0000-000000000001' }), undefined)
+})
+
+test('end users land on Usage & cost while administrators keep their console home', () => {
+  const targets = modelTargets()
+  assert.deepEqual(homeApp(targets, targets.roles.user), { app: 'portal', path: '/usage' })
+  assert.deepEqual(homeApp(targets, targets.roles.admin), { app: 'web', path: '/models' })
 })
