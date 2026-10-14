@@ -221,7 +221,7 @@ export function IdentityPage() {
   const previousEditing = useRef(false)
 
   useLayoutEffect(() => {
-    if (detailsOpen) {
+    if (detailsOpen && !discardOpen) {
       if (detailEditing) {
         editFormRef.current?.querySelector<HTMLInputElement | HTMLTextAreaElement>('input, textarea')?.focus()
       } else if (previousEditing.current) {
@@ -229,7 +229,7 @@ export function IdentityPage() {
       }
     }
     previousEditing.current = detailEditing
-  }, [detailEditing, detailsOpen])
+  }, [detailEditing, detailsOpen, discardOpen])
 
   const principals = useQuery({ queryKey: ['principals'], queryFn: api.listPrincipals })
   const costCenters = useQuery({ queryKey: ['cost-centers'], queryFn: api.listCostCenters })

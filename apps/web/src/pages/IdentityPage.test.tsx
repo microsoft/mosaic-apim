@@ -313,18 +313,48 @@ describe('IdentityPage', () => {
       await user.click(screen.getByRole('button', { name: edit }))
       await user.type(screen.getByRole('textbox', { name: field }), ' changed')
       fireEvent.click(sectionButton('Agents'))
-      await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })
+      const confirmation = await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })
+      await waitFor(() => expect(within(confirmation).getByRole('button', { name: 'Keep editing' })).toHaveFocus())
       if (dismissal === 'Escape') {
         await user.keyboard('{Escape}')
       } else {
         await user.click(screen.getByRole('button', { name: 'Keep editing' }))
       }
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Discard unsaved changes?' })).not.toBeInTheDocument())
+      const draft = await screen.findByRole('textbox', { name: field })
+      expect(draft).toHaveValue(`${value} changed`)
+      await waitFor(() => expect(draft).toHaveFocus())
 
       await user.click(await screen.findByRole('button', { name: 'Close identity details' }))
       await user.click(await screen.findByRole('button', { name: 'Discard changes' }))
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
       expect(await screen.findByRole('heading', { name: section })).toBeVisible()
       expect(screen.getByLabelText('Section query')).toHaveTextContent(`?tab=${tab}&scope=kept`)
+    })
+
+    it.each(['Keep editing', 'Escape'])('restores focus to the draft when closing the drawer is canceled with %s', async (dismissal) => {
+      const user = userEvent.setup()
+      renderPage(`/identity?tab=${tab}&scope=kept`)
+      await user.click(await screen.findByRole('button', { name: row }))
+      await user.click(screen.getByRole('button', { name: edit }))
+      await user.type(screen.getByRole('textbox', { name: field }), ' changed')
+      await user.click(screen.getByRole('button', { name: 'Close identity details' }))
+      const confirmation = await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })
+      await waitFor(() => expect(within(confirmation).getByRole('button', { name: 'Keep editing' })).toHaveFocus())
+      if (dismissal === 'Escape') {
+        await user.keyboard('{Escape}')
+      } else {
+        await user.click(screen.getByRole('button', { name: 'Keep editing' }))
+      }
+
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Discard unsaved changes?' })).not.toBeInTheDocument())
+      const draft = await screen.findByRole('textbox', { name: field })
+      expect(draft).toHaveValue(`${value} changed`)
+      await waitFor(() => expect(draft).toHaveFocus())
+      expect(sectionButton(section)).toHaveAttribute('aria-current', 'page')
+      expect(screen.getByLabelText('Section query')).toHaveTextContent(`?tab=${tab}&scope=kept`)
+      expect(mocks.updatePrincipal).not.toHaveBeenCalled()
+      expect(mocks.updateGroup).not.toHaveBeenCalled()
     })
   })
 

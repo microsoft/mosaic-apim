@@ -27,9 +27,11 @@ width, without resizing the underlying list. Closing or switching grant details 
 credential controls; secrets never persist in route state.
 
 Administrator identity details open only on selection, in a trailing-edge overview drawer.
-Editing local metadata is explicit and closing protects unsaved drafts. Directory onboarding
-starts with Entra search, then selection and an explicit Add action. Configuration or permission
-failure has recovery guidance; manual entry is a deliberate advanced fallback.
+Editing local metadata is explicit and closing protects unsaved drafts. Canceling a discard
+confirmation restores focus to the draft without changing the section or selection.
+Directory onboarding starts with Entra search, then selection and an explicit Add action.
+Configuration or permission failure has recovery guidance; manual entry is a deliberate advanced
+fallback.
 
 ## Brand
 
