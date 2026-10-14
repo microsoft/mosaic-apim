@@ -203,7 +203,7 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-identity-detail.png" alt="An agent overview drawer beside the full-width identity list">
       <p><b>Identity details.</b> An on-demand drawer shows an identity's overview and local defaults
-      without squeezing the list. Editing local metadata is an explicit action, and closing protects unsaved edits.</p>
+      without squeezing the list. Editing local metadata is an explicit action, and closing or changing sections protects unsaved edits.</p>
     </td>
   </tr>
   <tr>

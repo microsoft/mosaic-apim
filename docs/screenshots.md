@@ -50,7 +50,7 @@ If `uv` is available only as a Python module, use `python -m uv run ...` with th
 | `--output DIR` | Write the PNGs somewhere else, for example to compare before and after |
 | `--headed` | Show the browser while it captures |
 | `--preview` | Serve production assets after building both apps with `npm run build --prefix apps\web` and `npm run build --prefix apps\portal`; avoids cold dev-server dependency bundling |
-| `--check-navigation` | Also verify desktop collapse, mobile focus/inert behavior, identity drawer drafts/focus/reflow, forced colors, usage-first portal landing, unchanged list geometry, and drawer/credential teardown against the fictional estate |
+| `--check-navigation` | Also verify desktop collapse, mobile focus/inert behavior, identity drawer drafts/focus/reflow and section-change discard confirmation, forced colors, usage-first portal landing, unchanged list geometry, and drawer/credential teardown against the fictional estate |
 | `--reuse-servers` | Use a demo API and apps that are already running instead of starting them |
 | `--api-port`, `--console-port`, `--portal-port` | Change the ports, which default to 18000, 15173, and 15174 |
 

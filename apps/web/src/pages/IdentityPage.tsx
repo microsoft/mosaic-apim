@@ -214,6 +214,7 @@ export function IdentityPage() {
   const [confirmation, setConfirmation] = useState<ConfirmationState>(null)
   const [detailEditing, setDetailEditing] = useState(false)
   const [discardOpen, setDiscardOpen] = useState(false)
+  const [pendingTab, setPendingTab] = useState<IdentityTab | null>(null)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const editButtonRef = useRef<HTMLButtonElement>(null)
   const editFormRef = useRef<HTMLFormElement>(null)
@@ -513,17 +514,25 @@ export function IdentityPage() {
     setDetailEditing(false)
   }
 
-  function closeDetails(discard = false) {
+  function keepEditing() {
+    setDiscardOpen(false)
+    setPendingTab(null)
+  }
+
+  function closeDetails(discard = false, nextTab: IdentityTab | null = null) {
     if (updatePrincipal.isPending || updateGroup.isPending) return
     if (!discard && detailEditing && (principalDetailHasChanges || groupDetailHasChanges)) {
+      setPendingTab(nextTab)
       setDiscardOpen(true)
       return
     }
     cancelEditing()
     setDiscardOpen(false)
+    setPendingTab(null)
     setDetailsOpen(false)
     setSelectedPrincipalId('')
     setSelectedGroupId('')
+    if (nextTab) updateTab(nextTab)
   }
 
   const principalDetailError = updatePrincipal.error ?? deletePrincipal.error
@@ -649,7 +658,7 @@ export function IdentityPage() {
       )}
 
       <SectionLayout label="Identity" orientation="horizontal" sections={IDENTITY_SECTIONS} active={activeTab}
-        onSelect={(value) => isIdentityTab(value) && updateTab(value)}>
+        onSelect={(value) => isIdentityTab(value) && value !== activeTab && closeDetails(false, value)}>
       <div className={styles.toolbar}>
         <div className={styles.toolbarControls}>
           <Input
@@ -1402,14 +1411,14 @@ export function IdentityPage() {
         </DialogSurface>
       </Dialog>
 
-      <Dialog open={discardOpen} onOpenChange={(_, data) => setDiscardOpen(data.open)}>
+      <Dialog open={discardOpen} onOpenChange={(_, data) => !data.open && keepEditing()}>
         <DialogSurface>
           <DialogBody>
             <DialogTitle>Discard unsaved changes?</DialogTitle>
-            <DialogContent>Your local edits have not been saved. Keep editing or discard them to close the details.</DialogContent>
+            <DialogContent>Your local edits have not been saved. Keep editing or discard them to {pendingTab ? 'switch sections' : 'close the details'}.</DialogContent>
             <DialogActions>
-              <Button onClick={() => setDiscardOpen(false)}>Keep editing</Button>
-              <Button appearance="primary" onClick={() => closeDetails(true)}>Discard changes</Button>
+              <Button onClick={keepEditing}>Keep editing</Button>
+              <Button appearance="primary" onClick={() => closeDetails(true, pendingTab)}>Discard changes</Button>
             </DialogActions>
           </DialogBody>
         </DialogSurface>

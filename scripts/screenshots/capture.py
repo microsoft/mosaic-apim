@@ -1334,6 +1334,37 @@ def _check_identity_workspace(page: Page) -> None:
         if page.evaluate("document.documentElement.scrollWidth > window.innerWidth + 1"):
             raise CaptureError(f"console: identity workspace overflows at {width}px")
 
+    for section, name, edit, field_label in (
+        ("users", "Megan Bowen", "Edit local metadata", "Local label"),
+        ("groups", "Data Science", "Edit group", "Description"),
+    ):
+        page.goto(origin + f"/identity?tab={section}")
+        _settle(page)
+        page.get_by_role("button", name=re.compile(r"^" + re.escape(name))).click()
+        page.get_by_role("button", name=edit, exact=True).click()
+        draft = page.get_by_role("textbox", name=field_label, exact=True)
+        draft.fill(f"{name} section draft")
+        # Exercise both section handlers directly while the modal drawer makes navigation inert.
+        page.get_by_label("Identity section", exact=True).evaluate(
+            """(element) => {
+                element.value = 'agents';
+                element.dispatchEvent(new Event('change', { bubbles: true }));
+            }"""
+        )
+        page.get_by_role("dialog", name="Discard unsaved changes?", exact=True).wait_for()
+        page.get_by_role("button", name="Keep editing", exact=True).click()
+        if f"tab={section}" not in page.url or draft.input_value() != f"{name} section draft":
+            raise CaptureError("console: cancelling a section change lost the section or draft")
+        page.locator('nav[aria-label="Identity sections"] button[title="Agents"]').evaluate(
+            "(element) => element.click()"
+        )
+        page.get_by_role("dialog", name="Discard unsaved changes?", exact=True).wait_for()
+        page.get_by_role("button", name="Discard changes", exact=True).click()
+        page.wait_for_url("**/identity?tab=agents")
+        page.locator(".identity-drawer").wait_for(state="hidden")
+        if page.get_by_role("dialog", name="Discard unsaved changes?", exact=True).count():
+            raise CaptureError("console: discarding a section draft left the confirmation open")
+
     page.emulate_media(forced_colors="active")
     glass = page.locator(".sidebar").evaluate(
         "(element) => getComputedStyle(element).backdropFilter"
@@ -1341,7 +1372,10 @@ def _check_identity_workspace(page: Page) -> None:
     if glass != "none":
         raise CaptureError("console: forced colors did not disable translucent navigation")
     page.emulate_media(forced_colors="none")
-    print("verified identity focus, dirty drafts, picker selection, reflow, and forced colors")
+    print(
+        "verified identity focus, dirty drafts, section navigation, picker selection, "
+        "reflow, and forced colors"
+    )
 
 
 def capture(

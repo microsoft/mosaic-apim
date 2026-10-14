@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   searchDirectory: vi.fn(),
   createPrincipal: vi.fn(),
   updatePrincipal: vi.fn(),
+  updateGroup: vi.fn(),
 }))
 
 vi.mock('../api', () => ({
@@ -52,7 +53,7 @@ vi.mock('../api', () => ({
     updatePrincipal: mocks.updatePrincipal,
     deletePrincipal: vi.fn(),
     createGroup: vi.fn(),
-    updateGroup: vi.fn(),
+    updateGroup: mocks.updateGroup,
     deleteGroup: vi.fn(),
     addMembership: vi.fn(),
     removeMembership: vi.fn(),
@@ -127,6 +128,11 @@ function NavigationProbe() {
 
 function principalRow(name: string | RegExp) {
   return screen.getByRole('button', { name })
+}
+
+function sectionButton(name: string) {
+  return within(screen.getByRole('navigation', { name: 'Identity sections', hidden: true }))
+    .getByRole('button', { name, hidden: true })
 }
 
 function mockCreatePrincipal() {
@@ -207,6 +213,119 @@ describe('IdentityPage', () => {
     await user.click(screen.getByRole('button', { name: 'Cancel editing' }))
     expect(screen.queryByRole('textbox', { name: 'Description' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Edit group' })).toHaveFocus()
+  })
+
+  describe.each([
+    {
+      kind: 'principal',
+      tab: 'users',
+      section: 'People',
+      row: /Alex User/,
+      edit: 'Edit local metadata',
+      field: 'Local label',
+      value: 'Alex User',
+    },
+    {
+      kind: 'local group',
+      tab: 'groups',
+      section: 'MOSAIC groups',
+      row: /Research team/,
+      edit: 'Edit group',
+      field: 'Description',
+      value: 'Local collection',
+    },
+  ])('$kind section navigation', ({ tab, section, row, edit, field, value }) => {
+    beforeEach(() => {
+      mocks.groups = [{ id: 'group-one', tenantId: 'tenant', name: 'Research team', description: 'Local collection', ...timestamps }]
+    })
+
+    it.each(['buttons', 'selector'])('guards dirty drafts from section %s until discard is confirmed', async (control) => {
+      const user = userEvent.setup()
+      renderPage(`/identity?tab=${tab}&scope=kept`)
+      await user.click(await screen.findByRole('button', { name: row }))
+      await user.click(screen.getByRole('button', { name: edit }))
+      await user.type(screen.getByRole('textbox', { name: field }), ' changed')
+
+      // Section controls are behind the modal drawer; dispatch without moving focus outside it.
+      function selectAgents() {
+        if (control === 'buttons') {
+          fireEvent.click(sectionButton('Agents'))
+        } else {
+          fireEvent.change(screen.getByLabelText('Identity section'), { target: { value: 'agents' } })
+        }
+      }
+
+      selectAgents()
+      expect(await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })).toBeVisible()
+      expect(screen.getByLabelText('Section query')).toHaveTextContent(`?tab=${tab}&scope=kept`)
+      expect(sectionButton(section)).toHaveAttribute('aria-current', 'page')
+
+      await user.click(screen.getByRole('button', { name: 'Keep editing' }))
+      expect(await screen.findByRole('textbox', { name: field })).toHaveValue(`${value} changed`)
+      expect(screen.getByLabelText('Section query')).toHaveTextContent(`?tab=${tab}&scope=kept`)
+      expect(sectionButton(section)).toHaveAttribute('aria-current', 'page')
+
+      selectAgents()
+      await user.click(await screen.findByRole('button', { name: 'Discard changes' }))
+      expect(await screen.findByRole('heading', { name: 'Agents' })).toBeVisible()
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      expect(screen.getByLabelText('Section query')).toHaveTextContent('?tab=agents&scope=kept')
+      expect(mocks.updatePrincipal).not.toHaveBeenCalled()
+      expect(mocks.updateGroup).not.toHaveBeenCalled()
+
+      await user.click(sectionButton(section))
+      await user.click(await screen.findByRole('button', { name: row }))
+      await user.click(screen.getByRole('button', { name: edit }))
+      expect(screen.getByRole('textbox', { name: field })).toHaveValue(value)
+    })
+
+    it.each(['overview', 'editing'])('navigates without a prompt from a clean %s', async (mode) => {
+      const user = userEvent.setup()
+      renderPage(`/identity?tab=${tab}&scope=kept`)
+      await user.click(await screen.findByRole('button', { name: row }))
+      if (mode === 'editing') {
+        await user.click(screen.getByRole('button', { name: edit }))
+      }
+
+      fireEvent.click(sectionButton('Agents'))
+      expect(await screen.findByRole('heading', { name: 'Agents' })).toBeVisible()
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      expect(screen.getByLabelText('Section query')).toHaveTextContent('?tab=agents&scope=kept')
+    })
+
+    it('does nothing when the current section is selected with a dirty draft', async () => {
+      const user = userEvent.setup()
+      renderPage(`/identity?tab=${tab}&scope=kept`)
+      await user.click(await screen.findByRole('button', { name: row }))
+      await user.click(screen.getByRole('button', { name: edit }))
+      await user.type(screen.getByRole('textbox', { name: field }), ' changed')
+
+      fireEvent.click(sectionButton(section))
+      expect(screen.queryByRole('dialog', { name: 'Discard unsaved changes?' })).not.toBeInTheDocument()
+      expect(screen.getByRole('textbox', { name: field })).toHaveValue(`${value} changed`)
+      expect(screen.getByLabelText('Section query')).toHaveTextContent(`?tab=${tab}&scope=kept`)
+    })
+
+    it.each(['Keep editing', 'Escape'])('forgets section navigation canceled with %s when the drawer is subsequently closed', async (dismissal) => {
+      const user = userEvent.setup()
+      renderPage(`/identity?tab=${tab}&scope=kept`)
+      await user.click(await screen.findByRole('button', { name: row }))
+      await user.click(screen.getByRole('button', { name: edit }))
+      await user.type(screen.getByRole('textbox', { name: field }), ' changed')
+      fireEvent.click(sectionButton('Agents'))
+      await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })
+      if (dismissal === 'Escape') {
+        await user.keyboard('{Escape}')
+      } else {
+        await user.click(screen.getByRole('button', { name: 'Keep editing' }))
+      }
+
+      await user.click(await screen.findByRole('button', { name: 'Close identity details' }))
+      await user.click(await screen.findByRole('button', { name: 'Discard changes' }))
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      expect(await screen.findByRole('heading', { name: section })).toBeVisible()
+      expect(screen.getByLabelText('Section query')).toHaveTextContent(`?tab=${tab}&scope=kept`)
+    })
   })
 
   it('lists people, agents, and applications with security groups on their own tabs', async () => {
