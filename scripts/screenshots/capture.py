@@ -976,7 +976,7 @@ SHOTS: list[Shot] = [
     ),
     Shot("portal-requests", "portal", "/requests", "dark", "Approved for the churn analysis"),
     # Tall enough for the budget banner, the figures, the daily trend, and the last 24 hours.
-    Shot("portal-usage", "portal", "/usage", "light", "Busiest resource", height=1210),
+    Shot("portal-usage", "portal", "/usage", "light", "Busiest resource", height=1400),
     Shot(
         "portal-usage-resources",
         "portal",
@@ -1165,6 +1165,122 @@ def _capture_one(
     return target
 
 
+def _check_portal_appearance(page: Page, theme: Theme) -> None:
+    origin = "/".join(page.url.split("/")[:3])
+    expected = "rgb(255, 255, 255)" if theme == "light" else "rgb(28, 37, 49)"
+    session = page.context.new_cdp_session(page)
+    try:
+        for width, height in ((1440, 900), (390, 844)):
+            page.set_viewport_size({"width": width, "height": height})
+            for route, surface in (
+                ("/usage", ".usage-kpi-card"),
+                ("/catalog", ".resource-list"),
+                ("/access", ".resource-list"),
+                ("/requests", ".request-card"),
+            ):
+                page.goto(origin + route)
+                _settle(page)
+                page.locator(surface).first.wait_for()
+                if page.evaluate("document.documentElement.scrollWidth > window.innerWidth + 1"):
+                    raise CaptureError(f"portal: {route} overflows at {width}px in {theme}")
+                chrome = page.locator(".topbar").evaluate(
+                    """element => {
+                      const style = getComputedStyle(element);
+                      const probe = document.createElement('span');
+                      probe.style.backgroundColor = 'var(--mosaic-glass)';
+                      element.append(probe);
+                      const glass = getComputedStyle(probe).backgroundColor;
+                      probe.remove();
+                      return { blur: style.backdropFilter, background: style.backgroundColor,
+                        glass };
+                    }"""
+                )
+                if chrome["blur"] != "blur(16px)" or chrome["background"] != chrome["glass"]:
+                    raise CaptureError(
+                        f"portal: {route} does not use {theme} glass chrome: {chrome}"
+                    )
+                for selector in (surface, ".fui-FluentProvider"):
+                    style = page.locator(selector).first.evaluate(
+                        """element => {
+                          const style = getComputedStyle(element);
+                          return {background: style.backgroundColor, radius: style.borderRadius,
+                            padding: style.padding};
+                        }"""
+                    )
+                    if style["background"] != expected:
+                        raise CaptureError(
+                            f"portal: {route} {selector} is not an opaque {theme} surface"
+                        )
+                    if selector == surface and style["radius"] != "12px":
+                        raise CaptureError(f"portal: {route} does not use rounded panels")
+                    if (
+                        surface in (".usage-kpi-card", ".request-card")
+                        and selector == surface
+                        and (style["padding"] != "20px")
+                    ):
+                        raise CaptureError(
+                            f"portal: {route} Fluent card styles override panel spacing"
+                        )
+            page.goto(origin + "/catalog")
+            _settle(page)
+            page.get_by_role("button", name=re.compile("^View access options for ")).first.click()
+            drawer = page.get_by_role("dialog")
+            drawer.wait_for()
+            background = drawer.evaluate("element => getComputedStyle(element).backgroundColor")
+            if background != expected:
+                raise CaptureError(f"portal: {theme} detail drawer is not opaque")
+            page.keyboard.press("Escape")
+            drawer.wait_for(state="hidden")
+
+        for feature, value in (
+            ("prefers-reduced-transparency", "reduce"),
+            ("forced-colors", "active"),
+        ):
+            session.send(
+                "Emulation.setEmulatedMedia",
+                {"features": [{"name": feature, "value": value}]},
+            )
+            for selector in (".sidebar", ".topbar"):
+                style = page.locator(selector).evaluate(
+                    """element => {
+                      const style = getComputedStyle(element);
+                      return {blur: style.backdropFilter, background: style.backgroundColor};
+                    }"""
+                )
+                if style["blur"] != "none":
+                    raise CaptureError(f"portal: {feature} did not disable {selector} blur")
+                if feature == "prefers-reduced-transparency" and style["background"] != expected:
+                    raise CaptureError(f"portal: reduced transparency left {selector} translucent")
+            session.send("Emulation.setEmulatedMedia", {"features": []})
+
+        page.evaluate(
+            """() => {
+              for (const sheet of document.styleSheets) {
+                for (let index = sheet.cssRules.length - 1; index >= 0; index--) {
+                  const rule = sheet.cssRules[index];
+                  if (rule instanceof CSSSupportsRule &&
+                      rule.conditionText.includes('backdrop-filter')) {
+                    sheet.deleteRule(index);
+                  }
+                }
+              }
+            }"""
+        )
+        for selector in (".sidebar", ".topbar"):
+            style = page.locator(selector).evaluate(
+                """element => {
+                  const style = getComputedStyle(element);
+                  return {blur: style.backdropFilter, background: style.backgroundColor};
+                }"""
+            )
+            if style["blur"] != "none" or style["background"] != expected:
+                raise CaptureError(f"portal: unsupported blur did not leave {selector} solid")
+    finally:
+        session.send("Emulation.setEmulatedMedia", {"features": []})
+        session.detach()
+    print(f"verified portal {theme} glass, solid surfaces, mobile reflow, and blur fallbacks")
+
+
 def _check_navigation(page: Page, app: App) -> None:
     """Exercise shell geometry and focus using the same fictional estate as the captures."""
     origin = "/".join(page.url.split("/")[:3])
@@ -1193,8 +1309,10 @@ def _check_navigation(page: Page, app: App) -> None:
         dialog = page.get_by_role("dialog")
         dialog.wait_for()
         after = rows.bounding_box()
-        if before is None or after is None or any(
-            abs(before[axis] - after[axis]) > 1 for axis in ("x", "y", "width", "height")
+        if (
+            before is None
+            or after is None
+            or any(abs(before[axis] - after[axis]) > 1 for axis in ("x", "y", "width", "height"))
         ):
             raise CaptureError("portal: opening grant details moved the access list")
         if not dialog.evaluate("(element) => element.contains(document.activeElement)"):
@@ -1218,9 +1336,13 @@ def _check_navigation(page: Page, app: App) -> None:
         )
         select.select_option(label=general)
         _settle(page)
-        if page.locator("[data-secret]").count() or page.get_by_role(
-            "button", name="Connection details", exact=True
-        ).get_attribute("aria-expanded") != "false":
+        if (
+            page.locator("[data-secret]").count()
+            or page.get_by_role("button", name="Connection details", exact=True).get_attribute(
+                "aria-expanded"
+            )
+            != "false"
+        ):
             raise CaptureError("portal: switching grants retained connection details or a key")
         select.select_option(value=selected_grant)
         page.get_by_role("button", name="Connection details", exact=True).click()
@@ -1401,6 +1523,7 @@ def capture(
     written: list[Path] = []
     failures: list[CaptureError] = []
     verified: set[App] = set()
+    verified_portal_themes: set[Theme] = set()
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=not headed)
         try:
@@ -1428,6 +1551,13 @@ def capture(
                     if check_navigation and shot.app not in verified:
                         verified.add(shot.app)
                         _check_navigation(page, shot.app)
+                    if (
+                        check_navigation
+                        and shot.app == "portal"
+                        and shot.theme not in (verified_portal_themes)
+                    ):
+                        _check_portal_appearance(page, shot.theme)
+                        verified_portal_themes.add(shot.theme)
                 except (CaptureError, PlaywrightTimeoutError) as error:
                     failures.append(CaptureError(str(error)))
                     print(f"FAILED {error}", file=sys.stderr)

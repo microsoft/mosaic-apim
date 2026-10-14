@@ -16,9 +16,11 @@ history. List-heavy workspaces can use horizontal section navigation to preserve
 At constrained widths, a labeled selector replaces the section navigation.
 
 The administrator rail exposes Light, Dark, and System next to the account menu, with a compact
-menu when collapsed. It shares the browser preference with Settings. The admin chrome uses
-restrained translucent surfaces; data, forms, and drawers stay opaque. Unsupported blur, reduced
-transparency, and forced colors use solid surfaces.
+menu when collapsed. It shares the browser preference with Settings. Both apps use a cool-neutral
+light/dark palette and restrained translucent navigation rails and top bars; data panels, forms,
+menus, and drawers stay opaque. Rounded panels, soft borders, and Fluent theme overrides keep
+those surfaces consistent. Unsupported blur, reduced transparency, and forced colors use solid
+navigation surfaces.
 
 Primary mobile navigation is modal, traps focus, restores the opener, and makes the underlying
 header/content inert. The portal opens on Usage & cost, followed by Catalog, My access, and My

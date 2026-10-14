@@ -52,7 +52,24 @@ export function MosaicThemeProvider({ children }: PropsWithChildren) {
 
   return (
     <ThemeContext.Provider value={value}>
-      <FluentProvider theme={resolvedTheme === 'dark' ? webDarkTheme : webLightTheme}>
+      <FluentProvider theme={resolvedTheme === 'dark' ? {
+        ...webDarkTheme,
+        colorNeutralBackground1: '#1c2531',
+        colorNeutralBackground2: '#222e3b',
+        colorNeutralBackground3: '#303e4e',
+        colorNeutralForeground1: '#f5f5f5',
+        colorNeutralForeground2: '#c8c6c4',
+        colorNeutralStroke1: '#536479',
+        colorNeutralStroke2: '#354354',
+        colorBrandBackground: '#005faa',
+      } : {
+        ...webLightTheme,
+        colorNeutralBackground2: '#f5f7fa',
+        colorNeutralBackground3: '#e8edf4',
+        colorNeutralStroke1: '#c6cfdb',
+        colorNeutralStroke2: '#e1e7ef',
+        colorBrandBackground: '#005faa',
+      }}>
         {children}
       </FluentProvider>
     </ThemeContext.Provider>
