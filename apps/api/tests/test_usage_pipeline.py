@@ -952,8 +952,8 @@ def test_a_console_on_another_origin_can_read_the_export_file_name(settings: Set
     assert response.status_code == 200
     disposition = response.headers["content-disposition"]
     assert disposition.startswith('attachment; filename="mosaic-people-')
-    # Browsers hide the header from a cross-origin script unless the API exposes it.
-    assert response.headers["access-control-expose-headers"] == "Content-Disposition"
+    # Cross-origin scripts need the export name and the directory's throttle retry interval.
+    assert response.headers["access-control-expose-headers"] == "Content-Disposition, Retry-After"
 
 
 async def test_analytics_need_the_admin_role(harness: Harness) -> None:
