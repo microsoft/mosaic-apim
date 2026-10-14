@@ -378,9 +378,10 @@ one under **Settings > Appearance**.
       header lets the caller charge that grant instead of their default cost center.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/portal-requests.png" alt="Approved, denied, and pending access requests with their environments and cost centers">
-      <p><b>My requests.</b> Access requests with their environment, cost center, justification,
-      state, and the administrator's decision note, with status filters and exact grant links.
+      <img src="docs/images/screenshots/portal-requests.png" alt="Model-first access requests with exact offerings, known versions, environments and cost centers">
+      <p><b>My requests.</b> Model-first requests show exact offerings and known versions,
+      environment, cost center, justification, state, and administrator decisions, with status
+      filters and exact grant links.
       Withdrawing a pending request requires confirmation.</p>
     </td>
   </tr>
@@ -393,8 +394,8 @@ one under **Settings > Appearance**.
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/portal-usage-resources.png" alt="Usage by granted resource with requests, tokens, estimated cost, quotas, rate limits, and usage tracking">
-      <p><b>Usage by resource.</b> A dedicated report shows each grant's requests, tokens,
-      estimated cost or <b>No price</b>, quota use, busiest minute, and attribution.
+      <p><b>Usage by resource.</b> Model-first rows retain each offering and show its grant's
+      requests, tokens, estimated cost or <b>No price</b>, quota use, busiest minute, and attribution.
       Overview and breakdowns share the same period and resource/environment filters.</p>
     </td>
   </tr>

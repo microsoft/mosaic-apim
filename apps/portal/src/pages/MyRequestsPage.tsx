@@ -27,6 +27,12 @@ function headingSummary(request: AccessRequest): ResourceSummary | null {
   }
 }
 
+function offeringLabel(request: AccessRequest) {
+  const summary = headingSummary(request)
+  const name = request.resourceDisplayName?.trim() || summary?.displayName?.trim()
+  return name && name !== modelTitle(request.resource, request.resourceDisplayName, summary, request.model) ? name : null
+}
+
 function GrantStatus({ request }: { request: AccessRequest }) {
   if (request.grantedEntitlementId) {
     return (
@@ -109,12 +115,16 @@ export function MyRequestsPage() {
                     )}
                   </h2>
                 }
-                description={withResourceKind(
-                  request.resource,
-                  request.resourceDisplayName,
-                  `Opened ${new Date(request.createdAt).toLocaleDateString()}`,
-                  headingSummary(request),
-                )}
+                description={<>
+                  {withResourceKind(
+                    request.resource,
+                    request.resourceDisplayName,
+                    `Opened ${new Date(request.createdAt).toLocaleDateString()}`,
+                    headingSummary(request),
+                  )}
+                  {offeringLabel(request) && <> · <span className="resource-offering">{offeringLabel(request)}</span></>}
+                  {request.model?.version?.trim() && <> · Version {request.model.version.trim()}</>}
+                </>}
                 action={<Badge appearance="tint">{requestStateLabel(request.state)}</Badge>}
               />
               <div className="badge-row">

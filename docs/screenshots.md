@@ -176,6 +176,7 @@ survives to be read back.
 - `RESOURCE_NAMES` in `capture.py`: the demo's gateway, resource group, account, and vault names.
 - The shared MCP metadata API, readable MOSAIC-owned APIM resource names, product names, and
   fictional person/workload/gateway names and directory aliases are redacted too.
+- Exact offering names in `.resource-offering` text are blurred, independently of literal matches.
 - `REDACTION_PATTERNS` in `capture.py`: GUIDs, email addresses, URLs and URIs, Azure resource IDs,
   Azure, Communication Services, and Contoso hostnames, IPv4 addresses, MOSAIC record IDs and the
   APIM names derived from them, and the demo's placeholder keys.
@@ -277,8 +278,8 @@ shows both themes. Keep new shots in that pattern.
 | `portal-connection-cost-center` | Portal | `/access`, the GPT-4o grant under General with **Connection details** open, scrolled to **Cost center header** | Light | Choosing a cost center |
 | `portal-pool-connection` | Portal | `/access`, Claude Sonnet 4.5 selected, **Connection details** drawer scrolled to **Authentication** and the shared-key note | Dark | Models that share a key |
 | `portal-mcp-connection` | Portal | `/access`, with an enforced MCP grant's **Connection details** open | Dark | MCP connection |
-| `portal-requests` | Portal | `/requests` | Dark | My requests |
+| `portal-requests` | Portal | `/requests`, model-first cards with offering and version context | Dark | My requests |
 | `portal-usage` | Portal | `/usage`, the default portal landing page | Light | Usage & cost |
-| `portal-usage-resources` | Portal | `/usage?tab=resources`, **By resource** | Dark | Usage by resource |
+| `portal-usage-resources` | Portal | `/usage?tab=resources`, **By resource** with exact offering context | Dark | Usage by resource |
 | `portal-usage-breakdowns` | Portal | `/usage?tab=breakdowns`, **Cost centers** and pooled quotas | Light | Usage breakdowns |
 | `portal-budget-banner` | Portal | `/access`, with the budget banner for Customer Insights | Light | Budget banner |

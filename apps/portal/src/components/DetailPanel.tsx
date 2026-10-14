@@ -1,6 +1,6 @@
 import { Button, DrawerBody, DrawerHeader, DrawerHeaderTitle, OverlayDrawer } from '@fluentui/react-components'
 import { DismissRegular } from '@fluentui/react-icons'
-import { type ReactNode, useEffect, useId, useState } from 'react'
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
 
 export function DetailPanel({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   const titleId = useId()
@@ -8,9 +8,15 @@ export function DetailPanel({ title, onClose, children }: { title: string; onClo
     document.activeElement instanceof HTMLElement && document.activeElement !== document.body
       ? document.activeElement
       : null)
+  const restorationFrame = useRef<number | null>(null)
   useEffect(() => {
+    if (restorationFrame.current !== null) {
+      cancelAnimationFrame(restorationFrame.current)
+      restorationFrame.current = null
+    }
     return () => {
-      requestAnimationFrame(() => {
+      restorationFrame.current = requestAnimationFrame(() => {
+        restorationFrame.current = null
         const target = opener?.isConnected ? opener : document.querySelector<HTMLElement>('.resource-search input')
         target?.focus()
       })

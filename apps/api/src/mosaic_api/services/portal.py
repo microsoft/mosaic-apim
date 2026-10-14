@@ -22,6 +22,7 @@ environment, the API it's called with, and its capacity badge, but not the pool,
 their regions, or its deployments (ADR 0024).
 """
 
+import asyncio
 from dataclasses import dataclass
 from typing import Literal
 
@@ -389,17 +390,16 @@ class PortalService:
         inventory: _Inventory | None = None,
     ) -> list[PortalModel | None]:
         inventory = {} if inventory is None else inventory
-        result: list[PortalModel | None] = []
-        for resource in resources:
-            descriptor = None
+        result: list[PortalModel | None] = [None] * len(resources)
+        deployments: list[tuple[int, str, str]] = []
+        for index, resource in enumerate(resources):
             if visible is not None and not visible.get(_resource_key(resource), False):
-                result.append(None)
                 continue
             if resource.kind == "poolModel":
                 pool = (await records.model_pools()).get(resource.scope_id or "")
                 model = pool.pool_model(resource.id) if pool else None
                 if model and model.model_name:
-                    descriptor = PortalModel(
+                    result[index] = PortalModel(
                         name=model.model_name,
                         format=model.model_format,
                         version=model.expected_version,
@@ -418,12 +418,21 @@ class PortalService:
                         endpoint_id = publication.model_endpoint_id
                         deployment_name = publication.deployment_name
                 if endpoint_id:
-                    if endpoint_id not in inventory:
-                        inventory[endpoint_id] = await self._deployments(tenant_id, endpoint_id)
-                    stored = inventory[endpoint_id]
-                    if stored:
-                        descriptor = stored.models.get(deployment_name.casefold())
-            result.append(descriptor)
+                    deployments.append((index, endpoint_id, deployment_name))
+        missing = sorted({endpoint_id for _, endpoint_id, _ in deployments} - inventory.keys())
+        inventory.update(
+            zip(
+                missing,
+                await asyncio.gather(
+                    *(self._deployments(tenant_id, endpoint_id) for endpoint_id in missing)
+                ),
+                strict=True,
+            )
+        )
+        for index, endpoint_id, deployment_name in deployments:
+            stored = inventory[endpoint_id]
+            if stored:
+                result[index] = stored.models.get(deployment_name.casefold())
         return result
 
     async def _capacity(

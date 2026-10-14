@@ -9,7 +9,7 @@ import {
   Text,
 } from '@fluentui/react-components'
 import { useQuery } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { type ReactNode, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { usePortalApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
@@ -51,6 +51,7 @@ import {
   rateLimitPeakLabel,
   relativeTime,
   rowLabel,
+  rowTitle,
   rowContextLabel,
   matchesEnvironmentFilter,
   usageTrackingLabel,
@@ -117,7 +118,7 @@ function combineRecentHours(rows: UsageResourceRow[], fallback: UsageHourPoint[]
   return Array.from(hours.values()).sort((a, b) => a.hour.localeCompare(b.hour))
 }
 
-function KpiCard({ title, value, detail }: { title: string; value: string; detail?: string }) {
+function KpiCard({ title, value, detail }: { title: string; value: string; detail?: ReactNode }) {
   return (
     <Card className="usage-kpi-card">
       <Text size={200} weight="semibold">
@@ -539,7 +540,7 @@ function ResourceTable({
               <tr key={row.entitlementId}>
                 <th scope="row">
                   <span className="resource-name">
-                    {rowLabel(row)}
+                    {rowTitle(row)}
                     {row.resourceSummary.available === false && (
                       <Badge appearance="outline" color="warning">
                         No longer available
@@ -547,6 +548,7 @@ function ResourceTable({
                     )}
                     {!row.enabled && <Badge color="danger">Disabled</Badge>}
                   </span>
+                  {rowLabel(row) !== rowTitle(row) && <small className="resource-offering">{row.resourceSummary.displayName?.trim()}</small>}
                   <small>{gatewayLabel(row.resourceSummary)}</small>
                   {row.costCenter && (
                     <small>
@@ -796,7 +798,9 @@ export function UsagePage() {
                 )}
                 <KpiCard
                   title="Busiest resource"
-                  value={filtered.busiestResource ? rowLabel(filtered.busiestResource) : 'None'}
+                  value={filtered.busiestResource ? rowTitle(filtered.busiestResource) : 'None'}
+                  detail={filtered.busiestResource && rowLabel(filtered.busiestResource) !== rowTitle(filtered.busiestResource) ?
+                    <span className="resource-offering">{filtered.busiestResource.resourceSummary.displayName?.trim()}</span> : undefined}
                 />
               </div>
               {filtered.totals.requests === 0 ? (

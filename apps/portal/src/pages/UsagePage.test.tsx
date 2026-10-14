@@ -379,6 +379,33 @@ async function findResourceRow(name: string) {
 }
 
 describe('UsagePage', () => {
+  it('distinguishes same-model offerings in the resource table, filter and trend legend', async () => {
+    const first = resourceRow({})
+    const second = resourceRow({
+      entitlementId: 'grant-second',
+      resourceSummary: { ...first.resourceSummary, displayName: 'Second offering' },
+    })
+    const report = usageReport({ byResource: [first, second] })
+    report.timeline = report.timeline.filter((point) => point.entitlementId === first.entitlementId)
+      .flatMap((point) => [point, { ...point, entitlementId: second.entitlementId }])
+    renderPage(report)
+
+    const table = await screen.findByRole('table', { name: 'Usage by resource' })
+    expect(within(table).getAllByText('gpt-4o')).toHaveLength(2)
+    expect(within(table).getByText('Chat completions')).toBeVisible()
+    expect(within(table).getByText('Second offering')).toBeVisible()
+    const filter = screen.getByRole('combobox', { name: 'Resource' })
+    expect(within(filter).getByRole('option', { name: /^gpt-4o · Chat completions ·/ })).toHaveValue('grant-model')
+    expect(within(filter).getByRole('option', { name: /^gpt-4o · Second offering ·/ })).toHaveValue('grant-second')
+    await openSection('Overview & trends')
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Group' }), 'resource')
+    const legend = screen.getByRole('list', { name: 'Trend legend' })
+    expect(within(legend).getAllByRole('listitem').map((item) => item.textContent)).toEqual([
+      'gpt-4o · Chat completions · Research · Production · Production gateway',
+      'gpt-4o · Second offering · Research · Production · Production gateway',
+    ])
+  })
+
   it('shows the sample figures badge and notice for simulated data', async () => {
     renderPage()
 

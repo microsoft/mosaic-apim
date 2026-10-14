@@ -249,6 +249,12 @@ FIND_SENSITIVE_TEXT = """
     }
     return found
   }
+  for (const element of document.querySelectorAll('.resource-offering')) {
+    if (collapsed(element)) continue
+    const range = document.createRange()
+    range.selectNodeContents(element)
+    for (const rect of range.getClientRects()) keep(rect, element)
+  }
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     const text = node.nodeValue
