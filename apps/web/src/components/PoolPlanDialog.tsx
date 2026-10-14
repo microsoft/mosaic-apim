@@ -19,7 +19,7 @@ import type { RefObject } from 'react'
 import { useMosaicApi } from '../api'
 import { describeAccessMethods, describeLimits } from '../entitlement-limits'
 import { ENTITLEMENT_SUBJECT_KIND_LABELS, plural } from '../labels'
-import { POOL_RESOURCE_KIND_LABELS, planProblems } from '../pools'
+import { POOL_RESOURCE_KIND_LABELS, planProblems, poolChangeLockReason } from '../pools'
 import { runtimeConfig } from '../runtime-config'
 import type {
   ModelPool,
@@ -71,7 +71,7 @@ function statusOf(error: unknown): number | undefined {
 }
 
 export interface PoolPlanDialogProps {
-  pool: Pick<ModelPool, 'id' | 'displayName' | 'models'>
+  pool: Pick<ModelPool, 'id' | 'displayName' | 'models' | 'status' | 'accessState' | 'lastRunId'>
   mode: PoolPlanMode
   onClose: () => void
   locked?: boolean
@@ -92,6 +92,8 @@ export function PoolPlanDialog({ pool, mode, onClose, onFinished, locked = false
   const session = useId()
   const introId = useId()
   const publishing = mode === 'publish'
+  const lockReason = poolChangeLockReason(pool)
+  const changesLocked = locked || Boolean(lockReason)
   const [freshPlan, setFreshPlan] = useState<PublishPlan | null>(null)
   const [runId, setRunId] = useState('')
   const [refusal, setRefusal] = useState('')
@@ -107,7 +109,7 @@ export function PoolPlanDialog({ pool, mode, onClose, onFinished, locked = false
   const planning = useQuery({
     queryKey: ['pool-plan', mode, pool.id, session],
     queryFn: createPlan,
-    enabled: !locked,
+    enabled: !changesLocked,
     staleTime: Infinity,
     gcTime: 0,
     retry: false,
@@ -192,19 +194,20 @@ export function PoolPlanDialog({ pool, mode, onClose, onFinished, locked = false
   const problems = planProblems(planning.error)
   const replanProblems = planProblems(replanError)
 
-  if (locked && !apply.isPending && !runId) {
+  if (changesLocked && !apply.isPending && !runId) {
     return (
       <WorkspaceEditorFrame title="Pool changes are locked" onBack={onClose} onCancel={onClose} backLabel="Back to pool">
         <MessageBar intent="warning">
           <MessageBarBody>
-            {interruptedRunId
+            {lockReason ?? (interruptedRunId
               ? 'The last run was interrupted. Reconcile the unknown gateway state before changing the pool.'
-              : 'A plan is being applied. Wait for it to finish before editing or reviewing another plan.'}
+              : 'A plan is being applied. Wait for it to finish before editing or reviewing another plan.')}
           </MessageBarBody>
         </MessageBar>
         {apply.error && <ErrorState error={apply.error}
           title={publishing ? 'MOSAIC didn’t apply the plan' : `MOSAIC didn’t unpublish ${pool.displayName}`} />}
-        {interruptedRunId && <ModelAccessRecovery publicationId={pool.id} runId={interruptedRunId} target="pool" />}
+        {(pool.accessState === 'unknown' || interruptedRunId) && <ModelAccessRecovery
+          publicationId={pool.id} runId={interruptedRunId ?? pool.lastRunId} target="pool" />}
       </WorkspaceEditorFrame>
     )
   }

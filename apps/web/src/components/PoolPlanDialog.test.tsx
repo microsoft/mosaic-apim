@@ -6,7 +6,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../api'
 import { anthropicPool, governedAnthropicPool, poolPlan, poolRun } from '../test/pool-fixtures'
-import type { PoolAccessSnapshot, PublishPlan, PublishRun } from '../types'
+import type { ModelPool, PoolAccessSnapshot, PublishPlan, PublishRun } from '../types'
 import { PoolPlanDialog } from './PoolPlanDialog'
 
 const api = {
@@ -52,7 +52,7 @@ const unpublishPlan: PublishPlan = {
   ],
 }
 
-function renderDialog(mode: 'publish' | 'unpublish' = 'publish') {
+function renderDialog(mode: 'publish' | 'unpublish' = 'publish', pool: ModelPool = anthropicPool) {
   const onClose = vi.fn()
   const onFinished = vi.fn()
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -60,7 +60,7 @@ function renderDialog(mode: 'publish' | 'unpublish' = 'publish') {
     <QueryClientProvider client={queryClient}>
       <FluentProvider theme={webLightTheme}>
         <MemoryRouter>
-          <PoolPlanDialog pool={anthropicPool} mode={mode} onClose={onClose} onFinished={onFinished} />
+          <PoolPlanDialog pool={pool} mode={mode} onClose={onClose} onFinished={onFinished} />
         </MemoryRouter>
       </FluentProvider>
     </QueryClientProvider>,
@@ -75,6 +75,18 @@ describe('PoolPlanDialog', () => {
     api.planUnpublishModelPool.mockResolvedValue(unpublishPlan)
     api.applyModelPool.mockResolvedValue(running)
     api.getModelPoolRun.mockResolvedValue(poolRun)
+  })
+
+  it.each(['publish', 'unpublish'] as const)('blocks independent %s entry and offers diagnostics for unknown access', async (mode) => {
+    renderDialog(mode, { ...anthropicPool, status: 'failed', accessState: 'unknown', lastRunId: null })
+
+    const workspace = await screen.findByRole('region', { name: 'Pool changes are locked' })
+    expect(within(workspace).getByText(/gateway's access state is unknown/)).toBeVisible()
+    expect(within(workspace).getByRole('button', { name: 'Check recovery status (diagnostic only)' })).toBeVisible()
+    expect(api.planModelPool).not.toHaveBeenCalled()
+    expect(api.planUnpublishModelPool).not.toHaveBeenCalled()
+    expect(api.applyModelPool).not.toHaveBeenCalled()
+    expect(api.unpublishModelPool).not.toHaveBeenCalled()
   })
 
   it('applies the plan the administrator reviewed, then reports the run', async () => {

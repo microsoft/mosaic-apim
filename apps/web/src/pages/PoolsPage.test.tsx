@@ -12,6 +12,7 @@ const api = {
   getEnvironmentCatalog: vi.fn(), listModelPoolSummaries: vi.fn(), listModelPoolSuggestions: vi.fn(),
   listGateways: vi.fn(), getPoolCandidates: vi.fn(), createModelPool: vi.fn(), updateModelPool: vi.fn(),
   getModelPoolDetail: vi.fn(), listModelPoolRuns: vi.fn(), planModelPool: vi.fn(),
+  planUnpublishModelPool: vi.fn(),
 }
 const suggestion: PoolSuggestion = {
   gatewayId: poolGateway.id, gatewayName: poolGateway.name, gatewayEnvironment: 'production',
@@ -76,6 +77,19 @@ describe('PoolsPage workbench', () => {
     renderPage('/pools?selected=missing')
     expect(await screen.findByText('Pool not in this list')).toBeVisible()
     expect(api.getModelPoolDetail).not.toHaveBeenCalled()
+  })
+  it.each(['edit', 'publish', 'unpublish'] as const)('locks a direct embedded %s workspace with unknown access', async (mode) => {
+    api.getModelPoolDetail.mockResolvedValue({ ...anthropicPoolDetail,
+      pool: { ...anthropicPool, status: 'failed', accessState: 'unknown' } })
+    renderPage(`/pools?selected=${anthropicPool.id}&mode=${mode === 'edit' ? 'edit' : 'review'}&planAction=${mode}`)
+
+    expect(await screen.findByText(/gateway's access state is unknown/)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Check recovery status (diagnostic only)' })).toBeVisible()
+    expect(screen.queryByRole('region', { name: 'Edit Anthropic Claude' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Plan review' })).not.toBeInTheDocument()
+    expect(api.updateModelPool).not.toHaveBeenCalled()
+    expect(api.planModelPool).not.toHaveBeenCalled()
+    expect(api.planUnpublishModelPool).not.toHaveBeenCalled()
   })
   it('retains unapplied changes in the list', async () => {
     api.listModelPoolSummaries.mockResolvedValue([{ ...poolSummaries[0], unappliedChanges: true }])

@@ -5,7 +5,7 @@ import { Link } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { describeAccessMethods, describeLimits } from '../entitlement-limits'
 import { ENTITLEMENT_SUBJECT_KIND_LABELS, plural } from '../labels'
-import { poolAccessLabel } from '../pools'
+import { poolAccessLabel, poolChangeLockReason } from '../pools'
 import type { ModelAccessSettings, ModelPool, PoolAccessGrant, PoolModelQuota } from '../types'
 import { ErrorState } from './AsyncState'
 import styles from '../pages/PoolDetailPage.module.css'
@@ -45,7 +45,7 @@ export function PoolAccessCard({
     !pool.governedAccess ||
     settings.keysEnabled !== pool.governedAccess.keysEnabled ||
     settings.entraEnabled !== pool.governedAccess.entraEnabled
-  const busy = pool.status === 'applying' || pool.accessState === 'applying' || pool.accessState === 'unknown'
+  const busy = Boolean(poolChangeLockReason(pool))
   const applied = pool.appliedAccess
   const modelName = (id: string) => pool.models.find((model) => model.id === id)?.displayName ?? id
 

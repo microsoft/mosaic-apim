@@ -117,6 +117,16 @@ export function poolAccessLabel(pool: Pick<ModelPool, 'governedAccess' | 'access
   return pool.governedAccess ? POOL_ACCESS_STATE_LABELS[pool.accessState ?? 'pending'] : 'Shared key'
 }
 
+export function poolChangeLockReason(pool: Pick<ModelPool, 'status' | 'accessState'>): string | null {
+  if (pool.accessState === 'unknown') {
+    return "The gateway's access state is unknown. Recover the interrupted run before editing or reviewing another plan."
+  }
+  if (pool.status === 'applying' || pool.accessState === 'applying') {
+    return 'A plan is being applied. Wait for it to finish before editing or reviewing another plan.'
+  }
+  return null
+}
+
 /** The grants a pool's last apply put in force, on every model. */
 export function poolGrantCount(pool: Pick<ModelPool, 'appliedAccess'>): number {
   return pool.appliedAccess?.grants.filter((grant) => grant.enabled).length ?? 0

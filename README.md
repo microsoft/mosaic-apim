@@ -1702,6 +1702,10 @@ over the pool's resources in reverse, so a backend pool goes before the backends
 key's named value goes last. It refuses with `409` and `planRequired` or `stalePlan` as a
 publication's does. The same guards hold:
 
+- While a pool is applying or its gateway access state is unknown, editing, drain changes, access
+  settings, plan review, unpublishing, and record removal are locked, including direct workspace
+  links. Unknown state offers diagnostic recovery even when run history is unavailable; it does
+  not confirm quiescence or release the write lock.
 - A pool that still owns API Management resources can't be removed, and neither can a gateway with
   published pools.
 - An endpoint, or one of its deployments, can't be removed while a pool may own a backend for it.

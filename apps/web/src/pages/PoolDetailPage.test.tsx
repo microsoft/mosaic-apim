@@ -120,7 +120,10 @@ describe('PoolDetailPage', () => {
     expect(api.unpublishModelPool).not.toHaveBeenCalled()
   })
 
-  it.each(['publish', 'unpublish'] as const)('keeps its %s run and navigation guard when pool refresh reports applying', async (mode) => {
+  it.each([
+    ['publish', 'applying'], ['unpublish', 'applying'],
+    ['publish', 'unknown'], ['unpublish', 'unknown'],
+  ] as const)('keeps its %s run and navigation guard when pool refresh reports %s', async (mode, accessState) => {
     const user = userEvent.setup()
     const running: PublishRun = { ...poolRun, status: 'running', completedAt: null, durationMs: null, steps: [] }
     const apply = mode === 'publish' ? api.applyModelPool : api.unpublishModelPool
@@ -129,7 +132,8 @@ describe('PoolDetailPage', () => {
     let finishRun!: (run: PublishRun) => void
     api.getModelPoolRun.mockImplementationOnce(() => new Promise<PublishRun>((resolve) => { finishRun = resolve }))
     api.getModelPoolDetail.mockResolvedValueOnce(anthropicPoolDetail)
-      .mockResolvedValue({ ...anthropicPoolDetail, pool: { ...anthropicPool, status: 'applying' } })
+      .mockResolvedValue({ ...anthropicPoolDetail, pool: { ...anthropicPool,
+        status: accessState === 'unknown' ? 'failed' : 'applying', accessState } })
     renderPage(`/pools/${anthropicPool.id}?mode=review&planAction=${mode}`)
 
     await user.click(await screen.findByRole('button', { name: mode === 'publish' ? 'Apply plan' : 'Unpublish pool' }))
@@ -141,16 +145,110 @@ describe('PoolDetailPage', () => {
     expect(await screen.findByRole('dialog', { name: 'Operation in progress' })).toBeVisible()
     await waitFor(() => expect(api.getModelPoolRun).toHaveBeenCalledWith(anthropicPool.id, running.id))
 
-    await act(async () => finishRun(poolRun))
+    await act(async () => finishRun(accessState === 'unknown' ? { ...poolRun, status: 'interrupted' } : poolRun))
 
     await waitFor(() => expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument())
-    expect(await screen.findByText(mode === 'publish' ? 'Apply finished' : 'Unpublish finished')).toBeVisible()
+    expect(await screen.findByText(accessState === 'unknown'
+      ? `${mode === 'publish' ? 'Apply' : 'Unpublish'} interrupted. The gateway’s state is unknown.`
+      : mode === 'publish' ? 'Apply finished' : 'Unpublish finished')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Back to pool' })).toBeEnabled()
     expect(plan).toHaveBeenCalledTimes(1)
     expect(apply).toHaveBeenCalledExactlyOnceWith(anthropicPool.id, poolPlan.id)
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(await screen.findByRole('heading', { name: 'Anthropic Claude', level: 1 })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Review changes' })).toBeDisabled()
+  })
+
+  it.each(['edit', 'publish', 'unpublish'] as const)('blocks a direct %s workspace with unknown access even without run history', async (mode) => {
+    const user = userEvent.setup()
+    api.getModelPoolDetail.mockResolvedValue({ ...anthropicPoolDetail,
+      pool: { ...anthropicPool, status: 'failed', accessState: 'unknown', lastRunId: null } })
+    api.listModelPoolRuns.mockRejectedValue(new Error('Run history unavailable.'))
+    api.getModelPoolLock.mockResolvedValue({ ownerId: 'publishrun_retained_owner' })
+    api.recoverModelPool.mockResolvedValue({ ...poolRun, id: 'publishrun_retained_owner', status: 'interrupted' })
+    renderPage(`/pools/${anthropicPool.id}?mode=${mode === 'edit' ? 'edit' : 'review'}&planAction=${mode}`)
+
+    expect(await screen.findByText("The gateway's access state is unknown. Recover the interrupted run before editing or reviewing another plan.")).toBeVisible()
+    expect(screen.queryByRole('region', { name: 'Edit Anthropic Claude' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Plan review' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/A plan is being applied/)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Check recovery status (diagnostic only)' }))
+
+    await waitFor(() => expect(api.recoverModelPool).toHaveBeenCalledExactlyOnceWith(anthropicPool.id, {
+      runId: 'publishrun_retained_owner', confirmQuiesced: false,
+    }))
+    expect(api.getModelPoolLock).toHaveBeenCalledWith(anthropicPool.id)
+    expect(api.updateModelPool).not.toHaveBeenCalled()
+    expect(api.planModelPool).not.toHaveBeenCalled()
+    expect(api.planUnpublishModelPool).not.toHaveBeenCalled()
+    expect(api.applyModelPool).not.toHaveBeenCalled()
+    expect(api.unpublishModelPool).not.toHaveBeenCalled()
+  })
+
+  it('blocks a legacy save-and-review entry with unknown access', async () => {
+    api.getModelPoolDetail.mockResolvedValue({ ...anthropicPoolDetail,
+      pool: { ...anthropicPool, status: 'failed', accessState: 'unknown' } })
+    api.listModelPoolRuns.mockResolvedValue([])
+    renderPage({ pathname: `/pools/${anthropicPool.id}`, state: { openPlan: true } })
+
+    expect(await screen.findByRole('region', { name: 'Pool changes are locked' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Check recovery status (diagnostic only)' })).toBeVisible()
+    expect(api.planModelPool).not.toHaveBeenCalled()
+  })
+
+  it('locks every detail action for unknown access and does not claim saved changes are running', async () => {
+    const user = userEvent.setup()
+    api.getModelPoolDetail.mockResolvedValue({ ...anthropicPoolDetail, unappliedChanges: true,
+      pool: { ...anthropicPool, status: 'failed', accessState: 'unknown' } })
+    api.listModelPoolRuns.mockResolvedValue([])
+    renderPage(`/pools/${anthropicPool.id}?tab=models`)
+
+    expect(await screen.findByText('The gateway’s access state is unknown.')).toBeVisible()
+    expect(screen.getByText('Saved changes are not confirmed active')).toBeVisible()
+    expect(screen.queryByText('Saved changes aren’t running yet')).not.toBeInTheDocument()
+    expect(screen.getByText('Saved changes are not confirmed active. Recover the interrupted run before reviewing another plan.')).toBeVisible()
+    for (const button of screen.getAllByRole('button', { name: 'Review changes' })) expect(button).toBeDisabled()
+    for (const control of screen.getAllByRole('switch')) expect(control).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'More actions for Anthropic Claude' }))
+    expect(await screen.findByRole('menuitem', { name: 'Edit' })).toHaveAttribute('aria-disabled', 'true')
+    await user.keyboard('{Escape}')
+    await user.click(screen.getByRole('button', { name: 'Policy and runs' }))
+    expect(screen.getByRole('button', { name: 'Unpublish' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'More lifecycle actions for Anthropic Claude' }))
+    expect(await screen.findByRole('menuitem', { name: 'Remove MOSAIC record' })).toHaveAttribute('aria-disabled', 'true')
+    await user.keyboard('{Escape}')
+    await user.click(screen.getByRole('button', { name: 'Access and connection' }))
+    const access = await screen.findByRole('group', { name: 'Who can call it' })
+    for (const control of within(access).getAllByRole('switch')) expect(control).toBeDisabled()
+    expect(within(access).getByRole('button', { name: 'Turn on governed access' })).toBeDisabled()
+    expect(api.updateModelPool).not.toHaveBeenCalled()
+  })
+
+  it('locks record removal for an unknown-state pool without recorded resources', async () => {
+    api.getModelPoolDetail.mockResolvedValue({ ...draftDetail,
+      pool: { ...draftPool, status: 'failed', accessState: 'unknown' } })
+    api.listModelPoolRuns.mockResolvedValue([])
+    renderPage(`/pools/${draftPool.id}?tab=plans`)
+
+    expect(await screen.findByRole('button', { name: 'Remove MOSAIC record' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Review publish plan' })).toBeDisabled()
+    expect(api.deleteModelPool).not.toHaveBeenCalled()
+  })
+
+  it('does not invent a recovery run or unlock unknown access when no write lock is held', async () => {
+    const user = userEvent.setup()
+    api.getModelPoolDetail.mockResolvedValue({ ...anthropicPoolDetail,
+      pool: { ...anthropicPool, status: 'failed', accessState: 'unknown', lastRunId: null } })
+    api.listModelPoolRuns.mockImplementation(() => new Promise<PublishRun[]>(() => {}))
+    api.getModelPoolLock.mockResolvedValue({ ownerId: null })
+    renderPage(`/pools/${anthropicPool.id}?mode=review`)
+
+    await user.click(await screen.findByRole('button', { name: 'Check recovery status (diagnostic only)' }))
+
+    expect(await screen.findByText('No pool write lock is currently held.')).toBeVisible()
+    expect(screen.getByRole('region', { name: 'Pool changes are locked' })).toBeVisible()
+    expect(api.recoverModelPool).not.toHaveBeenCalled()
+    expect(api.planModelPool).not.toHaveBeenCalled()
   })
 
   it('allows section changes while an unrelated mutation is pending', async () => {

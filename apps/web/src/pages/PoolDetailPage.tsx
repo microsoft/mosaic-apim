@@ -56,6 +56,7 @@ import {
   memberPositions,
   memberShares,
   newestRunsFirst,
+  poolChangeLockReason,
   poolFamilyLabel,
   poolRequestExample,
   poolRunOperation,
@@ -533,7 +534,10 @@ function PoolDetail({ poolId, embedded = false }: { poolId: string; embedded?: b
   const published = pool.resources.some((resource) => resource.createdByMosaic)
   const writeBlocker = poolWriteBlocker(gateway)
   const { problems, warnings } = detail.data
-  const planBlocked = applying || problems.length > 0 || Boolean(writeBlocker)
+  const unknownAccess = pool.accessState === 'unknown'
+  const lockReason = poolChangeLockReason(pool)
+  const changesLocked = Boolean(lockReason)
+  const planBlocked = changesLocked || problems.length > 0 || Boolean(writeBlocker)
   const lastRun = runs.data?.find((run) => run.id === pool.lastRunId)
   const interrupted = lastRun?.status === 'interrupted' ? lastRun : null
   const family = pool.models.length ? poolFamilyLabel(pool.vendor, pool.apiShape) : 'No models yet'
@@ -547,17 +551,17 @@ function PoolDetail({ poolId, embedded = false }: { poolId: string; embedded?: b
     0,
   )
 
-  if (editing && applying) return <div className={styles.page}>
+  if (editing && changesLocked) return <div className={styles.page}>
     <Button onClick={() => workbench.close()}>Back to pool</Button>
     <MessageBar intent="warning"><MessageBarBody><MessageBarTitle>Pool changes are locked</MessageBarTitle>
-      {interrupted ? 'The last run was interrupted. Reconcile the unknown gateway state before changing the pool.'
-        : 'A plan is being applied. Wait for it to finish before editing or reviewing another plan.'}
+      {lockReason}
     </MessageBarBody></MessageBar>
-    {interrupted && <ModelAccessRecovery publicationId={pool.id} runId={interrupted.id} target="pool" />}
+    {(unknownAccess || interrupted) && <ModelAccessRecovery
+      publicationId={pool.id} runId={interrupted?.id ?? pool.lastRunId} target="pool" />}
   </div>
   if (editing) return <PoolEditorDialog pool={pool} onClose={() => workbench.close()}
     onSaved={(_saved, review) => { if (review) setPlanMode('publish'); else workbench.close(pool.id) }} />
-  if (planMode) return <PoolPlanDialog pool={pool} mode={planMode} locked={applying}
+  if (planMode) return <PoolPlanDialog pool={pool} mode={planMode} locked={changesLocked}
     interruptedRunId={interrupted?.id} onClose={() => setPlanMode(null)} />
 
   return (
@@ -579,7 +583,7 @@ function PoolDetail({ poolId, embedded = false }: { poolId: string; embedded?: b
               </Button>}
               actions={[{
                 label: 'Edit',
-                disabled: applying,
+                disabled: changesLocked,
                 onClick: () => workbench.open('edit', pool.id),
               }]}
             />
@@ -590,18 +594,20 @@ function PoolDetail({ poolId, embedded = false }: { poolId: string; embedded?: b
       />
 
       <div className={styles.messages}>
-        {interrupted && (
+        {(unknownAccess || interrupted) && (
           <>
             <MessageBar intent="warning">
               <MessageBarBody>
-                <MessageBarTitle>The last run was interrupted. The gateway’s state is unknown.</MessageBarTitle>
+                <MessageBarTitle>{interrupted
+                  ? 'The last run was interrupted. The gateway’s state is unknown.'
+                  : 'The gateway’s access state is unknown.'}</MessageBarTitle>
                 Some changes may have reached API Management. Reconcile the run before you change the pool again.
               </MessageBarBody>
             </MessageBar>
-            <ModelAccessRecovery publicationId={pool.id} runId={interrupted.id} target="pool" />
+            <ModelAccessRecovery publicationId={pool.id} runId={interrupted?.id ?? pool.lastRunId} target="pool" />
           </>
         )}
-        {applying && !interrupted && (
+        {applying && !interrupted && !unknownAccess && (
           <MessageBar intent="info">
             <MessageBarBody>
               <MessageBarTitle>Applying a plan</MessageBarTitle>
@@ -632,8 +638,12 @@ function PoolDetail({ poolId, embedded = false }: { poolId: string; embedded?: b
         {detail.data.unappliedChanges && (
           <MessageBar intent="info">
             <MessageBarBody>
-              <MessageBarTitle>Saved changes aren’t running yet</MessageBarTitle>
-              The gateway still runs the pool as it was last applied. Review a plan to apply your changes.
+              <MessageBarTitle>{unknownAccess
+                ? 'Saved changes are not confirmed active'
+                : 'Saved changes aren’t running yet'}</MessageBarTitle>
+              {unknownAccess
+                ? 'Saved changes are not confirmed active. Recover the interrupted run before reviewing another plan.'
+                : 'The gateway still runs the pool as it was last applied. Review a plan to apply your changes.'}
             </MessageBarBody>
             <MessageBarActions>
               <Button size="small" disabled={planBlocked} onClick={() => setPlanMode('publish')} {...restoreFocus}>
@@ -754,7 +764,7 @@ function PoolDetail({ poolId, embedded = false }: { poolId: string; embedded?: b
               poolType={pool.poolType}
               model={model}
               catalog={catalog.data}
-              drainDisabled={applying || drain.isPending}
+              drainDisabled={changesLocked || drain.isPending}
               onDrain={(member, drained) => drain.mutate({ pool, model, member, drained })}
             />
           ))
@@ -804,13 +814,13 @@ function PoolDetail({ poolId, embedded = false }: { poolId: string; embedded?: b
       <div className={styles.lifecycleActions}>
         <RowActions
           label={`More lifecycle actions for ${pool.displayName}`}
-          primary={published ? <Button appearance="secondary" disabled={applying || Boolean(writeBlocker)}
+          primary={published ? <Button appearance="secondary" disabled={changesLocked || Boolean(writeBlocker)}
             onClick={() => setPlanMode('unpublish')} {...restoreFocus}>Unpublish</Button>
-            : <Button appearance="subtle" disabled={applying || published}
+            : <Button appearance="subtle" disabled={changesLocked || published}
               onClick={() => setRemoving(true)} {...restoreFocus}>Remove MOSAIC record</Button>}
           destructiveActions={published ? [{
             label: 'Remove MOSAIC record',
-            disabled: applying || published,
+            disabled: changesLocked || published,
             onClick: () => setRemoving(true),
           }] : []}
         />
