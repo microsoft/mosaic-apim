@@ -1183,22 +1183,24 @@ def _check_portal_appearance(page: Page, theme: Theme) -> None:
                 page.locator(surface).first.wait_for()
                 if page.evaluate("document.documentElement.scrollWidth > window.innerWidth + 1"):
                     raise CaptureError(f"portal: {route} overflows at {width}px in {theme}")
-                chrome = page.locator(".topbar").evaluate(
-                    """element => {
-                      const style = getComputedStyle(element);
-                      const probe = document.createElement('span');
-                      probe.style.backgroundColor = 'var(--mosaic-glass)';
-                      element.append(probe);
-                      const glass = getComputedStyle(probe).backgroundColor;
-                      probe.remove();
-                      return { blur: style.backdropFilter, background: style.backgroundColor,
-                        glass };
-                    }"""
-                )
-                if chrome["blur"] != "blur(16px)" or chrome["background"] != chrome["glass"]:
-                    raise CaptureError(
-                        f"portal: {route} does not use {theme} glass chrome: {chrome}"
+                for selector in (".sidebar", ".topbar"):
+                    chrome = page.locator(selector).evaluate(
+                        """element => {
+                          const style = getComputedStyle(element);
+                          const probe = document.createElement('span');
+                          probe.style.backgroundColor = 'var(--mosaic-glass)';
+                          element.append(probe);
+                          const glass = getComputedStyle(probe).backgroundColor;
+                          probe.remove();
+                          return { blur: style.backdropFilter, background: style.backgroundColor,
+                            glass };
+                        }"""
                     )
+                    if chrome["blur"] != "blur(16px)" or chrome["background"] != chrome["glass"]:
+                        raise CaptureError(
+                            f"portal: {route} {selector} does not use {theme} glass chrome: "
+                            f"{chrome}"
+                        )
                 for selector in (surface, ".fui-FluentProvider"):
                     style = page.locator(selector).first.evaluate(
                         """element => {
