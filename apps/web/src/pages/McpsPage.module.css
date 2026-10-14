@@ -2,6 +2,7 @@
   display: flex;
   flex-direction: column;
   gap: 20px;
+  min-width: 0;
 }
 
 .panel {
@@ -11,6 +12,12 @@
   border: 1px solid var(--mosaic-border-soft);
   background: var(--mosaic-surface);
   box-shadow: var(--mosaic-shadow);
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.panel :global(table) {
+  table-layout: auto;
 }
 
 .panelHeader {
@@ -59,13 +66,14 @@
 
 .rowActions {
   display: flex;
+  gap: 10px;
   justify-content: flex-end;
 }
 
 .actionRow {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 10px;
   justify-content: flex-end;
 }
 
@@ -152,7 +160,4 @@
   background: transparent;
   color: var(--mosaic-text-muted);
   border: 1px dashed var(--mosaic-border-soft);
-}
-.recordAction {
-  margin-inline-start: 12px;
 }

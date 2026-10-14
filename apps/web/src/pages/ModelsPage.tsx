@@ -54,6 +54,7 @@ import { PublishModelDialog } from '../components/PublishModelDialog'
 import { PageHeader } from '../components/PageHeader'
 import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { RemovalDialog } from '../components/RemovalDialog'
+import { RowActions } from '../components/RowActions'
 import { UnpublishDialog } from '../components/UnpublishDialog'
 import { AI_KIND_LABELS, CAPACITY_TYPE_LABELS, PROCESSING_SCOPE_LABELS } from '../labels'
 import {
@@ -273,24 +274,29 @@ function PublishedModels({ onMessage }: { onMessage: (message: string) => void }
                     <TableCell>/{publication.apiPath}</TableCell>
                     <TableCell>{lastAppliedLabel(publication)}</TableCell>
                     <TableCell className={styles.publicationActionCell}>
-                      <div className={styles.publicationActions}>
-                        <Button
+                      <RowActions
+                        label={`More actions for ${publication.displayName}`}
+                        primary={<Button
                           appearance="secondary"
                           disabled={reviewPlan.isPending || publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown'}
                           onClick={() => reviewPlan.mutate(publication)}
-                        >
-                          {reviewPlan.isPending && reviewPlan.variables?.id === publication.id ? 'Planning…' : publication.status === 'published' || holdsApi(publication) ? 'Review changes' : 'Review publish plan'}
-                        </Button>
-                        <Button
-                          appearance="secondary"
-                          disabled={publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown'}
-                          onClick={() => setUnpublishing(publication)}
                           {...restoreFocus}
                         >
-                          Unpublish
-                        </Button>
-                        <Button className={styles.recordAction} appearance="subtle" disabled={remove.isPending} onClick={() => confirmRemoval(publication)} {...restoreFocus}>Remove MOSAIC record</Button>
-                      </div>
+                          {reviewPlan.isPending && reviewPlan.variables?.id === publication.id ? 'Planning…' : publication.status === 'published' || holdsApi(publication) ? 'Review changes' : 'Review publish plan'}
+                        </Button>}
+                        destructiveActions={[
+                          {
+                            label: 'Unpublish',
+                            disabled: publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown',
+                            onClick: () => setUnpublishing(publication),
+                          },
+                          {
+                            label: 'Remove MOSAIC record',
+                            disabled: remove.isPending,
+                            onClick: () => confirmRemoval(publication),
+                          },
+                        ]}
+                      />
                     </TableCell>
                   </TableRow>
                 ))}
@@ -1290,38 +1296,29 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                         {usesBackendKey(endpoint) ? '—' : formatTimestamp(endpoint.lastSyncedAt)}
                       </TableCell>
                       <TableCell>
-                        <div className={styles.actionRow}>
-                          <Button
+                        <RowActions
+                          label={`More actions for ${endpoint.name}`}
+                          primary={<Button
                             appearance="secondary"
                             onClick={() => recheck.mutate(endpoint.id)}
                             disabled={recheck.isPending}
                           >
                             Check access
-                          </Button>
-                          {!usesBackendKey(endpoint) && (
-                            <Button
-                              appearance="secondary"
-                              onClick={() => sync.mutate(endpoint.id)}
-                              disabled={sync.isPending || !endpoint.access.canRead}
-                            >
-                              Sync models
-                            </Button>
-                          )}
-                          <Button
-                            appearance="subtle"
-                            onClick={() => setChangingEndpoint(endpoint)}
-                          >
-                            Change environment
-                          </Button>
-                          <Button
-                            appearance="subtle"
-                            onClick={() => confirmRemoval(endpoint)}
-                            disabled={remove.isPending}
-                            {...restoreFocus}
-                          >
-                            Remove
-                          </Button>
-                        </div>
+                          </Button>}
+                          actions={[
+                            ...(!usesBackendKey(endpoint) ? [{
+                              label: 'Sync models',
+                              disabled: sync.isPending || !endpoint.access.canRead,
+                              onClick: () => sync.mutate(endpoint.id),
+                            }] : []),
+                            { label: 'Change environment', onClick: () => setChangingEndpoint(endpoint) },
+                          ]}
+                          destructiveActions={[{
+                            label: 'Remove',
+                            disabled: remove.isPending,
+                            onClick: () => confirmRemoval(endpoint),
+                          }]}
+                        />
                       </TableCell>
                     </TableRow>
                   ))}

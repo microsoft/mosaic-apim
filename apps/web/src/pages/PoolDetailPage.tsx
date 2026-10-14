@@ -36,6 +36,7 @@ import { PoolPlanDialog } from '../components/PoolPlanDialog'
 import type { PoolPlanMode } from '../components/PoolPlanDialog'
 import { PoolTypeDiagram } from '../components/PoolTypeDiagram'
 import { RemovalDialog } from '../components/RemovalDialog'
+import { RowActions } from '../components/RowActions'
 import { useEnvironmentCatalog } from '../environments'
 import { CAPACITY_TYPE_LABELS, PROCESSING_SCOPE_LABELS, plural } from '../labels'
 import {
@@ -514,12 +515,17 @@ function PoolDetail({ poolId }: { poolId: string }) {
             <PoolStatusBadge pool={pool} />
             {detail.data.unappliedChanges && <UnappliedChangesBadge />}
             <EnvironmentBadge environment={detail.data.gatewayEnvironment ?? null} catalog={catalog.data} />
-            <Button appearance="secondary" disabled={applying} onClick={() => setEditing(true)} {...restoreFocus}>
-              Edit
-            </Button>
-            <Button appearance="primary" disabled={planBlocked} onClick={() => setPlanMode('publish')} {...restoreFocus}>
+            <RowActions
+              label={`More actions for ${pool.displayName}`}
+              primary={<Button appearance="primary" disabled={planBlocked} onClick={() => setPlanMode('publish')} {...restoreFocus}>
               {published ? 'Review changes' : 'Review publish plan'}
-            </Button>
+              </Button>}
+              actions={[{
+                label: 'Edit',
+                disabled: applying,
+                onClick: () => setEditing(true),
+              }]}
+            />
           </div>
         }
       />
@@ -737,10 +743,18 @@ function PoolDetail({ poolId }: { poolId: string }) {
         {runs.data && <RunHistory runs={runs.data} />}
       </Card>
       <div className={styles.lifecycleActions}>
-        {published && <Button appearance="secondary" disabled={applying || Boolean(writeBlocker)}
-          onClick={() => setPlanMode('unpublish')} {...restoreFocus}>Unpublish</Button>}
-        <Button appearance="subtle" disabled={applying || published}
-          onClick={() => setRemoving(true)} {...restoreFocus}>Remove MOSAIC record</Button>
+        <RowActions
+          label={`More lifecycle actions for ${pool.displayName}`}
+          primary={published ? <Button appearance="secondary" disabled={applying || Boolean(writeBlocker)}
+            onClick={() => setPlanMode('unpublish')} {...restoreFocus}>Unpublish</Button>
+            : <Button appearance="subtle" disabled={applying || published}
+              onClick={() => setRemoving(true)} {...restoreFocus}>Remove MOSAIC record</Button>}
+          destructiveActions={published ? [{
+            label: 'Remove MOSAIC record',
+            disabled: applying || published,
+            onClick: () => setRemoving(true),
+          }] : []}
+        />
         <Text size={200}>Unpublish first if the pool still owns gateway resources. Record removal never changes API Management.</Text>
       </div>
       </>}

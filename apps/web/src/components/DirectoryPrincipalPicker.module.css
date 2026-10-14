@@ -9,25 +9,60 @@
   gap: 12px;
 }
 
+.searchRow > *,
+.searchRow :global(.fui-Select),
+.searchRow :global(.fui-Input) {
+  min-width: 0;
+  width: 100%;
+}
+
 .results {
   display: grid;
   gap: 8px;
   margin: 0;
   padding: 0;
   list-style: none;
+  max-height: min(42vh, 360px);
+  overflow-y: auto;
 }
 
 .resultButton {
   width: 100%;
   padding: 12px 14px;
-  display: grid;
-  gap: 6px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
   border: 1px solid var(--mosaic-border-soft);
   border-radius: 10px;
   background: var(--mosaic-surface);
   color: var(--mosaic-text);
   text-align: left;
   cursor: pointer;
+}
+
+.resultContent {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.resultButton[aria-pressed="true"] {
+  border-color: var(--mosaic-primary);
+  background: var(--mosaic-primary-soft);
+}
+
+.selection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 0;
+  border-top: 1px solid var(--mosaic-border-soft);
+}
+
+.selection > span {
+  flex: 1 1 260px;
 }
 
 .resultButton:hover,

@@ -1,6 +1,7 @@
 .page {
   display: grid;
   gap: 20px;
+  min-width: 0;
 }
 
 .listCard {
@@ -28,6 +29,11 @@
   display: grid;
   gap: 4px;
   justify-items: start;
+}
+
+.readiness :global(.fui-Badge) {
+  width: max-content;
+  white-space: nowrap;
 }
 
 .poolLink {

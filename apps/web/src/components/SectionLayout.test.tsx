@@ -33,4 +33,12 @@ describe('SectionLayout', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'Test models section' }), { target: { value: 'endpoints' } })
     expect(screen.getByRole('heading', { name: 'Endpoint content' })).toBeVisible()
   })
+  it('keeps horizontal sections labeled even with a stored collapsed vertical preference', () => {
+    localStorage.setItem('mosaic.sections.Test models', 'collapsed')
+    render(<SectionLayout label="Test models" orientation="horizontal" sections={sections} active="published" onSelect={() => undefined}>
+      Content
+    </SectionLayout>)
+    expect(screen.getByRole('button', { name: 'Model endpoints' })).toHaveTextContent('Model endpoints')
+    expect(screen.queryByRole('button', { name: 'Expand Test models sections' })).not.toBeInTheDocument()
+  })
 })

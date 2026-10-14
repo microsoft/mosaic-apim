@@ -40,6 +40,7 @@ import { PageHeader } from '../components/PageHeader'
 import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { PublishMcpServerDialog } from '../components/PublishMcpServerDialog'
 import { RemovalDialog } from '../components/RemovalDialog'
+import { RowActions } from '../components/RowActions'
 import { ModelAccessRecovery } from '../components/ModelAccessRecovery'
 import { PrincipalKindBadge } from '../components/PrincipalKindBadge'
 import { UnpublishDialog } from '../components/UnpublishDialog'
@@ -522,42 +523,31 @@ function RegisteredMcpServers({
                     </TableCell>
                     <TableCell>{formatTimestamp(endpoint.lastSyncedAt)}</TableCell>
                     <TableCell>
-                      <div className={styles.actionRow}>
-                        <Button
+                      <RowActions
+                        label={`More actions for ${endpoint.name}`}
+                        primary={<Button
                           appearance="secondary"
                           disabled={recheck.isPending}
                           onClick={() => recheck.mutate(endpoint.id)}
-                        >
-                          Check connection
-                        </Button>
-                        <Button
-                          appearance="secondary"
-                          disabled={sync.isPending || !endpoint.access.canDiscover}
-                          onClick={() => sync.mutate(endpoint.id)}
-                        >
-                          Sync tools
-                        </Button>
-                        <Button
-                          appearance="secondary"
-                          onClick={() => onPublish(endpoint.id)}
                           {...restoreFocus}
                         >
-                          Publish through a gateway
-                        </Button>
-                        <Button
-                          appearance="subtle"
-                          onClick={() => setChangingEndpoint(endpoint)}
-                        >
-                          Change environment
-                        </Button>
-                        <Button
-                          appearance="subtle"
-                          disabled={remove.isPending}
-                          onClick={() => remove.mutate(endpoint.id)}
-                        >
-                          Remove
-                        </Button>
-                      </div>
+                          Check connection
+                        </Button>}
+                        actions={[
+                          {
+                            label: 'Sync tools',
+                            disabled: sync.isPending || !endpoint.access.canDiscover,
+                            onClick: () => sync.mutate(endpoint.id),
+                          },
+                          { label: 'Publish through a gateway', onClick: () => onPublish(endpoint.id) },
+                          { label: 'Change environment', onClick: () => setChangingEndpoint(endpoint) },
+                        ]}
+                        destructiveActions={[{
+                          label: 'Remove',
+                          disabled: remove.isPending,
+                          onClick: () => remove.mutate(endpoint.id),
+                        }]}
+                      />
                     </TableCell>
                   </TableRow>
                 ))}
@@ -904,34 +894,31 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
                       <div className={styles.cellStack}>
                         <ModelCallerValue publication={publication} principals={principals.data} />
                         {!isUnpublished(publication) && (
-                          <div className={styles.actionRow}>
-                            <Button
+                          <RowActions
+                            label={`More model caller actions for ${publication.displayName}`}
+                            primary={<Button
                               appearance="secondary"
                               size="small"
                               disabled={publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown' || eligibleModelCallers.length === 0}
                               onClick={() => openModelCallerDialog(publication)}
                             >
                               {publication.modelCallerId ? 'Change' : 'Choose'}
-                            </Button>
-                            {publication.modelCallerId && (
-                              <Button
-                                appearance="subtle"
-                                size="small"
-                                disabled={publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown' || clearModelCaller.isPending}
-                                onClick={() => clearModelCaller.mutate(publication)}
-                              >
-                                Clear
-                              </Button>
-                            )}
-                          </div>
+                            </Button>}
+                            destructiveActions={publication.modelCallerId ? [{
+                              label: 'Clear',
+                              disabled: publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown' || clearModelCaller.isPending,
+                              onClick: () => clearModelCaller.mutate(publication),
+                            }] : []}
+                          />
                         )}
                       </div>
                     </TableCell>
                     <TableCell>{mcpServerUrl(publication, gatewaysById.get(publication.gatewayId))}</TableCell>
                     <TableCell>{lastAppliedLabel(publication)}</TableCell>
                     <TableCell>
-                      <div className={styles.actionRow}>
-                        <Button
+                      <RowActions
+                        label={`More actions for ${publication.displayName}`}
+                        primary={<Button
                           appearance="secondary"
                           disabled={publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown'}
                           disabledFocusable={reviewPlan.isPending}
@@ -939,25 +926,20 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
                           {...restoreFocus}
                         >
                           {reviewPlan.isPending && reviewPlan.variables?.id === publication.id ? 'Planning…' : publication.status === 'published' || holdsApi(publication) ? 'Review changes' : 'Review publish plan'}
-                        </Button>
-                        <Button
-                          appearance="secondary"
-                          disabled={publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown'}
-                          onClick={() => setUnpublishing(publication)}
-                          {...restoreFocus}
-                        >
-                          Unpublish
-                        </Button>
-                        <Button
-                          className={styles.recordAction}
-                          appearance="subtle"
-                          disabled={remove.isPending}
-                          onClick={() => setRemoving(publication)}
-                          {...restoreFocus}
-                        >
-                          Remove MOSAIC record
-                        </Button>
-                      </div>
+                        </Button>}
+                        destructiveActions={[
+                          {
+                            label: 'Unpublish',
+                            disabled: publication.status === 'applying' || publication.accessState === 'applying' || publication.accessState === 'unknown',
+                            onClick: () => setUnpublishing(publication),
+                          },
+                          {
+                            label: 'Remove MOSAIC record',
+                            disabled: remove.isPending,
+                            onClick: () => setRemoving(publication),
+                          },
+                        ]}
+                      />
                     </TableCell>
                   </TableRow>
                 ))}

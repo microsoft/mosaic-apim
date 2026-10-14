@@ -139,7 +139,8 @@ describe('PoolDetailPage', () => {
 
     expect(screen.getByRole('button', { name: 'Review changes' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Unpublish' })).toBeEnabled()
-    expect(screen.getByRole('button', { name: 'Remove MOSAIC record' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'More lifecycle actions for Anthropic Claude' }))
+    expect(await screen.findByRole('menuitem', { name: 'Remove MOSAIC record' })).toHaveAttribute('aria-disabled', 'true')
   })
 
   it('places deployments reached with an API key after the backend pool, without weights', async () => {
@@ -260,7 +261,8 @@ describe('PoolDetailPage', () => {
     expect(await screen.findByText('MOSAIC can’t change this pool in API Management')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Review changes' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Unpublish' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Edit' })).toBeEnabled()
+    await userEvent.setup().click(screen.getByRole('button', { name: 'More actions for Anthropic Claude' }))
+    expect(await screen.findByRole('menuitem', { name: 'Edit' })).not.toHaveAttribute('aria-disabled', 'true')
   })
 
   it('asks for fixes before any plan', async () => {

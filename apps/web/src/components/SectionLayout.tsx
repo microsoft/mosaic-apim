@@ -28,12 +28,14 @@ export function SectionLayout({
   active,
   onSelect,
   children,
+  orientation = 'vertical',
 }: {
   label: string
   sections: readonly PageSection[]
   active: string
   onSelect: (value: string) => void
   children: ReactNode
+  orientation?: 'vertical' | 'horizontal'
 }) {
   const id = useId()
   const key = `mosaic.sections.${label}`
@@ -45,18 +47,18 @@ export function SectionLayout({
     setCollapsed(next)
   }
   return (
-    <div className={`${styles.layout} ${collapsed ? styles.collapsed : ''}`}>
+    <div className={`${styles.layout} ${orientation === 'horizontal' ? styles.horizontal : collapsed ? styles.collapsed : ''}`}>
       <nav className={styles.navigation} aria-label={`${label} sections`}>
-        <Button appearance="subtle" icon={collapsed ? <ChevronRightRegular /> : <ChevronLeftRegular />}
+        {orientation === 'vertical' && <Button appearance="subtle" icon={collapsed ? <ChevronRightRegular /> : <ChevronLeftRegular />}
           aria-label={collapsed ? `Expand ${label} sections` : `Collapse ${label} sections`}
-          aria-expanded={!collapsed} onClick={toggle} />
+          aria-expanded={!collapsed} onClick={toggle} />}
         {sections.map((section) => (
           <button key={section.value} type="button"
             className={active === section.value ? styles.active : ''}
             aria-current={active === section.value ? 'page' : undefined}
             title={section.label} onClick={() => onSelect(section.value)}>
-            {collapsed ? <span aria-hidden="true">{section.label.slice(0, 2)}</span> : section.label}
-            {collapsed && <span className="sr-only">{section.label}</span>}
+            {collapsed && orientation === 'vertical' ? <span aria-hidden="true">{section.label.slice(0, 2)}</span> : section.label}
+            {collapsed && orientation === 'vertical' && <span className="sr-only">{section.label}</span>}
           </button>
         ))}
       </nav>

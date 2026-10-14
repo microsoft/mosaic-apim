@@ -7,9 +7,8 @@ import {
   Text,
   Title3,
 } from '@fluentui/react-components'
-import { useMemo } from 'react'
 import { PageHeader, PreviewNotice } from '../components/PageHeader'
-import { initialsFor } from '../initials'
+import { IdentityAvatar } from '../components/IdentityAvatar'
 import { runtimeConfig } from '../runtime-config'
 import styles from './AdminProfilePage.module.css'
 
@@ -64,7 +63,6 @@ export function AdminProfilePage() {
   const tenantId = account?.tenantId ?? runtimeConfig.entraTenantId
   const environment = account?.environment ?? 'local-preview'
   const homeAccountId = account?.homeAccountId ?? 'local-administrator'
-  const initials = useMemo(() => initialsFor(displayName), [displayName])
 
   return (
     <section className={styles.page}>
@@ -88,9 +86,7 @@ export function AdminProfilePage() {
       <div className={styles.grid}>
         <Card className={styles.card}>
           <div className={styles.identityHeader}>
-            <div className={styles.avatar} aria-hidden="true">
-              {initials}
-            </div>
+            <IdentityAvatar name={displayName} objectId={account?.localAccountId} size={56} />
             <div>
               <Title3 as="h2">Administrator identity</Title3>
               <Text className={styles.cardDescription}>

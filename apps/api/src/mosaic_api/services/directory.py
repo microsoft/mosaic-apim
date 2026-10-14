@@ -26,7 +26,7 @@ from mosaic_api.domain import (
     utc_now,
 )
 from mosaic_api.errors import ConflictError, DirectoryDisabledError, NotFoundError, ValidationError
-from mosaic_api.integrations.graph import DirectoryLookup
+from mosaic_api.integrations.graph import DirectoryLookup, DirectoryPhoto
 from mosaic_api.repositories import (
     CostCenterRepository,
     DirectoryRepository,
@@ -204,6 +204,15 @@ class DirectoryService:
         if not item:
             raise NotFoundError("Directory object was not found", details={"objectId": object_id})
         return (await self._annotate_directory_objects(actor, [item]))[0]
+
+    async def directory_photo(self, actor: Actor, object_id: str) -> DirectoryPhoto:
+        if not self._directory:
+            raise DirectoryDisabledError("Directory photos are off in this deployment.")
+        normalized = _canonical_guid(object_id, "objectId")
+        photo = await self._directory.user_photo(actor.tenant_id, normalized)
+        if photo is None:
+            raise NotFoundError("A person photo was not found")
+        return photo
 
     async def security_group_members(
         self, actor: Actor, principal_id: str, limit: int

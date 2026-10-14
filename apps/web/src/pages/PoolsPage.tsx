@@ -17,6 +17,7 @@ import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader } from '../components/PageHeader'
+import { RowActions } from '../components/RowActions'
 import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { PoolStatusBadge, ReadinessSummaryBadge, UnappliedChangesBadge } from '../components/PoolBadges'
 import { PoolEditorDialog } from '../components/PoolEditorDialog'
@@ -74,7 +75,7 @@ function PoolRow({ summary, catalog }: { summary: ModelPoolSummary; catalog?: En
         </div>
       </td>
       <td>
-        <div className={styles.cellStack}>
+        <div className={`${styles.cellStack} ${styles.readiness}`}>
           <ReadinessSummaryBadge readiness={summary.readiness} />
           {summary.problemCount > 0 && (
             <Text size={200} className={styles.problems}>
@@ -150,7 +151,9 @@ function SuggestionRow({
         )}
       </td>
       <td>
-        <Button
+        <RowActions
+          label={`More actions for suggested pool on ${suggestion.gatewayName}`}
+          primary={<Button
           size="small"
           icon={<AddRegular />}
           aria-label={`Create pool for ${suggestion.vendor || 'these models'} on ${suggestion.gatewayName}`}
@@ -159,7 +162,8 @@ function SuggestionRow({
           {...restoreFocus}
         >
           Create pool
-        </Button>
+        </Button>}
+        />
       </td>
     </tr>
   )
@@ -255,7 +259,7 @@ export function PoolsPage() {
           </Select>
         </Field>
       )}
-      <SectionLayout label="Pools" sections={poolSections} active={section}
+      <SectionLayout label="Pools" sections={poolSections} active={section} orientation="horizontal"
         onSelect={(value) => { if (!createSuggested.isPending) selectSection(value) }}>
       {section === 'pools' && <>
       {summaries.isPending && <Loading label="Loading pools" />}

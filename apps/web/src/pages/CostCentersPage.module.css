@@ -2,6 +2,7 @@
   display: grid;
   gap: 20px;
   container-type: inline-size;
+  min-width: 0;
 }
 
 
@@ -44,6 +45,12 @@
   gap: 6px;
 }
 
+.identityCell {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
 .addMember {
   display: flex;
   flex-wrap: wrap;
@@ -57,6 +64,7 @@
 
 .tableWrap {
   overflow: auto;
+  min-width: 0;
 }
 
 .tableWrap :global(table) {
@@ -66,15 +74,14 @@
 .tableWrap :global(th) {
   background: var(--mosaic-surface-subtle);
   color: var(--mosaic-text-muted);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
 }
 
 .tableWrap :global(th),
 .tableWrap :global(td) {
-  padding: 10px 12px;
+  padding: 16px 18px;
   border-bottom: 1px solid var(--mosaic-border-soft);
   vertical-align: top;
 }
@@ -107,8 +114,24 @@
 }
 
 .code {
-  white-space: nowrap;
+  overflow-wrap: anywhere;
   color: var(--mosaic-text);
+}
+
+.technicalDetails {
+  margin-top: 8px;
+  max-width: 36ch;
+}
+
+.technicalDetails summary {
+  cursor: pointer;
+  color: var(--mosaic-primary);
+  font-size: 12px;
+}
+
+.technicalDetails[open] .code {
+  display: block;
+  margin-top: 8px;
 }
 
 .detailList {

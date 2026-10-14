@@ -1,6 +1,7 @@
 .page {
   display: grid;
   gap: 20px;
+  min-width: 0;
 }
 
 .heroGrid {
@@ -33,18 +34,7 @@
 }
 
 .publicationActionCell {
-  width: 196px;
-  min-width: 196px;
-}
-
-.publicationActions {
-  display: grid;
-  justify-items: start;
-  gap: 6px;
-  width: max-content;
-}
-
-.publicationActions > button {
+  width: 1%;
   white-space: nowrap;
 }
 
@@ -111,6 +101,7 @@
 
 .tableWrap :global(table) {
   width: 100%;
+  table-layout: auto;
 }
 
 .tableWrap :global(th) {
@@ -118,13 +109,12 @@
   color: var(--mosaic-text-muted);
   font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
+  line-height: 1.5;
 }
 
 .tableWrap :global(th),
 .tableWrap :global(td) {
-  padding: 12px 14px;
+  padding: 16px 18px;
   border-bottom: 1px solid var(--mosaic-border-soft);
   vertical-align: top;
 }
@@ -489,8 +479,4 @@
 .pendingBadge {
   background: var(--colorNeutralBackground3);
   color: var(--colorNeutralForeground2);
-}
-
-.recordAction {
-  margin-inline-start: 12px;
 }

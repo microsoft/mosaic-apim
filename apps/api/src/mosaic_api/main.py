@@ -220,7 +220,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             else EntraAuthenticator(app_settings)
         )
         directory_lookup: DirectoryLookup | None = (
-            GraphDirectoryLookup(credential, endpoint=str(app_settings.graph_endpoint))
+            GraphDirectoryLookup(
+                credential,
+                endpoint=str(app_settings.graph_endpoint),
+                tenant_id=app_settings.tenant_id,
+            )
             if app_settings.entra_directory_lookup and app_settings.auth_mode is AuthMode.ENTRA
             else None
         )
@@ -622,7 +626,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
             allow_headers=["Authorization", "Content-Type", "X-Correlation-ID"],
             # The console saves each CSV export under the name the API gives it.
-            expose_headers=["Content-Disposition"],
+            expose_headers=["Content-Disposition", "Retry-After"],
         )
 
     @app.middleware("http")

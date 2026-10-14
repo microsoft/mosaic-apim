@@ -224,7 +224,8 @@ describe('PricingPage', () => {
     renderPage()
 
     await screen.findByRole('table', { name: 'Prices' })
-    await user.click(screen.getByRole('button', { name: 'History (2)' }))
+    await user.click(screen.getByRole('button', { name: 'More actions for gpt-4o' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'History (2)' }))
 
     const history = await screen.findByRole('table', { name: 'Price history' })
     const rows = within(history).getAllByRole('row').slice(1)

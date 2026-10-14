@@ -277,6 +277,7 @@ describe('GatewaysPage', () => {
     ])
     renderPage()
 
-    expect(await screen.findByRole('button', { name: 'Sync' })).toBeDisabled()
+    await userEvent.setup().click(await screen.findByRole('button', { name: /^More actions for/ }))
+    expect(await screen.findByRole('menuitem', { name: 'Sync' })).toHaveAttribute('aria-disabled', 'true')
   })
 })

@@ -26,6 +26,7 @@ import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { EnvironmentPicker } from '../components/EnvironmentPicker'
 import { PageHeader } from '../components/PageHeader'
+import { RowActions } from '../components/RowActions'
 import { useEnvironmentCatalog } from '../environments'
 import type { Gateway, GatewayStatus, GatewaySuggestion } from '../types'
 import styles from './GatewaysPage.module.css'
@@ -318,29 +319,26 @@ export function GatewaysPage() {
                         : 'Never'}
                     </td>
                     <td>
-                      <div className={styles.inlineActions}>
-                        <Button
+                      <RowActions
+                        label={`More actions for ${gateway.name}`}
+                        primary={<Button
                           appearance="secondary"
                           onClick={() => recheck.mutate(gateway.id)}
                           disabled={recheck.isPending}
                         >
                           Check access
-                        </Button>
-                        <Button
-                          appearance="secondary"
-                          onClick={() => sync.mutate(gateway.id)}
-                          disabled={sync.isPending || !gateway.access.canRead}
-                        >
-                          Sync
-                        </Button>
-                        <Button
-                          appearance="subtle"
-                          onClick={() => remove.mutate(gateway.id)}
-                          disabled={remove.isPending}
-                        >
-                          Remove MOSAIC record
-                        </Button>
-                      </div>
+                        </Button>}
+                        actions={[{
+                          label: 'Sync',
+                          disabled: sync.isPending || !gateway.access.canRead,
+                          onClick: () => sync.mutate(gateway.id),
+                        }]}
+                        destructiveActions={[{
+                          label: 'Remove MOSAIC record',
+                          disabled: remove.isPending,
+                          onClick: () => remove.mutate(gateway.id),
+                        }]}
+                      />
                     </td>
                   </tr>
                 ))}

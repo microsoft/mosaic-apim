@@ -5,7 +5,7 @@ import styles from './PrincipalKindBadge.module.css'
 
 export function PrincipalKindBadge({ kind }: { kind: PrincipalKind }) {
   return (
-    <Badge appearance="tint" className={styles.badge}>
+    <Badge appearance="outline" className={styles.badge}>
       {PRINCIPAL_KIND_LABELS[kind]}
     </Badge>
   )

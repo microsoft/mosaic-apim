@@ -7,6 +7,7 @@ from mosaic_api.domain import (
     PrincipalKind,
 )
 from mosaic_api.errors import DirectoryError, DirectoryForbiddenError
+from mosaic_api.integrations.graph.photos import DirectoryPhoto, validate_photo
 
 
 class FakeDirectoryLookup:
@@ -17,6 +18,8 @@ class FakeDirectoryLookup:
         *,
         forbidden: bool = False,
         unavailable: bool = False,
+        photos: Mapping[str, DirectoryPhoto] | None = None,
+        tenant_id: str = "tenant-test",
     ) -> None:
         self._objects = {item.object_id.casefold(): item for item in objects}
         self._members = {
@@ -25,6 +28,8 @@ class FakeDirectoryLookup:
         }
         self._forbidden = forbidden
         self._unavailable = unavailable
+        self.photos = {key.casefold(): value for key, value in (photos or {}).items()}
+        self._tenant_id = tenant_id
         self.closed = False
 
     async def search(
@@ -47,6 +52,16 @@ class FakeDirectoryLookup:
     async def get_object(self, object_id: str) -> DirectoryObject | None:
         self._raise_if_configured()
         return self._objects.get(object_id.casefold())
+
+    async def user_photo(self, tenant_id: str, object_id: str) -> DirectoryPhoto | None:
+        if tenant_id.casefold() != self._tenant_id.casefold():
+            raise DirectoryForbiddenError("Directory photos are restricted to this tenant")
+        self._raise_if_configured()
+        item = self._objects.get(object_id.casefold())
+        if item is None or item.kind != PrincipalKind.USER:
+            return None
+        photo = self.photos.get(object_id.casefold())
+        return validate_photo(photo.content, photo.content_type) if photo else None
 
     async def member_groups(self, object_id: str, group_object_ids: Sequence[str]) -> set[str]:
         self._raise_if_configured()

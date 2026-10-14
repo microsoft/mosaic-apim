@@ -10,9 +10,12 @@
 .content { min-width: 0; display: grid; gap: 20px; }
 .description { margin: 0; max-width: 75ch; color: var(--mosaic-text-muted); line-height: 1.6; }
 .compact { display: none; }
+.horizontal { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+.horizontal .navigation { position: static; display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 14px; border-right: 0; border-bottom: 1px solid var(--mosaic-border-soft); }
+.horizontal .navigation > button { border-radius: 8px; padding: 10px 14px; }
 @media (max-width: 1050px) {
   .layout, .collapsed { grid-template-columns: minmax(0, 1fr); gap: 16px; }
-  .navigation { display: none; }
+  .navigation, .horizontal .navigation { display: none; }
   .compact { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
   .compact select { min-width: 0; max-width: 100%; padding: 8px 12px; border: 1px solid var(--mosaic-border); border-radius: 4px; color: var(--mosaic-text); background: var(--mosaic-surface); }
 }

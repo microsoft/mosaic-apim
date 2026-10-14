@@ -21,6 +21,7 @@ from collections.abc import AsyncIterator, Iterable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from io import BytesIO
 from typing import Any, cast
 
 import httpx
@@ -85,6 +86,7 @@ from mosaic_api.integrations.aoai.key_check import KeyCheckOutcome, KeyCheckResu
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient, ApimKeyManager
 from mosaic_api.integrations.email import EmailMessage, EmailSendResult
+from mosaic_api.integrations.graph import DirectoryPhoto
 from mosaic_api.integrations.graph.fake import FakeDirectoryLookup
 from mosaic_api.main import create_app
 from mosaic_api.model_pools import (
@@ -123,6 +125,7 @@ from mosaic_api.services.pricing import PricingService
 from mosaic_api.services.telemetry import TelemetryService, member_host
 from mosaic_api.services.usage import RollupUsageSource
 from mosaic_api.services.usage_rollup import UsageRollupService
+from PIL import Image, ImageDraw
 
 from scripts.screenshots.demo_fakes import (
     AI_RESOURCE_ID,
@@ -460,9 +463,19 @@ def _directory_object(person: Person) -> DirectoryObject:
 
 
 def build_directory_lookup() -> FakeDirectoryLookup:
+    objects = [*(_directory_object(person) for person in PEOPLE), *EXTRA_DIRECTORY_OBJECTS]
+    image = Image.new("RGB", (96, 96), "#e9f0f8")
+    drawing = ImageDraw.Draw(image)
+    drawing.ellipse((32, 16, 64, 48), fill="#5379a3")
+    drawing.ellipse((16, 54, 80, 118), fill="#5379a3")
+    content = BytesIO()
+    image.save(content, format="PNG")
+    photo = DirectoryPhoto(content=content.getvalue(), content_type="image/png")
     return FakeDirectoryLookup(
-        [*(_directory_object(person) for person in PEOPLE), *EXTRA_DIRECTORY_OBJECTS],
+        objects,
         DIRECTORY_GROUP_MEMBERS,
+        photos={item.object_id: photo for item in objects if item.kind == PrincipalKind.USER},
+        tenant_id=TENANT_ID,
     )
 
 

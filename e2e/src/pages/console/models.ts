@@ -1,7 +1,7 @@
 import { type Locator, type Page, type Response, expect } from '@playwright/test'
 import type { Targets } from '../../config.ts'
 import type { PersonaPool } from '../../fixtures.ts'
-import { banner, escapeRegExp, expectDataLoaded, expectNoLoadError, field, responseTo } from '../common.ts'
+import { banner, clickRowAction, escapeRegExp, expectDataLoaded, expectNoLoadError, field, responseTo } from '../common.ts'
 import { PublishDialog } from './publish-dialog.ts'
 import { UnpublishDialog } from './unpublish-dialog.ts'
 
@@ -86,7 +86,7 @@ export class ModelsPage {
   async replan(row: Locator): Promise<{ dialog: PublishDialog; plan: Response }> {
     await this.selectSection('published')
     const plan = await this.#respond('POST', /^\/api\/v1\/publications\/[^/]+\/plan$/, () =>
-      row.getByRole('button', { name: /^Review (changes|publish plan)$/ }).click(),
+      clickRowAction(this.page, row, /^Review (changes|publish plan)$/),
     )
     const dialog = new PublishDialog(this.page, this.targets, /^(Publish a model|Review model access)$/)
     await dialog.visible()
@@ -100,7 +100,7 @@ export class ModelsPage {
   async openUnpublish(row: Locator, displayName: string): Promise<{ dialog: UnpublishDialog; plan: Response }> {
     await this.selectSection('published')
     const plan = await this.#respond('POST', /^\/api\/v1\/publications\/[^/]+\/unpublish-plan$/, () =>
-      row.getByRole('button', { name: 'Unpublish', exact: true }).click(),
+      clickRowAction(this.page, row, 'Unpublish'),
     )
     const dialog = new UnpublishDialog(this.page, this.targets, displayName)
     await dialog.visible()
@@ -110,7 +110,7 @@ export class ModelsPage {
   /** Removes a publication record through its confirmation dialog. */
   async removePublication(row: Locator, displayName: string): Promise<Response> {
     await this.selectSection('published')
-    await row.getByRole('button', { name: 'Remove MOSAIC record', exact: true }).click()
+    await clickRowAction(this.page, row, 'Remove MOSAIC record')
     const dialog = this.page.getByRole('alertdialog', { name: `Remove ${displayName}?` })
     await expect(dialog).toBeVisible()
     const response = await this.#respond('DELETE', /^\/api\/v1\/publications\/[^/]+$/, () =>
@@ -143,7 +143,7 @@ export class ModelsPage {
   async removeModelApi(displayName: string): Promise<Response> {
     await this.selectSection('imported')
     return this.#respond('DELETE', /^\/api\/v1\/model-apis\/[^/]+$/, () =>
-      this.modelApiRow(displayName).getByRole('button', { name: 'Remove', exact: true }).click(),
+      clickRowAction(this.page, this.modelApiRow(displayName), 'Remove'),
     )
   }
 
@@ -171,7 +171,7 @@ export class ModelsPage {
   async checkAccess(name: string): Promise<Response> {
     await this.selectSection('endpoints')
     return this.#respond('POST', /^\/api\/v1\/model-endpoints\/[^/]+\/preflight$/, () =>
-      this.endpointRow(name).getByRole('button', { name: 'Check access', exact: true }).click(),
+      clickRowAction(this.page, this.endpointRow(name), 'Check access'),
     )
   }
 
@@ -181,7 +181,7 @@ export class ModelsPage {
     return this.#respond(
       'POST',
       /^\/api\/v1\/model-endpoints\/[^/]+\/sync$/,
-      () => this.endpointRow(name).getByRole('button', { name: 'Sync models', exact: true }).click(),
+      () => clickRowAction(this.page, this.endpointRow(name), 'Sync models'),
       180_000,
     )
   }
@@ -189,7 +189,7 @@ export class ModelsPage {
   /** Removes what MOSAIC stored about an endpoint, through its confirmation dialog. Azure is never changed. */
   async removeEndpoint(name: string): Promise<Response> {
     await this.selectSection('endpoints')
-    await this.endpointRow(name).getByRole('button', { name: 'Remove', exact: true }).click()
+    await clickRowAction(this.page, this.endpointRow(name), 'Remove')
     const dialog = this.page.getByRole('alertdialog', { name: `Remove ${name}?` })
     await expect(dialog).toBeVisible()
     const response = await this.#respond('DELETE', /^\/api\/v1\/model-endpoints\/[^/]+$/, () =>

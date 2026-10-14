@@ -41,6 +41,7 @@ import { PublicationsBlockedRefusal } from '../components/EnvironmentRefusal'
 import { ReviewEnvironmentSuggestionsDialog } from '../components/ReviewEnvironmentSuggestionsDialog'
 import { PageHeader, PreviewNotice, DataSourceBadge } from '../components/PageHeader'
 import { SectionLayout, usePageSection } from '../components/SectionLayout'
+import { DirectoryConfiguration } from '../components/DirectoryConfiguration'
 import {
   environmentInUseDetails,
   invalidEnvironmentField,
@@ -991,6 +992,7 @@ export function SettingsPage() {
             Secrets, tokens, client secrets, and connection-string contents are never shown or
             stored in MOSAIC settings.
           </Text>
+          <DirectoryConfiguration />
         </Card>}
 
         {section === 'appearance' && <Card className={styles.card}>

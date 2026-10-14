@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from typing import Protocol
 
 from mosaic_api.domain import DirectoryMemberPage, DirectoryObject, DirectorySearchKind
+from mosaic_api.integrations.graph.photos import DirectoryPhoto
 
 
 class DirectoryLookup(Protocol):
@@ -31,6 +32,14 @@ class DirectoryLookup(Protocol):
         """The user, agent or security group with this object ID, or None if there is none."""
         ...
 
+    async def user_photo(self, tenant_id: str, object_id: str) -> DirectoryPhoto | None:
+        """A small photo of an ordinary user in the caller's tenant, or None if absent.
+
+        Implementations verify the object kind before reading a photo. Agents, groups and
+        applications do not have person avatars. Photos are optional and never persisted.
+        """
+        ...
+
     async def member_groups(self, object_id: str, group_object_ids: Sequence[str]) -> set[str]:
         """The subset of ``group_object_ids`` this object belongs to, directly or by nesting."""
         ...
@@ -47,4 +56,4 @@ class DirectoryLookup(Protocol):
 from mosaic_api.integrations.graph.client import GraphDirectoryLookup  # noqa: E402
 from mosaic_api.integrations.graph.fake import FakeDirectoryLookup  # noqa: E402
 
-__all__ = ["DirectoryLookup", "FakeDirectoryLookup", "GraphDirectoryLookup"]
+__all__ = ["DirectoryLookup", "DirectoryPhoto", "FakeDirectoryLookup", "GraphDirectoryLookup"]

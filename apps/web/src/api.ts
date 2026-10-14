@@ -254,6 +254,7 @@ export interface MosaicApi {
   getDirectoryStatus(): Promise<DirectoryStatus>
   searchDirectory(kind: DirectorySearchKind, query: string, limit?: number): Promise<DirectoryObject[]>
   getDirectoryObject(objectId: string): Promise<DirectoryObject>
+  getDirectoryPhoto(objectId: string): Promise<Blob | null>
   listPrincipalMembers(principalId: string, limit?: number): Promise<DirectoryMemberPage>
   listGateways(): Promise<Gateway[]>
   registerGateway(payload: {
@@ -751,6 +752,28 @@ export function useMosaicApi(): MosaicApi {
         ),
       getDirectoryObject: (objectId) =>
         request<DirectoryObject>(`/api/v1/directory/objects/${encodeURIComponent(objectId)}`),
+      getDirectoryPhoto: async (objectId) => {
+        const headers = await requestHeaders(false)
+        headers.set('Accept', 'image/jpeg, image/png')
+        const response = await fetch(`${runtimeConfig.apiBaseUrl}/api/v1/directory/objects/${encodeURIComponent(objectId)}/photo`, {
+          headers, cache: 'no-store',
+        })
+        if (response.status === 404) return null
+        if (!response.ok) {
+          let body: ApiErrorBody | undefined
+          try {
+            body = await response.json() as ApiErrorBody
+          } catch {
+            body = undefined
+          }
+          throw new ApiError(failureMessage(body, response.status), response.status, body)
+        }
+        const blob = await response.blob()
+        if (!['image/jpeg', 'image/png'].includes(blob.type) || blob.size > 262_144) {
+          throw new ApiError('The profile photo response is not a supported thumbnail.', 502)
+        }
+        return blob
+      },
       listPrincipalMembers: (principalId, limit = 200) =>
         request<DirectoryMemberPage>(
           `/api/v1/principals/${encodeURIComponent(principalId)}/members?limit=${encodeURIComponent(String(limit))}`,

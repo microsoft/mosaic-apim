@@ -14,6 +14,7 @@ vi.mock('@azure/msal-react', () => ({
 }))
 
 const api = {
+  getDirectoryStatus: vi.fn(),
   getEnvironmentCatalog: vi.fn(),
   listEnvironmentFindings: vi.fn(),
   createEnvironment: vi.fn(),
@@ -100,6 +101,7 @@ describe('SettingsPage', () => {
     })
     api.listEnvironmentSuggestions.mockResolvedValue({ items: [] })
     api.getEmailSettings.mockResolvedValue(emailSettingsFixture)
+    api.getDirectoryStatus.mockResolvedValue({ lookupEnabled: true, groupClaimsEnabled: false })
   })
 
   it('applies and persists appearance preferences', async () => {
@@ -135,6 +137,8 @@ describe('SettingsPage', () => {
     expect(screen.queryByRole('form', { name: 'Email settings' })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Runtime configuration' }))
     expect(screen.getByRole('heading', { name: 'Runtime identity and configuration' })).toBeVisible()
+    expect(await screen.findByText(/does not verify Graph consent/)).toBeVisible()
+    expect(screen.getByText('ProfilePhoto.Read.All')).toBeVisible()
     expect(screen.queryByRole('textbox', { name: 'Support destination alias' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Add environment' })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Integration preview' }))

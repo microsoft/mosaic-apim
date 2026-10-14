@@ -1,6 +1,7 @@
 .page {
   display: grid;
   gap: 20px;
+  min-width: 0;
 }
 
 .toolbar {
@@ -17,8 +18,8 @@
   padding: 18px;
   display: grid;
   gap: 12px;
-  border: 1px solid var(--mosaic-primary);
-  background: var(--mosaic-primary-soft);
+  border: 1px solid var(--mosaic-border-soft);
+  background: var(--mosaic-surface);
   box-shadow: var(--mosaic-shadow);
 }
 
