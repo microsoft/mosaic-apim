@@ -266,6 +266,19 @@ FIND_SENSITIVE_TEXT = """
     range.selectNodeContents(element)
     for (const rect of range.getClientRects()) keep(rect, element)
   }
+  // Runtime values may be placeholders rather than GUIDs or names from the seeded directory.
+  const privateRuntimeLabels = ['Administrator context', 'Tenant ID', 'API base URL']
+  for (const label of document.querySelectorAll('dt')) {
+    if (!privateRuntimeLabels.includes(label.textContent.trim())) {
+      continue
+    }
+    for (const value of label.parentElement.querySelectorAll(':scope > dd')) {
+      if (collapsed(value)) continue
+      const range = document.createRange()
+      range.selectNodeContents(value)
+      for (const rect of range.getClientRects()) keep(rect, value)
+    }
+  }
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     const text = node.nodeValue
@@ -897,6 +910,14 @@ SHOTS: list[Shot] = [
         "Findings",
         height=924,
         actions=(wait_for_text("Limitations:"), scroll_to_text("Findings", margin=80)),
+    ),
+    Shot(
+        "console-runtime-configuration",
+        "console",
+        "/settings?tab=runtime",
+        "light",
+        "Directory lookup is available automatically",
+        height=1200,
     ),
     Shot(
         "console-email-settings",

@@ -2858,10 +2858,11 @@ class DirectoryMemberPage(MosaicModel):
 class DirectoryStatus(MosaicModel):
     """Whether directory search is available, and whether group grants can be enforced.
 
-    ``lookup_enabled`` is the deployment's choice (``MOSAIC_ENTRA_DIRECTORY_LOOKUP``). When it is
-    false, administrators enter object IDs by hand. ``group_claims_enabled`` records whether the
-    deployment configured Entra to put security-group IDs in tokens
-    (``MOSAIC_ENTRA_GROUP_CLAIMS``); without that, the gateway can't match a group grant.
+    ``lookup_enabled`` reports whether the directory integration is available. Entra
+    authentication always provides it; local authentication uses manual entry unless a test or
+    demo supplies a directory double. Availability does not prove Microsoft Graph consent.
+    ``group_claims_enabled`` records whether the deployment configured Entra to put group IDs in
+    tokens (``MOSAIC_ENTRA_GROUP_CLAIMS``); without that, the gateway can't match a group grant.
     """
 
     lookup_enabled: bool

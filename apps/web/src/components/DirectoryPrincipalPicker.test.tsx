@@ -111,7 +111,7 @@ describe('DirectoryPrincipalPicker', () => {
   })
 
   it.each([
-    [new mocks.TestApiError('Directory search is off.', 409, { code: 'directory_disabled' }), 'Directory search is off. Use manual entry instead.'],
+    [new mocks.TestApiError('Directory lookup requires Entra authentication.', 409, { code: 'directory_disabled' }), 'Directory lookup requires Entra authentication. Use manual entry instead.'],
     [new mocks.TestApiError('Missing permission User.ReadBasic.All.', 403, { code: 'directory_forbidden' }), 'Missing permission User.ReadBasic.All.'],
     [new mocks.TestApiError('Graph unavailable.', 502, { code: 'directory_unavailable' }), "Couldn't reach Microsoft Graph. Try again."],
   ])('shows a friendly directory error (%#)', async (error, message) => {

@@ -189,6 +189,9 @@ where they do not contain an endpoint, account name, or identifier.
 People avatars, including profile images and initials, are blurred as whole regions. Demo photos
 are synthetic fixtures; the capture never loads a real directory image.
 
+Runtime configuration also blurs the administrator context, tenant ID, and API base URL values
+by their field labels, even when the demo shows generic placeholders rather than GUIDs.
+
 Redaction reads the page's text. It can't see text drawn in an image or a canvas. If a shot shows
 something identifying that isn't text, or the rules miss something, add a literal or a pattern
 rather than editing the image by hand. Then capture the shot again and check it.
@@ -278,6 +281,7 @@ shows both themes. Keep new shots in that pattern.
 | `console-analytics-reliability` | Console | `/analytics?tab=reliability` | Dark | Reliability |
 | `console-environments` | Console | `/settings` | Light | Environments |
 | `console-environment-findings` | Console | `/settings?tab=findings` | Dark | Environment findings |
+| `console-runtime-configuration` | Console | `/settings?tab=runtime`, read-only deployment details and directory availability/Graph permissions; local demo authentication with a fictional directory double | Light | Runtime configuration |
 | `console-email-settings` | Console | `/settings?tab=email` | Light | Budget email |
 | `portal-request-access` | Portal | `/catalog`, GPT-4o mini access options in an overlay drawer | Light | Request access |
 | `portal-access` | Portal | `/access`, grouped model rows and an exact grant's **Connection details** open in a drawer | Light | My access |
