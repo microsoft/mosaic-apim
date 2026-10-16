@@ -956,7 +956,7 @@ SHOTS: list[Shot] = [
         "console",
         "/settings?tab=runtime",
         "light",
-        "Directory lookup is available automatically",
+        "Directory lookup is enabled with Entra authentication",
         height=1200,
     ),
     Shot(

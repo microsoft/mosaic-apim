@@ -372,11 +372,11 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-runtime-configuration.png" alt="Runtime configuration in Settings with read-only deployment details, directory availability, and required and optional Microsoft Graph permissions">
+      <img src="docs/images/screenshots/console-runtime-configuration.png" alt="Runtime configuration in Settings with read-only deployment details and granted or missing Microsoft Graph permissions">
       <p><b>Runtime configuration.</b> Read-only deployment details and directory availability sit
-      alongside the required and optional Microsoft Graph permissions. Entra authentication
-      provides directory lookup automatically; a successful search, not this status, confirms
-      access for an identity type.</p>
+      alongside the granted or missing state of every required and optional Microsoft Graph
+      permission. Administrators can refresh the check and open remediation guidance for missing
+      consent.</p>
     </td>
     <td width="50%" valign="top"></td>
   </tr>

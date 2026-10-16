@@ -152,7 +152,7 @@ describe('DirectoryPrincipalPicker', () => {
     await user.selectOptions(screen.getByRole('combobox', { name: 'Directory search kind' }), 'application')
     await user.type(screen.getByRole('textbox', { name: 'Directory search' }), 'app')
     expect(await screen.findByText('Missing Application.Read.All.')).toBeVisible()
-    expect(screen.getByRole('link', { name: 'Check directory configuration' })).toHaveAttribute('href', '/settings?tab=runtime')
+    expect(screen.getByRole('link', { name: 'Review Graph permissions' })).toHaveAttribute('href', '/settings?tab=runtime')
     await user.click(screen.getByRole('button', { name: 'Retry directory search' }))
     expect(await screen.findByText(/No matching directory identities/)).toBeVisible()
     expect(mocks.api.searchDirectory).toHaveBeenLastCalledWith('application', 'app', 20)

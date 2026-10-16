@@ -262,7 +262,7 @@ export function IdentityPage() {
   })
   const directoryStatus = useQuery({
     queryKey: ['directory', 'status'],
-    queryFn: api.getDirectoryStatus,
+    queryFn: () => api.getDirectoryStatus(),
   })
   const memberships = useQuery({
     queryKey: ['memberships', selectedGroupId],

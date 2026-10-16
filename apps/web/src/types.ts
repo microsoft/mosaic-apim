@@ -2025,7 +2025,16 @@ export interface DirectoryMemberPage {
 export interface DirectoryStatus {
   lookupEnabled: boolean
   groupClaimsEnabled: boolean
+  permissions: DirectoryPermissionStatus[]
+  permissionStatusMessage?: string | null
   message?: string | null
+}
+
+export interface DirectoryPermissionStatus {
+  permission: string
+  capability: string
+  required: boolean
+  granted?: boolean | null
 }
 
 export type GrantOverlapKind = 'groups' | 'directAndGroup' | 'multipleGroups'

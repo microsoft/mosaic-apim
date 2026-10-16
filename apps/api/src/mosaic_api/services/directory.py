@@ -9,6 +9,7 @@ from mosaic_api.domain import (
     AuditEvent,
     DirectoryMemberPage,
     DirectoryObject,
+    DirectoryPermissionStatus,
     DirectorySearchKind,
     DirectoryStatus,
     Group,
@@ -25,7 +26,14 @@ from mosaic_api.domain import (
     subject_kind_for,
     utc_now,
 )
-from mosaic_api.errors import ConflictError, DirectoryDisabledError, NotFoundError, ValidationError
+from mosaic_api.errors import (
+    ConflictError,
+    DirectoryDisabledError,
+    DirectoryError,
+    DirectoryForbiddenError,
+    NotFoundError,
+    ValidationError,
+)
 from mosaic_api.integrations.graph import DirectoryLookup, DirectoryPhoto
 from mosaic_api.repositories import (
     CostCenterRepository,
@@ -172,7 +180,9 @@ class DirectoryService:
     async def list_principals(self, actor: Actor) -> list[Principal]:
         return await self._repository.list_principals(actor.tenant_id)
 
-    async def directory_status(self, _actor: Actor) -> DirectoryStatus:
+    async def directory_status(
+        self, _actor: Actor, *, include_permissions: bool = False
+    ) -> DirectoryStatus:
         if not self._directory:
             message = "Directory lookup requires Entra authentication. Use manual entry instead."
         elif not self._group_claims_enabled:
@@ -182,9 +192,37 @@ class DirectoryService:
             )
         else:
             message = None
+        permission_status_message = None
+        granted_permissions: frozenset[str] | None = None
+        if self._directory and include_permissions:
+            try:
+                granted_permissions = await self._directory.application_permissions()
+            except (DirectoryError, DirectoryForbiddenError) as exc:
+                permission_status_message = str(exc)
+        permission_definitions = (
+            ("User.ReadBasic.All", "People and agent users", True),
+            ("GroupMember.Read.All", "Entra security groups and members", True),
+            ("AgentIdentity.Read.All", "Entra agent identities", True),
+            ("Application.Read.All", "Applications and managed identities", False),
+            ("ProfilePhoto.Read.All", "People and administrator photos", False),
+        )
         return DirectoryStatus(
             lookup_enabled=self._directory is not None,
             group_claims_enabled=self._group_claims_enabled,
+            permissions=[
+                DirectoryPermissionStatus(
+                    permission=permission,
+                    capability=capability,
+                    required=required,
+                    granted=(
+                        permission in granted_permissions
+                        if granted_permissions is not None
+                        else None
+                    ),
+                )
+                for permission, capability, required in permission_definitions
+            ],
+            permission_status_message=permission_status_message,
             message=message,
         )
 

@@ -373,11 +373,42 @@ code,
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
+  align-items: center;
   gap: 8px 24px;
+  padding-block: 4px;
+}
+
+.directory-permissions dt,
+.directory-permissions dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
 }
 
 .directory-permissions dd {
   margin: 0;
+}
+
+.directory-remediation {
+  padding: 12px 16px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 8px;
+  background: var(--mosaic-surface-subtle);
+}
+
+.directory-remediation summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.directory-remediation ol {
+  margin-block: 12px;
+  padding-inline-start: 24px;
+}
+
+.directory-remediation li + li {
+  margin-top: 8px;
 }
 
 @supports (backdrop-filter: blur(16px)) {

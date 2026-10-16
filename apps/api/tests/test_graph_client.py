@@ -51,17 +51,54 @@ async def _no_sleep(_seconds: float) -> None:
 def _client(
     handler: Callable[[httpx.Request], httpx.Response | Awaitable[httpx.Response]],
     *,
+    credential: FakeCredential | None = None,
     sleep: Callable[[float], Awaitable[None]] = _no_sleep,
     **kwargs: Any,
 ) -> GraphDirectoryLookup:
     return GraphDirectoryLookup(
-        FakeCredential(),
+        credential or FakeCredential(),
         endpoint="https://graph.microsoft.com",
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         sleep=sleep,
         tenant_id="tenant-test",
         **kwargs,
     )
+
+
+@pytest.mark.asyncio
+async def test_application_permissions_reads_the_api_identity_graph_token() -> None:
+    credential = FakeCredential(
+        {
+            "tid": "tenant-test",
+            "idtyp": "app",
+            "roles": ["User.ReadBasic.All", "GroupMember.Read.All"],
+        }
+    )
+    client = _client(
+        lambda request: pytest.fail(f"permission inspection must not call Graph: {request.url}"),
+        credential=credential,
+    )
+
+    assert await client.application_permissions() == frozenset(
+        {"User.ReadBasic.All", "GroupMember.Read.All"}
+    )
+    assert credential.tenants == ["tenant-test"]
+
+
+@pytest.mark.asyncio
+async def test_application_permissions_rejects_a_delegated_graph_token() -> None:
+    client = _client(
+        lambda request: pytest.fail(f"permission inspection must not call Graph: {request.url}"),
+        credential=FakeCredential(
+            {
+                "tid": "tenant-test",
+                "scp": "User.ReadBasic.All",
+            }
+        ),
+    )
+
+    with pytest.raises(DirectoryForbiddenError, match="app-only"):
+        await client.application_permissions()
 
 
 @pytest.mark.asyncio

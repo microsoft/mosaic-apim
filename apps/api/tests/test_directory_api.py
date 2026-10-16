@@ -182,6 +182,9 @@ def test_entra_directory_lookup_is_always_available(
         assert response.status_code == 200
         assert response.json()["lookupEnabled"] is True
         assert response.json()["message"] is None
+        assert all(
+            permission["granted"] is None for permission in response.json()["permissions"]
+        )
 
 
 def test_policy_preview_validation_returns_422(client: TestClient) -> None:
@@ -223,6 +226,58 @@ def test_local_authentication_has_no_live_directory_lookup(client: TestClient) -
     assert response.status_code == 409
     assert response.json()["code"] == "directory_disabled"
     assert response.json()["message"] == status_response.json()["message"]
+
+
+def test_directory_status_reports_granted_and_missing_graph_permissions(
+    directory_client: TestClient,
+) -> None:
+    install_directory_lookup(
+        directory_client.app,
+        FakeDirectoryLookup(
+            [],
+            application_permissions=[
+                "User.ReadBasic.All",
+                "GroupMember.Read.All",
+                "AgentIdentity.Read.All",
+                "ProfilePhoto.Read.All",
+            ],
+        ),
+    )
+
+    response = directory_client.get(
+        "/api/v1/directory/status", params={"includePermissions": "true"}
+    )
+
+    assert response.status_code == 200
+    permissions = {
+        item["permission"]: item for item in response.json()["permissions"]
+    }
+    assert permissions["User.ReadBasic.All"]["granted"] is True
+    assert permissions["ProfilePhoto.Read.All"]["granted"] is True
+    assert permissions["Application.Read.All"]["granted"] is False
+    assert permissions["Application.Read.All"]["required"] is False
+    assert response.json()["permissionStatusMessage"] is None
+
+
+def test_directory_status_keeps_permissions_visible_when_the_probe_fails(
+    directory_client: TestClient,
+) -> None:
+    install_directory_lookup(
+        directory_client.app,
+        FakeDirectoryLookup([], unavailable=True),
+    )
+
+    response = directory_client.get(
+        "/api/v1/directory/status", params={"includePermissions": "true"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["permissionStatusMessage"] == (
+        "Microsoft Graph directory read failed"
+    )
+    assert all(
+        permission["granted"] is None for permission in response.json()["permissions"]
+    )
 
 
 def test_directory_search_when_lookup_is_on_and_principal_annotation(

@@ -78,6 +78,35 @@ class GraphDirectoryLookup:
         if self._owns_client:
             await self._client.aclose()
 
+    async def application_permissions(self) -> frozenset[str]:
+        try:
+            token = await self._credential.get_token(
+                self._scope, tenant_id=self._tenant_id
+            )
+        except (AzureError, TimeoutError) as exc:
+            raise DirectoryError(
+                "The API identity could not get a Microsoft Graph token"
+            ) from exc
+        try:
+            claims = jwt.decode(token.token, options={"verify_signature": False})
+        except jwt.PyJWTError as exc:
+            raise DirectoryForbiddenError(
+                "The API identity's Microsoft Graph token could not be verified"
+            ) from exc
+        tenant_id = str(claims.get("tid", "")).casefold()
+        roles = claims.get("roles")
+        if (
+            (self._tenant_id and tenant_id != self._tenant_id)
+            or claims.get("scp")
+            or claims.get("idtyp") not in {None, "app"}
+            or not isinstance(roles, list)
+            or not all(isinstance(role, str) and role for role in roles)
+        ):
+            raise DirectoryForbiddenError(
+                "Directory lookup requires the API identity's app-only Microsoft Graph token"
+            )
+        return frozenset(roles)
+
     async def user_photo(self, tenant_id: str, object_id: str) -> DirectoryPhoto | None:
         if not self._tenant_id or tenant_id.casefold() != self._tenant_id:
             raise DirectoryForbiddenError("Directory photos are restricted to this tenant")

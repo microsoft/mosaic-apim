@@ -101,7 +101,17 @@ describe('SettingsPage', () => {
     })
     api.listEnvironmentSuggestions.mockResolvedValue({ items: [] })
     api.getEmailSettings.mockResolvedValue(emailSettingsFixture)
-    api.getDirectoryStatus.mockResolvedValue({ lookupEnabled: true, groupClaimsEnabled: false })
+    api.getDirectoryStatus.mockResolvedValue({
+      lookupEnabled: true,
+      groupClaimsEnabled: false,
+      permissions: [
+        { permission: 'User.ReadBasic.All', capability: 'People and agent users', required: true, granted: true },
+        { permission: 'GroupMember.Read.All', capability: 'Entra security groups and members', required: true, granted: true },
+        { permission: 'AgentIdentity.Read.All', capability: 'Entra agent identities', required: true, granted: false },
+        { permission: 'Application.Read.All', capability: 'Applications and managed identities', required: false, granted: false },
+        { permission: 'ProfilePhoto.Read.All', capability: 'People and administrator photos', required: false, granted: false },
+      ],
+    })
   })
 
   it('applies and persists appearance preferences', async () => {
@@ -137,10 +147,12 @@ describe('SettingsPage', () => {
     expect(screen.queryByRole('form', { name: 'Email settings' })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Runtime configuration' }))
     expect(screen.getByRole('heading', { name: 'Runtime identity and configuration' })).toBeVisible()
-    expect(await screen.findByText(/does not verify Graph consent/)).toBeVisible()
-    expect(screen.getByText(/Directory lookup is available automatically with Entra authentication/)).toBeVisible()
+    expect(await screen.findByText(/1 required Graph permission is missing/)).toBeVisible()
+    expect(screen.getByText(/Directory lookup is enabled with Entra authentication/)).toBeVisible()
     expect(screen.queryByText(/MOSAIC_ENTRA_DIRECTORY_LOOKUP/)).not.toBeInTheDocument()
-    expect(screen.getByText('ProfilePhoto.Read.All')).toBeVisible()
+    expect(screen.getAllByText('ProfilePhoto.Read.All')[0]).toBeVisible()
+    expect(screen.getAllByText('Missing')).toHaveLength(3)
+    expect(api.getDirectoryStatus).toHaveBeenCalledWith(true)
     expect(screen.queryByRole('textbox', { name: 'Support destination alias' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Add environment' })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Budget email' }))
@@ -179,7 +191,13 @@ describe('SettingsPage', () => {
   })
 
   it('explains local-authentication directory limitations without an enable switch', async () => {
-    api.getDirectoryStatus.mockResolvedValue({ lookupEnabled: false, groupClaimsEnabled: true })
+    api.getDirectoryStatus.mockResolvedValue({
+      lookupEnabled: false,
+      groupClaimsEnabled: true,
+      permissions: [
+        { permission: 'User.ReadBasic.All', capability: 'People and agent users', required: true, granted: null },
+      ],
+    })
     renderSettings('runtime')
     expect(await screen.findByText(/Directory lookup requires Entra authentication/)).toBeVisible()
     expect(screen.getByText(/Use manual entry to record identities without directory verification/)).toBeVisible()
@@ -194,9 +212,15 @@ describe('SettingsPage', () => {
     expect(await screen.findByText('Directory configuration unavailable')).toBeVisible()
     expect(screen.getByText('Directory status could not be read')).toBeVisible()
     expect(screen.queryByText(/Directory lookup requires Entra authentication/)).not.toBeInTheDocument()
-    api.getDirectoryStatus.mockResolvedValue({ lookupEnabled: true, groupClaimsEnabled: true })
-    await user.click(screen.getByRole('button', { name: 'Refresh directory configuration' }))
-    expect(await screen.findByText(/Directory lookup is available automatically/)).toBeVisible()
+    api.getDirectoryStatus.mockResolvedValue({
+      lookupEnabled: true,
+      groupClaimsEnabled: true,
+      permissions: [
+        { permission: 'User.ReadBasic.All', capability: 'People and agent users', required: true, granted: true },
+      ],
+    })
+    await user.click(screen.getByRole('button', { name: 'Refresh permission status' }))
+    expect(await screen.findByText(/Directory lookup is enabled with Entra authentication/)).toBeVisible()
   })
 
   it('validates create keys before calling the API', async () => {

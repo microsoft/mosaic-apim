@@ -291,7 +291,7 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-analytics-reliability` | Console | `/analytics?tab=reliability` | Dark | Reliability |
 | `console-environments` | Console | `/settings` | Light | Environments |
 | `console-environment-findings` | Console | `/settings?tab=findings` | Dark | Environment findings |
-| `console-runtime-configuration` | Console | `/settings?tab=runtime`, read-only deployment details and directory availability/Graph permissions; local demo authentication with a fictional directory double | Light | Runtime configuration |
+| `console-runtime-configuration` | Console | `/settings?tab=runtime`, read-only deployment details, directory availability, and granted/missing Graph permission status; local demo authentication with a fictional directory double | Light | Runtime configuration |
 | `console-email-settings` | Console | `/settings?tab=email` | Light | Budget email |
 | `portal-request-access` | Portal | `/catalog`, GPT-4o mini access options in an overlay drawer | Light | Request access |
 | `portal-access` | Portal | `/access`, grouped model rows and an exact grant's **Connection details** open in a drawer | Light | My access |

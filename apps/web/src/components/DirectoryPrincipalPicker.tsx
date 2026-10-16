@@ -173,7 +173,7 @@ export function DirectoryPrincipalPicker({
             {directoryErrorMessage(search.error)}
             <div>
               <Button onClick={() => search.refetch()} disabled={search.isFetching}>Retry directory search</Button>
-              {' '}<a href="/settings?tab=runtime">Check directory configuration</a>
+              {' '}<a href="/settings?tab=runtime">Review Graph permissions</a>
             </div>
           </MessageBarBody>
         </MessageBar>
