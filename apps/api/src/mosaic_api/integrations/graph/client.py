@@ -95,6 +95,8 @@ class GraphDirectoryLookup:
             ) from exc
         tenant_id = str(claims.get("tid", "")).casefold()
         roles = claims.get("roles")
+        if "roles" not in claims and claims.get("idtyp") == "app":
+            roles = []
         if (
             (self._tenant_id and tenant_id != self._tenant_id)
             or claims.get("scp")
