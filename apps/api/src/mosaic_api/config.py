@@ -135,6 +135,13 @@ class Settings(BaseSettings):
             "Without it MOSAIC takes only the URI of a secret someone else stored."
         ),
     )
+    management_key_vault_uri: AnyHttpUrl | None = Field(
+        default=None,
+        description=(
+            "Separate commercial Key Vault for Azure management service-principal secrets. "
+            "Only the MOSAIC API identity receives data access; never use the backend vault."
+        ),
+    )
     mcp_discovery_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
     entra_group_claims: bool = Field(
         default=True,
@@ -171,6 +178,24 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_fail_closed_modes(self) -> "Settings":
+        if self.management_key_vault_uri is not None:
+            management = self.management_key_vault_uri
+            if (
+                management.scheme != "https"
+                or not management.host
+                or not management.host.endswith(".vault.azure.net")
+                or management.username
+                or management.password
+                or management.port not in {None, 443}
+                or management.path not in {None, "", "/"}
+                or management.query
+                or management.fragment
+            ):
+                raise ValueError("MOSAIC_MANAGEMENT_KEY_VAULT_URI must name a commercial Key Vault")
+            if self.key_vault_uri and management.host == self.key_vault_uri.host:
+                raise ValueError(
+                    "The management credentials vault must differ from the backend vault"
+                )
         if self.environment is Environment.AZURE:
             if self.auth_mode is not AuthMode.ENTRA:
                 raise ValueError("Azure deployments must use Entra authentication")

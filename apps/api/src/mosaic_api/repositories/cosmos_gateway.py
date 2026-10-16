@@ -79,7 +79,7 @@ class CosmosGatewayRepository(CosmosRepositoryBase):
         return await self._read(Gateway, tenant_id, gateway_id)
 
     async def find_gateway_by_resource_id(
-        self, tenant_id: str, azure_resource_id: str
+        self, tenant_id: str, azure_resource_id: str, *, azure_cloud: str = "commercial"
     ) -> Gateway | None:
         items = await self._query(
             Gateway,
@@ -88,7 +88,7 @@ class CosmosGatewayRepository(CosmosRepositoryBase):
             " AND LOWER(c.azureResourceId) = @resourceId",
             [{"name": "@resourceId", "value": azure_resource_id.casefold()}],
         )
-        return items[0] if items else None
+        return next((item for item in items if item.azure_cloud == azure_cloud), None)
 
     async def create_gateway(self, gateway: Gateway, audit_event: AuditEvent) -> Gateway:
         await self._mutate(

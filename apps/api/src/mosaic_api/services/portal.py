@@ -288,6 +288,7 @@ class PortalService:
             entries.append(
                 CatalogEntry(
                     kind=CatalogEntryKind.MODEL_API,
+                    azure_cloud=gateway.azure_cloud,
                     id=model_api.id,
                     display_name=model_api.display_name,
                     summary=model_api.summary,
@@ -320,6 +321,7 @@ class PortalService:
             entries.append(
                 CatalogEntry(
                     kind=CatalogEntryKind.MCP_SERVER,
+                    azure_cloud=gateway.azure_cloud,
                     id=mcp_server.id,
                     display_name=mcp_server.display_name,
                     summary=mcp_server.summary,
@@ -349,6 +351,7 @@ class PortalService:
                 entries.append(
                     CatalogEntry(
                         kind=CatalogEntryKind.POOL_MODEL,
+                        azure_cloud=gateway.azure_cloud,
                         id=model.id,
                         scope_id=pool.id,
                         display_name=model.display_name,

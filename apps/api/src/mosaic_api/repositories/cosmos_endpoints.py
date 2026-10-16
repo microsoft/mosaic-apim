@@ -32,7 +32,7 @@ class CosmosModelEndpointRepository(CosmosEndpointStateBase):
         return await self._read(ModelEndpoint, tenant_id, endpoint_id)
 
     async def find_endpoint_by_resource_id(
-        self, tenant_id: str, azure_resource_id: str
+        self, tenant_id: str, azure_resource_id: str, *, azure_cloud: str = "commercial"
     ) -> ModelEndpoint | None:
         items = await self._query(
             ModelEndpoint,
@@ -41,13 +41,19 @@ class CosmosModelEndpointRepository(CosmosEndpointStateBase):
             " AND LOWER(c.azureResourceId) = @resourceId",
             [{"name": "@resourceId", "value": azure_resource_id.casefold()}],
         )
-        return items[0] if items else None
+        return next((item for item in items if item.azure_cloud == azure_cloud), None)
 
-    async def find_endpoint_by_url(self, tenant_id: str, endpoint: str) -> ModelEndpoint | None:
+    async def find_endpoint_by_url(
+        self, tenant_id: str, endpoint: str, *, azure_cloud: str = "commercial"
+    ) -> ModelEndpoint | None:
         target = endpoint.casefold().rstrip("/")
         items = await self._query(ModelEndpoint, tenant_id, "modelEndpoint")
         return next(
-            (item for item in items if str(item.endpoint).casefold().rstrip("/") == target),
+            (
+                item for item in items
+                if item.azure_cloud == azure_cloud
+                and str(item.endpoint).casefold().rstrip("/") == target
+            ),
             None,
         )
 

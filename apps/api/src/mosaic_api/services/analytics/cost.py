@@ -165,9 +165,7 @@ class CostTally:
         share = 1.0 if priced.amount is None else priced.unpriced_share
         left_tokens = round(tokens * share)
         if priced.amount is not None:
-            self.add_amount(
-                priced.amount, priced.reserved, key if kind == "deployment" else None
-            )
+            self.add_amount(priced.amount, priced.reserved, key if kind == "deployment" else None)
             self.priced_tokens += tokens - left_tokens
         if left_tokens <= 0 or priced.unpriced is None:
             return

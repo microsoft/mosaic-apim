@@ -9,6 +9,36 @@ MODEL_RUNTIME_CLIENT_ID = "abcdefff-2222-3333-4444-555555555555"
 MODEL_CLIENT_ID = "fedcba98-7654-3210-fedc-ba9876543210"
 
 
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "http://management.vault.azure.net",
+        "https://management.vault.usgovcloudapi.net",
+        "https://management.vault.azure.net/secrets/name",
+        "https://management.vault.azure.net?secret=value",
+        "https://user:password@management.vault.azure.net",
+    ],
+)
+def test_management_credentials_vault_rejects_unsafe_uri(uri: str) -> None:
+    with pytest.raises(ValidationError):
+        local_settings(management_key_vault_uri=uri)
+
+
+def test_management_credentials_must_not_share_apim_backend_secret_vault() -> None:
+    with pytest.raises(ValidationError, match="must differ"):
+        local_settings(
+            key_vault_uri="https://backend.vault.azure.net",
+            management_key_vault_uri="https://backend.vault.azure.net",
+        )
+    assert (
+        local_settings(
+            key_vault_uri="https://backend.vault.azure.net",
+            management_key_vault_uri="https://management.vault.azure.net",
+        ).management_key_vault_uri
+        is not None
+    )
+
+
 def local_settings(**overrides: Any) -> Settings:
     return Settings(
         _env_file=None,

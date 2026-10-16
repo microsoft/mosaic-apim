@@ -283,7 +283,7 @@ class BlockedListGate:
         found: dict[str, object] | None = None
         written = False
         try:
-            resource = ApimResourceId.parse(gateway.azure_resource_id)
+            resource = gateway.arm_resource()
             client = client_factory(resource)
             found = await client.get_named_value(BLOCKED_COST_CENTERS_NAMED_VALUE)
             if found is None or live_value(found) != value:

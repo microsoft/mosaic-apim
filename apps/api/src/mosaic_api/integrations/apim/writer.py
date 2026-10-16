@@ -36,6 +36,7 @@ class ApimWriter:
     """Create, replace, and delete the API Management resources a publication owns."""
 
     def __init__(self, arm: ArmClient, resource: ApimResourceId) -> None:
+        arm.require_cloud(resource.azure_cloud)
         self._arm = arm
         self._resource = resource
         self._base = resource.canonical
@@ -270,6 +271,7 @@ class ApimWriter:
         backend_name: str,
         subscription_required: bool,
         description: str,
+        use_default_subscription_key_names: bool = False,
     ) -> JsonObject | None:
         """Create or replace a passthrough MCP server that forwards to ``backend_name``.
 
@@ -281,6 +283,11 @@ class ApimWriter:
         ``/mcp``. :func:`~mosaic_api.domain.mcp_backend_url` derives that URL.
         """
 
+        key_properties: JsonObject = (
+            {"subscriptionKeyParameterNames": dict(DEFAULT_SUBSCRIPTION_KEY_NAMES)}
+            if use_default_subscription_key_names
+            else {}
+        )
         return await self._arm.put(
             self.resource_id(f"apis/{name}"),
             {
@@ -292,6 +299,7 @@ class ApimWriter:
                     "protocols": ["https"],
                     "backendId": backend_name,
                     "subscriptionRequired": subscription_required,
+                    **key_properties,
                     "mcpProperties": {"transportType": "streamable"},
                 }
             },

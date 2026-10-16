@@ -2,17 +2,20 @@ import { Badge, Tooltip } from '@fluentui/react-components'
 import { ShieldCheckmarkRegular } from '@fluentui/react-icons'
 import type { BadgeProps } from '@fluentui/react-components'
 import { environmentLabel, findEnvironment } from '../environments'
-import type { EnvironmentCatalogView } from '../types'
+import type { AzureCloud, EnvironmentCatalogView } from '../types'
+import { CloudBadge } from './CloudBadge'
 import styles from './EnvironmentComponents.module.css'
 
 export function EnvironmentBadge({
   environment,
   catalog,
   size = 'medium',
+  azureCloud,
 }: {
   environment: string | null
   catalog?: EnvironmentCatalogView
   size?: BadgeProps['size']
+  azureCloud?: AzureCloud
 }) {
   const definition = findEnvironment(catalog, environment)
   const unknown = environment != null && !definition
@@ -30,11 +33,12 @@ export function EnvironmentBadge({
       </span>
     </Badge>
   )
-  return unknown ? (
+  const environmentBadge = unknown ? (
     <Tooltip content="Not defined in Settings → Environments" relationship="label">
       {badge}
     </Tooltip>
   ) : (
     badge
   )
+  return <>{azureCloud && <CloudBadge cloud={azureCloud} />}{environmentBadge}</>
 }

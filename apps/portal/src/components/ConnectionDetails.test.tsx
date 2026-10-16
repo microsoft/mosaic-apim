@@ -136,6 +136,48 @@ describe('ConnectionDetails', () => {
     vi.restoreAllMocks()
   })
 
+  it('labels Government models and never offers commercial token setup or eager key reveal', async () => {
+    const user = userEvent.setup()
+    const government: ModelConnection = {
+      ...connection, azureCloud: 'government',
+      appliedMethods: { keysEnabled: true, entraEnabled: false },
+      entraAudience: null, entraScope: null, entraClientId: null, keyExists: true,
+    }
+    renderDetails()
+    await openDetails(user, government)
+    expect(screen.getByLabelText('Azure Government')).toBeVisible()
+    expect(screen.getByText('Ready', { selector: '.connection-status .fui-Badge' })).toBeVisible()
+    expect(screen.getByLabelText('Azure Government').parentElement).toHaveClass('connection-status')
+    expect(screen.queryByRole('button', { name: /Get.*token/i })).not.toBeInTheDocument()
+    expect(screen.queryByText('Delegated scope', { selector: 'dt' })).not.toBeInTheDocument()
+    expect(samples().join('\n')).toContain('Ocp-Apim-Subscription-Key')
+    expect(samples().join('\n')).not.toContain('Authorization: Bearer')
+    expect(api.revealMyEntitlementKey).not.toHaveBeenCalled()
+  })
+
+  it('offers secure header-input configuration and explicit key reveal for Government MCP', async () => {
+    const user = userEvent.setup()
+    const government = {
+      ...mcpConnection, azureCloud: 'government' as const,
+      appliedMethods: { keysEnabled: true, entraEnabled: false },
+      keysAvailable: true, keysAllowedByCostCenter: true, keyExists: true,
+      resourceMetadataUrl: null, audience: null, delegatedScope: null,
+      applicationScope: null, requiredAppRole: null, clientId: null,
+      runtime: { ...connection.runtime!, keyState: 'ready' as const },
+    }
+    api.getMcpConnection.mockResolvedValue(government)
+    renderDetails(mcpResolved)
+    await user.click(toggle())
+    expect(await screen.findByRole('button', { name: 'Show primary key' })).toBeVisible()
+    expect(screen.getByLabelText('Azure Government')).toBeVisible()
+    const config = samples().join('\n')
+    expect(config).toContain('promptString')
+    expect(config).toContain('${input:mosaic-key}')
+    expect(config).not.toContain('Bearer')
+    expect(screen.queryByText('Delegated scope', { selector: 'dt' })).not.toBeInTheDocument()
+    expect(api.revealMyEntitlementKey).not.toHaveBeenCalled()
+  })
+
   it('loads connection details only after the panel is expanded', async () => {
     const user = userEvent.setup()
     const loading = deferred<ModelConnection>()

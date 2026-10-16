@@ -49,6 +49,7 @@ import { ReviewEnvironmentSuggestionsDialog } from '../components/ReviewEnvironm
 import { PageHeader } from '../components/PageHeader'
 import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { DirectoryConfiguration } from '../components/DirectoryConfiguration'
+import { AzureConnectionsPanel } from '../components/AzureConnectionsPanel'
 import {
   environmentInUseDetails,
   invalidEnvironmentField,
@@ -900,6 +901,7 @@ function EmailSettingsSection({ draft, setDraft }: {
 export function SettingsPage() {
   const sections = [
     { value: 'environments', label: 'Environments', icon: <GlobeRegular />, description: 'Shared environment classifications and enforcement settings saved to MOSAIC.' },
+    { value: 'connections', label: 'Azure connections', icon: <GlobeRegular />, description: 'Management identities for Azure Commercial and Azure Government resources.' },
     { value: 'findings', label: 'Findings', icon: <WarningRegular />, description: 'Findings about environment classification and compatibility.' },
     { value: 'email', label: 'Budget email', icon: <MailRegular />, description: 'Shared budget email settings saved to MOSAIC. Test messages use the saved configuration.' },
     { value: 'runtime', label: 'Runtime configuration', icon: <SettingsRegular />, description: 'Read-only deployed configuration. Change deployment settings outside this page.' },
@@ -929,10 +931,11 @@ export function SettingsPage() {
     <section className={styles.page}>
       <PageHeader
         title="Settings"
-        description="Classify environments, set up budget email, review safe runtime details, and personalize appearance."
+        description="Manage Azure connections, classify environments, set up budget email, and personalize appearance."
       />
       <SectionLayout label="Settings" sections={sections} active={section} onSelect={selectSection}>
       {section === 'environments' && <EnvironmentsSettingsSection />}
+      {section === 'connections' && <AzureConnectionsPanel />}
       {section === 'findings' && <EnvironmentFindings title="Findings" />}
       {section === 'email' && <EmailSettingsSection draft={emailDraft} setDraft={setEmailDraft} />}
 

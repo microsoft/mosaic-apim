@@ -1,7 +1,7 @@
 """Administrator analytics, and each gateway's telemetry readiness. See ADR 0019."""
 
 from datetime import date
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
@@ -60,6 +60,9 @@ def analytics_filters(
     resource_id: Annotated[str | None, Query(alias="resourceId", max_length=_ID)] = None,
     subject_kind: Annotated[EntitlementSubjectKind | None, Query(alias="subjectKind")] = None,
     cost_center_id: Annotated[str | None, Query(alias="costCenterId", max_length=_ID)] = None,
+    azure_cloud: Annotated[
+        Literal["commercial", "government"] | None, Query(alias="azureCloud")
+    ] = None,
 ) -> AnalyticsFilters:
     return AnalyticsFilters(
         range=range_,
@@ -70,6 +73,7 @@ def analytics_filters(
         resource_id=resource_id or None,
         subject_kind=subject_kind,
         cost_center_id=cost_center_id or None,
+        azure_cloud=azure_cloud,
     )
 
 
@@ -89,9 +93,7 @@ async def refresh_analytics(request: Request, auth: Admin) -> AnalyticsStatus:
 
 
 @analytics_router.get("/analytics/overview", response_model=AnalyticsOverview)
-async def analytics_overview(
-    request: Request, auth: Admin, filters: Filters
-) -> AnalyticsOverview:
+async def analytics_overview(request: Request, auth: Admin, filters: Filters) -> AnalyticsOverview:
     return await _analytics(request).overview(_actor(auth), filters)
 
 

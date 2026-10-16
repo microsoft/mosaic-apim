@@ -66,9 +66,7 @@ def pool_model_offered(pool: ModelPool | None, pool_model_id: str) -> bool:
     """
 
     return (
-        pool is not None
-        and pool.governed_access is not None
-        and pool.serves_model(pool_model_id)
+        pool is not None and pool.governed_access is not None and pool.serves_model(pool_model_id)
     )
 
 
@@ -76,11 +74,7 @@ def applied_pool_grant(pool: ModelPool, entitlement_id: str) -> PoolAccessGrant 
     if pool.applied_access is None:
         return None
     return next(
-        (
-            grant
-            for grant in pool.applied_access.grants
-            if grant.entitlement_id == entitlement_id
-        ),
+        (grant for grant in pool.applied_access.grants if grant.entitlement_id == entitlement_id),
         None,
     )
 
@@ -216,9 +210,32 @@ def decorate_pool_entitlement(
         applied_methods=methods,
         subscription_name=grant.key_name if grant else None,
         key_exists=key_name is not None and pool.owns_key(key_name),
+        key_state=(
+            (
+                "ineligible"
+                if not entitlement.enabled
+                or cost_center is None
+                or not cost_center.keys_allowed
+                or (grant is not None and (grant.is_group_grant or not grant.keys_allowed))
+                else (
+                    "pending"
+                    if grant is None
+                    else pool.key_lifecycle.get(key_name or "", "pending")
+                )
+            )
+            if pool.azure_cloud == "government"
+            else None
+        ),
+        key_error=(
+            "Key setup needs an administrator retry; no key has been revealed."
+            if pool.key_lifecycle.get(key_name or "") == "failed"
+            else None
+        ),
         applied_at=pool.last_applied_at,
         error=pool.last_error,
     )
+    if pool.azure_cloud == "government":
+        runtime.key_exists = runtime.key_exists and runtime.key_state == "ready"
     binding = entitlement.binding
     if binding and binding.source == BindingSource.ORCHESTRATED and grant is None:
         binding = None
@@ -253,6 +270,7 @@ def safe_pool_access_snapshot(pool: ModelPool, target: PoolAccessSnapshot) -> Po
     ]
     return PoolAccessSnapshot(
         version=target.version,
+        azure_cloud=target.azure_cloud,
         settings=ModelAccessSettings(
             keys_enabled=previous.settings.keys_enabled and target.settings.keys_enabled,
             entra_enabled=(

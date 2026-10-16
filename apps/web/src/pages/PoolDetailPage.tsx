@@ -160,7 +160,7 @@ function MemberRow({
       <td>
         <div className={styles.cellStack}>
           <Text>{member.region ?? 'Region unknown'}</Text>
-          <EnvironmentBadge environment={member.environment ?? null} catalog={catalog} size="small" />
+          <EnvironmentBadge azureCloud={member.azureCloud ?? 'commercial'} environment={member.environment ?? null} catalog={catalog} size="small" />
         </div>
       </td>
       <td>
@@ -574,7 +574,7 @@ function PoolDetail({ poolId, embedded = false }: { poolId: string; embedded?: b
           <div className={styles.headerActions}>
             <PoolStatusBadge pool={pool} />
             {detail.data.unappliedChanges && <UnappliedChangesBadge />}
-            <EnvironmentBadge environment={detail.data.gatewayEnvironment ?? null} catalog={catalog.data} />
+            <EnvironmentBadge azureCloud={detail.data.pool.azureCloud ?? 'commercial'} environment={detail.data.gatewayEnvironment ?? null} catalog={catalog.data} />
             <RowActions
               label={`More actions for ${pool.displayName}`}
               primary={<Button appearance="primary" title="Preview changes. Nothing changes until you select Apply plan."

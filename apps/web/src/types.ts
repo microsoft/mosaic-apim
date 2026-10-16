@@ -1,3 +1,18 @@
+export type AzureCloud = 'commercial' | 'government'
+
+export interface AzureConnection {
+  id: string
+  name: string
+  azureCloud: AzureCloud
+  azureTenantId: string
+  authentication: 'managedIdentity' | 'clientSecret'
+  clientId: string | null
+  status: 'untested' | 'ready' | 'failed'
+  statusMessage: string | null
+  revision: number
+  inUse: boolean
+}
+
 export type PrincipalKind =
   | 'user'
   | 'servicePrincipal'
@@ -512,6 +527,7 @@ export interface EnvironmentFindingList {
 }
 
 export interface ResourceSummary {
+  azureCloud?: AzureCloud
   kind: EntitlementResourceKind
   id: string
   scopeId?: string | null
@@ -523,6 +539,7 @@ export interface ResourceSummary {
 }
 
 export interface AccessRequestResourceSnapshot {
+  azureCloud?: AzureCloud
   displayName: string | null
   gatewayId: string | null
   gatewayName: string | null
@@ -547,6 +564,8 @@ export interface ModelAccessSettings {
 }
 
 export interface EntitlementRuntime {
+  keyState?: 'pending' | 'preparing' | 'ready' | 'failed' | 'deleted' | 'ineligible' | null
+  keyError?: string | null
   publicationId: string
   status: 'pending' | 'applying' | 'applied' | 'revocationPending' | 'revoked' | 'failed' | 'unknown'
   appliedMethods?: ModelAccessSettings | null
@@ -752,6 +771,8 @@ export interface GatewayInventorySummary {
 }
 
 export interface Gateway {
+  azureCloud?: AzureCloud
+  azureConnectionId?: string | null
   id: string
   tenantId: string
   name: string
@@ -791,6 +812,8 @@ export interface GatewaySyncRun {
 }
 
 export interface GatewaySuggestion {
+  azureCloud?: AzureCloud
+  azureConnectionId?: string | null
   azureResourceId: string
   serviceName: string
   resourceGroup: string
@@ -1178,6 +1201,8 @@ export interface DeclaredDeploymentInput {
 }
 
 export interface ModelEndpoint {
+  azureCloud?: AzureCloud
+  azureConnectionId?: string | null
   id: string
   tenantId: string
   name: string
@@ -1329,6 +1354,8 @@ export interface McpAccessGrant {
 }
 
 export interface McpAccessSnapshot {
+  azureCloud?: AzureCloud
+  settings?: ModelAccessSettings
   version: number
   audience: string
   delegatedScope: string
@@ -1343,6 +1370,7 @@ export interface PublicationLockInfo {
 }
 
 export interface Publication {
+  azureCloud?: AzureCloud
   id: string
   tenantId: string
   entityType: 'publication'
@@ -1382,6 +1410,7 @@ export interface Publication {
 }
 
 export interface McpPublication {
+  azureCloud?: AzureCloud
   id: string
   tenantId: string
   entityType: 'mcpPublication'
@@ -1594,6 +1623,7 @@ export interface PoolModel {
 
 /** One vendor's deployments, on many endpoints, served through one API on one gateway. */
 export interface ModelPool {
+  azureCloud?: AzureCloud
   id: string
   tenantId: string
   entityType: 'modelPool'
@@ -1685,6 +1715,7 @@ export interface ModelPoolUpdate {
 }
 
 export interface PoolMemberView {
+  azureCloud?: AzureCloud
   modelEndpointId: string
   endpointName?: string | null
   deploymentName: string
@@ -1736,6 +1767,7 @@ export interface PoolModelView {
 }
 
 export interface ModelPoolDetail {
+  azureCloud?: AzureCloud
   pool: ModelPool
   gatewayName?: string | null
   gatewayEnvironment?: string | null
@@ -1815,6 +1847,7 @@ export interface PoolHealth {
 }
 
 export interface PoolCandidateDeployment {
+  azureCloud?: AzureCloud
   modelEndpointId: string
   endpointName: string
   region?: string | null
@@ -1870,6 +1903,7 @@ export interface PoolMemberProblem {
 
 /** A pool as the console's list shows it, with its active members counted. */
 export interface ModelPoolSummary {
+  azureCloud?: AzureCloud
   pool: ModelPool
   gatewayName?: string | null
   gatewayEnvironment?: string | null
@@ -1919,6 +1953,7 @@ export interface PoolReference {
 
 /** A pool worth creating on a gateway: one vendor's models deployed on two or more endpoints. */
 export interface PoolSuggestion {
+  azureCloud?: AzureCloud
   gatewayId: string
   gatewayName: string
   gatewayEnvironment?: string | null
@@ -1939,6 +1974,7 @@ export interface KeySharedModel {
 }
 
 export interface ModelConnection {
+  azureCloud?: AzureCloud
   entitlementId: string
   /** A pool model's pool ID. */
   publicationId: string
@@ -1978,6 +2014,12 @@ export interface ModelConnection {
 }
 
 export interface McpConnection {
+  azureCloud?: AzureCloud
+  appliedMethods?: ModelAccessSettings | null
+  subscriptionHeader?: string
+  keysAvailable?: boolean
+  keyExists?: boolean
+  keysAllowedByCostCenter?: boolean
   entitlementId: string
   mcpServerId: string
   publicationId?: string | null
@@ -2132,6 +2174,8 @@ export interface ObservedAvailableModel {
 }
 
 export interface ModelEndpointSuggestion {
+  azureCloud?: AzureCloud
+  azureConnectionId?: string | null
   source: SuggestionSource
   endpoint?: string | null
   azureResourceId?: string | null
@@ -2237,6 +2281,8 @@ export interface McpInventorySummary {
 }
 
 export interface McpEndpoint {
+  azureCloud?: AzureCloud
+  azureConnectionId?: string | null
   id: string
   tenantId: string
   name: string
@@ -2325,6 +2371,7 @@ export type ExportView =
   | 'costCenters'
 
 export interface AnalyticsFilters {
+  azureCloud?: AzureCloud
   range?: AnalyticsRange
   start?: string
   end?: string
@@ -2413,6 +2460,7 @@ export interface AnalyticsRankRow {
 }
 
 export interface AnalyticsGatewayHealth {
+  azureCloud?: AzureCloud
   gatewayId: string
   name: string
   environment: string | null
@@ -2485,6 +2533,7 @@ export interface AnalyticsConsumerRow extends AnalyticsUsage {
 }
 
 export interface AnalyticsOnBehalfRow extends AnalyticsUsage {
+  azureCloud?: AzureCloud | null
   /** `${person}|${gatewayId}/${mcpApiName}|${application}` */
   key: string
   personObjectId: string
@@ -2513,6 +2562,7 @@ export interface AnalyticsOnBehalfUnresolved {
 }
 
 export interface AnalyticsGrantRow extends AnalyticsUsage {
+  azureCloud?: AzureCloud | null
   key: string
   entitlementId: string | null
   state: 'active' | 'disabled' | 'removed'
@@ -2563,6 +2613,7 @@ export interface AnalyticsConsumers extends AnalyticsReport {
 }
 
 export interface AnalyticsApiRow extends AnalyticsUsage {
+  azureCloud?: AzureCloud | null
   key: string
   gatewayId: string
   gatewayName: string
@@ -2588,6 +2639,7 @@ export interface AnalyticsModelRow extends AnalyticsUsage {
 }
 
 export interface AnalyticsDeploymentRow extends AnalyticsUsage {
+  azureCloud?: AzureCloud | null
   key: string
   endpointId: string
   endpointName: string | null
@@ -2651,6 +2703,7 @@ export interface AnalyticsDenialReason {
 }
 
 export interface AnalyticsDenialRow {
+  azureCloud?: AzureCloud | null
   reason: string
   reasonLabel: string
   callerObjectId: string | null
@@ -2755,6 +2808,7 @@ export interface AnalyticsHygiene extends AnalyticsReport {
 }
 
 export interface AnalyticsUnattributedRow {
+  azureCloud?: AzureCloud | null
   gatewayId: string
   gatewayName: string
   apiName: string

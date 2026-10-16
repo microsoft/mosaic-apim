@@ -18,6 +18,8 @@ import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader } from '../components/PageHeader'
 import { DetailPanel } from '../components/DetailPanel'
 import { ResourceRow } from '../components/ResourceRow'
+import { CloudBadge } from '../components/CloudBadge'
+import { cloudLabel } from '../cloud-label'
 import { grantTitle, groupResources, modelGroupKey, uniqueValues } from '../model-presentation'
 import {
   describeAttribution,
@@ -41,6 +43,7 @@ export function MyAccessPage() {
   const [params, setParams] = useSearchParams()
   const [search, setSearch] = useState('')
   const [environmentFilter, setEnvironmentFilter] = useState('all')
+  const [cloudFilter, setCloudFilter] = useState('all')
   const [costCenterFilter, setCostCenterFilter] = useState('all')
   const profile = useQuery({ queryKey: ['portal', 'profile'], queryFn: api.getProfile })
   const entitlements = useQuery({
@@ -66,6 +69,7 @@ export function MyAccessPage() {
   const filtered = visibleEntitlements.filter((resolved) => {
     const environment = resolved.resourceSummary?.environment ?? null
     return (environmentFilter === 'all' || (environmentFilter === 'unclassified' ? environment === null : environment === environmentFilter)) &&
+      (cloudFilter === 'all' || (resolved.resourceSummary?.azureCloud ?? 'commercial') === cloudFilter) &&
       (costCenterFilter === 'all' || (resolved.costCenter?.id ?? 'default') === costCenterFilter) &&
       `${grantTitle(resolved)} ${resolved.resourceDisplayName ?? ''} ${resolved.resourceSummary?.displayName ?? ''} ${resolved.resourceSummary?.gatewayName ?? ''} ${costCenterText(resolved)} ${resolved.viaGroupName ?? ''}`
         .toLowerCase().includes(search.trim().toLowerCase())
@@ -124,6 +128,9 @@ export function MyAccessPage() {
           <div className="filter-row" role="group" aria-label="My access filters">
             <Input className="resource-search" aria-label="Search my access" placeholder="Search your models and servers"
               value={search} onChange={(_, data) => setSearch(data.value)} />
+            <label><span>Cloud</span><select value={cloudFilter} onChange={(event) => setCloudFilter(event.currentTarget.value)}>
+              <option value="all">All clouds</option><option value="commercial">Azure Commercial</option><option value="government">Azure Government</option>
+            </select></label>
             <label><span>Environment</span>
               <select value={environmentFilter} onChange={(event) => setEnvironmentFilter(event.currentTarget.value)}>
                 <option value="all">All environments</option>
@@ -140,7 +147,7 @@ export function MyAccessPage() {
             </label>
           </div>
           {groups.length === 0 ? <EmptyState title="No access matches these filters">
-            <Button onClick={() => { setSearch(''); setEnvironmentFilter('all'); setCostCenterFilter('all') }}>Clear filters</Button>
+            <Button onClick={() => { setSearch(''); setEnvironmentFilter('all'); setCloudFilter('all'); setCostCenterFilter('all') }}>Clear filters</Button>
           </EmptyState> : <>
             <div className="resource-list-caption">{groups.length} {groups.length === 1 ? 'resource' : 'resources'} · {filtered.length} {filtered.length === 1 ? 'grant' : 'grants'}</div>
             <div className="resource-list-heading" aria-hidden="true">
@@ -152,8 +159,9 @@ export function MyAccessPage() {
                 const unavailable = group.items.filter((resolved) => resolved.resourceSummary?.available === false).length
                 return <ResourceRow key={group.key} title={group.title}
                   subtitle={<>{group.items.length} {group.items.length === 1 ? 'grant' : 'grants'} · {uniqueValues(group.items.map(costCenterText)).join(', ')}</>}
-                  environments={uniqueValues(group.items.map((resolved) => resolved.resourceSummary?.environment ?? null)).map((key) =>
-                    <EnvironmentBadge key={key ?? 'unclassified'} environment={key} environments={environments.data} />)}
+                  environments={<>{uniqueValues(group.items.map((resolved) => resolved.resourceSummary?.azureCloud ?? 'commercial')).map((cloud) =>
+                    <CloudBadge key={cloud} cloud={cloud} />)}{uniqueValues(group.items.map((resolved) => resolved.resourceSummary?.environment ?? null)).map((key) =>
+                    <EnvironmentBadge key={key ?? 'unclassified'} environment={key} environments={environments.data} />)}</>}
                   status={<>
                     <span>{statuses.length === 1 ? statuses[0] : 'Mixed gateway state'}</span>
                     {unavailable > 0 && <Badge appearance="outline" color="warning">No longer available{group.items.length > 1 ? ` (${unavailable})` : ''}</Badge>}
@@ -176,7 +184,7 @@ export function MyAccessPage() {
               }}>
                 <option value="">Choose a cost center and grant</option>
                 {selectedGroup.items.map((resolved) => <option key={resolved.entitlement.id} value={resolved.entitlement.id}>
-                  {costCenterText(resolved)} · {environmentLabel(environments.data, resolved.resourceSummary?.environment ?? null)}
+                  {costCenterText(resolved)} · {cloudLabel(resolved.resourceSummary?.azureCloud)} · {environmentLabel(environments.data, resolved.resourceSummary?.environment ?? null)}
                   {` · ${resolved.resourceDisplayName ?? resolved.resourceSummary?.displayName ?? grantTitle(resolved)}`}
                   {resolved.model?.version && ` · ${resolved.model.version}`}
                   {` · ${describeAttribution(resolved)} · ${describeRuntime(resolved.entitlement)}`}
@@ -186,7 +194,7 @@ export function MyAccessPage() {
             {selected ? <div key={selected.entitlement.id} className="drawer-content">
               <div className="badge-row">
                 <Badge appearance="tint">{costCenterText(selected)}</Badge>
-                <EnvironmentBadge environment={selected.resourceSummary?.environment ?? null} environments={environments.data} />
+                <EnvironmentBadge azureCloud={selected.resourceSummary?.azureCloud ?? 'commercial'} environment={selected.resourceSummary?.environment ?? null} environments={environments.data} />
                 <Badge appearance="outline">{describeRuntime(selected.entitlement)}</Badge>
               </div>
               <Text>{withResourceKind(selected.entitlement.resource, selected.resourceDisplayName,

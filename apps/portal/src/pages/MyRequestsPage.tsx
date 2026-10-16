@@ -23,6 +23,7 @@ function headingSummary(request: AccessRequest): ResourceSummary | null {
     gatewayId: request.resourceSnapshot.gatewayId,
     gatewayName: request.resourceSnapshot.gatewayName,
     environment: request.requestedEnvironment,
+    azureCloud: request.resourceSnapshot.azureCloud,
     available: false,
   }
 }
@@ -129,6 +130,7 @@ export function MyRequestsPage() {
               />
               <div className="badge-row">
                 <EnvironmentBadge
+                  azureCloud={headingSummary(request)?.azureCloud ?? 'commercial'}
                   environment={request.resourceSummary?.environment ?? request.requestedEnvironment}
                   environments={environments.data}
                 />

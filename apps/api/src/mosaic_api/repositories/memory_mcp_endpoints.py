@@ -27,13 +27,16 @@ class InMemoryMcpEndpointRepository(InMemoryEndpointStateBase):
         endpoint = self.endpoints.get(endpoint_id)
         return endpoint if endpoint and endpoint.tenant_id == tenant_id else None
 
-    async def find_endpoint_by_url(self, tenant_id: str, endpoint: str) -> McpEndpoint | None:
+    async def find_endpoint_by_url(
+        self, tenant_id: str, endpoint: str, *, azure_cloud: str = "commercial"
+    ) -> McpEndpoint | None:
         target = endpoint.casefold().rstrip("/")
         return next(
             (
                 item
                 for item in self.endpoints.values()
                 if item.tenant_id == tenant_id
+                and item.azure_cloud == azure_cloud
                 and str(item.endpoint).casefold().rstrip("/") == target
             ),
             None,

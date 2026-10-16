@@ -62,9 +62,7 @@ def _grant_key(grant_key: str, grant: GrantInfo | None) -> str:
 
 
 def _ordered[T: AnalyticsUsage](rows: list[T], label: Callable[[T], str]) -> list[T]:
-    return sorted(
-        rows, key=lambda row: (-row.total_tokens, -row.requests, label(row).casefold())
-    )
+    return sorted(rows, key=lambda row: (-row.total_tokens, -row.requests, label(row).casefold()))
 
 
 def _kind(name: Name, tally: _Tally) -> ConsumerKind:
@@ -133,6 +131,7 @@ def _on_behalf_rows(
         known = scope.apis.get((gateway_id, mcp_api))
         rows.append(
             AnalyticsOnBehalfRow(
+                azure_cloud=scope.gateway_cloud(gateway_id),
                 **usage_values(tally.metrics, requests, tokens, tally.cost),
                 key=f"{person}|{gateway_id}/{mcp_api}|{application}",
                 person_object_id=person,
@@ -308,6 +307,7 @@ def consumers_report(
         charged = scope.cost_center(grant)
         grant_rows.append(
             AnalyticsGrantRow(
+                azure_cloud=scope.gateway_cloud(grant.gateway_id) if grant else None,
                 **usage_values(grant_tally.metrics, requests, tokens, grant_tally.cost),
                 key=merged,
                 entitlement_id=entitlement_id,

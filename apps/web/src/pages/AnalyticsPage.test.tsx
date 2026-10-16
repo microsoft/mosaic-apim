@@ -151,6 +151,19 @@ describe('AnalyticsPage', () => {
     await waitFor(() => expect(api.exportAnalytics).toHaveBeenCalledWith('trend', expect.objectContaining({ costCenterId: 'cc-support' })))
   })
 
+  it('defaults to all clouds and carries the applied cloud to reports and CSV exports', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Alice Admin')
+    await user.click(screen.getByRole('button', { name: 'Filters' }))
+    expect(screen.getByLabelText('Cloud')).toHaveValue('')
+    await user.selectOptions(screen.getByLabelText('Cloud'), 'government')
+    await user.click(screen.getByRole('button', { name: 'Apply filters' }))
+    await waitFor(() => expect(api.getAnalyticsOverview).toHaveBeenLastCalledWith(expect.objectContaining({ azureCloud: 'government' })))
+    await user.click(screen.getByRole('button', { name: 'Export CSV' }))
+    await waitFor(() => expect(api.exportAnalytics).toHaveBeenCalledWith('trend', expect.objectContaining({ azureCloud: 'government' })))
+  })
+
   it('offers model pools whose API is in API Management as resources', async () => {
     api.listModelPools.mockResolvedValue([
       { id: 'pool-claude', displayName: 'Claude', apiName: 'claude', resources: [{ kind: 'api', name: 'claude', createdByMosaic: true }] },

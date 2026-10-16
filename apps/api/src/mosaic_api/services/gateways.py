@@ -14,6 +14,12 @@ from typing import Any
 
 import structlog
 
+from mosaic_api.clouds import (
+    AzureCloud,
+    ConnectionValidator,
+    known_azure_host_cloud,
+    validate_resource_connection,
+)
 from mosaic_api.domain import (
     ApimResourceId,
     AuditEvent,
@@ -116,9 +122,11 @@ class GatewayService:
         identity_resolver: IdentityResolver | None = None,
         bootstrap_resource_id: str | None = None,
         environment_repository: EnvironmentRepository | None = None,
+        connection_validator: ConnectionValidator | None = None,
     ) -> None:
         self._repository = repository
         self._client_factory = client_factory
+        self._connection_validator = connection_validator
         self._principal_id = principal_id
         self._identity_resolver = identity_resolver
         self._identity_resolved = principal_id is not None
@@ -173,9 +181,22 @@ class GatewayService:
         return gateway
 
     async def register(self, actor: Actor, request: GatewayCreate) -> Gateway:
-        resource = ApimResourceId.parse(request.azure_resource_id)
+        if request.azure_connection_id is not None or request.azure_cloud != "commercial":
+            async with scope_lease(self._repository, actor.tenant_id, "azure-connections"):
+                return await self._register(actor, request)
+        return await self._register(actor, request)
+
+    async def _register(self, actor: Actor, request: GatewayCreate) -> Gateway:
+        await validate_resource_connection(
+            self._connection_validator, actor.tenant_id,
+            request.azure_connection_id, request.azure_cloud,
+        )
+        resource = ApimResourceId.parse(
+            request.azure_resource_id, azure_cloud=request.azure_cloud,
+            azure_connection_id=request.azure_connection_id,
+        )
         existing = await self._repository.find_gateway_by_resource_id(
-            actor.tenant_id, resource.canonical
+            actor.tenant_id, resource.canonical, azure_cloud=resource.azure_cloud
         )
         if existing:
             raise ConflictError(
@@ -189,6 +210,8 @@ class GatewayService:
             name=(request.name or resource.service_name).strip(),
             provider=request.provider,
             azure_resource_id=resource.canonical,
+            azure_cloud=resource.azure_cloud,
+            azure_connection_id=resource.azure_connection_id,
             subscription_id=resource.subscription_id,
             resource_group=resource.resource_group,
             service_name=resource.service_name,
@@ -354,9 +377,20 @@ class GatewayService:
         return recorded
 
     async def _apply_preflight(self, gateway: Gateway) -> Gateway:
-        resource = ApimResourceId.parse(gateway.azure_resource_id)
+        resource = gateway.arm_resource()
         client = self._client_factory(resource)
-        result = await run_preflight(client, principal_id=await self._resolve_principal_id())
+        principal_id = (
+            await client._arm.caller_object_id()
+            if resource.azure_connection_id is not None or resource.azure_cloud != "commercial"
+            else await self._resolve_principal_id()
+        )
+        result = await run_preflight(client, principal_id=principal_id)
+        if result.capabilities.gateway_url is not None:
+            detected_cloud = known_azure_host_cloud(str(result.capabilities.gateway_url))
+            if detected_cloud is not None and detected_cloud != gateway.azure_cloud:
+                raise ValidationError(
+                    "Azure returned a gateway hostname belonging to a different Azure cloud."
+                )
         capabilities = result.capabilities
         # Preflight reads the service resource, not its contents, so it cannot re-derive
         # capabilities that only a sync can establish. Carry those forward instead of resetting
@@ -438,7 +472,7 @@ class GatewayService:
     async def _collect_and_persist(
         self, gateway: Gateway, run: GatewaySyncRun, started: datetime
     ) -> None:
-        resource = ApimResourceId.parse(gateway.azure_resource_id)
+        resource = gateway.arm_resource()
         client = self._client_factory(resource)
         collector = InventoryCollector(client, tenant_id=gateway.tenant_id, gateway_id=gateway.id)
         snapshot = await collector.collect()
@@ -688,7 +722,7 @@ class GatewayService:
         self, actor: Actor, gateway_id: str, api_name: str, operation_name: str
     ) -> ScopedPolicyView:
         gateway = await self.get_gateway(actor, gateway_id)
-        resource = ApimResourceId.parse(gateway.azure_resource_id)
+        resource = gateway.arm_resource()
         client = self._client_factory(resource)
         xml = await client.get_operation_policy(api_name, operation_name)
         label = f"Operation: {api_name}/{operation_name}"
@@ -1101,9 +1135,34 @@ class GatewayService:
             self._audit(actor, "mcpServer.catalogUpdated", updated.id, resource_type="mcpServer"),
         )
 
-    async def suggestions(self, actor: Actor) -> list[GatewaySuggestion]:
+    async def suggestions(
+        self, actor: Actor, *, azure_cloud: AzureCloud = "commercial",
+        azure_connection_id: str | None = None,
+    ) -> list[GatewaySuggestion]:
         """Surface the APIM that MOSAIC's own deployment created, if it is not onboarded yet."""
 
+        await validate_resource_connection(
+            self._connection_validator, actor.tenant_id, azure_connection_id, azure_cloud
+        )
+        if azure_connection_id is not None or azure_cloud != "commercial":
+            return [
+                GatewaySuggestion(
+                    azure_resource_id=gateway.azure_resource_id,
+                    azure_cloud=gateway.azure_cloud,
+                    azure_connection_id=gateway.azure_connection_id,
+                    service_name=gateway.service_name,
+                    resource_group=gateway.resource_group,
+                    subscription_id=gateway.subscription_id,
+                    already_registered=True,
+                    gateway_id=gateway.id,
+                    reason=(
+                        "Already registered through this connection; add other gateways by ARM ID."
+                    ),
+                )
+                for gateway in await self._repository.list_gateways(actor.tenant_id)
+                if gateway.azure_cloud == azure_cloud
+                and gateway.azure_connection_id == azure_connection_id
+            ]
         if not self._bootstrap_resource_id:
             return []
         try:

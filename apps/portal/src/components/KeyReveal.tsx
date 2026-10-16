@@ -21,9 +21,10 @@ import {
   keyRevealProblem,
   sharedKeyModels,
   type KeyAvailability,
+  type KeyConnection,
 } from '../connection-format'
 import { useFocusHandoff, type FocusHandoff } from '../focus-handoff'
-import type { KeySlot, ModelConnection } from '../types'
+import type { KeySlot } from '../types'
 
 interface RevealVariables {
   slot: KeySlot
@@ -56,7 +57,7 @@ export function KeyReveal({
   focusHandoff,
 }: {
   entitlementId: string
-  connection: ModelConnection
+  connection: KeyConnection
   onConflict: () => void
   focusHandoff?: FocusHandoff
 }) {
@@ -109,7 +110,7 @@ export function KeyReveal({
       if (isConflict(failure)) onConflict()
     },
   })
-  const keyExists = connection.keyExists ?? connection.runtime?.keyExists ?? true
+  const keyExists = connection.keyExists ?? connection.runtime?.keyExists ?? connection.azureCloud !== 'government'
   const sharedWith = sharedKeyModels(connection)
   const alsoAffected = sharedWith ? `, including apps that call ${sharedWith} with it` : ''
   const costCenterLabel = connection.costCenter
@@ -253,13 +254,14 @@ export function KeyReveal({
   const visible = availability.available ? secret : null
   const keyActionError = createKey.error ?? rotateKey.error ?? deleteKey.error
   const problem = reveal.isError
-    ? keyRevealProblem(reveal.error)
+    ? keyRevealProblem(reveal.error, connection.azureCloud)
     : keyActionError
-      ? keyRevealProblem(keyActionError)
+      ? keyRevealProblem(keyActionError, connection.azureCloud)
       : null
   const entraOnlyGroupGrant = !availability.available && availability.reason === GROUP_GRANT_ENTRA_ONLY
-  // Applies don't create keys: until someone asks for one, there's nothing to show or rotate.
   const awaitingKey = availability.available && !keyExists
+  const preparingKey = connection.azureCloud === 'government' && awaitingKey &&
+    !['failed', 'deleted'].includes(connection.runtime?.keyState ?? '')
   const costCenterKeysOff =
     !availability.available && availability.reason.startsWith('Subscription keys are turned off for this cost center')
 
@@ -296,15 +298,17 @@ export function KeyReveal({
       {awaitingKey && (
         <>
           <Text as="p" size={200} className="connection-note">
-            No subscription key exists yet. Create one when an app needs key-based access.
+            {preparingKey ? 'MOSAIC is preparing your initial key after the reviewed apply. Refresh connection details to check its status.'
+              : connection.runtime?.keyState === 'failed' ? 'Automatic key setup failed. Refresh status or ask your administrator to retry the connection.'
+              : 'No subscription key exists yet. Create one when an app needs key-based access.'}
           </Text>
           <div className="key-actions">
             <Button
               appearance="primary"
-              onClick={() => createKey.mutate()}
+              onClick={() => preparingKey || connection.runtime?.keyState === 'failed' ? onConflict() : createKey.mutate()}
               disabled={createKey.isPending}
             >
-              Create key
+              {preparingKey || connection.runtime?.keyState === 'failed' ? 'Refresh key status' : 'Create key'}
             </Button>
           </div>
         </>

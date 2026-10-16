@@ -16,6 +16,7 @@ import structlog
 from azure.core.credentials_async import AsyncTokenCredential
 from azure.core.exceptions import ClientAuthenticationError
 
+from mosaic_api.clouds import AzureCloud, cloud_profile
 from mosaic_api.domain import (
     APIM_API_VERSION,
     APIM_LLM_DIAGNOSTIC_API_VERSION,
@@ -273,10 +274,18 @@ class ArmClient:
         *,
         client: httpx.AsyncClient | None = None,
         base_url: str = ARM_BASE_URL,
+        scope: str | None = None,
         sleep: Any = asyncio.sleep,
     ) -> None:
         self._credential = credential
         self._base_url = base_url.rstrip("/")
+        profiles = (cloud_profile("commercial"), cloud_profile("government"))
+        profile = next(
+            (profile for profile in profiles if profile.arm_endpoint == self._base_url), None
+        )
+        if profile is None or (scope is not None and scope != profile.arm_scope):
+            raise ValueError("ARM endpoint and token scope must match a supported Azure cloud")
+        self._scope = profile.arm_scope
         self._client = client or httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0))
         self._owns_client = client is None
         self._sleep = sleep
@@ -296,6 +305,10 @@ class ArmClient:
         if self._owns_client:
             await self._client.aclose()
 
+    def require_cloud(self, cloud: AzureCloud) -> None:
+        if cloud_profile(cloud).arm_endpoint != self._base_url:
+            raise ValueError("ARM transport does not match the resource's Azure cloud")
+
     async def caller_object_id(self) -> str | None:
         """The object ID of the identity MOSAIC calls Azure with.
 
@@ -306,7 +319,7 @@ class ArmClient:
         """
 
         try:
-            token = await self._credential.get_token(ARM_SCOPE)
+            token = await self._credential.get_token(self._scope)
             claims = jwt.decode(token.token, options={"verify_signature": False})
         except (ClientAuthenticationError, jwt.PyJWTError, ValueError):
             return None
@@ -315,12 +328,12 @@ class ArmClient:
 
     async def _authorization_header(self) -> str:
         try:
-            token = await self._credential.get_token(ARM_SCOPE)
-        except ClientAuthenticationError as error:
+            token = await self._credential.get_token(self._scope)
+        except ClientAuthenticationError:
             raise UpstreamAuthorizationError(
                 "MOSAIC could not acquire an Azure Resource Manager token",
-                details={"reason": str(error)},
-            ) from error
+                details={"reason": "Authentication failed for the selected Azure connection"},
+            ) from None
         return f"Bearer {token.token}"
 
     @staticmethod
@@ -371,7 +384,26 @@ class ArmClient:
         return await self._send("GET", url, params=params, allow_not_found=allow_not_found)
 
     def _absolute(self, url: str) -> str:
-        return url if url.startswith("http") else f"{self._base_url}{url}"
+        try:
+            target = httpx.URL(url)
+            origin = httpx.URL(self._base_url)
+            if (
+                target.username or target.password or target.fragment
+                or (target.is_absolute_url and (
+                    target.scheme != origin.scheme or target.host != origin.host
+                    or target.port != origin.port
+                ))
+                or (
+                    not target.is_absolute_url
+                    and (not url.startswith("/") or url.startswith("//"))
+                )
+            ):
+                raise ValueError
+        except (httpx.InvalidURL, ValueError):
+            raise UpstreamError(
+                "Azure returned an untrusted ARM continuation or operation URL"
+            ) from None
+        return str(target) if target.is_absolute_url else f"{self._base_url}{url}"
 
     async def _send(
         self,
@@ -409,7 +441,8 @@ class ArmClient:
                 headers["If-Match"] = if_match
             try:
                 response = await self._client.request(
-                    method, target, params=params, json=json, headers=headers
+                    method, target, params=params, json=json, headers=headers,
+                    follow_redirects=False,
                 )
             except httpx.HTTPError as error:
                 last_error = "Credential request transport failure" if sensitive else str(error)
@@ -424,6 +457,8 @@ class ArmClient:
                 await self._sleep(min(2.0**attempt, MAX_RETRY_DELAY_SECONDS))
                 continue
 
+            if 300 <= response.status_code < 400:
+                raise UpstreamError("Azure Resource Manager redirects are not permitted")
             if response.status_code in {401, 403}:
                 raise UpstreamAuthorizationError(
                     "MOSAIC's identity is not authorized for this Azure resource",
@@ -601,6 +636,7 @@ class ArmClient:
         poll_url = _poll_url(response)
         if not poll_url:
             return
+        poll_url = self._absolute(poll_url)
         delay = self._poll_delay(response, DEFAULT_POLL_DELAY_SECONDS)
         for _ in range(MAX_POLL_ATTEMPTS):
             await self._sleep(delay)
@@ -717,6 +753,7 @@ class ApimClient:
     """API Management reads. Every method on this class is read-only by construction."""
 
     def __init__(self, arm: ArmClient, resource: ApimResourceId) -> None:
+        arm.require_cloud(resource.azure_cloud)
         self._arm = arm
         self._resource = resource
         self._base = resource.canonical

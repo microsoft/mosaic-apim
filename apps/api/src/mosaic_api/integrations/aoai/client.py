@@ -28,6 +28,7 @@ class CognitiveServicesClient:
     """
 
     def __init__(self, arm: ArmClient, resource: CognitiveServicesResourceId) -> None:
+        arm.require_cloud(resource.azure_cloud)
         self._arm = arm
         self._resource = resource
         self._account = resource.account_scope

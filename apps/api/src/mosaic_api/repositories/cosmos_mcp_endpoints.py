@@ -24,11 +24,16 @@ class CosmosMcpEndpointRepository(CosmosEndpointStateBase):
     async def get_endpoint(self, tenant_id: str, endpoint_id: str) -> McpEndpoint | None:
         return await self._read(McpEndpoint, tenant_id, endpoint_id)
 
-    async def find_endpoint_by_url(self, tenant_id: str, endpoint: str) -> McpEndpoint | None:
+    async def find_endpoint_by_url(
+        self, tenant_id: str, endpoint: str, *, azure_cloud: str = "commercial"
+    ) -> McpEndpoint | None:
         target = endpoint.casefold().rstrip("/")
         items = await self._query(McpEndpoint, tenant_id, "mcpEndpoint")
         return next(
-            (item for item in items if str(item.endpoint).casefold().rstrip("/") == target),
+            (
+                item for item in items if item.azure_cloud == azure_cloud
+                and str(item.endpoint).casefold().rstrip("/") == target
+            ),
             None,
         )
 

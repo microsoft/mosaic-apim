@@ -37,6 +37,7 @@ function renderDialog(entitlement = directGrant) {
     navigate = useNavigate()
     return null
   }
+
   function tree(open = true, grant = entitlement) {
     return (
       <QueryClientProvider client={queryClient}>
@@ -105,6 +106,22 @@ describe('EntitlementConnectionDialog', () => {
       limits: { requests: { counterKeyExpression: '@(context.Subscription.Id)', calls: 60, renewalPeriodSeconds: 60 } },
     })
     api.revealEntitlementKey.mockResolvedValue(revealed)
+  })
+
+  it('shows Government key readiness without commercial OAuth instructions or creating a key', async () => {
+    api.getEntitlementConnection.mockResolvedValue({
+      ...connectionInfo, azureCloud: 'government', keyExists: false,
+      appliedMethods: { keysEnabled: true, entraEnabled: false },
+      runtime: { ...connectionInfo.runtime!, keyState: 'preparing' },
+      entraAudience: null, entraScope: null, entraClientId: null,
+    })
+    renderDialog()
+    expect(await screen.findByLabelText('Azure Government')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Refresh key status' })).toBeVisible()
+    expect(screen.queryByText(/Microsoft Entra bearer tokens/)).not.toBeInTheDocument()
+    expect(screen.queryByText('Model-runtime audience')).not.toBeInTheDocument()
+    expect(api.createEntitlementKey).not.toHaveBeenCalled()
+    expect(api.revealEntitlementKey).not.toHaveBeenCalled()
   })
 
   it('does not request or copy a key until explicitly asked, and never caches key material', async () => {

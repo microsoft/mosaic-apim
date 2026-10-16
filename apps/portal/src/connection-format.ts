@@ -56,20 +56,52 @@ export function describeConnectionRuntime(runtime: EntitlementRuntime | null | u
 
 export type KeyAvailability = { available: true } | { available: false; reason: string }
 
+export type KeyConnection = Pick<ModelConnection,
+  'entitlementId' | 'runtime' | 'appliedMethods' | 'keyExists' | 'keysAllowedByCostCenter' |
+  'keysAvailable' | 'keySharedWith' | 'azureCloud' | 'costCenter'>
+
+export function governmentReadiness(connection: KeyConnection) {
+  const runtime = connection.runtime
+  if (runtime?.status !== 'applied') {
+    if (runtime && !['pending', 'applying'].includes(runtime.status)) return describeConnectionRuntime(runtime)
+    return { label: runtime?.status === 'failed' ? 'Gateway apply failed' : 'Approved — awaiting apply',
+      explanation: 'An administrator must successfully apply reviewed gateway access before a key can be prepared.', applied: false }
+  }
+  if (connection.keysAllowedByCostCenter === false || connection.keysAvailable === false ||
+    runtime.keyState === 'ineligible') {
+    return { label: 'Key access unavailable',
+      explanation: 'Azure Government requires an eligible direct grant and a cost center that allows keys. Ask your administrator to review this grant.', applied: false }
+  }
+  if ((connection.keyExists ?? runtime.keyExists) && runtime.keyState !== 'deleted') {
+    return { label: 'Ready', explanation: 'Gateway access and your subscription key are prepared. Reveal the key explicitly to connect. Network access is still required.', applied: true }
+  }
+  if (runtime.keyState === 'failed') {
+    return { label: 'Key setup failed', explanation: runtime.keyError || 'Refresh key status, or ask your administrator to retry the connection and check API Management permissions.', applied: false }
+  }
+  if (runtime.keyState === 'deleted') {
+    return { label: 'Key deleted', explanation: 'This key was deleted. Create a new key explicitly if you need to restore key access.', applied: false }
+  }
+  return { label: 'Preparing key', explanation: 'Gateway access is applied. MOSAIC is preparing your subscription key; refresh connection details to check again.', applied: false }
+}
+
 export const GROUP_GRANT_ENTRA_ONLY =
   "Access granted to a group uses Microsoft Entra sign-in only, so there's no key. Sign in with your own account to get a token."
 
-export function keyAvailability(connection: ModelConnection): KeyAvailability {
+export function keyAvailability(connection: KeyConnection): KeyAvailability {
   if (connection.keysAvailable === false) {
     return {
       available: false,
-      reason: GROUP_GRANT_ENTRA_ONLY,
+      reason: connection.azureCloud === 'government'
+        ? 'Azure Government key access requires a direct grant. Ask your administrator for one; group grants cannot supply a shared key.'
+        : GROUP_GRANT_ENTRA_ONLY,
     }
   }
   if (connection.keysAllowedByCostCenter === false) {
     return {
       available: false,
-      reason: 'Subscription keys are turned off for this cost center. Use a Microsoft Entra ID token instead.',
+      reason: connection.azureCloud === 'government'
+        ? 'Subscription keys are turned off for this cost center. Azure Government requires keys; ask your administrator to choose a key-enabled cost center.'
+        : 'Subscription keys are turned off for this cost center. Use a Microsoft Entra ID token instead.',
     }
   }
   const runtime = connection.runtime
@@ -100,7 +132,7 @@ export function keyAvailability(connection: ModelConnection): KeyAvailability {
 /** Rejects a response that does not describe the key that was asked for. */
 export function isExpectedKey(
   result: KeyRevealResult,
-  connection: ModelConnection,
+  connection: KeyConnection,
   slot: KeySlot,
 ) {
   const expectedSubscription = connection.runtime?.subscriptionName
@@ -221,7 +253,7 @@ export function connectionProblem(error: unknown, resourceKind: 'modelApi' | 'mc
   }
 }
 
-export function keyRevealProblem(error: unknown): Problem {
+export function keyRevealProblem(error: unknown, azureCloud: ModelConnection['azureCloud'] = 'commercial'): Problem {
   if (error instanceof UnexpectedCredentialError) {
     return { title: 'Could not show the key', message: error.message }
   }
@@ -264,7 +296,9 @@ export function keyRevealProblem(error: unknown): Problem {
       return { title: 'A key already exists', message: 'Show, rotate, or delete the existing key.' }
     }
     if (reason === 'costCenterKeysOff') {
-      return { title: 'Keys are turned off for this cost center', message: 'Use a Microsoft Entra ID token instead.' }
+      return { title: 'Keys are turned off for this cost center', message: azureCloud === 'government'
+        ? 'Azure Government requires a key-enabled cost center. Ask your administrator to update this grant.'
+        : 'Use a Microsoft Entra ID token instead.' }
     }
     if (reason === 'keyNotOwned') {
       return { title: 'This key is not yours to manage', message: 'Ask an administrator to check the grant owner.' }
@@ -320,6 +354,7 @@ export type SampleInput = Pick<
   | 'keysAvailable'
   | 'costCenter'
   | 'costCenterHeader'
+  | 'azureCloud'
 >
 
 function shellDoubleQuoted(text: string) {
@@ -346,6 +381,8 @@ export function buildSamples(
   connection: SampleInput,
   options: { credential?: 'token' } = {},
 ): ConnectionSamples | null {
+  if (connection.azureCloud === 'government' &&
+    (options.credential === 'token' || !connection.appliedMethods?.keysEnabled || connection.keysAvailable === false)) return null
   const methods = connection.appliedMethods
   const credential =
     options.credential === 'token'
@@ -433,7 +470,7 @@ export function buildSamples(
 /** Non-secret sign-in identifiers only; a token sample never sees a key either. */
 export type TokenSampleInput = Pick<
   ModelConnection,
-  'tenantId' | 'entraClientId' | 'entraScope' | 'appliedMethods'
+  'tenantId' | 'entraClientId' | 'entraScope' | 'appliedMethods' | 'azureCloud'
 >
 
 /**
@@ -441,6 +478,7 @@ export type TokenSampleInput = Pick<
  * token to stdout, so the output can be captured into MOSAIC_ACCESS_TOKEN.
  */
 export function buildTokenSample(connection: TokenSampleInput): string | null {
+  if (connection.azureCloud === 'government') return null
   const { tenantId, entraClientId, entraScope } = connection
   if (!connection.appliedMethods?.entraEnabled || !tenantId || !entraClientId || !entraScope) return null
   const authority = `https://login.microsoftonline.com/${tenantId}`

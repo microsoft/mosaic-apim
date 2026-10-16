@@ -6,6 +6,7 @@ import { useEnvironmentCatalog } from '../environments'
 import type { McpAuthMode, McpEndpoint } from '../types'
 import { ErrorState, Loading } from './AsyncState'
 import { EnvironmentPicker } from './EnvironmentPicker'
+import { AzureConnectionPicker, type ConnectionSelection } from './AzureConnectionPicker'
 import { WorkspaceEditorFrame } from './WorkspaceEditorFrame'
 import styles from '../pages/McpsPage.module.css'
 
@@ -21,6 +22,7 @@ export function McpRegistrationForm({
   const catalog = useEnvironmentCatalog()
   const formRef = useRef<HTMLFormElement>(null)
   const [mode, setMode] = useState<McpAuthMode>('none')
+  const [connection, setConnection] = useState<ConnectionSelection>({ azureCloud: 'commercial', azureConnectionId: null })
   const [url, setUrl] = useState('')
   const [name, setName] = useState('')
   const [environment, setEnvironment] = useState<string | null>(null)
@@ -39,6 +41,7 @@ export function McpRegistrationForm({
       name: name.trim() || undefined,
       environment,
       authMode: mode,
+      ...(connection.azureConnectionId || connection.azureCloud !== 'commercial' ? connection : {}),
       credentialSecretUri: mode === 'apiKey' ? secretUri.trim() : undefined,
       resourceAudience: mode === 'managedIdentity' ? audience.trim() : undefined,
     }),
@@ -65,6 +68,10 @@ export function McpRegistrationForm({
       pending={register.isPending} pendingLabel="Registering server…"
       primaryAction={{ label: 'Register', onClick: () => formRef.current?.requestSubmit() }}>
       <form ref={formRef} onSubmit={submit} className={styles.editorForm}>
+        <AzureConnectionPicker value={connection} onChange={(selection) => {
+          setConnection(selection)
+          if (selection.azureCloud === 'government' && mode === 'apiKey') setMode('none')
+        }} />
         <Field label="Server URL" required
           hint="The Streamable HTTP endpoint, usually ending in /mcp. MOSAIC will not connect to a private or loopback address.">
           <Input required type="url" value={url} onChange={(_, data) => setUrl(data.value)}
@@ -73,8 +80,8 @@ export function McpRegistrationForm({
         <TabList aria-label="Server authentication" selectedValue={mode}
           onTabSelect={(_, data) => setMode(data.value as McpAuthMode)}>
           <Tab value="none">No auth</Tab>
-          <Tab value="apiKey">Key Vault secret</Tab>
-          <Tab value="managedIdentity">Managed identity</Tab>
+          <Tab value="apiKey" disabled={connection.azureCloud === 'government'}>Key Vault secret</Tab>
+          <Tab value="managedIdentity">{connection.azureCloud === 'government' ? 'Selected connection' : 'Managed identity'}</Tab>
         </TabList>
         {mode === 'apiKey' && (
           <Field label="Key Vault secret URI" required

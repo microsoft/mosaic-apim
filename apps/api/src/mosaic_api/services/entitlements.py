@@ -158,8 +158,7 @@ class GovernedRecords:
     async def publications(self) -> dict[str, Publication]:
         if self._publications is None:
             self._publications = {
-                item.id: item
-                for item in await self._repository.list_publications(self._tenant_id)
+                item.id: item for item in await self._repository.list_publications(self._tenant_id)
             }
         return self._publications
 
@@ -279,11 +278,7 @@ def _existing_grant_conflict(existing: Entitlement) -> ConflictError:
 
 
 def _reject_mcp_token_limits(resource: EntitlementResource, enforcement: Any) -> None:
-    if (
-        resource.kind == "mcpServer"
-        and enforcement is not None
-        and enforcement.tokens is not None
-    ):
+    if resource.kind == "mcpServer" and enforcement is not None and enforcement.tokens is not None:
         raise ValidationError(
             "MCP servers are limited by calls, not tokens. Remove the token limits."
         )
@@ -550,6 +545,7 @@ class EntitlementService:
     @staticmethod
     def _snapshot_from_summary(summary: ResourceSummary) -> AccessRequestResourceSnapshot:
         return AccessRequestResourceSnapshot(
+            azure_cloud=summary.azure_cloud,
             display_name=summary.display_name,
             gateway_id=summary.gateway_id,
             gateway_name=summary.gateway_name,
@@ -570,6 +566,7 @@ class EntitlementService:
             gateway_id=snapshot.gateway_id if snapshot else None,
             gateway_name=snapshot.gateway_name if snapshot else None,
             environment=requested_environment,
+            azure_cloud=snapshot.azure_cloud if snapshot else "commercial",
             available=False,
         )
 
@@ -667,6 +664,7 @@ class EntitlementService:
 
         result: list[ResourceSummary] = []
         for index, resource in enumerate(resources):
+            snapshot = snapshots[index]
             resource_visible = visible
             if isinstance(visible, dict):
                 resource_visible = visible.get(_resource_key(resource), False)
@@ -690,17 +688,26 @@ class EntitlementService:
                         id=resource.id,
                         scope_id=resource.scope_id,
                         display_name=model_api.display_name,
+                        azure_cloud=gateway.azure_cloud,
                         gateway_id=gateway.id,
                         gateway_name=gateway.name,
                         environment=gateway.environment,
                         available=await records.model_api_offered(model_api),
                     )
                 elif model_api:
+                    publication = (await records.publications()).get(model_api.publication_id or "")
                     summary = ResourceSummary(
                         kind=resource.kind,
                         id=resource.id,
                         scope_id=resource.scope_id,
                         display_name=model_api.display_name,
+                        azure_cloud=(
+                            publication.azure_cloud
+                            if publication
+                            else snapshot.azure_cloud
+                            if snapshot
+                            else "commercial"
+                        ),
                         gateway_id=model_api.gateway_id,
                         available=False,
                     )
@@ -713,17 +720,28 @@ class EntitlementService:
                         id=resource.id,
                         scope_id=resource.scope_id,
                         display_name=mcp_server.display_name,
+                        azure_cloud=gateway.azure_cloud,
                         gateway_id=gateway.id,
                         gateway_name=gateway.name,
                         environment=gateway.environment,
                         available=await records.mcp_server_offered(mcp_server),
                     )
                 elif mcp_server:
+                    mcp_publication = (await records.mcp_publications()).get(
+                        mcp_server.publication_id or ""
+                    )
                     summary = ResourceSummary(
                         kind=resource.kind,
                         id=resource.id,
                         scope_id=resource.scope_id,
                         display_name=mcp_server.display_name,
+                        azure_cloud=(
+                            mcp_publication.azure_cloud
+                            if mcp_publication
+                            else snapshot.azure_cloud
+                            if snapshot
+                            else "commercial"
+                        ),
                         gateway_id=mcp_server.gateway_id,
                         available=False,
                     )
@@ -737,6 +755,7 @@ class EntitlementService:
                         id=resource.id,
                         scope_id=resource.scope_id,
                         display_name=product.display_name,
+                        azure_cloud=gateway.azure_cloud,
                         gateway_id=gateway.id,
                         gateway_name=gateway.name,
                         environment=gateway.environment,
@@ -752,6 +771,7 @@ class EntitlementService:
                         id=resource.id,
                         scope_id=resource.scope_id,
                         display_name=f"{deployment.deployment_name} on {endpoint.name}",
+                        azure_cloud=endpoint.azure_cloud,
                         gateway_id=None,
                         gateway_name=None,
                         environment=endpoint.environment,
@@ -767,6 +787,7 @@ class EntitlementService:
                         id=resource.id,
                         scope_id=resource.scope_id,
                         display_name=pool_model.display_name,
+                        azure_cloud=gateway.azure_cloud,
                         gateway_id=gateway.id,
                         gateway_name=gateway.name,
                         environment=gateway.environment,
@@ -778,6 +799,7 @@ class EntitlementService:
                         id=resource.id,
                         scope_id=resource.scope_id,
                         display_name=pool_model.display_name,
+                        azure_cloud=pool.azure_cloud,
                         gateway_id=pool.gateway_id,
                         available=False,
                     )
@@ -879,9 +901,7 @@ class EntitlementService:
         subscriptions = await self._gateways.list_observed(
             ObservedSubscription, actor.tenant_id, descriptor.gateway_id, "observedSubscription"
         )
-        owned = [
-            item for item in subscriptions if _subscription_owner(item) == apim_user.name
-        ]
+        owned = [item for item in subscriptions if _subscription_owner(item) == apim_user.name]
         candidates = [
             item
             for item in owned
@@ -927,28 +947,39 @@ class EntitlementService:
             publication is not None or mcp_publication is not None or model_pool is not None
         ) and book is None:
             book = await self.cost_center_book(entitlement.tenant_id)
-        intent = cost_center_intent(entitlement, principal, book)
+        intent = cost_center_intent(
+            entitlement,
+            principal,
+            book,
+            key_capable=True
+            if (mcp_publication is not None and mcp_publication.azure_cloud == "government")
+            else None,
+        )
+        target = publication or mcp_publication or model_pool
+        charged = book.get(entitlement.cost_center_id) if book is not None else None
+        if (
+            target is not None
+            and target.azure_cloud == "government"
+            and principal is not None
+            and charged is not None
+            and charged.recheck_pending(entitlement.id, principal.id)
+        ):
+            intent = None
         if entitlement.resource.kind == "poolModel":
             pool_locked = bool(
                 model_pool
-                and await self._gateways.get_publication_lock(
-                    entitlement.tenant_id, model_pool.id
-                )
+                and await self._gateways.get_publication_lock(entitlement.tenant_id, model_pool.id)
             )
             return decorate_pool_entitlement(
                 entitlement, model_pool, principal, locked=pool_locked, cost_center=intent
             )
         locked = bool(
             publication
-            and await self._gateways.get_publication_lock(
-                entitlement.tenant_id, publication.id
-            )
+            and await self._gateways.get_publication_lock(entitlement.tenant_id, publication.id)
         )
         mcp_locked = bool(
             mcp_publication
-            and await self._gateways.get_publication_lock(
-                entitlement.tenant_id, mcp_publication.id
-            )
+            and await self._gateways.get_publication_lock(entitlement.tenant_id, mcp_publication.id)
         )
         if entitlement.resource.kind == "mcpServer":
             return decorate_mcp_entitlement(
@@ -1041,9 +1072,7 @@ class EntitlementService:
         if binding is None:
             binding = await self.infer_binding(actor, descriptor, request.subject)
         return Entitlement(
-            id=entitlement_id(
-                actor.tenant_id, request.subject, request.resource, cost_center.id
-            ),
+            id=entitlement_id(actor.tenant_id, request.subject, request.resource, cost_center.id),
             tenant_id=actor.tenant_id,
             subject=request.subject,
             resource=request.resource,
@@ -1447,9 +1476,7 @@ class EntitlementService:
                     details={"publicationId": publication.id},
                 )
             mcp_publication = await entitlement_mcp_publication(self._gateways, entitlement)
-            if mcp_publication and mcp_grant_needs_retention(
-                mcp_publication, entitlement.id
-            ):
+            if mcp_publication and mcp_grant_needs_retention(mcp_publication, entitlement.id):
                 raise ConflictError(
                     "This MCP grant is still applied or its runtime state is uncertain. Disable "
                     "the grant and apply the MCP server's access before deleting it.",
@@ -1948,9 +1975,7 @@ class EntitlementService:
         book = await self.cost_center_book(actor.tenant_id)
         cost_center = self._require_cost_center(
             book,
-            approval.cost_center_id
-            or access_request.cost_center_id
-            or book.default_for(principal),
+            approval.cost_center_id or access_request.cost_center_id or book.default_for(principal),
         )
         if principal is not None:
             existing = await self._repository.get_entitlement(

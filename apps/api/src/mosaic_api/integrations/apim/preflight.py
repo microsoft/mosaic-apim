@@ -7,6 +7,7 @@ role assignment must be granted out-of-band by someone with more privilege than 
 
 from dataclasses import dataclass
 
+from mosaic_api.clouds import management_identity_label
 from mosaic_api.domain import (
     APIM_CONTRIBUTOR_ROLE_ID,
     APIM_CONTRIBUTOR_ROLE_NAME,
@@ -77,6 +78,8 @@ def build_remediation(
     role_name = APIM_CONTRIBUTOR_ROLE_NAME if write else APIM_READER_ROLE_NAME
     role_id = APIM_CONTRIBUTOR_ROLE_ID if write else APIM_READER_ROLE_ID
     assignee = principal_id or "<mosaic-managed-identity-object-id>"
+    if principal_id is None and resource.azure_cloud == "government":
+        assignee = "<government-service-principal-object-id>"
     command = (
         "az role assignment create"
         f' --assignee-object-id "{assignee}"'
@@ -84,6 +87,8 @@ def build_remediation(
         f' --role "{role_name}"'
         f' --scope "{resource.canonical}"'
     )
+    if resource.azure_cloud == "government":
+        command = f"az cloud set --name AzureUSGovernment && {command}"
     return AccessRemediation(
         role_name=role_name,
         role_definition_id=role_id,
@@ -227,6 +232,7 @@ async def run_preflight(
     """Check read access, probe write capability, and describe the service."""
 
     resource = client.resource
+    identity_label = management_identity_label(resource.azure_cloud, resource.azure_connection_id)
     checked_at = utc_now()
 
     try:
@@ -241,7 +247,7 @@ async def run_preflight(
                 missing_actions=list(READ_ACTIONS),
                 remediation=build_remediation(resource, principal_id=principal_id),
                 message=(
-                    "MOSAIC's managed identity cannot read this API Management service. "
+                    f"{identity_label} cannot read this API Management service. "
                     "Grant it the reader role shown below and try again."
                 ),
             ),
@@ -268,7 +274,7 @@ async def run_preflight(
                 checked_at=checked_at,
                 message=(
                     "No API Management service exists at this resource ID, or it is not visible "
-                    "to MOSAIC's managed identity."
+                    f"to {identity_label}."
                 ),
             ),
             capabilities=GatewayCapabilities(),
@@ -321,7 +327,7 @@ async def run_preflight(
         missing = missing_write
     else:
         message = (
-            "MOSAIC's managed identity is missing read permissions on this API Management service."
+            f"{identity_label} is missing read permissions on this API Management service."
         )
         remediation = build_remediation(resource, principal_id=principal_id)
         status = GatewayStatus.UNAUTHORIZED

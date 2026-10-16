@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 
 import structlog
 
+from mosaic_api.clouds import AzureCloud
 from mosaic_api.domain import (
     CostCenterRef,
     DirectoryObject,
@@ -264,9 +265,7 @@ class Scope:
         return [gateway for gateway in self.gateways.values() if self.governed.get(gateway.id)]
 
     def live_states(self) -> list[UsageRollupState]:
-        return [
-            state for gateway in self.live_gateways() if (state := self.states.get(gateway.id))
-        ]
+        return [state for gateway in self.live_gateways() if (state := self.states.get(gateway.id))]
 
     # -- filters ----------------------------------------------------------------------------
 
@@ -378,6 +377,10 @@ class Scope:
     def gateway_name(self, gateway_id: str | None) -> str:
         gateway = self.all_gateways.get(gateway_id or "")
         return gateway.name if gateway else REMOVED_GATEWAY
+
+    def gateway_cloud(self, gateway_id: str | None) -> AzureCloud | None:
+        resource = self.all_gateways.get(gateway_id or "") or self.states.get(gateway_id or "")
+        return resource.azure_cloud if resource else None
 
     def environment_name(self, key: str | None) -> str:
         if key is None:
@@ -509,9 +512,11 @@ def grant_for(entitlement: Entitlement, scope: Scope) -> GrantInfo:
         ),
         per_member=entitlement.subject.kind == EntitlementSubjectKind.SECURITY_GROUP,
         cost_center_id=entitlement.cost_center_id,
-        cost_center_code=(current.code if (current := scope.cost_centers.get(
-            entitlement.cost_center_id
-        )) else None),
+        cost_center_code=(
+            current.code
+            if (current := scope.cost_centers.get(entitlement.cost_center_id))
+            else None
+        ),
         cost_center_name=current.name if current else None,
     )
 
@@ -617,6 +622,13 @@ def resolve_gateways(
             if gateway.environment == filters.environment
         }
         narrowed = True
+    if filters.azure_cloud is not None:
+        selected = {
+            gateway_id: gateway
+            for gateway_id, gateway in selected.items()
+            if gateway.azure_cloud == filters.azure_cloud
+        }
+        narrowed = True
     return selected, (sorted(selected) if narrowed else None)
 
 
@@ -624,9 +636,7 @@ def resolve_resource(
     resource_id: str, apis: dict[tuple[str, str], RolledUpApi]
 ) -> tuple[set[tuple[str, str]], set[str]]:
     matches = {
-        key
-        for key, api in apis.items()
-        if resource_id in {api.resource_id, api.publication_id}
+        key for key, api in apis.items() if resource_id in {api.resource_id, api.publication_id}
     }
     if not matches:
         raise NotFoundError(

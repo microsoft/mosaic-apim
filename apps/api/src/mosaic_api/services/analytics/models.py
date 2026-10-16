@@ -71,6 +71,7 @@ class AnalyticsFilters:
     # Narrows callers, grants, limits, cost by consumer and the chargeback to the grants charged
     # to one cost center, as the subject filter does. See ADR 0022.
     cost_center_id: str | None = None
+    azure_cloud: Literal["commercial", "government"] | None = None
 
 
 class AnalyticsWindow(MosaicModel):
@@ -150,6 +151,7 @@ class AnalyticsRankRow(MosaicModel):
 
 class AnalyticsGatewayHealth(MosaicModel):
     gateway_id: str
+    azure_cloud: Literal["commercial", "government"] = "commercial"
     name: str
     environment: str | None
     environment_name: str
@@ -298,6 +300,7 @@ class AnalyticsCostCenterRow(AnalyticsUsage):
 
 
 class AnalyticsGrantRow(AnalyticsUsage):
+    azure_cloud: Literal["commercial", "government"] | None = None
     key: str
     entitlement_id: str | None
     state: GrantState
@@ -334,6 +337,7 @@ class AnalyticsOnBehalfRow(AnalyticsUsage):
     row only says whose MCP calls they served, so nothing here adds to any other total.
     """
 
+    azure_cloud: Literal["commercial", "government"] | None = None
     # `{person}|{gatewayId}/{mcpApiName}|{application}`, every part lowercased.
     key: str
     person_object_id: str
@@ -390,6 +394,7 @@ class AnalyticsConsumers(AnalyticsReport):
 
 
 class AnalyticsApiRow(AnalyticsUsage):
+    azure_cloud: Literal["commercial", "government"] | None = None
     key: str
     gateway_id: str
     gateway_name: str
@@ -416,6 +421,7 @@ class AnalyticsModelRow(AnalyticsUsage):
 
 
 class AnalyticsDeploymentRow(AnalyticsUsage):
+    azure_cloud: Literal["commercial", "government"] | None = None
     key: str
     endpoint_id: str
     endpoint_name: str | None
@@ -483,6 +489,7 @@ class AnalyticsDenialReason(MosaicModel):
 
 
 class AnalyticsDenialRow(MosaicModel):
+    azure_cloud: Literal["commercial", "government"] | None = None
     reason: str
     reason_label: str
     caller_object_id: str | None
@@ -591,6 +598,7 @@ class AnalyticsHygiene(AnalyticsReport):
 
 
 class AnalyticsUnattributedRow(MosaicModel):
+    azure_cloud: Literal["commercial", "government"] | None = None
     gateway_id: str
     gateway_name: str
     api_name: str

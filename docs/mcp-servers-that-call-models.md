@@ -13,6 +13,16 @@ whether a model call is allowed, what limits apply, and which cost center pays. 
 called the MCP server decides none of that. MOSAIC only records them, so usage can be reported by
 person.
 
+For Azure Government, both hops use eligible applied direct-grant subscription keys, not commercial
+bearer tokens. The MCP server needs its own application model grant and its own workload key, kept
+in its secret store. The Government gateway passes the same opaque reference, and accepts it on a
+model hop only after the application's subscription maps to its exact applied grant. Correlation
+uses trusted grant history, the administrator-bound model caller, the same gateway and the call
+window—not a supplied commercial object ID, UPN or bearer token. A reference grants no access.
+A shared pool key still authorizes only the pool models applied for its subject and cost center.
+Keys identify a grant holder, not a verified Government human account. The Entra diagram and code
+below describe Commercial connections.
+
 ```mermaid
 sequenceDiagram
     participant Person
@@ -63,13 +73,15 @@ Content-Type: application/json
   Plan and apply the MCP server again. The plan's review shows that the server receives each call's
   reference, and names the application. The applied access snapshot's `modelCaller` shows what's
   live.
-- **The application needs its own model grant.** Grant the application `Models.Invoke.Application`
+- **The application needs its own model grant.** For Commercial, grant the application `Models.Invoke.Application`
   on the models its tools call, on the same gateway, and apply them. A grant on a model in a
   governed [model pool](../README.md#model-pools) counts too. The plan warns when MOSAIC can't find
   an enabled direct grant for the application on a model this gateway publishes, or on a model in
   one of its governed pools. It
   warns too when MOSAIC can no longer name the principal as an application. Then the server
   receives no reference until that's fixed, and its own access is unaffected.
+  For Government, apply the application's direct key-only model grant and securely provide its
+  automatically issued workload key to the MCP server; no commercial app-role token authorizes it.
 - **Can't be deleted while named.** MOSAIC refuses to delete a principal an MCP server calls models
   as, or to change it to a kind that isn't an application. Clear it on the server first.
 
@@ -85,7 +97,9 @@ gateway forwards. For each such request:
   that request.
 - **Call the model through the same MOSAIC gateway**, as the server's own application. Use an Entra
   token for `api://<model-runtime-client-id>/.default`, with the `Models.Invoke.Application` app
-  role. MOSAIC ignores the header on a call made with a key, or with a person's token.
+  role. For Commercial, MOSAIC ignores the header on a call made with a key, or with a person's
+  token. For Government, send the application's applied workload key using
+  `Ocp-Apim-Subscription-Key`, without a bearer token; references from personal key grants are ignored.
 - **Treat the value as opaque.** Don't parse it, store it, change it, or send it on another request.
   It grants nothing, and it's valid only while its MCP call runs.
 

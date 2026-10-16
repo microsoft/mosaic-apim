@@ -70,8 +70,7 @@ class CostCenterIntent:
     # The cost center's per-person limits, when the grant sets none of its own.
     inherited: EntitlementEnforcement | None
     pool: PooledQuota | None
-    # Whether the grant can have a key: a direct grant on a model API or a pool model. Only then
-    # does turning keys on or off change what its policy compiles.
+    # Commercial MCP remains token-only; Government MCP includes key permission in its intent.
     keyed: bool = True
 
     def payload(self) -> dict[str, Any]:
@@ -86,7 +85,11 @@ class CostCenterIntent:
 
 
 def cost_center_intent(
-    entitlement: Entitlement, principal: Principal | None, book: CostCenterBook | None
+    entitlement: Entitlement,
+    principal: Principal | None,
+    book: CostCenterBook | None,
+    *,
+    key_capable: bool | None = None,
 ) -> CostCenterIntent | None:
     """The grant's cost center as its policy uses it; None when MOSAIC has no record of it."""
 
@@ -114,8 +117,12 @@ def cost_center_intent(
         ),
         pool=limit.pool if limit is not None else None,
         keyed=direct
-        and entitlement.resource.kind
-        in {EntitlementResourceKind.MODEL_API, EntitlementResourceKind.POOL_MODEL},
+        and (
+            key_capable
+            if key_capable is not None
+            else entitlement.resource.kind
+            in {EntitlementResourceKind.MODEL_API, EntitlementResourceKind.POOL_MODEL}
+        ),
     )
 
 
@@ -238,9 +245,7 @@ async def environment_guard(
 
     async with AsyncExitStack() as stack:
         if environments:
-            await stack.enter_async_context(
-                scope_lease(repository, tenant_id, ENVIRONMENTS_SCOPE)
-            )
+            await stack.enter_async_context(scope_lease(repository, tenant_id, ENVIRONMENTS_SCOPE))
         for gateway_id in sorted(set(gateway_ids)):
             await stack.enter_async_context(
                 publication_lock(repository, tenant_id, gateway_mutation_scope(gateway_id))
@@ -250,9 +255,7 @@ async def environment_guard(
                 scope_lease(repository, tenant_id, endpoint_mutation_scope(endpoint_id))
             )
         for publication_id in sorted(set(publication_ids)):
-            await stack.enter_async_context(
-                publication_lock(repository, tenant_id, publication_id)
-            )
+            await stack.enter_async_context(publication_lock(repository, tenant_id, publication_id))
         yield
 
 
@@ -396,9 +399,33 @@ def decorate_entitlement(
         applied_methods=methods,
         subscription_name=grant.subscription_name if grant else None,
         key_exists=owns_grant_subscription(publication, entitlement.id),
+        key_state=(
+            (
+                "ineligible"
+                if not entitlement.enabled
+                or cost_center is None
+                or not cost_center.keys_allowed
+                or (grant is not None and (grant.is_group_grant or not grant.keys_allowed))
+                else (
+                    "pending"
+                    if grant is None
+                    else publication.key_lifecycle.get(grant.subscription_name or "", "pending")
+                )
+            )
+            if publication.azure_cloud == "government"
+            else None
+        ),
+        key_error=(
+            "Key setup needs an administrator retry; no key has been revealed."
+            if grant is not None
+            and publication.key_lifecycle.get(grant.subscription_name or "") == "failed"
+            else None
+        ),
         applied_at=publication.last_applied_at,
         error=publication.last_error,
     )
+    if publication.azure_cloud == "government":
+        runtime.key_exists = runtime.key_exists and runtime.key_state == "ready"
     binding = entitlement.binding
     if binding and binding.source == BindingSource.ORCHESTRATED and grant is None:
         binding = None
@@ -457,6 +484,7 @@ def safe_access_snapshot(
     ]
     return ModelAccessSnapshot(
         version=target.version,
+        azure_cloud=target.azure_cloud,
         settings=ModelAccessSettings(
             keys_enabled=previous.settings.keys_enabled and target.settings.keys_enabled,
             entra_enabled=(
