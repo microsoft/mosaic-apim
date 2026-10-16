@@ -50,6 +50,55 @@ def local_settings(**overrides: Any) -> Settings:
     )
 
 
+def test_notification_workers_do_not_enable_external_channels() -> None:
+    settings = local_settings()
+    assert settings.notifications_enabled
+    assert settings.approval_evaluator_enabled
+    assert not settings.scheduled_workers_always_on
+    assert settings.frontend_url is None
+    assert settings.portal_url is None
+
+
+@pytest.mark.parametrize("field", ["notification_interval_seconds", "approval_interval_seconds"])
+@pytest.mark.parametrize("value", [0, 9, 3601])
+def test_scheduled_worker_intervals_are_bounded(field: str, value: int) -> None:
+    with pytest.raises(ValidationError):
+        local_settings(**{field: value})
+
+
+@pytest.mark.parametrize("field", ["frontend_url", "portal_url"])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://user:password@mosaic.example.com",
+        "https://mosaic.example.com/subpath",
+        "https://mosaic.example.com/?token=value",
+        "https://mosaic.example.com/#fragment",
+    ],
+)
+def test_notification_link_origins_reject_embedded_credentials_and_url_components(
+    field: str,
+    url: str,
+) -> None:
+    with pytest.raises(ValidationError, match="application origin"):
+        local_settings(**{field: url})
+
+
+@pytest.mark.parametrize("field", ["frontend_url", "portal_url"])
+def test_notification_links_require_https_in_azure(field: str) -> None:
+    with pytest.raises(ValidationError, match="must use https in Azure"):
+        Settings(
+            _env_file=None,
+            environment=Environment.AZURE,
+            auth_mode=AuthMode.ENTRA,
+            repository_backend=RepositoryBackend.COSMOS,
+            tenant_id="tenant",
+            api_client_id=CONTROL_PLANE_CLIENT_ID,
+            cosmos_endpoint="https://cosmos.example.com",
+            **{field: "http://mosaic.example.com"},
+        )
+
+
 def test_azure_rejects_local_auth_and_memory_repository() -> None:
     with pytest.raises(ValidationError, match="Azure deployments must use Entra"):
         Settings(
@@ -283,3 +332,44 @@ def test_azure_requires_https_graph_endpoint() -> None:
             cosmos_endpoint="https://cosmos.example.com",
             graph_endpoint="http://graph.example.com",
         )
+
+
+def test_teams_external_delivery_is_unconfigured_by_default() -> None:
+    settings = local_settings()
+    assert settings.teams_workflow_allowed_hosts == []
+    assert settings.teams_bot_auth_mode == "disabled"
+    assert settings.teams_bot_app_id is None
+    assert settings.teams_bot_secret_reference is None
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "*.logic.azure.com",
+        "https://region.logic.azure.com",
+        "region.logic.azure.com.evil.invalid",
+        "localhost",
+        "127.0.0.1",
+    ],
+)
+def test_teams_workflow_allowlist_is_deployment_owned_and_exact(host: str) -> None:
+    with pytest.raises(ValidationError, match="exact supported Microsoft"):
+        local_settings(teams_workflow_allowed_hosts=[host])
+    assert local_settings(
+        teams_workflow_allowed_hosts=["REGION.logic.azure.com", "region.logic.azure.com"],
+    ).teams_workflow_allowed_hosts == ["region.logic.azure.com"]
+
+
+def test_teams_bot_authentication_requires_explicit_identity_and_vault_reference() -> None:
+    with pytest.raises(ValidationError, match="MOSAIC_TEAMS_BOT_APP_ID"):
+        local_settings(teams_bot_auth_mode="managedIdentity")
+    with pytest.raises(ValidationError, match="MOSAIC_TEAMS_BOT_SECRET_REFERENCE"):
+        local_settings(teams_bot_auth_mode="clientSecret", teams_bot_app_id=MODEL_CLIENT_ID)
+    configured = local_settings(
+        teams_bot_auth_mode="clientSecret",
+        teams_bot_app_id=MODEL_CLIENT_ID,
+        teams_bot_secret_reference="https://vault.vault.azure.net/secrets/bot-credential",
+    )
+    assert configured.teams_bot_auth_mode == "clientSecret"
+    with pytest.raises(ValidationError, match="Key Vault HTTPS secret URI"):
+        local_settings(teams_bot_secret_reference="https://evil.invalid/secrets/credential")

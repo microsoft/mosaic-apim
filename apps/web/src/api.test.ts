@@ -16,6 +16,40 @@ describe('useMosaicApi', () => {
     vi.unstubAllGlobals()
   })
 
+  it.each([
+    ['getModelEndpointSyncRun', '/api/v1/model-endpoints/endpoint%2Fone/sync-runs/run%2Fone'],
+    ['getMcpEndpointSyncRun', '/api/v1/mcp-endpoints/endpoint%2Fone/sync-runs/run%2Fone'],
+    ['getPublishRun', '/api/v1/publications/endpoint%2Fone/runs/run%2Fone'],
+    ['getMcpPublishRun', '/api/v1/mcp-publications/endpoint%2Fone/runs/run%2Fone'],
+    ['getModelPoolRun', '/api/v1/model-pools/endpoint%2Fone/runs/run%2Fone'],
+    ['getSyncRun', '/api/v1/gateways/endpoint%2Fone/sync-runs/run%2Fone'],
+  ] as const)('reads exact notified run through %s using encoded identifiers', async (method, expectedPath) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'run/one' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useMosaicApi())
+    await result.current[method]('endpoint/one', 'run/one')
+    expect(fetchMock.mock.calls[0][0]).toContain(expectedPath)
+    expect(fetchMock.mock.calls[0][1].method ?? 'GET').toBe('GET')
+  })
+
+  it('sends notification preference revision separately from the self-scoped input', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ revision: 3 }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useMosaicApi())
+    const preferences = { timeZone: 'UTC', categories: [], digestSchedules: [], quietHours: null, thresholds: [80, 100], repeatCooldownSeconds: 86400 }
+    await result.current.saveNotificationPreferences(preferences, 2)
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toContain('/api/v1/notifications/me/preferences')
+    expect((options.headers as Headers).get('If-Match')).toBe('2')
+    expect(JSON.parse(options.body as string)).toEqual(preferences)
+  })
+
+  it('surfaces a missing notification API instead of synthesizing successful settings', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: 'Notification service is not configured.' }), { status: 503 })))
+    const { result } = renderHook(() => useMosaicApi())
+    await expect(result.current.getNotificationSettings()).rejects.toThrow('Notification service is not configured.')
+  })
+
   it('fetches photos as no-store images without credentials in the URL', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response('thumbnail', {
       headers: { 'Content-Type': 'image/png' },

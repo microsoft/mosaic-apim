@@ -1,6 +1,7 @@
 import { renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, usePortalApi } from './api'
+import { notificationPreferences } from './test/notification-fixtures'
 
 vi.mock('@azure/msal-react', () => ({
   useMsal: () => ({
@@ -27,6 +28,47 @@ function stubFetch(response: () => Response) {
 describe('usePortalApi', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it('reads and updates only the authenticated personal inbox with encoded filters and item IDs', async () => {
+    const fetchMock = stubFetch(() => jsonResponse({ items: [], unreadCount: 0, continuationToken: null }))
+    const { result } = renderHook(() => usePortalApi())
+    await result.current.listNotifications({ category: 'accessLifecycle', unreadOnly: true, limit: 25, continuationToken: 'token/+=' })
+    await result.current.setNotificationRead('item/1', true)
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/api/v1/me/notifications/inbox?category=accessLifecycle&unread_only=true&limit=25&continuation_token=token%2F%2B%3D')
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'GET', cache: 'no-store' })
+    expect(fetchMock.mock.calls[1][0]).toBe('http://localhost:8000/api/v1/me/notifications/inbox/item%2F1')
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: 'PATCH', body: '{"read":true}', cache: 'no-store' })
+  })
+
+  it('reads personal health and preferences and never writes caller-supplied user or persona fields', async () => {
+    const fetchMock = stubFetch(() => jsonResponse(notificationPreferences()))
+    const { result } = renderHook(() => usePortalApi())
+    await result.current.getNotificationPreferences()
+    await result.current.getNotificationHealth()
+    await result.current.saveNotificationPreferences(notificationPreferences(), 3)
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/api/v1/me/notifications/preferences')
+    expect(fetchMock.mock.calls[1][0]).toBe('http://localhost:8000/api/v1/me/notifications/health')
+    const options = fetchMock.mock.calls[2][1] as RequestInit
+    const body = JSON.parse(String(options.body)) as Record<string, unknown>
+    expect(options).toMatchObject({ method: 'PUT', cache: 'no-store' })
+    expect(new Headers(options.headers).get('If-Match')).toBe('3')
+    expect(Object.keys(body).sort()).toEqual(['categories', 'digestSchedules', 'quietHours', 'repeatCooldownSeconds', 'thresholds', 'timeZone'])
+    expect(body).not.toHaveProperty('userObjectId')
+    expect(body).not.toHaveProperty('persona')
+    expect(body).not.toHaveProperty('conversationId')
+  })
+
+  it('reads effective preferences and tests only the current user’s private Teams without a body', async () => {
+    const fetchMock = stubFetch(() => jsonResponse({}))
+    const { result } = renderHook(() => usePortalApi())
+    await result.current.getNotificationPreferencePreview()
+    await result.current.getPersonalTeamsStatus()
+    await result.current.testPersonalTeams()
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/api/v1/me/notifications/preferences/preview')
+    expect(fetchMock.mock.calls[1][0]).toBe('http://localhost:8000/api/v1/me/notifications/teams')
+    expect(fetchMock.mock.calls[2][0]).toBe('http://localhost:8000/api/v1/me/notifications/teams/test')
+    expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: 'POST', cache: 'no-store', body: undefined })
   })
 
   it('reads connection details from the owner-scoped API', async () => {

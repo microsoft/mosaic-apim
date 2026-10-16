@@ -538,7 +538,7 @@ async def list_sync_runs(request: Request, auth: Admin, gateway_id: str) -> list
 async def get_sync_run(
     request: Request, auth: Admin, gateway_id: str, run_id: str
 ) -> GatewaySyncRun:
-    return await _gateways(request).get_sync_run(_actor(auth), run_id)
+    return await _gateways(request).get_sync_run(_actor(auth), run_id, gateway_id=gateway_id)
 
 
 @router.get("/gateways/{gateway_id}/apis", response_model=list[ObservedApi])

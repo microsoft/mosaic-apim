@@ -48,6 +48,8 @@ import { PublicationsBlockedRefusal } from '../components/EnvironmentRefusal'
 import { ReviewEnvironmentSuggestionsDialog } from '../components/ReviewEnvironmentSuggestionsDialog'
 import { PageHeader } from '../components/PageHeader'
 import { SectionLayout, usePageSection } from '../components/SectionLayout'
+import { ApprovalAiSettings } from '../components/ApprovalAiSettings'
+import { NotificationSettings } from '../components/NotificationSettings'
 import { DirectoryConfiguration } from '../components/DirectoryConfiguration'
 import { AzureConnectionsPanel } from '../components/AzureConnectionsPanel'
 import {
@@ -904,6 +906,8 @@ export function SettingsPage() {
     { value: 'connections', label: 'Azure connections', icon: <GlobeRegular />, description: 'Management identities for Azure Commercial and Azure Government resources.' },
     { value: 'findings', label: 'Findings', icon: <WarningRegular />, description: 'Findings about environment classification and compatibility.' },
     { value: 'email', label: 'Budget email', icon: <MailRegular />, description: 'Shared budget email settings saved to MOSAIC. Test messages use the saved configuration.' },
+    { value: 'approvalAi', label: 'AI approval assistance', icon: <SettingsRegular />, description: 'Configure a governed model for advisory review. Saved intent, connection verification, and response-contract readiness are distinct.' },
+    { value: 'notifications', label: 'Notifications', icon: <MailRegular />, description: 'Configure shared channels, administrator routing, Teams destinations, and inspect delivery evidence.' },
     { value: 'runtime', label: 'Runtime configuration', icon: <SettingsRegular />, description: 'Read-only deployed configuration. Change deployment settings outside this page.' },
     { value: 'appearance', label: 'Appearance', icon: <WeatherMoonRegular />, description: 'Preferences apply immediately and are saved only in this browser.' },
   ]
@@ -938,6 +942,8 @@ export function SettingsPage() {
       {section === 'connections' && <AzureConnectionsPanel />}
       {section === 'findings' && <EnvironmentFindings title="Findings" />}
       {section === 'email' && <EmailSettingsSection draft={emailDraft} setDraft={setEmailDraft} />}
+      {section === 'approvalAi' && <ApprovalAiSettings />}
+      {section === 'notifications' && <NotificationSettings />}
 
         {section === 'runtime' && <Card className={styles.card}>
           <div className={styles.cardHeader}>

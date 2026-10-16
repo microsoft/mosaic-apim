@@ -6,14 +6,23 @@ product or subscription that realizes a grant, because gateway telemetry is keye
 subscription and a grant with no binding cannot be joined to a usage row.
 """
 
-from collections.abc import AsyncIterator, Sequence
+import hashlib
+import json
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import structlog
 from pydantic import ValidationError as SchemaValidationError
 
+from mosaic_api.approvals import (
+    ApprovalBlocker,
+    ApprovalContextRevision,
+    ApprovalDecisionProvenance,
+    ApprovalPolicy,
+    ApprovalPreview,
+)
 from mosaic_api.cost_centers import (
     CostCenter,
     CostCenterBook,
@@ -58,6 +67,7 @@ from mosaic_api.domain import (
     subject_kind_for,
     utc_now,
 )
+from mosaic_api.environments import EnvironmentCatalog
 from mosaic_api.errors import ConflictError, DirectoryError, NotFoundError, ValidationError
 from mosaic_api.integrations.graph import DirectoryLookup
 from mosaic_api.model_pools import ModelPool
@@ -71,9 +81,11 @@ from mosaic_api.repositories import (
     CostCenterRepository,
     DirectoryRepository,
     EntitlementRepository,
+    EnvironmentRepository,
     GatewayRepository,
     ModelEndpointRepository,
 )
+from mosaic_api.repositories.approvals import AccessRequestEventRepository
 from mosaic_api.services.cost_centers import load_book, record_recheck
 from mosaic_api.services.directory import Actor, DirectoryService
 from mosaic_api.services.mcp_access import (
@@ -90,6 +102,7 @@ from mosaic_api.services.model_access import (
     model_api_offered,
     publication_lock,
 )
+from mosaic_api.services.notification_events import access_request_event
 from mosaic_api.services.pool_access import (
     decorate_pool_entitlement,
     entitlement_model_pool,
@@ -294,6 +307,7 @@ class EntitlementService:
         endpoint_repository: ModelEndpointRepository,
         directory_lookup: DirectoryLookup | None = None,
         cost_center_repository: CostCenterRepository | None = None,
+        environment_repository: EnvironmentRepository | None = None,
     ) -> None:
         self._repository = repository
         self._directory = directory_repository
@@ -301,6 +315,7 @@ class EntitlementService:
         self._endpoints = endpoint_repository
         self._directory_lookup = directory_lookup
         self._cost_centers = cost_center_repository
+        self._environments = environment_repository
 
     def governed_records(self, tenant_id: str) -> GovernedRecords:
         """Records to share across the lookups that serve one response."""
@@ -1950,7 +1965,14 @@ class EntitlementService:
         )
 
     async def approve_access_request(
-        self, actor: Actor, request_id: str, approval: AccessRequestApproval
+        self,
+        actor: Actor,
+        request_id: str,
+        approval: AccessRequestApproval,
+        *,
+        expected_context: ApprovalContextRevision | None = None,
+        provenance: ApprovalDecisionProvenance | None = None,
+        decision_guard: Callable[[], Awaitable[ApprovalPolicy | None]] | None = None,
     ) -> AccessRequest:
         """Approve a pending request by creating the requester's grant and linking it.
 
@@ -1968,6 +1990,8 @@ class EntitlementService:
         if _approved_with_grant(access_request):
             return access_request
         self._require_pending(access_request)
+        if expected_context:
+            await self.require_approval_context(actor, request_id, expected_context)
         descriptor = await self._describe_resource(actor, access_request.resource)
         await self._require_environment_confirmation(actor, access_request, approval)
 
@@ -2015,6 +2039,20 @@ class EntitlementService:
             group_principal_ids=trusted_groups,
         )
         decided_at = utc_now()
+        inherited_limits = cost_center.limit_for(access_request.resource)
+        decision_provenance = (
+            provenance or ApprovalDecisionProvenance(actor_object_id=actor.object_id)
+        ).model_copy(
+            update={
+                "effective_cost_center_id": cost_center.id,
+                "effective_enforcement": approval.enforcement
+                or (
+                    inherited_limits.person.enforcement()
+                    if inherited_limits and inherited_limits.person
+                    else None
+                ),
+            }
+        )
         approved = AccessRequest.model_validate(
             {
                 **access_request.model_dump(by_alias=False),
@@ -2026,6 +2064,7 @@ class EntitlementService:
                 "granted_entitlement_id": entitlement.id,
                 "etag": access_request.etag,
                 "updated_at": decided_at,
+                "approval_provenance": decision_provenance.model_dump(mode="json", by_alias=True),
             }
         )
         audit_events = [
@@ -2047,16 +2086,48 @@ class EntitlementService:
                     "principalCreated": principal_created,
                     "costCenterId": entitlement.cost_center_id,
                     "requestedCostCenterId": access_request.cost_center_id,
+                    "approvalProvenance": approved.approval_provenance,
                 },
             ),
         ]
         written = False
         try:
             async with self._mutation(entitlement):
-                await self._validate_subject(actor, subject)
-                saved = await self._repository.approve_access_request(
-                    approved, entitlement, audit_events
+                # Re-read eligibility and environment while coordinated with publish/apply.
+                await self._require_environment_confirmation(actor, access_request, approval)
+                fresh_book = await self.cost_center_book(actor.tenant_id)
+                await self._require_may_charge(
+                    actor,
+                    subject,
+                    self._require_cost_center(fresh_book, cost_center.id),
+                    fresh_book,
+                    group_principal_ids=trusted_groups,
                 )
+                await self._validate_subject(actor, subject)
+                if expected_context:
+                    await self.require_approval_context(actor, request_id, expected_context)
+                policy_guard = await decision_guard() if decision_guard else None
+                if policy_guard:
+                    saved = await cast(
+                        AccessRequestEventRepository, self._repository
+                    ).approve_access_request_with_events(
+                        approved,
+                        entitlement,
+                        audit_events,
+                        [
+                            access_request_event(
+                                approved,
+                                origin="approval-policies",
+                                correlation_id=provenance.batch_id if provenance else None,
+                            )
+                        ],
+                        provenance=decision_provenance,
+                        policy_guard=policy_guard,
+                    )
+                else:
+                    saved = await self._repository.approve_access_request(
+                        approved, entitlement, audit_events
+                    )
                 written = True
                 granted = await self._repository.get_entitlement(actor.tenant_id, entitlement.id)
                 if granted is not None:
@@ -2087,6 +2158,158 @@ class EntitlementService:
             tenant_id=actor.tenant_id,
         )
         return saved
+
+    async def require_approval_context(
+        self, actor: Actor, request_id: str, expected: ApprovalContextRevision
+    ) -> None:
+        current = await self.preview_access_request(actor, request_id)
+        if current.revision.context_revision != expected.context_revision:
+            raise ConflictError(
+                "The request or its approval context changed. Preview it again before approving.",
+                details={"reason": "approvalContextChanged", "id": request_id},
+            )
+
+    async def preview_access_request(
+        self,
+        actor: Actor,
+        request_id: str,
+        approval: AccessRequestApproval | None = None,
+        *,
+        automation: bool = False,
+    ) -> ApprovalPreview:
+        approval = approval or AccessRequestApproval()
+        request = await self.get_access_request(actor, request_id)
+        summary = await self.resource_summary(actor.tenant_id, request.resource)
+        book = await self.cost_center_book(actor.tenant_id)
+        principal = await self._requester_principal(actor, request.requester_object_id)
+        center_id = approval.cost_center_id or request.cost_center_id or book.default_for(principal)
+        center = book.get(center_id)
+        catalog = (
+            await self._environments.get_environment_catalog(actor.tenant_id)
+            if self._environments
+            else None
+        ) or EnvironmentCatalog.new(actor.tenant_id)
+        definition = next(
+            (item for item in catalog.environments if item.key == summary.environment), None
+        )
+        probe = Entitlement(
+            id="preview",
+            tenant_id=actor.tenant_id,
+            resource=request.resource,
+            subject=EntitlementSubject(kind="user", id=principal.id if principal else "preview"),
+            cost_center_id=center_id,
+        )
+        publication = await entitlement_publication(self._gateways, probe)
+        mcp_publication = await entitlement_mcp_publication(self._gateways, probe)
+        pool = await entitlement_model_pool(self._gateways, probe)
+        target = publication or mcp_publication or pool
+        locked = bool(
+            target and await self._gateways.get_publication_lock(actor.tenant_id, target.id)
+        )
+        if request.resource.kind == "modelApi":
+            resource: Any = await self._gateways.get_model_api(actor.tenant_id, request.resource.id)
+        elif request.resource.kind == "mcpServer":
+            resource = await self._gateways.get_mcp_server(actor.tenant_id, request.resource.id)
+        else:
+            resource = pool or summary
+        material: dict[str, Any] = {
+            "request": request.model_dump(mode="json"),
+            "resource": resource.model_dump(mode="json") if resource else None,
+            "target": target.model_dump(mode="json") if target else None,
+            "summary": summary.model_dump(mode="json"),
+            "centers": [value.model_dump(mode="json") for _, value in sorted(book.by_id.items())],
+            "settings": book.settings.model_dump(mode="json") if book.settings else None,
+            "environment": catalog.model_dump(mode="json"),
+            "requesterDefaultCostCenterId": book.default_for(principal),
+        }
+        # Newly synthesised defaults have timestamps; only authored facts enter the fingerprint.
+        for value in [material["environment"], *material["centers"]]:
+            if isinstance(value, dict):
+                value.pop("createdAt", None)
+                value.pop("updatedAt", None)
+        revision = ApprovalContextRevision(
+            context_revision=hashlib.sha256(
+                json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+            request_etag=request.etag,
+            resource_etag=getattr(resource, "etag", None),
+            cost_center_etag=center.etag if center else None,
+            environment_revision=catalog.etag,
+            eligibility_checked_at=utc_now(),
+        )
+        blockers: list[ApprovalBlocker] = []
+
+        def block(code: str, message: str) -> None:
+            blockers.append(
+                ApprovalBlocker(
+                    code=code, message=message, next_action="Review this request individually."
+                )
+            )
+
+        if request.state != AccessRequestState.PENDING:
+            block("requestFinal", f"This request is {request.state}.")
+        if not summary.available:
+            block("resourceUnavailable", "The requested resource is not currently available.")
+        if locked:
+            block("mutationLocked", "An apply or another resource mutation is in progress.")
+        if summary.environment != request.requested_environment:
+            block(
+                "environmentChanged",
+                "The resource moved environments; manual confirmation is required.",
+            )
+        existing = None
+        if center is None:
+            block("costCenterMissing", "The selected cost center no longer exists.")
+        else:
+            groups: list[str] = []
+            direct = may_charge(center, principal=principal, settings=book.settings)
+            if not direct:
+                if principal and self._directory_lookup:
+                    groups = await self._group_principal_ids(actor, principal, center)
+                elif not automation and center.id == request.cost_center_id:
+                    groups = request.cost_center_group_ids
+                elif automation:
+                    block(
+                        "eligibilityUnverified",
+                        "Fresh directory membership evidence is unavailable.",
+                    )
+            if not may_charge(
+                center, principal=principal, settings=book.settings, group_principal_ids=groups
+            ):
+                block(
+                    "notACostCenterMember", "The requester cannot charge the selected cost center."
+                )
+            if principal:
+                existing = await self._repository.get_entitlement(
+                    actor.tenant_id,
+                    entitlement_id(
+                        actor.tenant_id, _subject_for(principal), request.resource, center.id
+                    ),
+                )
+                if existing:
+                    block("existingGrant", "A direct grant already exists under this cost center.")
+        enforcement = approval.enforcement
+        source = "explicit" if enforcement else "unrestricted"
+        if enforcement is None and center:
+            inherited = center.limit_for(request.resource)
+            if inherited and inherited.person:
+                enforcement = inherited.person.enforcement()
+                source = "costCenter"
+        if request.resource.kind == "mcpServer" and enforcement and enforcement.tokens:
+            block("mcpTokenLimits", "MCP servers support call limits, not token limits.")
+        return ApprovalPreview(
+            request=request,
+            resource_summary=summary,
+            revision=revision,
+            current_environment=summary.environment,
+            production=definition.production if definition else None,
+            effective_cost_center_id=center_id,
+            effective_enforcement=enforcement,
+            limits_source=cast(Any, source),
+            existing_entitlement_id=existing.id if existing else None,
+            mutation_locked=locked,
+            blockers=blockers,
+        )
 
     async def _require_environment_confirmation(
         self,

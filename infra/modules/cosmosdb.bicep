@@ -46,6 +46,8 @@ resource desiredStateContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabas
   properties: {
     resource: {
       id: 'desired-state'
+      // Only records with an explicit ttl expire; governance intent and audit history do not.
+      defaultTtl: -1
       partitionKey: {
         kind: 'Hash'
         paths: [

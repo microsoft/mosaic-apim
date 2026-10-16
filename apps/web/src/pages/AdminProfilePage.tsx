@@ -1,11 +1,14 @@
 import { useMsal } from '@azure/msal-react'
+import { useState } from 'react'
 import { Button, Card, Text, Title3 } from '@fluentui/react-components'
 import { PageHeader, PreviewNotice } from '../components/PageHeader'
 import { IdentityAvatar } from '../components/IdentityAvatar'
+import { NotificationPreferences } from '../components/NotificationPreferences'
 import { runtimeConfig } from '../runtime-config'
 import styles from './AdminProfilePage.module.css'
 
 export function AdminProfilePage() {
+  const [editingNotifications, setEditingNotifications] = useState(false)
   const { instance, accounts } = useMsal()
   const account = accounts[0]
   const displayName = account?.name ?? (runtimeConfig.authMode === 'local' ? 'Local administrator' : 'No signed-in administrator')
@@ -14,6 +17,7 @@ export function AdminProfilePage() {
 
   return (
     <section className={styles.page}>
+      {!editingNotifications && <>
       <PageHeader
         title="Admin Profile"
         description="Review the identity and authentication context of your administrator session."
@@ -73,6 +77,8 @@ export function AdminProfilePage() {
         </Card>
 
       </div>
+      </>}
+      <NotificationPreferences onEditingChange={setEditingNotifications} />
     </section>
   )
 }

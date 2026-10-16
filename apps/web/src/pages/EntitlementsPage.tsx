@@ -31,6 +31,9 @@ import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PrincipalKindBadge } from '../components/PrincipalKindBadge'
 import { IdentityAvatar } from '../components/IdentityAvatar'
 import { ModelAccessSettingsPanel } from '../components/ModelAccessSettingsPanel'
+import { ApprovalPolicies } from '../components/ApprovalPolicies'
+import { BulkApprovalWorkspace } from '../components/BulkApprovalWorkspace'
+import { BulkRequestSelection } from '../components/BulkRequestSelection'
 import { PublishModelDialog } from '../components/PublishModelDialog'
 import { ResourceWorkbench } from '../components/ResourceWorkbench'
 import { useWorkbenchLocation } from '../components/useWorkbenchLocation'
@@ -223,6 +226,7 @@ const ACCESS_SECTIONS = [
   { value: 'grants', label: 'Grants', icon: <KeyRegular />, description: 'Saved grants describe desired access. Saving, disabling, or revoking a grant does not by itself apply gateway changes.' },
   { value: 'effective', label: 'Effective access & overlaps', icon: <ShieldCheckmarkRegular />, description: 'Inspect recorded access paths and precedence. This is desired state, not a live runtime authorization test.' },
   { value: 'requests', label: 'Access requests', icon: <PersonClockRegular />, description: 'Decide portal requests, then review and apply the affected model, pool, or MCP plan where runtime access is governed.' },
+  { value: 'approvalPolicies', label: 'Approval policies', icon: <ShieldCheckmarkRegular />, description: 'Explicit, scheduled automatic approvals create bounded grant intent. Gateway plan review and apply remain separate.' },
   { value: 'settings', label: 'Model access settings', icon: <SettingsRegular />, description: 'Choose a published model to configure its authentication methods and review all saved grants and settings together.' },
 ] as const
 
@@ -330,6 +334,8 @@ export function EntitlementsPage() {
   const [connectionGrantId, setConnectionGrantId] = useState<string | null>(null)
   const [review, setReview] = useState<{ publication: Publication; plan: PublishPlan } | null>(null)
   const [approving, setApproving] = useState<ApprovalContext | null>(null)
+  const [bulkStage, setBulkStage] = useState<'select' | 'review' | null>(null)
+  const [bulkIds, setBulkIds] = useState<string[]>([])
   const publishedModelSelectRef = useRef<HTMLSelectElement>(null)
 
   function updateLocation(changes: Record<string, string | null>, replace = false) {
@@ -810,6 +816,14 @@ export function EntitlementsPage() {
   const selectedPool = selectedResource ? poolFor(selectedResource) : editingGrant ? poolFor(editingGrant.resource) : undefined
   const connectionGrant = rows.find((entitlement) => entitlement.id === connectionGrantId)
 
+  if (activeSection === 'requests' && bulkStage === 'select') return <BulkRequestSelection requests={pendingRequests.data ?? []} principals={principals.data ?? []}
+    onBack={() => setBulkStage(null)} onReview={ids => { setBulkIds(ids); setBulkStage('review') }} />
+  if (activeSection === 'requests' && bulkStage === 'review') return <BulkApprovalWorkspace requestIds={bulkIds} principals={principals.data ?? []} costCenters={costCenters.data ?? []}
+    onBack={() => setBulkStage(null)} onComplete={() => {
+      void queryClient.invalidateQueries({ queryKey: ['access-requests'] })
+      void queryClient.invalidateQueries({ queryKey: ['entitlements'] })
+    }} />
+
   return (
     <section className={styles.page}>
       <PageHeader
@@ -880,6 +894,7 @@ export function EntitlementsPage() {
       )}
 
       <SectionLayout label="Entitlements" sections={ACCESS_SECTIONS} active={activeSection} onSelect={selectSection}>
+      {activeSection === 'approvalPolicies' && <ApprovalPolicies />}
       {activeSection === 'settings' && <Card className={styles.detailCard} id="governed-model-access">
         <Title3 as="h2">Model access settings</Title3>
         <Text>Choose a successfully published MOSAIC model. Direct grants to people, agents, and applications, and Entra security-group grants, are applied; MOSAIC groups and imported-only APIs are not orchestrated.</Text>
@@ -1326,6 +1341,8 @@ export function EntitlementsPage() {
             <Badge appearance="outline">{accessRequest.state}</Badge>
           </div>}
           toolbar={
+            <>
+            <Button disabled={!pendingRequests.isSuccess || !pendingRequests.data.length} onClick={() => setBulkStage('select')}>Bulk approval review</Button>
             <Field label="Request status">
               <Select value={requestStatus} onChange={(_, data) => {
                 const next = new URLSearchParams(searchParams)
@@ -1342,6 +1359,7 @@ export function EntitlementsPage() {
                 <option value="all">All statuses</option>
               </Select>
             </Field>
+            </>
           }
           renderDetail={(accessRequest) => <div className={styles.grantDetail}>
             <Title3 as="h3">{requestResourceLabel(accessRequest, resourceLabel(accessRequest.resource))}</Title3>

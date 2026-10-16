@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse, Response
 
 from mosaic_api.analytics_api import analytics_router
 from mosaic_api.api import portal_router, router
+from mosaic_api.approvals_api import approvals_router
 from mosaic_api.auth import EntraAuthenticator, LocalAuthenticator
 from mosaic_api.azure_connections import (
     AzureConnectionRepository,
@@ -26,9 +27,10 @@ from mosaic_api.budgets_api import budgets_router, portal_budgets_router
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings, get_settings
 from mosaic_api.cost_centers_api import cost_centers_router, portal_cost_centers_router
 from mosaic_api.directory_api import directory_router
-from mosaic_api.domain import KeyVaultSecretId
+from mosaic_api.domain import Entitlement, KeyVaultSecretId, utc_now
 from mosaic_api.errors import (
     DomainError,
+    NotFoundError,
     ValidationError,
     domain_error_handler,
     request_validation_error_handler,
@@ -42,11 +44,28 @@ from mosaic_api.integrations.apim.credentials import ApimCredentialClient, ApimK
 from mosaic_api.integrations.azure_connections import AzureClientRegistry
 from mosaic_api.integrations.email import AcsEmailClient
 from mosaic_api.integrations.graph import DirectoryLookup, GraphDirectoryLookup
+from mosaic_api.integrations.graph.notifications import GraphNotificationDirectory
 from mosaic_api.integrations.key_vault import KeyVaultSecretWriter
 from mosaic_api.integrations.loganalytics import LogAnalyticsClient
 from mosaic_api.integrations.mcp import EntraTokenProvider, KeyVaultSecretReader
+from mosaic_api.integrations.teams import (
+    BotTokenSource,
+    ManagedIdentityBotTokenSource,
+    SecretBotTokenSource,
+    TeamsHttpTransport,
+    TeamsLifecycleAuthenticator,
+    WorkflowEndpointPolicy,
+)
 from mosaic_api.mcp_publishing_api import mcp_publishing_router
 from mosaic_api.model_pools_api import model_pools_router
+from mosaic_api.notification_delivery_api import notification_delivery_router
+from mosaic_api.notification_inbox_api import notifications_router, portal_notifications_router
+from mosaic_api.notification_readiness_api import notification_readiness_router
+from mosaic_api.notifications import CapabilityCheck, NotificationEvent
+from mosaic_api.notifications_preferences_api import (
+    notification_preferences_router,
+    portal_notification_preferences_router,
+)
 from mosaic_api.observability import configure_logging, configure_telemetry, instrument_requests
 from mosaic_api.pricing import load_seed
 from mosaic_api.pricing_api import pricing_router
@@ -82,6 +101,11 @@ from mosaic_api.repositories import (
     PricingRepository,
     UsageRollupRepository,
 )
+from mosaic_api.repositories.cosmos_approvals import CosmosApprovalRepository
+from mosaic_api.repositories.cosmos_notifications import CosmosNotificationRepository
+from mosaic_api.repositories.memory_approvals import InMemoryApprovalRepository
+from mosaic_api.repositories.memory_notifications import InMemoryNotificationRepository
+from mosaic_api.repositories.notifications import NotificationPersistence
 from mosaic_api.services import (
     DirectoryService,
     EntitlementService,
@@ -95,18 +119,57 @@ from mosaic_api.services import (
     UsageService,
 )
 from mosaic_api.services.analytics import AnalyticsService
+from mosaic_api.services.approval_ai import ApprovalAiService, HttpGovernedApprovalModel
+from mosaic_api.services.approval_events import GrantNotificationRecipientResolver
+from mosaic_api.services.approvals import ApprovalService
 from mosaic_api.services.budget_gate import BlockedListGate
+from mosaic_api.services.budget_notification_bridge import BudgetNotificationBridge
 from mosaic_api.services.budgets import BudgetService
+from mosaic_api.services.capability_notification_sources import CapabilityNotificationSource
 from mosaic_api.services.cost_centers import CostCenterService
+from mosaic_api.services.directory import Actor
+from mosaic_api.services.environment_notification_sources import EnvironmentNotificationSource
+from mosaic_api.services.feature_readiness import (
+    CapabilityProbe,
+    NotificationReadinessService,
+    ai_approval_capability,
+    container_retention_probe,
+    gateway_usage_probe,
+)
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 from mosaic_api.services.mcp_publishing import McpPublishingService
 from mosaic_api.services.model_pools import ModelPoolService
+from mosaic_api.services.notification_digests import (
+    DigestNotificationDispatcher,
+    NotificationDigestCoordinator,
+)
+from mosaic_api.services.notification_email import AcsNotificationDispatcher
+from mosaic_api.services.notification_preferences import NotificationPreferenceService
+from mosaic_api.services.notification_sources import (
+    CosmosNotificationRunSource,
+    InMemoryNotificationRunSource,
+    NotificationRunSource,
+    NotificationSourceService,
+)
+from mosaic_api.services.notification_visibility import (
+    NotificationVisibility,
+    usage_role_authorizer,
+)
+from mosaic_api.services.notifications import NotificationService
 from mosaic_api.services.pool_health import PoolHealthService
 from mosaic_api.services.portal_access import PortalAccessService
 from mosaic_api.services.pricing import PricingService
+from mosaic_api.services.scheduled_features import ScheduledFeatureWorker
+from mosaic_api.services.teams import TeamsChannelDispatcher, TeamsPersonalDispatcher, TeamsService
 from mosaic_api.services.telemetry import TelemetryService
 from mosaic_api.services.usage import RollupUsageSource, SimulatedUsageSource, UsageSource
+from mosaic_api.services.usage_notification_source import PortalUsageNotificationSource
+from mosaic_api.services.usage_notifications import (
+    DirectoryUsageNotificationIdentities,
+    UsageNotificationProducer,
+)
 from mosaic_api.services.usage_rollup import UsageRollupService
+from mosaic_api.teams_api import teams_router
 
 logger = structlog.get_logger()
 
@@ -148,12 +211,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         pricing_repository: PricingRepository
         cost_center_repository: CostCenterRepository
         budget_repository: BudgetRepository
+        approval_repository: InMemoryApprovalRepository | CosmosApprovalRepository
+        notification_events: dict[tuple[str, str], NotificationEvent] = {}
+        notification_repository: NotificationPersistence
+        operation_source: NotificationRunSource
+        retention_probes: tuple[CapabilityProbe, ...] = ()
         if app_settings.repository_backend is RepositoryBackend.MEMORY:
             repository = InMemoryDirectoryRepository()
+            approval_repository = InMemoryApprovalRepository()
             connection_repository = InMemoryAzureConnectionRepository()
             gateway_repository = InMemoryGatewayRepository()
             endpoint_repository = InMemoryModelEndpointRepository()
-            entitlement_repository = InMemoryEntitlementRepository()
+            entitlement_repository = InMemoryEntitlementRepository(
+                directory_repository=repository,
+                notification_events=notification_events,
+                approval_policies=approval_repository.policies,
+            )
             mcp_repository = InMemoryMcpEndpointRepository()
             environment_repository = InMemoryEnvironmentRepository(
                 gateway_repository, endpoint_repository, mcp_repository
@@ -162,8 +235,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             pricing_repository = InMemoryPricingRepository()
             cost_center_repository = InMemoryCostCenterRepository()
             budget_repository = InMemoryBudgetRepository()
+            notification_repository = InMemoryNotificationRepository(
+                events=notification_events,
+                audit_events=repository.audit_events,
+            )
+            operation_source = InMemoryNotificationRunSource(
+                gateway_repository.sync_runs,
+                gateway_repository.publish_runs,
+                endpoint_repository.sync_runs,
+                mcp_repository.sync_runs,
+            )
         else:
             cosmos_client = CosmosClient(str(app_settings.cosmos_endpoint), credential=credential)
+            approval_repository = CosmosApprovalRepository(
+                cosmos_client,
+                app_settings.cosmos_database,
+                app_settings.cosmos_desired_state_container,
+                app_settings.cosmos_audit_events_container,
+                owns_client=False,
+            )
             connection_repository = CosmosAzureConnectionRepository(
                 cosmos_client,
                 app_settings.cosmos_database,
@@ -246,6 +336,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app_settings.cosmos_audit_events_container,
                 app_settings.cosmos_usage_rollups_container,
                 owns_client=False,
+            )
+            notification_repository = CosmosNotificationRepository(
+                cosmos_client,
+                app_settings.cosmos_database,
+                app_settings.cosmos_desired_state_container,
+                app_settings.cosmos_audit_events_container,
+                owns_client=False,
+            )
+            operation_source = CosmosNotificationRunSource(
+                cosmos_client.get_database_client(
+                    app_settings.cosmos_database
+                ).get_container_client(app_settings.cosmos_sync_operations_container)
+            )
+            database = cosmos_client.get_database_client(app_settings.cosmos_database)
+            retention_probes = (
+                container_retention_probe(
+                    database.get_container_client(app_settings.cosmos_desired_state_container),
+                    scope="desired-state",
+                ),
+                container_retention_probe(
+                    database.get_container_client(app_settings.cosmos_usage_rollups_container),
+                    scope="usage-rollups",
+                ),
             )
         authenticator = (
             LocalAuthenticator(app_settings.tenant_id, app_settings.local_roles)
@@ -430,6 +543,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             endpoint_repository=endpoint_repository,
             directory_lookup=directory_lookup,
             cost_center_repository=cost_center_repository,
+            environment_repository=environment_repository,
         )
         app.state.directory_service = DirectoryService(
             repository,
@@ -489,6 +603,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             gateway_repository=gateway_repository,
             endpoint_repository=endpoint_repository,
         )
+        feature_http_client = httpx.AsyncClient(timeout=30, follow_redirects=False)
+        approval_service = ApprovalService(
+            approval_repository,
+            entitlements=entitlement_service,
+            hosting_verified=app_settings.scheduled_workers_always_on,
+        )
+        approval_ai_service = ApprovalAiService(
+            approval_repository,
+            entitlements=entitlement_service,
+            portal_access=app.state.portal_access_service,
+            directory_repository=repository,
+            model=HttpGovernedApprovalModel(credential, client=feature_http_client),
+        )
+        app.state.approval_repository = approval_repository
+        app.state.approval_service = approval_service
+        app.state.approval_ai_service = approval_ai_service
         telemetry_service = TelemetryService(
             gateway_repository=gateway_repository,
             rollup_repository=rollup_repository,
@@ -582,6 +712,142 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             cost_center_repository=cost_center_repository,
         )
         email_client = AcsEmailClient(credential)
+        console_origin = (
+            str(app_settings.frontend_url).rstrip("/")
+            if app_settings.frontend_url and app_settings.frontend_url.scheme == "https"
+            else None
+        )
+        portal_origin = (
+            str(app_settings.portal_url).rstrip("/")
+            if app_settings.portal_url and app_settings.portal_url.scheme == "https"
+            else None
+        )
+        notification_directory = (
+            GraphNotificationDirectory(
+                directory_lookup,
+                api_client_id=app_settings.api_client_id,
+                admin_role=app_settings.required_role,
+            )
+            if isinstance(directory_lookup, GraphDirectoryLookup) and app_settings.api_client_id
+            else None
+        )
+        portal_role_directory = (
+            GraphNotificationDirectory(
+                directory_lookup,
+                api_client_id=app_settings.api_client_id,
+                admin_role=app_settings.portal_role,
+            )
+            if isinstance(directory_lookup, GraphDirectoryLookup) and app_settings.api_client_id
+            else None
+        )
+        usage_producer = UsageNotificationProducer(
+            notification_repository,
+            PortalUsageNotificationSource(app.state.usage_service),
+            DirectoryUsageNotificationIdentities(repository, directory_lookup=directory_lookup),
+            tenant_id=app_settings.tenant_id,
+            authorize_recipient=usage_role_authorizer(
+                app_settings,
+                notification_directory,
+                portal_role_directory,
+            ),
+        )
+        grant_recipients = GrantNotificationRecipientResolver(
+            repository,
+            directory_lookup=directory_lookup,
+        )
+        visibility = NotificationVisibility(
+            entitlement_repository,
+            repository,
+            grant_recipients=grant_recipients.expand,
+            grant_member=grant_recipients.contains,
+            usage_authorizer=usage_producer.authorize_delivery,
+        )
+        preferences = NotificationPreferenceService(
+            notification_repository,
+            directory=notification_directory,
+            recipient_visibility=visibility,
+        )
+        digests = NotificationDigestCoordinator(
+            notification_repository,
+            preferences,
+            tenant_id=app_settings.tenant_id,
+            hosting_verified=app_settings.scheduled_workers_always_on,
+        )
+        bot_credential: ManagedIdentityCredential | None = None
+        bot_tokens: BotTokenSource | None = None
+        if app_settings.teams_bot_auth_mode == "managedIdentity" and app_settings.teams_bot_app_id:
+            bot_credential = ManagedIdentityCredential(client_id=app_settings.teams_bot_app_id)
+            bot_tokens = ManagedIdentityBotTokenSource(
+                bot_credential,
+                bot_app_id=app_settings.teams_bot_app_id,
+            )
+        elif (
+            app_settings.teams_bot_auth_mode == "clientSecret"
+            and app_settings.teams_bot_app_id
+            and app_settings.teams_bot_secret_reference
+        ):
+            bot_tokens = SecretBotTokenSource(
+                feature_http_client,
+                key_vault_reader,
+                tenant_id=app_settings.tenant_id,
+                bot_app_id=app_settings.teams_bot_app_id,
+                secret_reference=str(app_settings.teams_bot_secret_reference),
+            )
+        teams_service = TeamsService(
+            notification_repository,
+            tenant_id=app_settings.tenant_id,
+            secret_reader=key_vault_reader,
+            secret_writer=key_vault_writer,
+            transport=TeamsHttpTransport(
+                feature_http_client,
+                WorkflowEndpointPolicy(frozenset(app_settings.teams_workflow_allowed_hosts)),
+            ),
+            authenticator=TeamsLifecycleAuthenticator(feature_http_client),
+            token_source=bot_tokens,
+            console_origin=console_origin,
+            portal_origin=portal_origin,
+        )
+        email_dispatcher = AcsNotificationDispatcher(
+            email_client,
+            budget_repository,
+            mailbox_resolver=preferences.mailbox_resolver,
+            frontend_url=console_origin,
+            portal_url=portal_origin,
+        )
+        budget_bridge = BudgetNotificationBridge(
+            budget_repository,
+            notification_repository,
+            cost_center_repository=cost_center_repository,
+            sender=email_client,
+            fallback=email_dispatcher,
+            tenant_id=app_settings.tenant_id,
+            enabled=app_settings.budgets_enabled,
+        )
+        notification_service = NotificationService(
+            notification_repository,
+            audience_resolver=digests,
+            delivery_authorizer=preferences,
+            legacy_budget_authorizer=budget_bridge,
+            dispatchers={
+                "email": DigestNotificationDispatcher(digests, budget_bridge),
+                "teamsChannel": DigestNotificationDispatcher(
+                    digests,
+                    TeamsChannelDispatcher(teams_service),
+                ),
+                "teamsPersonal": DigestNotificationDispatcher(
+                    digests,
+                    TeamsPersonalDispatcher(teams_service),
+                ),
+            },
+            hosting_verified=app_settings.scheduled_workers_always_on,
+        )
+        app.state.notification_repository = notification_repository
+        app.state.notification_preference_service = preferences
+        app.state.notification_service = notification_service
+        app.state.notification_digest_service = digests
+        app.state.usage_notification_producer = usage_producer
+        app.state.teams_service = teams_service
+        app.state.budget_notification_bridge = budget_bridge
         budget_service = BudgetService(
             budget_repository,
             cost_center_repository=cost_center_repository,
@@ -599,9 +865,162 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             suggested_endpoint=app_settings.email_suggested_endpoint,
             suggested_sender=app_settings.email_suggested_sender,
             enabled=app_settings.budgets_enabled,
+            notification_bridge=budget_bridge,
         )
         app.state.budget_repository = budget_repository
         app.state.budget_service = budget_service
+        system_actor = Actor(
+            tenant_id=app_settings.tenant_id,
+            object_id="mosaic-notification-worker",
+        )
+
+        async def resolve_notification_grant(identifier: str) -> Entitlement | None:
+            try:
+                return await entitlement_service.get_entitlement(system_actor, identifier)
+            except NotFoundError:
+                return None
+
+        source_service = NotificationSourceService(
+            notification_repository,
+            operation_source,
+            tenant_id=app_settings.tenant_id,
+            resolve_grant=resolve_notification_grant,
+        )
+
+        async def ai_readiness(actor: Actor) -> list[CapabilityCheck]:
+            return [
+                ai_approval_capability(
+                    await approval_ai_service.readiness(actor),
+                    now=utc_now(),
+                )
+            ]
+
+        async def team_readiness(actor: Actor) -> list[CapabilityCheck]:
+            return await teams_service.capability_checks(actor.tenant_id)
+
+        async def personal_team_readiness(actor: Actor) -> list[CapabilityCheck]:
+            return await teams_service.capability_checks(
+                actor.tenant_id,
+                user_object_id=actor.object_id,
+            )
+
+        async def directory_readiness(actor: Actor) -> list[CapabilityCheck]:
+            return await preferences.readiness_checks(actor.tenant_id)
+
+        async def personal_directory_readiness(actor: Actor) -> list[CapabilityCheck]:
+            return await preferences.readiness_checks(actor.tenant_id, actor.object_id)
+
+        async def digest_readiness(actor: Actor) -> list[CapabilityCheck]:
+            return await digests.readiness_checks()
+
+        async def admin_usage_readiness(actor: Actor) -> list[CapabilityCheck]:
+            return await usage_producer.readiness_checks(
+                actor.tenant_id,
+                actor.object_id,
+                "admin",
+            )
+
+        async def personal_usage_readiness(actor: Actor) -> list[CapabilityCheck]:
+            return await usage_producer.readiness_checks(
+                actor.tenant_id,
+                actor.object_id,
+                "portal",
+            )
+
+        readiness = NotificationReadinessService(
+            app_settings,
+            notification_repository,
+            notification_repository,
+            budget_repository,
+            worker_names=(
+                "notifications",
+                "notificationSources",
+                "notificationUsage",
+                "notificationCapabilities",
+                "notificationFindings",
+                "notificationDigestSchedule",
+                "notificationBudgetBridge",
+            ),
+            worker_intervals={
+                "notificationUsage": app_settings.usage_rollup_interval_seconds,
+                "notificationCapabilities": app_settings.usage_rollup_interval_seconds,
+                "notificationFindings": app_settings.usage_rollup_interval_seconds,
+            },
+            admin_probes=(
+                *retention_probes,
+                ai_readiness,
+                team_readiness,
+                directory_readiness,
+                digest_readiness,
+                gateway_usage_probe(gateway_repository, telemetry_service, configured=uses_rollups),
+            ),
+            admin_self_probes=(admin_usage_readiness,),
+            personal_probes=(
+                personal_team_readiness,
+                personal_directory_readiness,
+                personal_usage_readiness,
+            ),
+        )
+        app.state.notification_readiness_service = readiness
+        capability_source = CapabilityNotificationSource(
+            notification_repository,
+            lambda: readiness.admin_checks(system_actor, include_personal=False),
+            tenant_id=app_settings.tenant_id,
+        )
+        finding_source = EnvironmentNotificationSource(
+            notification_repository,
+            lambda: app.state.environment_findings_service.list_findings(system_actor),
+            tenant_id=app_settings.tenant_id,
+        )
+        feature_workers = [
+            ScheduledFeatureWorker(
+                notification_repository,
+                gateway_repository,
+                action,
+                tenant_id=app_settings.tenant_id,
+                name=name,
+                interval_seconds=interval,
+                timeout_seconds=timeout,
+            )
+            for name, action, interval, timeout in (
+                (
+                    "notificationSources",
+                    source_service.reconcile,
+                    app_settings.notification_interval_seconds,
+                    45,
+                ),
+                (
+                    "notificationUsage",
+                    usage_producer.reconcile,
+                    app_settings.usage_rollup_interval_seconds,
+                    150,
+                ),
+                (
+                    "notificationCapabilities",
+                    capability_source.reconcile,
+                    app_settings.usage_rollup_interval_seconds,
+                    150,
+                ),
+                (
+                    "notificationFindings",
+                    finding_source.reconcile,
+                    app_settings.usage_rollup_interval_seconds,
+                    45,
+                ),
+                (
+                    "notificationDigestSchedule",
+                    digests.reconcile,
+                    app_settings.notification_interval_seconds,
+                    120,
+                ),
+                (
+                    "notificationBudgetBridge",
+                    budget_bridge.reconcile,
+                    app_settings.notification_interval_seconds,
+                    120,
+                ),
+            )
+        ]
         # Budgets are judged from rolled-up usage, so the check runs only where there is some.
         budget_loop = app_settings.budgets_enabled and uses_rollups
         app.state.authenticator = authenticator
@@ -652,6 +1071,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             rollup_service.start()
         if budget_loop:
             budget_service.start()
+        notification_loops = (
+            app_settings.notifications_enabled and app_settings.environment is not Environment.TEST
+        )
+        if notification_loops:
+            for worker in feature_workers:
+                worker.start()
+        notification_task = (
+            asyncio.create_task(
+                notification_service.run(
+                    app_settings.tenant_id,
+                    interval_seconds=app_settings.notification_interval_seconds,
+                ),
+                name="notifications",
+            )
+            if notification_loops
+            else None
+        )
+        approval_task = (
+            asyncio.create_task(
+                approval_service.run_forever(
+                    app_settings.tenant_id,
+                    interval_seconds=app_settings.approval_interval_seconds,
+                ),
+                name="approvalEvaluator",
+            )
+            if app_settings.approval_evaluator_enabled
+            else None
+        )
         logger.info(
             "application_started",
             environment=app_settings.environment,
@@ -663,6 +1110,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             automatic_keys_task.cancel()
             with suppress(asyncio.CancelledError):
                 await automatic_keys_task
+            if notification_task is not None:
+                notification_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await notification_task
+            for worker in feature_workers:
+                await worker.aclose()
+            if approval_task is not None:
+                approval_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await approval_task
+            await feature_http_client.aclose()
+            if bot_credential is not None:
+                await bot_credential.close()
             await budget_service.aclose()
             if rollup_service is not None:
                 await rollup_service.aclose()
@@ -699,6 +1159,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await pricing_repository.close()
             await cost_center_repository.close()
             await budget_repository.close()
+            await approval_repository.close()
+            await notification_repository.close()
             if cosmos_client:
                 await cosmos_client.close()
             await credential.close()
@@ -721,7 +1183,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             allow_origins=app_settings.cors_origins,
             allow_credentials=False,
             allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-            allow_headers=["Authorization", "Content-Type", "X-Correlation-ID"],
+            allow_headers=["Authorization", "Content-Type", "If-Match", "X-Correlation-ID"],
             # The console saves each CSV export under the name the API gives it.
             expose_headers=["Content-Disposition", "Retry-After"],
         )
@@ -762,6 +1224,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         pricing_repository = getattr(request.app.state, "pricing_repository", None)
         cost_center_repository = getattr(request.app.state, "cost_center_repository", None)
         budget_repository = getattr(request.app.state, "budget_repository", None)
+        approval_repository = getattr(request.app.state, "approval_repository", None)
+        notification_repository = getattr(request.app.state, "notification_repository", None)
         is_ready = (
             repository is not None
             and await repository.ready()
@@ -785,6 +1249,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             and await cost_center_repository.ready()
             and budget_repository is not None
             and await budget_repository.ready()
+            and approval_repository is not None
+            and await approval_repository.ready()
+            and notification_repository is not None
+            and await notification_repository.ready()
         )
         return JSONResponse(
             status_code=status.HTTP_200_OK if is_ready else status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -792,6 +1260,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     app.include_router(router)
+    app.include_router(approvals_router)
+    app.include_router(notification_readiness_router)
+    app.include_router(notifications_router)
+    app.include_router(portal_notifications_router)
+    app.include_router(notification_delivery_router)
+    app.include_router(notification_preferences_router)
+    app.include_router(portal_notification_preferences_router)
+    app.include_router(teams_router)
     app.include_router(azure_connections_router)
     app.include_router(mcp_publishing_router)
     app.include_router(model_pools_router)

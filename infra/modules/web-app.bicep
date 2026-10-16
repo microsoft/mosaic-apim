@@ -8,6 +8,7 @@ param azdServiceName string
 param appSettings array = []
 param corsAllowedOrigins array = []
 param tags object = {}
+param userAssignedIdentityResourceIds array = []
 
 var siteAppSettings = concat(appSettings, [
   {
@@ -20,8 +21,11 @@ resource site 'Microsoft.Web/sites@2023-12-01' = {
   name: name
   location: location
   kind: 'app,linux,container'
-  identity: {
+  identity: empty(userAssignedIdentityResourceIds) ? {
     type: 'SystemAssigned'
+  } : {
+    type: 'SystemAssigned, UserAssigned'
+    userAssignedIdentities: toObject(userAssignedIdentityResourceIds, id => id, id => {})
   }
   tags: union(tags, {
     'azd-service-name': azdServiceName

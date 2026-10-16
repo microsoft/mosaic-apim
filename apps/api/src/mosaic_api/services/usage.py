@@ -305,6 +305,8 @@ class DailyUsage:
     last_seen: datetime | None = None
     # A pool model's calls by the deployment that served them, for pricing only. Never shown.
     members: dict[str, MemberUsage] = field(default_factory=dict)
+    metered_requests: int | None = None
+    successful_requests: int | None = None
     azure_cloud: Literal["commercial", "government"] | None = None
 
     @property
@@ -317,6 +319,20 @@ class DailyUsage:
 
 
 UsageSeries = Mapping[str, Mapping[date, DailyUsage] | None]
+
+
+@dataclass(frozen=True)
+class NotificationUsageContext:
+    """Measured, caller-attributed inputs; never substitute grant totals for a person's series."""
+
+    entitlements: Sequence[ResolvedEntitlement]
+    series: UsageSeries
+    costs: Mapping[str, Mapping[date, float | None]]
+    freshness: UsageFreshness | None
+    coverage_start: datetime | None
+    through: datetime | None
+    measured: bool
+    shared_monthly: Sequence[CostCenterUsage] = ()
 
 
 @dataclass
@@ -858,6 +874,29 @@ class RollupUsageSource:
         start: date,
         end: date,
     ) -> UsageSeries:
+        return await self._daily_usage(actor, entitlements, start=start, end=end)
+
+    async def notification_daily_usage(
+        self,
+        actor: Actor,
+        entitlements: Sequence[ResolvedEntitlement],
+        *,
+        start: date,
+        end: date,
+    ) -> UsageSeries:
+        return await self._daily_usage(
+            actor, entitlements, start=start, end=end, require_member_scope=True
+        )
+
+    async def _daily_usage(
+        self,
+        actor: Actor,
+        entitlements: Sequence[ResolvedEntitlement],
+        *,
+        start: date,
+        end: date,
+        require_member_scope: bool = False,
+    ) -> UsageSeries:
         links = await self._links(actor.tenant_id, entitlements)
         states = await self._states(actor.tenant_id)
         keys = sorted({key for link in links.values() for key in link.keys})
@@ -869,6 +908,17 @@ class RollupUsageSource:
             else []
         )
         caller = actor.object_id.casefold()
+        shared_ids = {
+            item.entitlement.id for item in entitlements
+            if item.entitlement.subject.kind in {"group", "securityGroup"}
+        }
+        shared_keys = {
+            key for identity, link in links.items() if identity in shared_ids for key in link.keys
+        }
+        ambiguous_keys = {
+            fact.link_key for fact in facts
+            if require_member_scope and fact.link_key in shared_keys and not fact.per_member
+        }
         by_key: dict[str, list[UsageFact]] = defaultdict(list)
         for fact in facts:
             if fact.per_member and (fact.caller_object_id or "").casefold() != caller:
@@ -879,7 +929,14 @@ class RollupUsageSource:
         for item in entitlements:
             entitlement = item.entitlement
             link = links.get(entitlement.id)
-            if link is None:
+            if link is None or (
+                require_member_scope and entitlement.id in shared_ids
+                and (
+                    entitlement.binding is None
+                    or not entitlement.binding.attribution_per_member
+                    or bool(link.keys & ambiguous_keys)
+                )
+            ):
                 series[entitlement.id] = None
                 continue
             is_mcp = entitlement.resource.kind == EntitlementResourceKind.MCP_SERVER
@@ -939,6 +996,61 @@ class RollupUsageSource:
             now=self._clock(),
             interval=self._interval,
         )
+
+    async def notification_coverage(
+        self, actor: Actor, entitlements: Sequence[ResolvedEntitlement]
+    ) -> tuple[datetime | None, datetime | None]:
+        """Intersection, not union, of authoritative coverage on every relevant gateway."""
+
+        links = await self._links(actor.tenant_id, entitlements)
+        states = await self._states(actor.tenant_id)
+        starts: list[datetime] = []
+        ends: list[datetime] = []
+        for item in entitlements:
+            link = links.get(item.entitlement.id)
+            if link is None or not link.gateway_ids:
+                return None, None
+            for gateway_id in link.gateway_ids:
+                state = states.get(gateway_id)
+                if (
+                    state is None
+                    or state.last_success_at is None
+                    or state.data_available_from is None
+                    or state.queried_through is None
+                    or state.backfill_status in {"running", "failed"}
+                ):
+                    return None, None
+                resource = item.entitlement.resource
+                apis = [
+                    api
+                    for api in state.apis
+                    if (
+                        api.resource_id
+                        == (
+                            resource.scope_id
+                            if resource.kind == EntitlementResourceKind.POOL_MODEL
+                            else resource.id
+                        )
+                        or (
+                            resource.kind == EntitlementResourceKind.MODEL_DEPLOYMENT
+                            and api.model_endpoint_id == resource.scope_id
+                            and api.deployment_name == resource.id
+                        )
+                    )
+                ]
+                if (
+                    state.diagnostics_error
+                    or not apis
+                    or not all(api.api_name in state.instrumented_apis for api in apis)
+                ):
+                    return None, None
+                starts.append(
+                    datetime.combine(
+                        date.fromisoformat(state.data_available_from), time.min, tzinfo=UTC
+                    )
+                )
+                ends.append(state.queried_through.astimezone(UTC))
+        return (max(starts), min(ends)) if starts else (None, None)
 
     async def on_behalf_usage(self, actor: Actor, *, start: date, end: date) -> list[OnBehalfUse]:
         """Only the caller's own entries, from the facts that hold any. See ADR 0025.
@@ -1022,6 +1134,8 @@ def _measured_zero(is_mcp: bool) -> DailyUsage:
         errors=0,
         peak_minute_tokens=None if is_mcp else 0,
         peak_minute_requests=0,
+        metered_requests=0,
+        successful_requests=0,
     )
 
 
@@ -1128,6 +1242,8 @@ def _add_fact(usage: DailyUsage, fact: UsageFact, *, is_mcp: bool) -> None:
     usage.azure_cloud = fact.azure_cloud
     metrics = fact.metrics
     usage.requests = (usage.requests or 0) + metrics.requests
+    usage.metered_requests = (usage.metered_requests or 0) + metrics.metered_requests
+    usage.successful_requests = (usage.successful_requests or 0) + metrics.ok
     if not is_mcp:
         usage.prompt_tokens = (usage.prompt_tokens or 0) + metrics.prompt_tokens
         usage.completion_tokens = (usage.completion_tokens or 0) + metrics.completion_tokens
@@ -1490,6 +1606,99 @@ class UsageService:
                 await self._cost_center_usage(actor, entitlements, book, now) if measured else []
             ),
             on_behalf=behalf_rows,
+        )
+
+    async def notification_entitlements(self, actor: Actor) -> list[ResolvedEntitlement]:
+        """Current eligible report subjects, also used for producer publication revalidation."""
+
+        book = await load_book(self._cost_centers, actor.tenant_id)
+        return [
+            item.model_copy(
+                update={"entitlement": with_inherited_limits(item.entitlement, book)}
+            )
+            for item in await self._usage_entitlements(actor)
+            if item.entitlement.enabled
+            and item.entitlement.revocation is None
+            and item.effective
+            and (item.resource_summary is None or item.resource_summary.available)
+        ]
+
+    async def notification_context(
+        self, actor: Actor, *, start: date, end: date
+    ) -> NotificationUsageContext:
+        """Calendar producers reuse the portal's exact visibility, attribution and pricing.
+
+        Dates are inclusive UTC query bounds, not the summary's local accounting boundaries.
+        Hour slicing and conservative completeness checks belong to the notification source.
+        """
+
+        if end < start:
+            raise ValueError("Usage query dates must be ordered")
+        entitlements = await self.notification_entitlements(actor)
+        measured = self._source.data_source == "logAnalytics"
+        series: UsageSeries = {}
+        if measured:
+            if isinstance(self._source, RollupUsageSource):
+                series = await self._source.notification_daily_usage(
+                    actor, entitlements, start=start, end=end
+                )
+            else:
+                series = await self._source.daily_usage(actor, entitlements, start=start, end=end)
+        freshness = await self._source.freshness(actor, entitlements) if measured else None
+        coverage_start, through = (
+            await self._source.notification_coverage(actor, entitlements)
+            if isinstance(self._source, RollupUsageSource)
+            else (None, None)
+        )
+        pricing = (
+            await self._measured_pricing(actor, entitlements, series, start=start, end=end)
+            if measured
+            else None
+        )
+        costs: dict[str, Mapping[date, float | None]] = {}
+        if pricing is not None:
+            for item in entitlements:
+                grant = item.entitlement
+                figures = [
+                    (day, (series.get(grant.id) or {}).get(day)) for day in _days(start, end)
+                ]
+                key, _ = pricing.deployments.get(grant.id, (None, None))
+                members = pricing.members.get(grant.id)
+                if members is not None:
+                    _, points, note = pricing.price_pool_days(members, figures, end)
+                    costs[grant.id] = {
+                        day: value if note is None else None for day, value in points.items()
+                    }
+                elif key is not None:
+                    _, points, _ = pricing.price_days(key, figures, end)
+                    costs[grant.id] = points
+                costs[grant.id] = {
+                    day: (
+                        value
+                        if (point_usage := (series.get(grant.id) or {}).get(day)) is not None
+                        and point_usage.metered_requests is not None
+                        and point_usage.successful_requests is not None
+                        and point_usage.metered_requests >= point_usage.successful_requests
+                        else None
+                    )
+                    for day, value in costs.get(grant.id, {}).items()
+                }
+        return NotificationUsageContext(
+            entitlements=entitlements,
+            series=series,
+            costs=costs,
+            freshness=freshness,
+            coverage_start=coverage_start,
+            through=through,
+            measured=measured,
+            shared_monthly=(
+                await self._cost_center_usage(
+                    actor, entitlements, await load_book(self._cost_centers, actor.tenant_id),
+                    self._clock().astimezone(UTC),
+                )
+                if measured
+                else []
+            ),
         )
 
     async def _on_behalf_models(

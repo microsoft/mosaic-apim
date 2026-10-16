@@ -3,7 +3,7 @@ import { MsalProvider } from '@azure/msal-react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter } from 'react-router-dom'
+import { createBrowserRouter, RouterProvider } from 'react-router-dom'
 import App from './App'
 import { msalInstance } from './msal'
 import { runtimeConfig } from './runtime-config'
@@ -30,9 +30,7 @@ void msalInstance.initialize().then(() => {
     <StrictMode>
       <MsalProvider instance={msalInstance}>
         <QueryClientProvider client={queryClient}>
-          <BrowserRouter>
-            <App />
-          </BrowserRouter>
+          <RouterProvider router={createBrowserRouter([{ path: '*', element: <App /> }])} />
         </QueryClientProvider>
       </MsalProvider>
     </StrictMode>,

@@ -65,6 +65,16 @@ def test_unknown_gateway_returns_not_found(gateway_client: TestClient) -> None:
     assert response.json()["code"] == "not_found"
 
 
+def test_sync_run_cannot_be_read_under_a_different_gateway(gateway_client: TestClient) -> None:
+    gateway = _register(gateway_client)
+    run = _sync(gateway_client, str(gateway["id"]))
+
+    response = gateway_client.get(f"/api/v1/gateways/gateway_other/sync-runs/{run['id']}")
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "not_found"
+
+
 def test_suggested_gateway_is_offered_then_marked_registered(
     gateway_client: TestClient,
 ) -> None:

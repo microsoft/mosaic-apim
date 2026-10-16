@@ -7,13 +7,14 @@ blocked-list state are operational, like a gateway's rollup state, so they sit b
 each other's change.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, TypeVar
 
 from azure.core import MatchConditions
 from azure.cosmos import exceptions
 from azure.cosmos.aio import ContainerProxy, CosmosClient
 
+from mosaic_api.budget_notifications import BudgetNotificationOutbox
 from mosaic_api.budgets import (
     Budget,
     BudgetState,
@@ -25,7 +26,7 @@ from mosaic_api.budgets import (
 )
 from mosaic_api.domain import AuditEvent, utc_now
 from mosaic_api.errors import ConflictError
-from mosaic_api.repositories.cosmos import CosmosRepositoryBase
+from mosaic_api.repositories.cosmos import BatchOperation, CosmosRepositoryBase
 
 BUDGET_CHANGED = "The budget changed; reload it and try again"
 EMAIL_CHANGED = "The email settings changed; reload them and try again"
@@ -199,6 +200,100 @@ class CosmosBudgetRepository(CosmosRepositoryBase):
             {"budget_id": budget_id},
             change,
         )
+
+    async def update_budget_state_with_outbox(
+        self, tenant_id: str, budget_id: str, change: Callable[[BudgetState], BudgetState],
+        outboxes: Callable[[BudgetState], Sequence[BudgetNotificationOutbox]],
+    ) -> BudgetState:
+        state_id = budget_state_id(tenant_id, budget_id)
+        for _ in range(STATE_WRITE_ATTEMPTS):
+            current = await self.get_budget_state(tenant_id, budget_id)
+            initial = current or BudgetState(
+                id=state_id, tenant_id=tenant_id, budget_id=budget_id
+            )
+            stored = change(initial).model_copy(update={
+                "id": state_id, "tenant_id": tenant_id, "budget_id": budget_id,
+                "updated_at": utc_now(), "etag": initial.etag,
+            })
+            pending = list(outboxes(stored))
+            if any(
+                item.tenant_id != tenant_id or item.budget.id != budget_id for item in pending
+            ):
+                raise ConflictError("Budget outbox writes need one budget and tenant")
+            operations: list[BatchOperation] = [
+                self._replace_operation(stored) if current is not None
+                else ("create", (self._document(stored),))
+            ]
+            for outbox in pending:
+                existing = await self.get_notification_outbox(tenant_id, outbox.id)
+                if existing is None:
+                    operations.append(("create", (self._document(outbox),)))
+                elif existing.notice.delivery_owner == "legacy" and (
+                    outbox.notice.delivery_owner == "notificationPipeline"
+                    and existing.delivery_state != "providerAccepted"
+                ):
+                    operations.append(self._replace_operation(
+                        existing.model_copy(update={
+                            "notice": outbox.notice, "ready": outbox.ready,
+                            "delivery_state": outbox.delivery_state,
+                        })
+                    ))
+            if len(operations) > 100:
+                raise ConflictError("A budget transaction supports at most 99 new notice mutations")
+            try:
+                responses = await self._states.execute_item_batch(
+                    batch_operations=operations, partition_key=tenant_id
+                )
+            except exceptions.CosmosBatchOperationError as error:
+                status = error.operation_responses[error.error_index].get("statusCode")
+                if status in {404, 409, 412}:
+                    continue
+                raise
+            etag = responses[0].get("eTag") if responses else None
+            if not isinstance(etag, str) or not etag:
+                raise ConflictError("The budget transaction did not return its saved state version")
+            return stored.model_copy(update={"etag": etag})
+        raise ConflictError("The budget notification state kept changing")
+
+    async def list_notification_outboxes(self, tenant_id: str) -> list[BudgetNotificationOutbox]:
+        rows = self._states.query_items(
+            query="SELECT * FROM c WHERE c.tenantId = @tenantId AND c.entityType = @entityType",
+            parameters=[
+                {"name": "@tenantId", "value": tenant_id},
+                {"name": "@entityType", "value": "budgetNotificationOutbox"},
+            ], partition_key=tenant_id,
+        )
+        return [self._model(BudgetNotificationOutbox, row) async for row in rows]
+
+    async def get_notification_outbox(
+        self, tenant_id: str, outbox_id: str
+    ) -> BudgetNotificationOutbox | None:
+        try:
+            row = await self._states.read_item(item=outbox_id, partition_key=tenant_id)
+        except exceptions.CosmosResourceNotFoundError:
+            return None
+        if row.get("tenantId") != tenant_id:
+            return None
+        return self._model(BudgetNotificationOutbox, row)
+
+    async def save_notification_outbox(
+        self, outbox: BudgetNotificationOutbox
+    ) -> BudgetNotificationOutbox:
+        try:
+            if outbox.etag:
+                row = await self._states.replace_item(
+                    item=outbox.id, body=self._document(outbox), etag=outbox.etag,
+                    match_condition=MatchConditions.IfNotModified,
+                )
+            else:
+                row = await self._states.create_item(self._document(outbox))
+        except (
+            exceptions.CosmosResourceExistsError,
+            exceptions.CosmosResourceNotFoundError,
+            exceptions.CosmosAccessConditionFailedError,
+        ) as error:
+            raise ConflictError("The budget notification outbox changed") from error
+        return self._model(BudgetNotificationOutbox, row)
 
     async def delete_budget_state(
         self, tenant_id: str, budget_id: str, *, etag: str | None = None

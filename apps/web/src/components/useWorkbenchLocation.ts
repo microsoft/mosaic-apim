@@ -48,7 +48,12 @@ export function useWorkbenchLocation({
     if (!staleScope && (requestedMode === null || mode !== null)) return
     setParams((current) => {
       const next = new URLSearchParams(current)
-      if (staleScope) { next.delete(selectedParameter); next.delete(scopeParameter) }
+      if (staleScope) {
+        next.delete(selectedParameter)
+        next.delete(scopeParameter)
+        next.delete('runId')
+        next.delete('syncRun')
+      }
       next.delete(modeParameter)
       return next
     }, { replace: true, preventScrollReset: true })
@@ -57,6 +62,10 @@ export function useWorkbenchLocation({
   const select = useCallback((id: string | null) => {
     setParams((current) => {
       const next = new URLSearchParams(current)
+      if (id !== current.get(selectedParameter)) {
+        next.delete('runId')
+        next.delete('syncRun')
+      }
       if (id !== null) { next.set(selectedParameter, id); next.set(scopeParameter, scope) }
       else { next.delete(selectedParameter); next.delete(scopeParameter) }
       next.delete(modeParameter)

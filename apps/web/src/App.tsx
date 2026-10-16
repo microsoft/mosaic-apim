@@ -63,6 +63,7 @@ import { MosaicThemeProvider } from './theme'
 import { MosaicMark } from './components/MosaicMark'
 import { PageSearch } from './components/PageSearch'
 import { RequestNotifications } from './components/RequestNotifications'
+import { NotificationBell, NotificationInboxPage } from './components/NotificationInbox'
 import { useNavigationDrawer } from './components/useNavigationDrawer'
 import { AppearanceControl } from './components/AppearanceControl'
 import { IdentityAvatar } from './components/IdentityAvatar'
@@ -138,6 +139,10 @@ function AdminShell() {
     { label: 'Models · Model endpoints', to: '/models?tab=endpoints' },
     { label: 'Entitlements · Access requests', to: '/entitlements?tab=requests' },
     { label: 'Entitlements · Model access settings', to: '/entitlements?tab=settings' },
+    { label: 'Entitlements · Approval policies', to: '/entitlements?tab=approvalPolicies' },
+    { label: 'Settings · AI approval assistance', to: '/settings?tab=approvalAi' },
+    { label: 'Settings · Notifications', to: '/settings?tab=notifications' },
+    { label: 'Notification inbox', to: '/notifications' },
     { label: 'Pricing · Unpriced deployments', to: '/pricing?tab=unpriced' },
     { label: 'Settings · Appearance', to: '/settings?tab=appearance' },
   ]
@@ -208,6 +213,7 @@ function AdminShell() {
         <PageSearch destinations={searchDestinations} />
         <div className="topbar-actions">
           <RequestNotifications />
+          <NotificationBell />
         </div>
       </header>
       <main id="main-content" className="content" inert={mobileNavigationOpen}>
@@ -247,6 +253,7 @@ export default function App() {
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/support" element={<SupportPage />} />
               <Route path="/profile" element={<AdminProfilePage />} />
+              <Route path="/notifications" element={<NotificationInboxPage />} />
               <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Route>
           </Routes>

@@ -261,6 +261,7 @@ class BudgetNotification(MosaicModel):
     first_attempt_at: datetime | None = None
     sent_at: datetime | None = None
     error: str | None = None
+    delivery_owner: Literal["legacy", "notificationPipeline"] = "legacy"
 
 
 class BudgetState(Entity):
@@ -612,6 +613,8 @@ def evaluate(
     state.evaluated_at = now
     state.error = error
     for notice in state.notifications:
+        if notice.delivery_owner == "notificationPipeline":
+            continue
         if notice.status == "failed" and notice.attempts < NOTIFICATION_ATTEMPTS:
             # Communication Services refused it, so it's due again until it's had its attempts.
             notice.status = "sending"

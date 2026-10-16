@@ -1,7 +1,9 @@
 import type { AccountInfo } from '@azure/msal-browser'
 import { render, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AdminProfilePage } from './AdminProfilePage'
+vi.mock('../components/NotificationPreferences', () => ({ NotificationPreferences: () => <section aria-label="Personal notifications" /> }))
 
 const mocks = vi.hoisted(() => ({
   accounts: [] as AccountInfo[],
@@ -23,7 +25,7 @@ describe('AdminProfilePage', () => {
   })
 
   it('discloses local authentication without inventing account metadata', () => {
-    render(<AdminProfilePage />)
+    render(<QueryClientProvider client={new QueryClient()}><AdminProfilePage /></QueryClientProvider>)
 
     expect(screen.getAllByText('Local administrator').length).toBeGreaterThan(0)
     expect(screen.getByText(/Local development authentication is enabled/)).toBeVisible()
@@ -43,7 +45,7 @@ describe('AdminProfilePage', () => {
       localAccountId: 'actual-object',
       environment: 'login.microsoftonline.com',
     }]
-    render(<AdminProfilePage />)
+    render(<QueryClientProvider client={new QueryClient()}><AdminProfilePage /></QueryClientProvider>)
 
     expect(screen.getByText('administrator@example.test')).toBeVisible()
     expect(screen.getByText('actual-tenant')).toBeVisible()

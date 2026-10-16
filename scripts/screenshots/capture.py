@@ -18,7 +18,6 @@ import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
@@ -353,7 +352,7 @@ def click_tab(name: str) -> Action:
     return act
 
 
-def click_button(name: str) -> Action:
+def click_button(name: str | re.Pattern[str]) -> Action:
     def act(page: Page) -> None:
         page.get_by_role("button", name=name).filter(visible=True).first.click()
 
@@ -466,6 +465,15 @@ def wait_for_text(text: str) -> Action:
         _visible_text(page, text).wait_for(timeout=30_000)
 
     return act
+
+
+def review_demo_requests(page: Page) -> None:
+    click_button("Bulk approval review")(page)
+    _settle(page)
+    # Two explicit requests keep the facts readable without changing any approval state.
+    for checkbox in page.get_by_role("checkbox").all()[:2]:
+        checkbox.check()
+    click_button("Review 2 requests")(page)
 
 
 def scroll_to_text(text: str, margin: int = 24) -> Action:
@@ -780,6 +788,55 @@ SHOTS: list[Shot] = [
         height=1250,
     ),
     Shot(
+        "console-bulk-approval",
+        "console",
+        "/entitlements?tab=requests",
+        "dark",
+        "Access requests",
+        actions=(review_demo_requests, wait_for_text("Compatible shared limits")),
+        height=1950,
+    ),
+    Shot(
+        "console-approval-policy",
+        "console",
+        "/entitlements?tab=approvalPolicies",
+        "light",
+        "Development office hours",
+        actions=(
+            click_button("Development office hours"),
+            click_button("Edit policy and dry-run"),
+            wait_for_text("Bounded grant template"),
+        ),
+        height=2780,
+    ),
+    Shot(
+        "console-notification-inbox",
+        "console",
+        "/notifications",
+        "dark",
+        "Administrator notifications",
+        actions=(select_first_resource("Notifications"),),
+        height=1150,
+    ),
+    Shot(
+        "console-notification-preferences",
+        "console",
+        "/profile",
+        "light",
+        "Personal notifications",
+        actions=(click_button("Edit preferences"),),
+        height=2070,
+    ),
+    Shot(
+        "console-notification-readiness",
+        "console",
+        "/settings?tab=notifications&notificationView=health",
+        "dark",
+        "Notification readiness",
+        actions=(wait_for_text("Refresh checks"),),
+        height=2200,
+    ),
+    Shot(
         "console-model-access-settings",
         "console",
         "/entitlements?tab=settings",
@@ -879,7 +936,7 @@ SHOTS: list[Shot] = [
         "/dashboard",
         "light",
         "MOSAIC groups",
-        actions=(*DASHBOARD_LOADED, click_button("Notifications")),
+        actions=(*DASHBOARD_LOADED, click_button(re.compile(r"^Pending approvals"))),
         height=1000,
     ),
     Shot(
@@ -1007,6 +1064,32 @@ SHOTS: list[Shot] = [
             scroll_to_text("Budget warnings and blocks are emailed", margin=150),
         ),
         height=548,
+    ),
+    Shot(
+        "portal-notifications",
+        "portal",
+        "/notifications",
+        "light",
+        "Your persistent inbox",
+        actions=(wait_for_text("Mark read"),),
+        height=1280,
+    ),
+    Shot(
+        "portal-notification-preferences",
+        "portal",
+        "/notification-preferences",
+        "dark",
+        "Categories & channels",
+        height=1800,
+    ),
+    Shot(
+        "portal-notification-digests",
+        "portal",
+        "/notification-preferences",
+        "light",
+        "Categories & channels",
+        actions=(scroll_to_text("Digest schedules", margin=105),),
+        height=1430,
     ),
     Shot(
         "portal-request-access",
@@ -1999,12 +2082,15 @@ def main(argv: list[str] | None = None) -> int:
             if not _port_free(port):
                 parser.error(f"port {port} is in use; pick another with the --*-port options")
 
+    # Keep scratch data in the project's ignored cache, never in a shared system temp folder.
     logs = (
         args.logs_dir.resolve()
-        if args.logs_dir else Path(tempfile.mkdtemp(prefix="mosaic-screenshots-")).resolve()
+        if args.logs_dir
+        else REPO_ROOT / "scripts" / "screenshots" / "__pycache__" / f"capture-{time.time_ns()}"
     )
-    if args.logs_dir:
-        logs.mkdir(parents=True, exist_ok=False)
+    if not logs.is_relative_to(REPO_ROOT) or logs.is_relative_to(args.output.resolve()):
+        parser.error("--logs-dir must be a dedicated project-local directory outside --output")
+    logs.mkdir(parents=True, exist_ok=False)
     _ensure_chromium()
     api = [
         sys.executable,

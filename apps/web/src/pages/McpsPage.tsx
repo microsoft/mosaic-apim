@@ -37,6 +37,7 @@ import { completeWorkspaceNavigation } from '../components/WorkspaceLeaveGuard'
 import { useWorkbenchLocation } from '../components/useWorkbenchLocation'
 import { RemovalDialog } from '../components/RemovalDialog'
 import { RowActions } from '../components/RowActions'
+import { EndpointNotificationRun, PublishNotificationRun } from '../components/NotificationOperationRun'
 import { ModelAccessRecovery } from '../components/ModelAccessRecovery'
 import { PrincipalKindBadge } from '../components/PrincipalKindBadge'
 import { UnpublishDialog } from '../components/UnpublishDialog'
@@ -430,6 +431,7 @@ function RegisteredMcpServers({ onBanner }: { onBanner: (message: string) => voi
           <Badge appearance="tint" className={statusClasses[endpoint.status]}>{statusLabels[endpoint.status]}</Badge>
         </div>}
         renderDetail={(endpoint) => <div className={styles.detailStack}>
+          <EndpointNotificationRun endpointId={endpoint.id} kind="mcp" />
           <div className={styles.detailHeader}>
             <Title3 as="h3">{endpoint.name}</Title3>
             <RowActions label={`More actions for ${endpoint.name}`}
@@ -738,6 +740,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
           <PublicationStatusBadge publication={publication} />
         </div>}
         renderDetail={(publication) => <div className={styles.detailStack}>
+          <PublishNotificationRun publicationId={publication.id} target="mcp" />
           <div className={styles.detailHeader}>
             <Title3 as="h3">{publication.displayName}</Title3>
             <RowActions label={`More actions for ${publication.displayName}`}

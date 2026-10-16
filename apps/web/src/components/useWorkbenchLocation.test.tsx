@@ -31,6 +31,17 @@ function setup(url = '/models?tab=published&gateway=gateway-1&q=azure') {
 }
 
 describe('useWorkbenchLocation', () => {
+  it('drops operation evidence when selecting another record but preserves filters', async () => {
+    const user = userEvent.setup()
+    setup('/models?tab=published&selected=original&runId=publish-run&syncRun=sync-run&q=retained')
+    await user.click(screen.getByRole('button', { name: 'Select' }))
+    const params = new URLSearchParams(screen.getByTestId('url').textContent!)
+    expect(params.get('selected')).toBe('record')
+    expect(params.get('q')).toBe('retained')
+    expect(params.has('runId')).toBe(false)
+    expect(params.has('syncRun')).toBe(false)
+  })
+
   it('preserves tabs and filters across selection, editing and save', async () => {
     const user = userEvent.setup()
     setup()

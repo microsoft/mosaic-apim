@@ -1,6 +1,7 @@
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from uuid import uuid4
 
+from mosaic_api.budget_notifications import BudgetNotificationOutbox
 from mosaic_api.budgets import (
     Budget,
     BudgetState,
@@ -28,6 +29,7 @@ class InMemoryBudgetRepository:
         self.states: dict[tuple[str, str], BudgetState] = {}
         self.gates: dict[tuple[str, str], GateState] = {}
         self.audit_events: dict[str, AuditEvent] = {}
+        self.notification_outboxes: dict[tuple[str, str], BudgetNotificationOutbox] = {}
 
     async def ready(self) -> bool:
         return True
@@ -106,6 +108,14 @@ class InMemoryBudgetRepository:
         budget_id: str,
         change: Callable[[BudgetState], BudgetState],
     ) -> BudgetState:
+        return await self.update_budget_state_with_outbox(
+            tenant_id, budget_id, change, lambda _state: []
+        )
+
+    async def update_budget_state_with_outbox(
+        self, tenant_id: str, budget_id: str, change: Callable[[BudgetState], BudgetState],
+        outboxes: Callable[[BudgetState], Sequence[BudgetNotificationOutbox]],
+    ) -> BudgetState:
         state_id = budget_state_id(tenant_id, budget_id)
         current = self.states.get((tenant_id, state_id))
         changed = change(
@@ -123,7 +133,57 @@ class InMemoryBudgetRepository:
             },
             deep=True,
         )
+        pending = list(outboxes(stored))
+        if any(
+            item.tenant_id != tenant_id or item.budget.id != budget_id for item in pending
+        ):
+            raise ConflictError("Budget outbox writes need one budget and tenant")
+        staged = dict(self.notification_outboxes)
+        mutations = 0
+        for item in pending:
+            key = (tenant_id, item.id)
+            existing = self.notification_outboxes.get(key)
+            if existing is None or (
+                existing.notice.delivery_owner == "legacy"
+                and item.notice.delivery_owner == "notificationPipeline"
+                and existing.delivery_state != "providerAccepted"
+            ):
+                mutations += 1
+                staged[key] = item.model_copy(
+                    update={"etag": uuid4().hex}, deep=True
+                ) if existing is None else existing.model_copy(update={
+                    "notice": item.notice.model_copy(deep=True),
+                    "ready": item.ready, "delivery_state": item.delivery_state,
+                    "etag": uuid4().hex,
+                }, deep=True)
+        if mutations > 99:
+            raise ConflictError("A budget transaction supports at most 99 new notice mutations")
+        self.notification_outboxes = staged
         self.states[(tenant_id, state_id)] = stored
+        return stored.model_copy(deep=True)
+
+    async def list_notification_outboxes(self, tenant_id: str) -> list[BudgetNotificationOutbox]:
+        return [
+            item.model_copy(deep=True) for (tenant, _), item in self.notification_outboxes.items()
+            if tenant == tenant_id
+        ]
+
+    async def get_notification_outbox(
+        self, tenant_id: str, outbox_id: str
+    ) -> BudgetNotificationOutbox | None:
+        item = self.notification_outboxes.get((tenant_id, outbox_id))
+        return item.model_copy(deep=True) if item is not None else None
+
+    async def save_notification_outbox(
+        self, outbox: BudgetNotificationOutbox
+    ) -> BudgetNotificationOutbox:
+        current = self.notification_outboxes.get((outbox.tenant_id, outbox.id))
+        if (current is None) != (outbox.etag is None) or (
+            current is not None and current.etag != outbox.etag
+        ):
+            raise ConflictError("The budget notification outbox changed")
+        stored = outbox.model_copy(update={"etag": uuid4().hex}, deep=True)
+        self.notification_outboxes[(outbox.tenant_id, outbox.id)] = stored
         return stored.model_copy(deep=True)
 
     async def delete_budget_state(

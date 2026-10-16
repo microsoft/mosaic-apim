@@ -44,12 +44,20 @@ to `uv.lock`. Pillow is an API dependency used for thumbnail validation and scre
 
 If `uv` is available only as a Python module, use `python -m uv run ...` with the same arguments.
 
+An existing Python environment with the API dependencies and Playwright installed also works;
+this does not require the workspace's `.venv`:
+
+```powershell
+$env:PYTHONPATH = "apps\api\src;apps\api\tests"
+python -m scripts.screenshots.capture
+```
+
 | Option | Effect |
 | --- | --- |
 | `--list` | Print each shot's name, app, theme, and route, then exit |
 | `--only NAME` | Capture only that shot. Repeat it to capture several |
 | `--output DIR` | Write the PNGs somewhere else, for example to compare before and after |
-| `--logs-dir DIR` | Use a new dedicated directory for server logs and unredacted failure captures; keep it outside the repository. A successful run removes it |
+| `--logs-dir DIR` | Use a new dedicated project-local directory for server logs and unredacted failure captures, outside the PNG output directory. The default is an ignored `scripts\screenshots\__pycache__\capture-*` cache; a successful run removes it |
 | `--headed` | Show the browser while it captures |
 | `--preview` | Serve production assets after building both apps with `npm run build --prefix apps\web` and `npm run build --prefix apps\portal`; avoids cold dev-server dependency bundling |
 | `--check-navigation` | Also verify all four administrator rail combinations in both themes, full width recovery, single-line controls and document reflow, every Pool section and Pricing at exactly 1440px document width with local table scrolling and `scrollIntoView`, mobile focus/inert behavior, workspace drafts and section-change discard decisions, forced colors, usage-first portal landing, portal primary/section rail width recovery, expanded/compact appearance controls, unchanged portal list geometry, and drawer/credential teardown against the fictional estate. For each captured portal theme, check all four pages at desktop/mobile widths, glass chrome, opaque panels/drawers, panel spacing, and reduced-transparency/forced-colors/unsupported-blur fallbacks |
@@ -92,7 +100,8 @@ uv run --with "playwright>=1.58,<2" python -m scripts.screenshots.capture --reus
 ```
 
 The demo API keeps its state in memory. If a shot's actions submit anything, restart the API to
-get the original estate back, and commit only images from a full run without `--reuse-servers`.
+get the original estate back. Before committing, refresh every affected shot without
+`--reuse-servers`; changes to shared navigation require the full gallery.
 
 ### Browse the demo estate
 
@@ -165,8 +174,16 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
   its own and blocked at the gateways, Finance on track, and an organization budget that only
   warns. Sizing them from the month's spend keeps those levels whatever the date, so in a capture's
   first UTC day the amounts are only a few hours' worth. The demo runs no rollup or budget loop
-  afterwards, so every shot in a run shows the same figures. The traffic and timestamps follow the
-  clock, though, so they shift a little from one run to the next. Requests from the portal's origin
+  afterwards, so every shot in a run shows the same figures. Approval evaluation and notification
+  workers are also disabled; the seed explicitly runs notification processing against local provider
+  and directory doubles, which accept fictional messages but deliver none. A disabled development
+  office-hours policy exercises environment scope, local-time windows, waiting periods, and bounded
+  limits without approving requests. The administrator and portal user have independent example
+  preferences, including daily, weekly, and monthly email summaries; private Teams remains off.
+  The AI adapter is a deterministic local double, never a paid model call, and readiness honestly
+  reports local memory, disabled workers, and missing deployment prerequisites.
+  The traffic and timestamps follow the clock, though, so they shift a little from one run to the
+  next. Requests from the portal's origin
   are answered as Megan Bowen with the `User` role, and all others as Adele Vance with `Admin` and
   `User`. Local authentication is refused outside local and test environments, so the demo can't be
   pointed at a deployed MOSAIC.
@@ -243,14 +260,14 @@ shows both themes. Keep new shots in that pattern.
 - **A port is in use.** Another run or dev server is still up. Stop it, or choose other ports.
 - **The API exits early.** Seeding failed, usually because an API service changed, or one of the
   test doubles in `apps/api/tests` that `demo_fakes.py` builds on did. The API's log, in the
-  temporary folder the script prints, has the traceback. Fix the demo in the same change.
+  project-local cache the script prints, has the traceback. Fix the demo in the same change.
 - **A shot fails.** The script carries on with the other shots and exits with an error at the end.
   For each failure it prints the browser's errors and failed requests, and the path of a
   full-page `<name>.failed.png`. Most failures are ready text or an action target that no longer
   appears on the page, so update the shot to match.
-- **Debug captures aren't redacted.** They stay in the temporary folder and must never be copied
-  into the repository. The folder and its server logs are deleted after a successful run and kept
-  after a failed one.
+- **Debug captures aren't redacted.** They stay in the ignored project-local cache and must never
+  be copied into the documentation or committed. The cache and its server logs are deleted after
+  a successful run and kept after a failed one.
 
 ## Shot inventory
 
@@ -293,7 +310,12 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-budgets` | Console | Customer Support detail, **Budget** section | Dark | Budgets |
 | `console-analytics` | Console | `/analytics`, **Overview** section | Dark | Analytics |
 | `console-analytics-filters` | Console | `/analytics`, grouped draft **Filters** open, never applied | Light | Analytics filters |
-| `console-request-notifications` | Console | `/dashboard`, pending-request popover open | Light | Request notifications |
+| `console-request-notifications` | Console | `/dashboard`, pending-approvals popover open, separate from unread inbox bell | Light | Pending approvals |
+| `console-bulk-approval` | Console | `/entitlements?tab=requests`, two explicit pending requests in **Review bulk approvals**, never submitted | Dark | Bulk approval review |
+| `console-approval-policy` | Console | `/entitlements?tab=approvalPolicies`, disabled **Development office hours** policy in the full-workspace editor, never saved or enabled | Light | Scheduled approval policy |
+| `console-notification-inbox` | Console | `/notifications`, category/unread filters and selected exact notification | Dark | Administrator inbox |
+| `console-notification-preferences` | Console | `/profile`, **Edit preferences** workspace with independent administrator channel/cadence and digest controls, never saved | Light | Administrator preferences |
+| `console-notification-readiness` | Console | `/settings?tab=notifications&notificationView=health`, evidence and remediation for storage, hosting, email, public links, and disabled workers | Dark | Notification readiness |
 | `console-analytics-cost` | Console | `/analytics?tab=cost` | Light | Cost |
 | `console-pricing` | Console | `/pricing`, **Prices** section filtered to `2024-11-20` | Dark | Pricing |
 | `console-analytics-consumers` | Console | `/analytics?tab=consumers` | Light | Consumers |
@@ -318,3 +340,6 @@ to include both the daily trend and the complete last-24-hours chart.
 | `portal-usage-resources` | Portal | `/usage?tab=resources`, **By resource** with exact offering context | Dark | Usage by resource |
 | `portal-usage-breakdowns` | Portal | `/usage?tab=breakdowns`, **Cost centers** and pooled quotas | Light | Usage breakdowns |
 | `portal-budget-banner` | Portal | `/access`, with the budget banner for Customer Insights | Light | Budget banner |
+| `portal-notifications` | Portal | `/notifications`, personal request/usage updates, category/unread filters and exact links | Light | Personal inbox |
+| `portal-notification-preferences` | Portal | `/notification-preferences`, per-category channels/cadence; example saved preferences, never submitted during capture | Dark | Personal notification preferences |
+| `portal-notification-digests` | Portal | `/notification-preferences`, scrolled to daily/weekly/monthly schedules, quiet hours and threshold reminder controls | Light | Usage summaries and alert timing |
