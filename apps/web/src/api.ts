@@ -251,7 +251,7 @@ export interface MosaicApi {
   listMemberships(groupId: string): Promise<GroupMembership[]>
   addMembership(groupId: string, principalId: string): Promise<GroupMembership>
   removeMembership(groupId: string, principalId: string): Promise<void>
-  getDirectoryStatus(): Promise<DirectoryStatus>
+  getDirectoryStatus(includePermissions?: boolean): Promise<DirectoryStatus>
   searchDirectory(kind: DirectorySearchKind, query: string, limit?: number): Promise<DirectoryObject[]>
   getDirectoryObject(objectId: string): Promise<DirectoryObject>
   getDirectoryPhoto(objectId: string): Promise<Blob | null>
@@ -745,7 +745,10 @@ export function useMosaicApi(): MosaicApi {
         request<void>(`/api/v1/groups/${groupId}/members/${principalId}`, {
           method: 'DELETE',
         }),
-      getDirectoryStatus: () => request<DirectoryStatus>('/api/v1/directory/status'),
+      getDirectoryStatus: (includePermissions = false) =>
+        request<DirectoryStatus>(
+          `/api/v1/directory/status${includePermissions ? '?includePermissions=true' : ''}`,
+        ),
       searchDirectory: (kind, query, limit = 20) =>
         request<DirectoryObject[]>(
           `/api/v1/directory/search?kind=${encodeURIComponent(kind)}&q=${encodeURIComponent(query)}&limit=${encodeURIComponent(String(limit))}`,

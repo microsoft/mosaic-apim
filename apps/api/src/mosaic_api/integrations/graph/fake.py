@@ -20,6 +20,11 @@ class FakeDirectoryLookup:
         unavailable: bool = False,
         photos: Mapping[str, DirectoryPhoto] | None = None,
         tenant_id: str = "tenant-test",
+        application_permissions: Sequence[str] = (
+            "User.ReadBasic.All",
+            "GroupMember.Read.All",
+            "AgentIdentity.Read.All",
+        ),
     ) -> None:
         self._objects = {item.object_id.casefold(): item for item in objects}
         self._members = {
@@ -30,6 +35,7 @@ class FakeDirectoryLookup:
         self._unavailable = unavailable
         self.photos = {key.casefold(): value for key, value in (photos or {}).items()}
         self._tenant_id = tenant_id
+        self._application_permissions = frozenset(application_permissions)
         self.closed = False
 
     async def search(
@@ -62,6 +68,10 @@ class FakeDirectoryLookup:
             return None
         photo = self.photos.get(object_id.casefold())
         return validate_photo(photo.content, photo.content_type) if photo else None
+
+    async def application_permissions(self) -> frozenset[str]:
+        self._raise_if_configured()
+        return self._application_permissions
 
     async def member_groups(self, object_id: str, group_object_ids: Sequence[str]) -> set[str]:
         self._raise_if_configured()

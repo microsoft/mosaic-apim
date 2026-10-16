@@ -40,6 +40,10 @@ class DirectoryLookup(Protocol):
         """
         ...
 
+    async def application_permissions(self) -> frozenset[str]:
+        """Application permission values in the API identity's current Graph token."""
+        ...
+
     async def member_groups(self, object_id: str, group_object_ids: Sequence[str]) -> set[str]:
         """The subset of ``group_object_ids`` this object belongs to, directly or by nesting."""
         ...

@@ -31,8 +31,14 @@ def _actor(auth: AuthContext) -> Actor:
 
 
 @directory_router.get("/directory/status", response_model=DirectoryStatus)
-async def directory_status(request: Request, auth: Admin) -> DirectoryStatus:
-    return await _service(request).directory_status(_actor(auth))
+async def directory_status(
+    request: Request,
+    auth: Admin,
+    include_permissions: Annotated[bool, Query(alias="includePermissions")] = False,
+) -> DirectoryStatus:
+    return await _service(request).directory_status(
+        _actor(auth), include_permissions=include_permissions
+    )
 
 
 @directory_router.get("/directory/search", response_model=list[DirectoryObject])

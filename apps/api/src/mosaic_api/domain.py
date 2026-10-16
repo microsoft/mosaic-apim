@@ -2855,18 +2855,31 @@ class DirectoryMemberPage(MosaicModel):
     truncated: bool = False
 
 
+class DirectoryPermissionStatus(MosaicModel):
+    """Whether the API identity's current Graph token includes one application permission."""
+
+    permission: str
+    capability: str
+    required: bool
+    granted: bool | None = None
+
+
 class DirectoryStatus(MosaicModel):
     """Whether directory search is available, and whether group grants can be enforced.
 
     ``lookup_enabled`` reports whether the directory integration is available. Entra
     authentication always provides it; local authentication uses manual entry unless a test or
-    demo supplies a directory double. Availability does not prove Microsoft Graph consent.
+    demo supplies a directory double. ``permissions`` reports Graph consent only when the caller
+    asks the status endpoint to inspect the API identity's app-only token; ``granted=None`` means
+    it was not checked or could not be verified.
     ``group_claims_enabled`` records whether the deployment configured Entra to put group IDs in
     tokens (``MOSAIC_ENTRA_GROUP_CLAIMS``); without that, the gateway can't match a group grant.
     """
 
     lookup_enabled: bool
     group_claims_enabled: bool
+    permissions: list[DirectoryPermissionStatus] = Field(default_factory=list)
+    permission_status_message: str | None = None
     message: str | None = None
 
 
