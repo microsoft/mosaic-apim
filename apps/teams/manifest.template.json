@@ -1,0 +1,37 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.22/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.22",
+  "version": "1.0.0",
+  "id": "${APP_ID}",
+  "developer": {
+    "name": "MOSAIC",
+    "websiteUrl": "${WEBSITE_URL}",
+    "privacyUrl": "${PRIVACY_URL}",
+    "termsOfUseUrl": "${TERMS_URL}"
+  },
+  "name": {
+    "short": "MOSAIC",
+    "full": "MOSAIC personal notifications"
+  },
+  "description": {
+    "short": "One-way MOSAIC notifications in your personal Teams chat.",
+    "full": "Receive opted-in MOSAIC notifications privately. Links open authenticated MOSAIC pages. This app does not chat, approve requests, execute tools, or send notifications to shared channels."
+  },
+  "icons": {
+    "outline": "outline.png",
+    "color": "color.png"
+  },
+  "accentColor": "#176B67",
+  "bots": [
+    {
+      "botId": "${BOT_APP_ID}",
+      "scopes": ["personal"],
+      "isNotificationOnly": true,
+      "supportsFiles": false,
+      "supportsCalling": false,
+      "supportsVideo": false
+    }
+  ],
+  "defaultInstallScope": "personal",
+  "validDomains": []
+}

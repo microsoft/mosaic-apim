@@ -21,6 +21,7 @@ import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'reac
 import { CloudRegular, CodeRegular, DocumentRegular, InfoRegular, KeyRegular, PeopleRegular, PlugConnectedRegular, ShieldRegular } from '@fluentui/react-icons'
 import { ApiError, useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
+import { GatewayNotificationRun } from '../components/GatewayNotificationRun'
 import { GatewayRecordEditor } from '../components/GatewayEditors'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { EnvironmentFindings } from '../components/EnvironmentFindings'
@@ -900,6 +901,7 @@ function GatewayDetail({ gatewayId, embedded }: { gatewayId: string; embedded: b
       {recheck.isError && <ErrorState error={recheck.error} title="MOSAIC couldn’t check access" />}
 
       <EnvironmentFindings gatewayId={gatewayId} hideWhenEmpty />
+      <GatewayNotificationRun gatewayId={gatewayId} />
       <SectionLayout label="Gateway" sections={gatewaySections} active={tab} onSelect={setTab} orientation={embedded ? 'horizontal' : 'vertical'}>
       <div className={styles.tabPanel}>
         {tab !== 'overview' && <Text block size={200} className={styles.muted}>Read-only · Synced from APIM. Import records governance in MOSAIC; it does not edit this inventory.</Text>}

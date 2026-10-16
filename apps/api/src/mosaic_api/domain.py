@@ -2088,6 +2088,7 @@ class AccessRequest(Entity):
     decided_at: datetime | None = None
     decision_note: str | None = None
     granted_entitlement_id: str | None = None
+    approval_provenance: dict[str, Any] | None = None
 
 
 class AccessRequestCreate(MosaicModel):

@@ -43,6 +43,7 @@ vi.mock('./api', async (importOriginal) => {
     listPrincipals: async () => [],
     listGroups: async () => [],
     listAccessRequests: async () => [],
+    listNotificationInbox: async () => ({ items: [], unreadCount: 0, continuationToken: null }),
   }
   return { ...actual, useMosaicApi: () => api }
 })
@@ -105,7 +106,8 @@ describe('App shell', () => {
     }
     expect(screen.queryByRole('button', { name: 'Add model endpoint' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Collapse navigation' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Notifications' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Pending approvals' })).toBeVisible()
+    expect(screen.getByRole('button', { name: /Notification inbox/ })).toBeVisible()
     expect(screen.queryByText('AzureLite')).not.toBeInTheDocument()
     // Cost centers sits next to Entitlements; Pricing sits right after Analytics, whose figures it prices.
     const primary = within(screen.getByRole('navigation', { name: 'Primary navigation' }))

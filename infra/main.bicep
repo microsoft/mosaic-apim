@@ -78,11 +78,32 @@ param webContainerPort int = 8080
 @description('The portal container port.')
 param portalContainerPort int = 8080
 
-@description('Whether to deploy Azure Communication Services Email, which MOSAIC sends budget email through. Off by default; email also stays off in MOSAIC until an administrator turns it on in Settings.')
+@description('Whether to deploy Azure Communication Services Email for MOSAIC notifications. Off by default; email also stays off in MOSAIC until an administrator turns it on in Settings.')
 param deployEmail bool = false
 
 @description('Where Communication Services keeps its data at rest, when deployEmail is on.')
 param emailDataLocation string = 'United States'
+
+@description('JSON array of exact approved Teams Workflows hostnames. Empty disables shared destinations.')
+param teamsWorkflowAllowedHosts string = '[]'
+
+@allowed([
+  'disabled'
+  'managedIdentity'
+  'clientSecret'
+])
+@description('Optional private Teams bot OAuth source. Does not create a bot or enable notifications.')
+param teamsBotAuthMode string = 'disabled'
+
+@description('Optional client ID of the single-tenant bot app or its user-assigned managed identity.')
+param teamsBotAppId string = ''
+
+@description('Optional HTTPS Key Vault secret reference for bot client-credential OAuth, never the credential.')
+@secure()
+param teamsBotSecretReference string = ''
+
+@description('Existing user-assigned bot identity to attach to the API host for managedIdentity OAuth.')
+param teamsBotManagedIdentityResourceId string = ''
 
 var normalizedEnv = toLower(replace(replace(environmentName, '_', '-'), '.', '-'))
 var envLabel = startsWith(normalizedEnv, 'mosaic-') ? substring(normalizedEnv, 7) : normalizedEnv
@@ -140,6 +161,22 @@ var emailAppSettings = deployEmail
   : []
 var apiAppSettings = concat([
   {
+    name: 'MOSAIC_TEAMS_WORKFLOW_ALLOWED_HOSTS'
+    value: teamsWorkflowAllowedHosts
+  }
+  {
+    name: 'MOSAIC_TEAMS_BOT_AUTH_MODE'
+    value: teamsBotAuthMode
+  }
+  {
+    name: 'MOSAIC_TEAMS_BOT_APP_ID'
+    value: teamsBotAppId
+  }
+  {
+    name: 'MOSAIC_TEAMS_BOT_SECRET_REFERENCE'
+    value: teamsBotSecretReference
+  }
+  {
     name: 'MOSAIC_ENVIRONMENT'
     value: 'azure'
   }
@@ -190,6 +227,14 @@ var apiAppSettings = concat([
   {
     name: 'MOSAIC_FRONTEND_URL'
     value: webUrl
+  }
+  {
+    name: 'MOSAIC_PORTAL_URL'
+    value: portalUrl
+  }
+  {
+    name: 'MOSAIC_SCHEDULED_WORKERS_ALWAYS_ON'
+    value: 'true'
   }
   {
     name: 'MOSAIC_APIM_GATEWAY_URL'
@@ -341,6 +386,7 @@ module apiApp './modules/web-app.bicep' = {
   name: 'apiApp'
   params: {
     appSettings: apiAppSettings
+    userAssignedIdentityResourceIds: teamsBotAuthMode == 'managedIdentity' && !empty(teamsBotManagedIdentityResourceId) ? [teamsBotManagedIdentityResourceId] : []
     azdServiceName: 'api'
     containerImage: apiPlaceholderImage
     containerPort: apiContainerPort

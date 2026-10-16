@@ -16,6 +16,7 @@ this cannot be pointed at a deployed MOSAIC.
 """
 
 import argparse
+import json
 import math
 from collections.abc import AsyncIterator, Iterable, Iterator
 from contextlib import asynccontextmanager, contextmanager
@@ -28,6 +29,7 @@ import httpx
 import uvicorn
 from azure.core.credentials_async import AsyncTokenCredential
 from fastapi import FastAPI, Request
+from mosaic_api.approvals import ApprovalPolicySaveInput
 from mosaic_api.auth import AuthContext
 from mosaic_api.budgets import BudgetAction, BudgetUpdate, EmailSettingsUpdate, EmailTest
 from mosaic_api.config import (
@@ -88,6 +90,7 @@ from mosaic_api.integrations.apim.credentials import ApimCredentialClient, ApimK
 from mosaic_api.integrations.email import EmailMessage, EmailSendResult
 from mosaic_api.integrations.graph import DirectoryPhoto
 from mosaic_api.integrations.graph.fake import FakeDirectoryLookup
+from mosaic_api.integrations.graph.notifications import AdministratorDiscovery, NotificationContact
 from mosaic_api.main import create_app
 from mosaic_api.model_pools import (
     ModelPoolCreate,
@@ -97,6 +100,18 @@ from mosaic_api.model_pools import (
     PoolMemberSpec,
     PoolModelSpec,
     uses_backend_pools,
+)
+from mosaic_api.notifications import (
+    CategoryNotificationPreference,
+    ChannelCadence,
+    DigestSchedule,
+    NotificationAudience,
+    NotificationCategory,
+    NotificationChannelSettingsInput,
+    NotificationEventType,
+    NotificationPreferencesInput,
+    NotificationSubject,
+    NotificationTemplateData,
 )
 from mosaic_api.pricing import DeploymentPricingUpdate, EndpointPricingUpdate, PriceCreate
 from mosaic_api.repositories import GatewayRepository, InMemoryEntitlementRepository
@@ -112,13 +127,18 @@ from mosaic_api.services import (
 )
 from mosaic_api.services import cost_centers as cost_center_service
 from mosaic_api.services.analytics import AnalyticsService
+from mosaic_api.services.approval_events import GrantNotificationRecipientResolver
 from mosaic_api.services.budget_gate import BlockedListGate
 from mosaic_api.services.budgets import BudgetService
 from mosaic_api.services.cost_centers import CostCenterService
 from mosaic_api.services.directory import Actor
+from mosaic_api.services.feature_readiness import gateway_usage_probe
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 from mosaic_api.services.mcp_publishing import McpPublishingService
 from mosaic_api.services.model_pools import ModelPoolService
+from mosaic_api.services.notification_events import build_notification_event
+from mosaic_api.services.notification_visibility import NotificationVisibility
+from mosaic_api.services.notifications import NotificationDispatchResult
 from mosaic_api.services.pool_health import PoolHealthService
 from mosaic_api.services.portal_access import PortalAccessService
 from mosaic_api.services.pricing import PricingService
@@ -529,6 +549,62 @@ async def _demo_token(_audience: str) -> str:
     return "demo-entra-token-not-a-real-token"
 
 
+class DemoNotificationDirectory:
+    async def contact(self, tenant_id: str, object_id: str) -> NotificationContact:
+        if tenant_id != TENANT_ID:
+            raise SeedError("Notification lookup outside the fictional demo tenant")
+        person = next((person for person in PEOPLE if person.object_id == object_id), None)
+        return NotificationContact(
+            object_id=object_id,
+            display_name=person.label if person else None,
+            mailbox=_directory_detail(person) if person else None,
+            available=person is not None,
+        )
+
+    async def discover_administrators(self, tenant_id: str) -> AdministratorDiscovery:
+        return AdministratorDiscovery(
+            administrators=[await self.contact(tenant_id, ADMIN.object_id)],
+            complete=True,
+            fresh_until=utc_now() + timedelta(minutes=5),
+        )
+
+
+class DemoApprovalModel:
+    """A local schema-valid advisory response, never a real model invocation."""
+
+    async def caller_claims(self, connection: Any) -> dict[str, Any]:
+        return {
+            "oid": MOSAIC_PRINCIPAL_ID,
+            "tid": TENANT_ID,
+            "aud": connection.entra_audience,
+            "roles": ["Models.Invoke.Application"],
+        }
+
+    async def invoke(self, _connection: Any, _settings: Any, evidence: dict[str, Any]) -> str:
+        return json.dumps(
+            {
+                "suggestedOutcome": "needsReview",
+                "reasons": [
+                    {
+                        "explanation": "Review the current environment and inherited limits.",
+                        "evidenceIds": [next(iter(evidence))],
+                    }
+                ],
+                "missingInformation": [],
+                "riskFlags": [],
+            }
+        )
+
+
+class DemoNotificationDispatcher:
+    supports_idempotency = True
+
+    async def send(self, _delivery: Any, _events: Any) -> NotificationDispatchResult:
+        return NotificationDispatchResult(
+            outcome="providerAccepted", provider_operation_id="demo-notification-operation"
+        )
+
+
 @dataclass
 class DemoServices:
     """The fake-backed services that replace the Azure-facing ones in ``app.state``."""
@@ -693,6 +769,8 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         key_manager_factory=lambda resource: ApimKeyManager(gateway_arm, resource),
     )
     state.portal_access_service = portal_access
+    state.approval_ai_service._portal = portal_access
+    state.approval_ai_service._model = DemoApprovalModel()
     # Usage and analytics read the demo's gateway logs through MOSAIC's own rollup job.
     logs = DemoLogs()
     telemetry = TelemetryService(
@@ -799,6 +877,153 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         budgets=budgets,
         pools=pools,
         clients=[gateway_http, ai_http, vault_http, mcp_http],
+    )
+
+
+async def seed_approvals_and_notifications(app: FastAPI, estate: "Estate") -> None:
+    """Exercise production persistence/routing with only fictional local integrations."""
+
+    state = app.state
+    preferences = state.notification_preference_service
+    preferences._directory = DemoNotificationDirectory()
+    recipients = GrantNotificationRecipientResolver(
+        state.repository, directory_lookup=state.directory_lookup
+    )
+    visibility = NotificationVisibility(
+        state.entitlement_repository, state.repository, grant_recipients=recipients.expand
+    )
+    preferences._expand_recipients = recipients.expand
+    preferences._authorize_recipient = visibility.authorize
+    state.notification_service._dispatchers = {
+        channel: DemoNotificationDispatcher()
+        for channel in ("email", "teamsPersonal", "teamsChannel")
+    }
+    await preferences.save_settings(
+        TENANT_ID, ADMIN.object_id,
+        NotificationChannelSettingsInput(in_app_enabled=True, email_enabled=True),
+    )
+    for person, persona in ((ADMIN, "admin"), (PORTAL_USER, "portal")):
+        await preferences.save_preferences(
+            TENANT_ID, person.object_id, persona,
+            NotificationPreferencesInput(
+                time_zone="America/New_York",
+                categories=[
+                    CategoryNotificationPreference(
+                        category=category,
+                        email=(
+                            ChannelCadence(
+                                mode="digest", digest_periods=["daily", "weekly", "monthly"]
+                            )
+                            if category is NotificationCategory.USAGE_AND_BUDGETS
+                            else ChannelCadence(mode="immediate")
+                        ),
+                    )
+                    for category in NotificationCategory
+                ],
+                digest_schedules=[
+                    DigestSchedule(period=period) for period in ("daily", "weekly", "monthly")
+                ],
+            ),
+        )
+    await state.approval_service.save_policy(
+        Actor(ADMIN.object_id, TENANT_ID),
+        ApprovalPolicySaveInput.model_validate(
+            {
+                "name": "Development office hours",
+                "description": "Bounded development access after a one-hour review window.",
+                "scope": {
+                    "environments": ["development"],
+                    "resourceKinds": ["modelApi", "poolModel"],
+                },
+                "schedule": {
+                    "timeZone": "America/New_York",
+                    "windows": [
+                        {
+                            "daysOfWeek": [0, 1, 2, 3, 4],
+                            "startTime": "09:00",
+                            "endTime": "17:00",
+                        }
+                    ],
+                },
+                "minimumRequestAgeSeconds": 3600,
+                "grantTemplate": {
+                    "enforcement": {
+                        "tokens": {
+                            "tokensPerMinute": 10000,
+                            "counterKeyExpression": SUBSCRIPTION_COUNTER,
+                        }
+                    },
+                    "note": "Development only. Apply the gateway plan separately.",
+                },
+            }
+        ),
+    )
+    requests = list(state.entitlement_repository.access_requests.values())
+    request = next(
+        request for request in requests
+        if request.requester_object_id == PORTAL_USER.object_id and request.state == "pending"
+    )
+    grant = next(
+        grant for grant in state.entitlement_repository.entitlements.values()
+        if grant.enabled
+        and grant.subject.id == estate.principals[PORTAL_USER.label]
+        and grant.enforcement.tokens
+        and grant.enforcement.tokens.token_quota
+    )
+    now = utc_now()
+    for index, (event_type, summary, severity) in enumerate((
+        (
+            NotificationEventType.REQUEST_SUBMITTED,
+            "Your production model request is waiting for administrator review.",
+            "information",
+        ),
+        (
+            NotificationEventType.QUOTA_APPROACHING,
+            "Your attributed monthly token use has reached 80% of its grant quota.",
+            "warning",
+        ),
+        (
+            NotificationEventType.USAGE_SUMMARY,
+            "Your completed daily usage summary is ready. Unpriced activity is shown separately.",
+            "information",
+        ),
+    )):
+        subject = (
+            NotificationSubject(
+                request_id=request.id, resource=request.resource,
+                cost_center_id=request.cost_center_id,
+            )
+            if event_type is NotificationEventType.REQUEST_SUBMITTED
+            else NotificationSubject(
+                entitlement_id=grant.id, resource=grant.resource,
+                cost_center_id=grant.cost_center_id,
+            )
+        )
+        await state.notification_service.publish(build_notification_event(
+            tenant_id=TENANT_ID,
+            event_type=event_type,
+            source_id=subject.request_id or grant.id,
+            source_revision=f"demo-screenshot-{index}",
+            occurred_at=now - timedelta(seconds=index),
+            origin="screenshotDemo",
+            severity=severity,
+            subject=subject,
+            audience=NotificationAudience(
+                user_object_ids=[PORTAL_USER.object_id], include_administrators=True,
+            ),
+            data=NotificationTemplateData(summary=summary),
+        ))
+    for _ in range(5):
+        await state.notification_service.run_once(TENANT_ID)
+
+    readiness = state.notification_readiness_service
+    # Other production probes read the same repository and the substituted directory/model.
+    # Only the gateway probe captured an Azure-facing service before the demo replaced it.
+    readiness._admin_probes = tuple(
+        gateway_usage_probe(state.gateway_repository, state.telemetry_service, configured=True)
+        if probe.__qualname__ == f"{gateway_usage_probe.__qualname__}.<locals>.check"
+        else probe
+        for probe in readiness._admin_probes
     )
 
 
@@ -2474,6 +2699,8 @@ def build_settings(cors_origins: list[str]) -> Settings:
         usage_rollup_enabled=False,
         # The demo judges budgets itself, with the gateway and email doubles.
         budgets_enabled=False,
+        notifications_enabled=False,
+        approval_evaluator_enabled=False,
     )
 
 
@@ -2494,6 +2721,7 @@ def build_demo_app(console_port: int, portal_port: int) -> FastAPI:
                 estate = await seed_estate(services, TENANT_ID)
                 await seed_usage(services, estate, TENANT_ID)
                 await seed_budgets(services, estate, TENANT_ID)
+                await seed_approvals_and_notifications(demo_app, estate)
                 demo_app.state.demo_estate = estate
                 print(
                     "MOSAIC demo estate ready: "

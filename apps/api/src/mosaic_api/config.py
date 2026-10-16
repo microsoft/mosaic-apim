@@ -1,6 +1,6 @@
 from enum import StrEnum
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import AnyHttpUrl, Field, ValidationInfo, field_validator, model_validator
@@ -107,6 +107,32 @@ class Settings(BaseSettings):
         default=None,
         description="The sender address of the email domain azd deployed. Pre-fills Settings.",
     )
+    notifications_enabled: bool = Field(
+        default=True,
+        description=(
+            "Run durable notification processing. External channels still require tenant "
+            "configuration and recipient opt-in."
+        ),
+    )
+    notification_interval_seconds: int = Field(default=30, ge=10, le=3600)
+    approval_evaluator_enabled: bool = Field(
+        default=True,
+        description="Evaluate explicitly enabled approval policies; never applies gateway plans.",
+    )
+    approval_interval_seconds: int = Field(default=60, ge=10, le=3600)
+    scheduled_workers_always_on: bool = Field(
+        default=False,
+        description=(
+            "The deployment keeps at least one API instance awake for scheduled work. "
+            "Readiness reports the hosting prerequisite as unverified when false."
+        ),
+    )
+    frontend_url: AnyHttpUrl | None = None
+    portal_url: AnyHttpUrl | None = None
+    teams_workflow_allowed_hosts: list[str] = Field(default_factory=list)
+    teams_bot_auth_mode: Literal["disabled", "managedIdentity", "clientSecret"] = "disabled"
+    teams_bot_app_id: str | None = None
+    teams_bot_secret_reference: AnyHttpUrl | None = None
     log_analytics_endpoint: AnyHttpUrl = Field(
         default=AnyHttpUrl("https://api.loganalytics.azure.com"),
         description=(
@@ -158,7 +184,23 @@ class Settings(BaseSettings):
     )
     log_level: str = "INFO"
 
-    @field_validator("model_runtime_client_id", "model_client_id")
+    @field_validator("frontend_url", "portal_url")
+    @classmethod
+    def validate_notification_origin(cls, value: AnyHttpUrl | None) -> AnyHttpUrl | None:
+        if value is not None and (
+            value.username
+            or value.password
+            or value.query
+            or value.fragment
+            or value.path not in {None, "/"}
+        ):
+            raise ValueError(
+                "Notification links require an application origin without credentials, "
+                "a path, query or fragment"
+            )
+        return value
+
+    @field_validator("model_runtime_client_id", "model_client_id", "teams_bot_app_id")
     @classmethod
     def validate_optional_client_id(cls, value: str | None, info: ValidationInfo) -> str | None:
         if value is None or not value.strip():
@@ -169,8 +211,63 @@ class Settings(BaseSettings):
             setting = f"MOSAIC_{(info.field_name or '').upper()}"
             raise ValueError(f"{setting} must be a valid GUID") from exc
 
+    @field_validator("teams_workflow_allowed_hosts")
+    @classmethod
+    def validate_teams_hosts(cls, hosts: list[str]) -> list[str]:
+        normalized = []
+        for host in hosts:
+            candidate = host.strip().lower()
+            if (
+                not candidate
+                or "*" in candidate
+                or ":" in candidate
+                or "/" in candidate
+                or "\\" in candidate
+                or "@" in candidate
+                or candidate.endswith(".")
+                or not any(
+                    candidate.endswith(suffix)
+                    for suffix in (
+                        ".logic.azure.com",
+                        ".api.powerplatform.com",
+                    )
+                )
+            ):
+                raise ValueError(
+                    "MOSAIC_TEAMS_WORKFLOW_ALLOWED_HOSTS needs exact supported Microsoft "
+                    "Workflows hostnames, without URLs or wildcards"
+                )
+            if candidate not in normalized:
+                normalized.append(candidate)
+        return normalized
+
+    @field_validator("teams_bot_secret_reference", mode="before")
+    @classmethod
+    def empty_bot_secret_reference(cls, value: object) -> object:
+        return None if value == "" else value
+
     @model_validator(mode="after")
     def validate_fail_closed_modes(self) -> "Settings":
+        if self.teams_bot_auth_mode != "disabled" and not self.teams_bot_app_id:
+            raise ValueError("MOSAIC_TEAMS_BOT_APP_ID is required for bot authentication")
+        if self.teams_bot_auth_mode == "clientSecret" and not self.teams_bot_secret_reference:
+            raise ValueError("MOSAIC_TEAMS_BOT_SECRET_REFERENCE is required for clientSecret")
+        if self.teams_bot_secret_reference is not None:
+            secret = self.teams_bot_secret_reference
+            if (
+                secret.scheme != "https"
+                or not secret.host
+                or not secret.host.endswith((".vault.azure.net", ".vault.usgovcloudapi.net"))
+                or not secret.path
+                or not secret.path.startswith("/secrets/")
+                or secret.username
+                or secret.password
+                or secret.query
+                or secret.fragment
+            ):
+                raise ValueError(
+                    "MOSAIC_TEAMS_BOT_SECRET_REFERENCE must be a Key Vault HTTPS secret URI"
+                )
         if self.environment is Environment.AZURE:
             if self.auth_mode is not AuthMode.ENTRA:
                 raise ValueError("Azure deployments must use Entra authentication")
@@ -190,6 +287,9 @@ class Settings(BaseSettings):
                 )
             if not str(self.log_analytics_endpoint).casefold().startswith("https://"):
                 raise ValueError("MOSAIC_LOG_ANALYTICS_ENDPOINT must use https in Azure")
+            for name, url in (("FRONTEND_URL", self.frontend_url), ("PORTAL_URL", self.portal_url)):
+                if url is not None and url.scheme != "https":
+                    raise ValueError(f"MOSAIC_{name} must use https in Azure")
         if self.auth_mode is AuthMode.LOCAL and self.environment not in {
             Environment.LOCAL,
             Environment.TEST,

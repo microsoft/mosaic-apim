@@ -49,6 +49,7 @@ import { PageHeader } from '../components/PageHeader'
 import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { RemovalDialog } from '../components/RemovalDialog'
 import { RowActions } from '../components/RowActions'
+import { EndpointNotificationRun, PublishNotificationRun } from '../components/NotificationOperationRun'
 import { ResourceWorkbench } from '../components/ResourceWorkbench'
 import { useWorkbenchLocation } from '../components/useWorkbenchLocation'
 import { WorkspaceDialog } from '../components/WorkspaceDialog'
@@ -270,6 +271,7 @@ function PublishedModels({ onMessage, onPublish }: { onMessage: (message: string
         </div>}
         renderDetail={(publication) => <div className={styles.selectedDetail}>
           <Title3 as="h3">{publication.displayName}</Title3>
+          <PublishNotificationRun publicationId={publication.id} target="model" />
           <div className={styles.inlineActions}><PublicationStatusBadge publication={publication} />
             <Badge appearance="outline">Access: {publication.accessState}</Badge></div>
                       {publication.accessState === 'unknown' && (
@@ -1231,6 +1233,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
           </div>}
           renderDetail={(endpoint) => <div key={endpoint.id} className={styles.selectedDetail}>
             <Title3 as="h3">{endpoint.name}</Title3>
+            <EndpointNotificationRun endpointId={endpoint.id} kind="model" />
             <dl className={styles.detailList}>
               <div><dt>Endpoint URL</dt><dd>{endpoint.endpoint}</dd></div>
               {endpoint.azureResourceId && <div><dt>Azure resource ID</dt><dd>{endpoint.azureResourceId}</dd></div>}

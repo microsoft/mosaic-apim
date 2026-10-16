@@ -215,6 +215,7 @@ async def test_approval_creates_the_grant_intent_and_links_it(client: TestClient
     [approval_audit] = _audit_actions(client, "accessRequest.approved")
     assert approval_audit.resource_id == created.id
     assert approval_audit.details == {
+        "approvalProvenance": body["approvalProvenance"],
         "grantedEntitlementId": grant_id,
         "principalId": principal_id,
         "principalCreated": True,

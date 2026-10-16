@@ -2,6 +2,11 @@ import { useMsal } from '@azure/msal-react'
 import { useMemo } from 'react'
 import { runtimeConfig } from './runtime-config'
 import type {
+  CapabilityCheck, NotificationInboxFilter, NotificationInboxItem, NotificationInboxPage,
+  NotificationPreferences, NotificationPreferencesInput, NotificationPreferencePreview,
+  PersonalTeamsStatus, PersonalTeamsTestResult,
+} from './notification-types'
+import type {
   AccessRequest,
   AccessRequestCreate,
   ApiErrorBody,
@@ -32,10 +37,11 @@ export class ApiError extends Error {
 }
 
 interface RequestOptions {
-  method?: 'GET' | 'POST' | 'DELETE'
+  method?: 'GET' | 'POST' | 'DELETE' | 'PUT' | 'PATCH'
   body?: unknown
   cache?: RequestCache
   signal?: AbortSignal
+  ifMatch?: number
 }
 
 function errorMessage(body: ApiErrorBody | undefined, status: number) {
@@ -49,6 +55,14 @@ function entitlementPath(entitlementId: string) {
 }
 
 export interface PortalApi {
+  listNotifications(filter?: NotificationInboxFilter): Promise<NotificationInboxPage>
+  setNotificationRead(itemId: string, read: boolean): Promise<NotificationInboxItem>
+  getNotificationPreferences(): Promise<NotificationPreferences>
+  saveNotificationPreferences(input: NotificationPreferencesInput, revision?: number): Promise<NotificationPreferences>
+  getNotificationHealth(): Promise<CapabilityCheck[]>
+  getNotificationPreferencePreview(): Promise<NotificationPreferencePreview>
+  getPersonalTeamsStatus(): Promise<PersonalTeamsStatus>
+  testPersonalTeams(): Promise<PersonalTeamsTestResult>
   getProfile(): Promise<PortalProfile>
   listEntitlements(): Promise<ResolvedEntitlement[]>
   listEnvironments(): Promise<PortalEnvironment[]>
@@ -84,6 +98,7 @@ export function usePortalApi(): PortalApi {
       if (options.body !== undefined) {
         headers.set('Content-Type', 'application/json')
       }
+      if (options.ifMatch !== undefined) headers.set('If-Match', String(options.ifMatch))
       if (runtimeConfig.authMode === 'entra') {
         const account = accounts[0]
         if (!account) {
@@ -115,6 +130,30 @@ export function usePortalApi(): PortalApi {
     }
 
     return {
+      listNotifications: (filter = {}) => {
+        const params = new URLSearchParams()
+        if (filter.category) params.set('category', filter.category)
+        if (filter.unreadOnly !== undefined) params.set('unread_only', String(filter.unreadOnly))
+        if (filter.limit !== undefined) params.set('limit', String(filter.limit))
+        if (filter.continuationToken) params.set('continuation_token', filter.continuationToken)
+        const query = params.toString()
+        return request<NotificationInboxPage>(`/api/v1/me/notifications/inbox${query ? `?${query}` : ''}`, { cache: 'no-store' })
+      },
+      setNotificationRead: (itemId, read) =>
+        request<NotificationInboxItem>(`/api/v1/me/notifications/inbox/${encodeURIComponent(itemId)}`, {
+          method: 'PATCH', body: { read }, cache: 'no-store',
+        }),
+      getNotificationPreferences: () => request<NotificationPreferences>('/api/v1/me/notifications/preferences', { cache: 'no-store' }),
+      saveNotificationPreferences: (input, revision) => request<NotificationPreferences>('/api/v1/me/notifications/preferences', {
+        method: 'PUT', body: {
+          timeZone: input.timeZone, categories: input.categories, digestSchedules: input.digestSchedules,
+          quietHours: input.quietHours, thresholds: input.thresholds, repeatCooldownSeconds: input.repeatCooldownSeconds,
+        }, cache: 'no-store', ifMatch: revision,
+      }),
+      getNotificationHealth: () => request<CapabilityCheck[]>('/api/v1/me/notifications/health', { cache: 'no-store' }),
+      getNotificationPreferencePreview: () => request<NotificationPreferencePreview>('/api/v1/me/notifications/preferences/preview', { cache: 'no-store' }),
+      getPersonalTeamsStatus: () => request<PersonalTeamsStatus>('/api/v1/me/notifications/teams', { cache: 'no-store' }),
+      testPersonalTeams: () => request<PersonalTeamsTestResult>('/api/v1/me/notifications/teams/test', { method: 'POST', cache: 'no-store' }),
       getProfile: () => request<PortalProfile>('/api/v1/portal/me'),
       listEntitlements: () => request<ResolvedEntitlement[]>('/api/v1/portal/entitlements'),
       listEnvironments: () => request<PortalEnvironment[]>('/api/v1/portal/environments'),

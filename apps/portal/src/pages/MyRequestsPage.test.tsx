@@ -52,7 +52,7 @@ function accessRequest(overrides: Partial<AccessRequest>): AccessRequest {
 
 const opened = `Opened ${new Date('2026-01-01T00:00:00Z').toLocaleDateString()}`
 
-function renderPage(requests: AccessRequest[], withdrawAccessRequest = vi.fn()) {
+function renderPage(requests: AccessRequest[], withdrawAccessRequest = vi.fn(), path = '/') {
   mocks.api = {
     listAccessRequests: async () => requests,
     listEnvironments: async () => [
@@ -63,7 +63,7 @@ function renderPage(requests: AccessRequest[], withdrawAccessRequest = vi.fn()) 
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[path]}>
         <MyRequestsPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -72,6 +72,26 @@ function renderPage(requests: AccessRequest[], withdrawAccessRequest = vi.fn()) 
 }
 
 describe('MyRequestsPage', () => {
+  it('opens only the exact linked request and returns to the full list', async () => {
+    const user = userEvent.setup()
+    renderPage([
+      accessRequest({ id: 'request/1', resourceDisplayName: 'Linked resource' }),
+      accessRequest({ id: 'request-2', resourceDisplayName: 'Other resource' }),
+    ], vi.fn(), '/requests?request=request%2F1&status=completed')
+    expect(await screen.findByRole('heading', { name: 'Linked resource' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Other resource' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Request status')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Show all requests' }))
+    expect(screen.getByLabelText('Request status')).toHaveValue('completed')
+    await user.selectOptions(screen.getByLabelText('Request status'), 'all')
+    expect(screen.getByRole('heading', { name: 'Other resource' })).toBeVisible()
+  })
+
+  it('does not replace an unavailable linked request with unrelated records', async () => {
+    renderPage([accessRequest({ resourceDisplayName: 'Unrelated resource' })], vi.fn(), '/requests?request=missing')
+    expect(await screen.findByText('Request unavailable')).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Unrelated resource' })).not.toBeInTheDocument()
+  })
   it('keeps same-model requests distinguishable by their offering and version', async () => {
     renderPage([
       accessRequest({

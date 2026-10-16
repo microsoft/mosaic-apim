@@ -19,11 +19,12 @@ import {
   SignOutRegular,
   ChevronLeftRegular,
   ChevronRightRegular,
+  AlertRegular,
 } from '@fluentui/react-icons'
 import { useMsal } from '@azure/msal-react'
 import { useQuery } from '@tanstack/react-query'
 import { type ReactNode, useCallback, useMemo, useState } from 'react'
-import { NavLink, Navigate, Outlet, Route, Routes } from 'react-router-dom'
+import { NavLink, Navigate, Outlet, Route, Routes, useNavigate } from 'react-router-dom'
 import { usePortalApi } from './api'
 import { AuthGate } from './auth'
 import { ErrorState, Loading } from './components/AsyncState'
@@ -38,6 +39,9 @@ import { MosaicThemeProvider } from './theme'
 import { formatCount } from './usage-format'
 import { MosaicMark } from './components/MosaicMark'
 import { useNavigationDrawer } from './components/useNavigationDrawer'
+import { NotificationBell } from './components/NotificationBell'
+import { NotificationsPage } from './pages/NotificationsPage'
+import { NotificationPreferencesPage } from './pages/NotificationPreferencesPage'
 import './index.css'
 
 interface NavigationItem {
@@ -51,6 +55,7 @@ const navigation: NavigationItem[] = [
   { to: '/catalog', label: 'Catalog', icon: <BookInformationRegular /> },
   { to: '/access', label: 'My access', icon: <HomeRegular /> },
   { to: '/requests', label: 'My requests', icon: <PersonCircleRegular /> },
+  { to: '/notifications', label: 'Notifications', icon: <AlertRegular /> },
 ]
 
 function NavigationLinks({ onNavigate }: { onNavigate: () => void }) {
@@ -70,6 +75,7 @@ function NavigationLinks({ onNavigate }: { onNavigate: () => void }) {
 }
 
 function PortalShell() {
+  const navigate = useNavigate()
   const { instance, accounts } = useMsal()
   const api = usePortalApi()
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false)
@@ -139,6 +145,8 @@ function PortalShell() {
             </MenuTrigger>
             <MenuPopover><MenuList>
               <MenuItem>{accountName}</MenuItem>
+              <MenuItem onClick={() => { closeNavigation(); navigate('/notifications') }}>Notifications</MenuItem>
+              <MenuItem onClick={() => { closeNavigation(); navigate('/notification-preferences') }}>Notification preferences</MenuItem>
               {runtimeConfig.authMode === 'entra' && <MenuItem icon={<SignOutRegular />} onClick={signOut}>Sign out</MenuItem>}
             </MenuList></MenuPopover>
           </Menu>
@@ -162,6 +170,7 @@ function PortalShell() {
           </span>
         </div>
         <div className="topbar-actions">
+          <NotificationBell enabled={profile.isSuccess} />
           {profile.isLoading && <Loading label="Loading profile" />}
           {profile.isSuccess && profile.data.pendingRequestCount > 0 &&
             <NavLink className="pending-link" to="/requests"><Badge appearance="tint">{pendingRequests}</Badge></NavLink>}
@@ -187,6 +196,8 @@ export default function App() {
             <Route path="/usage" element={<UsagePage />} />
             <Route path="/catalog" element={<CatalogPage />} />
             <Route path="/requests" element={<MyRequestsPage />} />
+            <Route path="/notifications" element={<NotificationsPage />} />
+            <Route path="/notification-preferences" element={<NotificationPreferencesPage />} />
             <Route path="*" element={<Navigate to="/usage" replace />} />
           </Route>
         </Routes>

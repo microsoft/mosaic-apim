@@ -6,6 +6,8 @@ tried again after an answer that never came is the same operation, not a second 
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -38,6 +40,8 @@ class EmailSendResult:
     operation_id: str
     status_code: int | None = None
     error: str | None = None
+    retry_after_seconds: int | None = None
+    outcome_unknown: bool = False
 
 
 class EmailSender(Protocol):
@@ -67,6 +71,19 @@ def _error(payload: Any, status: int) -> str:
     code = error.get("code") if isinstance(error, dict) else None
     text = " ".join(part for part in (code, message) if isinstance(part, str) and part.strip())
     return (text or f"Communication Services answered HTTP {status}.")[:_ERROR_LENGTH]
+
+
+def _retry_after(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        return min(max(int(value), 0), 86400)
+    except ValueError:
+        try:
+            instant = parsedate_to_datetime(value)
+            return min(max(int((instant - datetime.now(UTC)).total_seconds()), 0), 86400)
+        except (ValueError, TypeError, OverflowError):
+            return None
 
 
 class AcsEmailClient:
@@ -136,6 +153,7 @@ class AcsEmailClient:
                 False,
                 operation_id,
                 error=f"Communication Services didn't answer ({type(failure).__name__}).",
+                outcome_unknown=True,
             )
         if response.status_code == 202:
             return EmailSendResult(True, operation_id, 202)
@@ -148,5 +166,6 @@ class AcsEmailClient:
         except ValueError:
             payload = None
         return EmailSendResult(
-            False, operation_id, response.status_code, _error(payload, response.status_code)
+            False, operation_id, response.status_code, _error(payload, response.status_code),
+            retry_after_seconds=_retry_after(response.headers.get("Retry-After")),
         )

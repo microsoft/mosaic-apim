@@ -49,6 +49,7 @@ export function MyRequestsPage() {
   const api = usePortalApi()
   const [params, setParams] = useSearchParams()
   const filter = ['pending', 'completed', 'withdrawn'].includes(params.get('status') ?? '') ? params.get('status')! : 'all'
+  const selectedRequest = params.get('request')
   const [withdrawingId, setWithdrawingId] = useState<string | null>(null)
   const queryClient = useQueryClient()
   const requests = useQuery({ queryKey: ['portal', 'requests'], queryFn: api.listAccessRequests })
@@ -64,7 +65,8 @@ export function MyRequestsPage() {
       ])
     },
   })
-  const visible = requests.data?.filter((request) => filter === 'all' || request.state === filter ||
+  const visible = requests.data?.filter((request) => selectedRequest ? request.id === selectedRequest :
+    filter === 'all' || request.state === filter ||
     (filter === 'completed' && (request.state === 'approved' || request.state === 'denied'))) ?? []
 
   return (
@@ -73,16 +75,24 @@ export function MyRequestsPage() {
         title="My requests"
         description="Track access requests and decisions."
       />
+      {selectedRequest && <p className="request-filters">Showing the linked request.
+        <Button onClick={() => {
+          const next = new URLSearchParams(params)
+          next.delete('request')
+          setParams(next)
+        }}>Show all requests</Button>
+      </p>}
       {requests.isLoading && <Loading label="Loading your requests" />}
       {requests.isError && <ErrorState error={requests.error} />}
       {requests.isSuccess && requests.data.length === 0 && (
-        <EmptyState title="No requests opened">
-          Requests you submit from the catalog will appear here.
+        <EmptyState title={selectedRequest ? 'Request unavailable' : 'No requests opened'}>
+          {selectedRequest ? 'This request is no longer available to your account. Show all requests to continue.' :
+            'Requests you submit from the catalog will appear here.'}
         </EmptyState>
       )}
       {requests.isSuccess && requests.data.length > 0 && (
         <>
-        <div className="request-filters">
+        {!selectedRequest && <div className="request-filters">
           <label htmlFor="request-status">Request status</label>
           <select id="request-status" value={filter} onChange={(event) => {
             const next = new URLSearchParams(params)
@@ -94,8 +104,10 @@ export function MyRequestsPage() {
             <option value="completed">Approved or denied</option>
             <option value="withdrawn">Withdrawn</option>
           </select>
-        </div>
-        {visible.length === 0 && <EmptyState title="No requests match this status">Choose another status to see your requests.</EmptyState>}
+        </div>}
+        {visible.length === 0 && <EmptyState title={selectedRequest ? 'Request unavailable' : 'No requests match this status'}>
+          {selectedRequest ? 'This request is no longer available to your account. Show all requests to continue.' : 'Choose another status to see your requests.'}
+        </EmptyState>}
         <div className="request-list">
           {visible.map((request) => (
             <Card key={request.id} className="request-card">

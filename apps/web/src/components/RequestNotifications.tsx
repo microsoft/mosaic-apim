@@ -1,5 +1,5 @@
 import { Badge, Button, Popover, PopoverSurface, PopoverTrigger, Spinner, Text } from '@fluentui/react-components'
-import { AlertRegular } from '@fluentui/react-icons'
+import { PersonClockRegular } from '@fluentui/react-icons'
 import { useQuery } from '@tanstack/react-query'
 import { useId, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -71,12 +71,12 @@ export function RequestNotifications() {
     navigate(`/entitlements?${params}`)
   }
   const notificationLabel = requests.isSuccess
-    ? `Notifications, ${requests.data.length} pending ${requests.data.length === 1 ? 'request' : 'requests'}`
-    : 'Notifications'
+    ? `Pending approvals, ${requests.data.length} pending ${requests.data.length === 1 ? 'request' : 'requests'}`
+    : 'Pending approvals'
   return (
     <Popover open={open} onOpenChange={(_, data) => setOpen(data.open)} positioning="below-end" trapFocus>
       <PopoverTrigger disableButtonEnhancement>
-        <Button appearance="subtle" icon={<AlertRegular />} aria-label={notificationLabel}>
+        <Button appearance="subtle" icon={<PersonClockRegular />} aria-label={notificationLabel}>
           {requests.isSuccess && requests.data.length > 0 && <Badge color="important" appearance="filled">{requests.data.length}</Badge>}
         </Button>
       </PopoverTrigger>

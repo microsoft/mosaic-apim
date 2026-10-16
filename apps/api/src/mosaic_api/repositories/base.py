@@ -1,6 +1,7 @@
 from collections.abc import Callable, Sequence
 from typing import Protocol
 
+from mosaic_api.budget_notifications import BudgetNotificationOutbox
 from mosaic_api.budgets import Budget, BudgetState, EmailSettings, GateState
 from mosaic_api.cost_centers import CostCenter, CostCenterSettings
 from mosaic_api.domain import (
@@ -696,6 +697,26 @@ class BudgetRepository(Protocol):
     async def close(self) -> None: ...
 
     async def record_audit(self, event: AuditEvent) -> None: ...
+
+    async def update_budget_state_with_outbox(
+        self, tenant_id: str, budget_id: str,
+        change: Callable[[BudgetState], BudgetState],
+        outboxes: Callable[[BudgetState], Sequence[BudgetNotificationOutbox]],
+    ) -> BudgetState:
+        """Commit notice ownership and source outbox in the same usage-rollups transaction."""
+        ...
+
+    async def list_notification_outboxes(
+        self, tenant_id: str
+    ) -> list[BudgetNotificationOutbox]: ...
+
+    async def get_notification_outbox(
+        self, tenant_id: str, outbox_id: str
+    ) -> BudgetNotificationOutbox | None: ...
+
+    async def save_notification_outbox(
+        self, outbox: BudgetNotificationOutbox
+    ) -> BudgetNotificationOutbox: ...
 
     async def list_budgets(self, tenant_id: str) -> list[Budget]: ...
 

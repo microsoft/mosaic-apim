@@ -21,6 +21,8 @@ export function usePageSection(sections: readonly PageSection[], defaultValue = 
     if (value !== active) {
       next.delete('selected')
       next.delete('mode')
+      next.delete('runId')
+      next.delete('syncRun')
     }
     setParams(next)
   }, [params, parameter, setParams, active])

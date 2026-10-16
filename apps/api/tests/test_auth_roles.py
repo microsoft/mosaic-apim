@@ -12,7 +12,7 @@ one of them which role its caller holds, so it has to answer a portal-only calle
 import asyncio
 import time
 from collections.abc import Iterator
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import httpx
 import jwt
@@ -36,6 +36,8 @@ PORTAL_PREFIXES = ("/api/v1/portal/", "/api/v1/me/")
 # is listed by method and path rather than by prefix, so a new route beside one of them still has
 # to refuse a portal-only caller unless it is added here on purpose.
 ANY_ROLE_ROUTES = frozenset({("GET", "/api/v1/console/me")})
+# This exact callback uses Microsoft Connector JWTs, never MOSAIC app roles.
+CONNECTOR_AUTH_ROUTES = frozenset({("POST", "/api/v1/teams/messages")})
 NO_MOSAIC_ROLE = "A MOSAIC app role is required: Admin, User"
 
 Admin = Annotated[AuthContext, Depends(require_admin)]
@@ -202,7 +204,8 @@ def _admin_routes(app: FastAPI) -> list[tuple[str, str]]:
 
     The portal read model and current-user credential APIs have their own authorization coverage.
     Only their explicit prefixes are exempt, so a new admin route elsewhere is still checked. The
-    routes in ``ANY_ROLE_ROUTES`` are exempt one by one and are covered separately below.
+    routes in ``ANY_ROLE_ROUTES`` and ``CONNECTOR_AUTH_ROUTES`` are exempt one by one and
+    covered separately; neighboring routes are never implicitly exempt.
     """
 
     calls: list[tuple[str, str]] = []
@@ -217,7 +220,7 @@ def _admin_routes(app: FastAPI) -> list[tuple[str, str]]:
         for method in operations:
             if method.upper() in {"HEAD", "OPTIONS", "PARAMETERS"}:
                 continue
-            if (method.upper(), concrete) in ANY_ROLE_ROUTES:
+            if (method.upper(), concrete) in ANY_ROLE_ROUTES | CONNECTOR_AUTH_ROUTES:
                 continue
             calls.append((method.upper(), concrete))
     return calls
@@ -257,6 +260,24 @@ def test_every_admin_route_refuses_a_portal_only_caller(portal_only_client: Test
         ):
             unexpected.append((method, path, response.status_code, response.text[:120]))
     assert not unexpected, unexpected
+
+
+@pytest.mark.parametrize("roles", [["User"], ["Admin"], []])
+def test_teams_callback_does_not_admit_mosaic_roles_without_connector_auth(
+    roles: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def reject_mosaic_auth(_request: Request) -> AuthContext:
+        raise AssertionError("The Connector callback must not use MOSAIC role authentication.")
+
+    with _local_client(roles) as client:
+        app = cast(FastAPI, client.app)
+        assert "post" in app.openapi()["paths"]["/api/v1/teams/messages"]
+        monkeypatch.setattr(app.state.authenticator, "authenticate", reject_mosaic_auth)
+        response = client.post("/api/v1/teams/messages", json={})
+        assert response.status_code == 401
+        assert response.json()["detail"] == (
+            "Teams Connector authentication or personal scope validation failed."
+        )
 
 
 def _portal_routes(app: FastAPI) -> list[tuple[str, str]]:

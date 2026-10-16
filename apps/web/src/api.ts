@@ -1,6 +1,7 @@
 import { useMsal } from '@azure/msal-react'
 import { useMemo } from 'react'
 import { runtimeConfig } from './runtime-config'
+import { adminApi, type AdminApi } from './admin-api'
 import type {
   AccessRequest,
   AccessRequestApproval,
@@ -138,6 +139,7 @@ interface RequestOptions {
   body?: unknown
   cache?: RequestCache
   signal?: AbortSignal
+  ifMatch?: number
 }
 
 export interface DownloadedFile {
@@ -167,7 +169,7 @@ export function failureMessage(body: ApiErrorBody | undefined, status: number): 
   return `Request failed with status ${status}`
 }
 
-export interface MosaicApi {
+export interface MosaicApi extends AdminApi {
   getConsoleAccess(): Promise<ConsoleAccess>
   getAnalyticsStatus(): Promise<AnalyticsStatus>
   refreshAnalytics(): Promise<AnalyticsStatus>
@@ -452,6 +454,7 @@ export interface MosaicApi {
   preflightModelEndpoint(endpointId: string): Promise<ModelEndpoint>
   syncModelEndpoint(endpointId: string): Promise<ModelEndpointSyncRun>
   listModelEndpointSyncRuns(endpointId: string): Promise<ModelEndpointSyncRun[]>
+  getModelEndpointSyncRun(endpointId: string, runId: string): Promise<ModelEndpointSyncRun>
   listModelDeployments(endpointId: string): Promise<ObservedModelDeployment[]>
   declareModelDeployment(
     endpointId: string,
@@ -485,6 +488,7 @@ export interface MosaicApi {
   preflightMcpEndpoint(endpointId: string): Promise<McpEndpoint>
   syncMcpEndpoint(endpointId: string): Promise<McpEndpointSyncRun>
   listMcpEndpointSyncRuns(endpointId: string): Promise<McpEndpointSyncRun[]>
+  getMcpEndpointSyncRun(endpointId: string, runId: string): Promise<McpEndpointSyncRun>
   listMcpEndpointTools(endpointId: string): Promise<ObservedMcpTool[]>
 }
 
@@ -513,6 +517,7 @@ export function useMosaicApi(): MosaicApi {
 
     async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
       const headers = await requestHeaders(options.body !== undefined)
+      if (options.ifMatch !== undefined) headers.set('If-Match', String(options.ifMatch))
       const response = await fetch(`${runtimeConfig.apiBaseUrl}${path}`, {
         method: options.method ?? 'GET',
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
@@ -589,6 +594,7 @@ export function useMosaicApi(): MosaicApi {
     }
 
     return {
+      ...adminApi(request),
       getConsoleAccess: () => request<ConsoleAccess>('/api/v1/console/me'),
       getAnalyticsStatus: () => request<AnalyticsStatus>('/api/v1/analytics/status'),
       refreshAnalytics: () =>
@@ -793,7 +799,7 @@ export function useMosaicApi(): MosaicApi {
       syncGateway: (id) =>
         request<GatewaySyncRun>(`/api/v1/gateways/${id}/sync`, { method: 'POST' }),
       getSyncRun: (id, runId) =>
-        request<GatewaySyncRun>(`/api/v1/gateways/${id}/sync-runs/${runId}`),
+        request<GatewaySyncRun>(`/api/v1/gateways/${encodeURIComponent(id)}/sync-runs/${encodeURIComponent(runId)}`),
       listSyncRuns: (id) => request<GatewaySyncRun[]>(`/api/v1/gateways/${id}/sync-runs`),
       listSuggestedGateways: () =>
         request<GatewaySuggestion[]>('/api/v1/gateways/suggested'),
@@ -845,7 +851,7 @@ export function useMosaicApi(): MosaicApi {
         request<PublishPlan>(`/api/v1/publications/${id}/unpublish-plan`, { method: 'POST' }),
       listPublishRuns: (id) => request<PublishRun[]>(`/api/v1/publications/${id}/runs`),
       getPublishRun: (id, runId) =>
-        request<PublishRun>(`/api/v1/publications/${id}/runs/${runId}`),
+        request<PublishRun>(`/api/v1/publications/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`),
       diagnosePublicationRecovery: (id, runId) =>
         request<PublishRun>(`/api/v1/publications/${id}/recover`, {
           method: 'POST',
@@ -1121,6 +1127,8 @@ export function useMosaicApi(): MosaicApi {
         request<ModelEndpointSyncRun>(`/api/v1/model-endpoints/${id}/sync`, { method: 'POST' }),
       listModelEndpointSyncRuns: (id) =>
         request<ModelEndpointSyncRun[]>(`/api/v1/model-endpoints/${id}/sync-runs`),
+      getModelEndpointSyncRun: (id, runId) =>
+        request<ModelEndpointSyncRun>(`/api/v1/model-endpoints/${encodeURIComponent(id)}/sync-runs/${encodeURIComponent(runId)}`),
       listModelDeployments: (id) =>
         request<ObservedModelDeployment[]>(`/api/v1/model-endpoints/${id}/deployments`),
       declareModelDeployment: (id, payload) =>
@@ -1153,6 +1161,8 @@ export function useMosaicApi(): MosaicApi {
         request<McpEndpointSyncRun>(`/api/v1/mcp-endpoints/${id}/sync`, { method: 'POST' }),
       listMcpEndpointSyncRuns: (id) =>
         request<McpEndpointSyncRun[]>(`/api/v1/mcp-endpoints/${id}/sync-runs`),
+      getMcpEndpointSyncRun: (id, runId) =>
+        request<McpEndpointSyncRun>(`/api/v1/mcp-endpoints/${encodeURIComponent(id)}/sync-runs/${encodeURIComponent(runId)}`),
       listMcpEndpointTools: (id) =>
         request<ObservedMcpTool[]>(`/api/v1/mcp-endpoints/${id}/tools`),
     }

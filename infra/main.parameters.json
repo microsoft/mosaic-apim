@@ -49,6 +49,21 @@
     },
     "emailDataLocation": {
       "value": "${MOSAIC_EMAIL_DATA_LOCATION=United States}"
+    },
+    "teamsWorkflowAllowedHosts": {
+      "value": "${MOSAIC_TEAMS_WORKFLOW_ALLOWED_HOSTS=[]}"
+    },
+    "teamsBotAuthMode": {
+      "value": "${MOSAIC_TEAMS_BOT_AUTH_MODE=disabled}"
+    },
+    "teamsBotAppId": {
+      "value": "${MOSAIC_TEAMS_BOT_APP_ID=}"
+    },
+    "teamsBotSecretReference": {
+      "value": "${MOSAIC_TEAMS_BOT_SECRET_REFERENCE=}"
+    },
+    "teamsBotManagedIdentityResourceId": {
+      "value": "${MOSAIC_TEAMS_BOT_MANAGED_IDENTITY_RESOURCE_ID=}"
     }
   }
 }

@@ -1,10 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, within } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { createMemoryRouter, RouterProvider } from 'react-router-dom'
+import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import type { PortalApi } from './api'
 import App from './App'
 import type { PortalProfile } from './types'
+import { notificationPreferences } from './test/notification-fixtures'
 
 const mocks = vi.hoisted(() => ({
   api: {} as PortalApi,
@@ -27,16 +29,14 @@ vi.mock('./api', () => ({
   ApiError: class ApiError extends Error {
     status = 403
   },
-  usePortalApi: () => mocks.api,
+  usePortalApi: () => Object.assign({ listNotifications: async () => ({ items: [], unreadCount: 0, continuationToken: null }) }, mocks.api),
 }))
 
 function renderApp(path = '/access') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[path]}>
-        <App />
-      </MemoryRouter>
+      <RouterProvider router={createMemoryRouter([{ path: '*', element: <App /> }], { initialEntries: [path] })} />
     </QueryClientProvider>,
   )
 }
@@ -57,6 +57,24 @@ function portalProfile(overrides: Partial<PortalProfile> = {}): PortalProfile {
 }
 
 describe('App', () => {
+  it('exposes inbox through navigation and bell, and personal preferences through the account menu', async () => {
+    const user = userEvent.setup()
+    mocks.api = {
+      getProfile: async () => portalProfile(),
+      listNotifications: async () => ({ items: [], unreadCount: 3, continuationToken: null }),
+      getNotificationPreferences: async () => notificationPreferences(),
+      getNotificationHealth: async () => [],
+      getNotificationPreferencePreview: async () => ({ preferences: notificationPreferences(), channels: [], checks: [] }),
+      getPersonalTeamsStatus: async () => ({ enabled: false, state: 'notInstalled', checks: [] }),
+    } as unknown as PortalApi
+    renderApp('/notifications')
+    expect(await screen.findByRole('heading', { name: 'Notifications' })).toBeVisible()
+    expect(await screen.findByRole('link', { name: 'Notifications — 3 unread' })).toHaveAttribute('href', '/notifications')
+    await user.click(screen.getByRole('button', { name: 'Account menu for Ada Lovelace' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Notification preferences' }))
+    expect(await screen.findByRole('heading', { name: 'Notification preferences' })).toBeVisible()
+    expect(await screen.findByLabelText('Email — Access requests')).toHaveValue('off')
+  })
   it.each(['/', '/unknown-page'])('lands %s on usage and orders end-user navigation', async (path) => {
     mocks.api = {
       getProfile: async () => portalProfile(),
@@ -67,7 +85,7 @@ describe('App', () => {
     renderApp(path)
     expect(await screen.findByRole('heading', { name: 'Usage & cost' })).toBeVisible()
     const links = within(screen.getByRole('navigation', { name: 'Primary navigation' })).getAllByRole('link')
-    expect(links.map((link) => link.textContent)).toEqual(['Usage & cost', 'Catalog', 'My access', 'My requests'])
+    expect(links.map((link) => link.textContent)).toEqual(['Usage & cost', 'Catalog', 'My access', 'My requests', 'Notifications'])
     expect(links[0]).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('group', { name: 'Appearance' })).toBeVisible()
     expect(screen.queryByText('Personal view')).not.toBeInTheDocument()

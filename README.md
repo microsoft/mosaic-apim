@@ -365,9 +365,10 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   </tr>
   <tr>
     <td colspan="2" valign="top">
-      <img src="docs/images/screenshots/console-request-notifications.png" alt="Readable pending-request notifications with requester names, requested models, and a review action">
-      <p><b>Request notifications.</b> Each pending request separates the requester, requested
-      resource, and time. Selecting a notification opens that exact request for review.</p>
+      <img src="docs/images/screenshots/console-request-notifications.png" alt="The pending-approvals popover with requester names, requested resources, and exact review links, separate from the unread notification inbox">
+      <p><b>Pending approvals.</b> Each pending request separates the requester, requested
+      resource, and time, and opens that exact request for review. This queue is separate from
+      the persistent notification inbox and its unread count.</p>
     </td>
   </tr>
   <tr>
@@ -378,7 +379,40 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
       permission. Administrators can refresh the check and open remediation guidance for missing
       consent.</p>
     </td>
-    <td width="50%" valign="top"></td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-notification-readiness.png" alt="Notification readiness checks with evidence and remediation for storage, always-on hosting, email, public message links, and disabled workers">
+      <p><b>Notification readiness.</b> Inspect prerequisite evidence and specific recovery
+      guidance for persistence, always-on hosting, email, public message links, and workers.
+      Refreshing checks sends no message, and saved configuration is not proof of delivery.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-approval-policy.png" alt="A disabled development approval policy editor with environment scope, office-hour windows, minimum request age, bounded limits, and dry-run controls">
+      <p><b>Scheduled approval policy.</b> Define environment and resource scope, a minimum
+      waiting period, local-time approval windows, and bounded grant limits.
+      Preview pending requests without approving them, and enable automation explicitly.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-bulk-approval.png" alt="Full-workspace bulk approval review with two explicit requests, current environment facts, inherited limits, per-request controls, and advisory AI actions">
+      <p><b>Bulk approval review.</b> Review an explicit selection against current environment,
+      cost-center, and limit facts, with independent inclusion and advisory AI controls.
+      Approvals save grant intent; gateway plans still require separate review and apply.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-notification-preferences.png" alt="Personal administrator notification preferences with per-category in-app, email and private Teams cadence controls, digest schedules, and usage thresholds">
+      <p><b>Administrator preferences.</b> Choose channels and cadence per event category,
+      digest schedules, quiet hours, and usage-alert thresholds. These choices belong only to
+      the administrator persona and do not enable an unavailable integration.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-notification-inbox.png" alt="The administrator notification inbox with category and unread filters, selected notification details, read controls, and an exact related-record link">
+      <p><b>Administrator inbox.</b> Filter persistent updates, inspect an exact notification,
+      and open the related record. Marking an update read does not approve a request or resolve
+      an operational issue.</p>
+    </td>
   </tr>
 </table>
 
@@ -459,6 +493,28 @@ resource lists, forms, and connection drawers remain solid for readability.
       <p><b>Usage breakdowns.</b> Each cost center shows aggregate monthly totals and pooled
       quotas for resources the person holds, never another person's activity. The same report
       separates model calls an MCP server made on their behalf from their own usage totals.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/portal-notifications.png" alt="A personal notification inbox with request and usage updates, category and unread filters, exact request links, and separate read state">
+      <p><b>Personal inbox.</b> Follow request status and attributed usage updates, filter
+      unread messages, and open the exact related request or access record. Inbox read state is
+      separate from approval and gateway readiness.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/portal-notification-preferences.png" alt="End-user preferences with independent in-app, email, and private Teams choices for each event category">
+      <p><b>Personal notification preferences.</b> Choose in-app, email, or private Teams
+      cadence separately for each category. External channels and recurring summaries require
+      explicit opt-in and ready integrations.</p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <img src="docs/images/screenshots/portal-notification-digests.png" alt="Daily, weekly, and monthly digest schedules with time-zone, delivery-time, quiet-hour, threshold, and repeat-cooldown controls">
+      <p><b>Usage summaries and alert timing.</b> Schedule daily, weekly, and monthly summaries
+      in your time zone, with quiet hours and configurable threshold reminders. These choices
+      change notification timing, not grant quotas or budget enforcement.</p>
     </td>
   </tr>
 </table>
@@ -637,6 +693,10 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   when a cost center they charge is near or past its budget. See
   [Budgets and alerts](docs/budgets-and-alerts.md) and
   [ADR 0023](docs/adr/0023-budgets-and-notifications.md)
+- Bulk request review, explicit scheduled approval policies, advisory AI through a governed
+  model, and personal/admin notification preferences. Approval still requires a separate
+  gateway plan apply. See [Approvals and notifications](docs/approvals-and-notifications.md)
+  for opt-ins, recipient routing, readiness, privacy, and hosting prerequisites.
 - ACR remote builds for every image, so deployment does not depend on a local Docker daemon
 - `azd` and modular Bicep for three Linux Web Apps on one plan, ACR, Cosmos, Key Vault, APIM,
   Log Analytics, Application Insights, diagnostics, managed identities, and narrow RBAC
@@ -672,6 +732,9 @@ then turn email on in **Settings > Email**. See [Budgets and alerts](docs/budget
   managed-identity search optionally uses `Application.Read.All`; person thumbnails optionally
   use separately consented `ProfilePhoto.Read.All`. Neither optional permission is required for
   onboarding people or agents. See [Optional Entra person photos](docs/identity-photos.md).
+  Notification routing to all actual administrators additionally requires `Application.Read.All`
+  and complete direct app-role/group-member discovery; signed-in principal inventory is not a
+  substitute. See [Notification routing](docs/notification-routing.md).
 - [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli)
 - [Azure Developer CLI](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd)
 - Python 3.12 and [uv](https://docs.astral.sh/uv/)
@@ -736,6 +799,11 @@ Budgets and their email have these. See [Budgets and alerts](docs/budgets-and-al
 | `MOSAIC_BUDGET_INTERVAL_SECONDS` | `900` | How often every budget is checked, from 60 to 86,400 seconds. |
 | `MOSAIC_BUDGET_FAST_INTERVAL_SECONDS` | `300` | How often a budget at 90% or more, with a threshold or a block to come, is checked, from 60 to 3,600 seconds. |
 | `MOSAIC_EMAIL_SUGGESTED_ENDPOINT`, `MOSAIC_EMAIL_SUGGESTED_SENDER` | None | The Communication Services endpoint and sender `azd` created. They only fill in **Settings > Email**; email stays off until an administrator saves it there. |
+
+Approval and notification worker settings, channel prerequisites, and delivery semantics are
+documented in [Approvals and notifications](docs/approvals-and-notifications.md#hosting-settings).
+In-app notifications default on; general email, Teams, and recurring summaries remain opt-in.
+Saved configuration is not proof that a worker stays awake or a provider delivered a message.
 
 Logging has one setting.
 

@@ -5,6 +5,11 @@ at 80% and 100% of it, and, if the cost center chooses, refuses its calls at the
 used up. An organization budget covers everything and only warns.
 [ADR 0023](adr/0023-budgets-and-notifications.md) records the design.
 
+Personal request/status messages, configurable notification channels, and daily/weekly/monthly
+usage summaries are described in [Approvals and notifications](approvals-and-notifications.md).
+Those summary periods do not add new budget enforcement periods: dollar budgets below remain
+monthly UTC budgets. Shared budget spend is never described as one person's private allowance.
+
 - [What a budget holds](#what-a-budget-holds)
 - [Set up email](#set-up-email)
 - [Set a budget](#set-a-budget)
@@ -65,8 +70,8 @@ emails are recorded as not sent.
   sent, and, for a budget that blocks, whether each gateway is refusing its calls.
 - **The organization's:** under **Cost centers > Organization budget**.
 
-Saving judges the budget at once, so a budget set below what's already spent emails and, if it
-blocks, blocks within seconds, and a raised budget lifts its block in the same request.
+Saving judges the budget at once, so a budget set below what's already spent queues its email
+and, if it blocks, blocks within seconds; a raised budget lifts its block in the same request.
 **Remove budget** lifts any block too. Budgets are audited as `budget.created`, `budget.updated`,
 and `budget.deleted`.
 
@@ -114,9 +119,32 @@ says who spent it. Thresholds reached by one check send one email, for the highe
 
 Each email goes at most once. A check records an email as being sent before it sends it, so two
 API instances can't both send it, and Communication Services is told each try is the same
-operation. A refused email is tried again at the next checks, three times in all. If MOSAIC stops
+operation. A refused email is retried with bounded delay, three times in all. If MOSAIC stops
 while sending one, it doesn't send it again: a missed email is better than a duplicate. Each
 budget's card lists its emails this month and how each went.
+
+With the notification worker configured, judging queues the email durably rather than waiting
+for ACS inside the budget request. The budget state and its send-ownership outbox commit together
+in `usage-rollups`; replay creates the shared event and delivery together in `desired-state`.
+The inline budget sender does not also send it. Block/unblock notices wait for the gateway-sync
+attempt and retain its actual enforcement counts.
+
+Migration preserves the explicitly configured owner/recipient audience, original message
+content, original notice IDs, and the stable ACS operation ID. Previously sent or skipped notices
+are not emailed again. An old in-flight claim remains **outcome unknown** unless a durable
+provider-acceptance receipt resolves it; it is never automatically resent. Refused sends retain
+their previous attempts, with three attempts in total. Provider acceptance is not confirmation
+that the email reached its recipient.
+
+Immediately before sending, MOSAIC rechecks the budget, its current recipients, and the legacy
+budget-email switch. Those explicitly enabled budget emails do not silently opt their recipients
+into new personal or shared-route emails. Generic email routing excludes these compatibility
+events, preventing duplicate email; independently authorized in-app and Teams routing can still
+use the same events. Expired accounting-period notices are suppressed, while a removed budget's
+unblock notice survives deletion of its monthly state. Source outboxes retain their receipt for
+90 days with document-level Cosmos TTL.
+
+For worker composition and migration ownership, see [Notification engine](notification-engine.md).
 
 ## Blocking
 

@@ -25,6 +25,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import structlog
 
+from mosaic_api.budget_notifications import BudgetNotificationOutbox
 from mosaic_api.budgets import (
     BUDGETS_BUSY,
     BUDGETS_SCOPE,
@@ -72,6 +73,7 @@ from mosaic_api.services.budget_gate import (
     GateSync,
     WriterFactory,
 )
+from mosaic_api.services.budget_notification_bridge import BudgetNotificationBridge
 from mosaic_api.services.cost_centers import load_book
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.portal import PortalService
@@ -238,6 +240,7 @@ class BudgetService:
         suggested_endpoint: str | None = None,
         suggested_sender: str | None = None,
         enabled: bool = True,
+        notification_bridge: BudgetNotificationBridge | None = None,
     ) -> None:
         self._repository = repository
         self._cost_centers = cost_center_repository
@@ -247,6 +250,7 @@ class BudgetService:
         self._writer_factory = writer_factory
         self._analytics = analytics
         self._email = email
+        self._notification_bridge = notification_bridge
         self._portal = portal
         self._tenant_id = tenant_id
         self._priced = priced
@@ -365,6 +369,8 @@ class BudgetService:
             logger.info("budget_check_skipped", reason="leased")
             return None
         try:
+            if self._notification_bridge is not None:
+                await self._notification_bridge.reconcile()
             judging = await self._judge_all(tenant_id, full=full, only=only)
         finally:
             try:
@@ -374,7 +380,10 @@ class BudgetService:
         result = judging.result
         # Gateways first, so a block notice goes once the gateways have been told to refuse.
         synced: GateSync | None = None
-        if full or result.blocked or result.unblocked:
+        if full or result.blocked or result.unblocked or (
+            self._notification_bridge is not None
+            and await self._notification_bridge.requires_gateway_sync()
+        ):
             synced = await self._gate.sync(
                 tenant_id,
                 self._client_factory,
@@ -386,6 +395,9 @@ class BudgetService:
             result.emails += await self._send_due(
                 item.budget, item.evaluation, judging.email, judging.book, synced
             )
+        if self._notification_bridge is not None:
+            await self._notification_bridge.release_pending(synced)
+            await self._notification_bridge.reconcile()
         return result
 
     async def _judge_all(
@@ -471,8 +483,13 @@ class BudgetService:
         spent = _spent(figures)
         note = error if error is not None else (NO_FIGURES if spent is None else None)
         decided: list[Evaluation] = []
+        sources: list[BudgetNotificationOutbox] = []
 
         def change(current: BudgetState) -> BudgetState:
+            previous_sources = (
+                self._notification_bridge.sources(budget, current, book)
+                if self._notification_bridge is not None else []
+            )
             result = evaluate(
                 budget,
                 current.model_copy(update={"cost_center_id": budget.cost_center_id}),
@@ -484,9 +501,24 @@ class BudgetService:
                 error=note,
             )
             decided[:] = [result]
+            if self._notification_bridge is not None:
+                for notice in result.due:
+                    notice.delivery_owner = "notificationPipeline"
+                combined = {source.id: source for source in previous_sources}
+                combined.update({
+                    source.id: source for source in self._notification_bridge.sources(
+                        budget, result.state, book, result.due
+                    )
+                })
+                sources[:] = list(combined.values())
             return result.state
 
-        saved = await self._repository.update_budget_state(budget.tenant_id, budget.id, change)
+        if self._notification_bridge is not None:
+            saved = await self._repository.update_budget_state_with_outbox(
+                budget.tenant_id, budget.id, change, lambda _state: sources
+            )
+        else:
+            saved = await self._repository.update_budget_state(budget.tenant_id, budget.id, change)
         evaluation = decided[0]
         evaluation.state = saved
         await self._audit_transitions(budget, evaluation, book)
@@ -560,6 +592,13 @@ class BudgetService:
         how many gateways already do what it says.
         """
 
+        if self._notification_bridge is not None:
+            # The source transaction already transferred these notices. There is never an
+            # inline legacy send as well as a shared-pipeline send.
+            if not record_outcomes:
+                await self._notification_bridge.release_pending(synced)
+                await self._notification_bridge.reconcile()
+            return 0
         if not evaluation.due:
             return 0
         recipients = self._recipients(budget, book)
@@ -857,6 +896,10 @@ class BudgetService:
         if budget is None:
             raise NotFoundError("No budget is set", details={"costCenterId": cost_center_id})
         state = await self._repository.get_budget_state(tenant_id, identifier)
+        removal: BudgetNotification | None = None
+        if self._notification_bridge is not None:
+            await self._notification_bridge.reconcile()
+            removal = await self._notification_bridge.stage_removal(budget)
         await self._repository.delete_budget(
             budget,
             AuditEvent(
@@ -871,7 +914,7 @@ class BudgetService:
         )
         lifted: tuple[BudgetState, BudgetNotification] | None = None
         if state is not None and state.blocked and state.month == month_of(self._clock()):
-            lifted = await self._lift_removed(budget)
+            lifted = await self._lift_removed(budget, removal)
         # Only the version this left goes: a budget set again meanwhile, under the same ID, keeps
         # the state its own check saved. The gateways and the email wait until it's gone, so
         # nothing slow sits between reading the state and removing it.
@@ -882,12 +925,17 @@ class BudgetService:
             await self._announce_lift(budget, *lifted)
 
     async def _lift_removed(
-        self, budget: Budget
+        self, budget: Budget, staged_notice: BudgetNotification | None = None
     ) -> tuple[BudgetState, BudgetNotification] | None:
         """Lift a removed budget's block in its saved state, with the email that says so."""
 
         now = self._clock()
-        notice = BudgetNotification(kind="unblocked", reason="budgetRemoved", created_at=now)
+        notice = staged_notice or BudgetNotification(
+            kind="unblocked", reason="budgetRemoved", created_at=now
+        )
+        if self._notification_bridge is not None:
+            notice.delivery_owner = "notificationPipeline"
+        book = await load_book(self._cost_centers, budget.tenant_id)
 
         def lift(state: BudgetState) -> BudgetState:
             if not state.blocked:
@@ -903,7 +951,17 @@ class BudgetService:
             )
 
         try:
-            saved = await self._repository.update_budget_state(budget.tenant_id, budget.id, lift)
+            if self._notification_bridge is not None:
+                saved = await self._repository.update_budget_state_with_outbox(
+                    budget.tenant_id, budget.id, lift,
+                    lambda current: self._notification_bridge.sources(
+                        budget, current, book, [notice]
+                    ) if self._notification_bridge is not None else [],
+                )
+            else:
+                saved = await self._repository.update_budget_state(
+                    budget.tenant_id, budget.id, lift
+                )
         except ConflictError:
             return None
         return saved, notice

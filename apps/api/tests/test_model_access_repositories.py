@@ -18,12 +18,15 @@ from mosaic_api.domain import (
     new_id,
 )
 from mosaic_api.errors import ConflictError
+from mosaic_api.notifications import NotificationEventType
 from mosaic_api.repositories import (
     InMemoryEntitlementRepository,
     InMemoryGatewayRepository,
 )
 from mosaic_api.repositories.cosmos_entitlements import CosmosEntitlementRepository
 from mosaic_api.repositories.cosmos_gateway import CosmosGatewayRepository
+from mosaic_api.services.approval_events import grant_event
+from mosaic_api.services.notification_events import access_request_event
 
 
 class Container:
@@ -33,6 +36,7 @@ class Container:
         self.generation = 0
         self.replace_on_read = False
         self.deletes: list[dict[str, Any]] = []
+        self.batches: list[tuple[str, list[tuple[Any, ...]]]] = []
 
     async def create_item(self, body: dict[str, Any]) -> dict[str, Any]:
         if self.failure:
@@ -50,6 +54,7 @@ class Container:
     ) -> list[dict[str, Any]]:
         """All or nothing, like a Cosmos transactional batch on one partition."""
 
+        self.batches.append((partition_key, deepcopy(batch_operations)))
         if self.failure:
             raise self.failure
         staged = deepcopy(self.items)
@@ -276,43 +281,79 @@ def _approval_events() -> list[AuditEvent]:
 
 async def test_memory_approval_writes_the_grant_and_decision_together() -> None:
     repository = InMemoryEntitlementRepository()
-    await repository.create_access_request(_pending_request(), _event("accessRequest.created"))
+    read = await repository.create_access_request(
+        _pending_request(), _event("accessRequest.created")
+    )
+    assert read.etag
     events = _approval_events()
 
-    await repository.approve_access_request(_approved(_pending_request()), _grant(), events)
+    await repository.approve_access_request(_approved(read), _grant(), events)
 
     stored = repository.access_requests["accessRequest_1"]
     assert stored.state == AccessRequestState.APPROVED
     assert stored.granted_entitlement_id == "entitlement_1"
     assert "entitlement_1" in repository.entitlements
     assert {event.id for event in events} <= set(repository.audit_events)
+    assert {event.event_type for event in repository.notification_events.values()} == {
+        NotificationEventType.REQUEST_SUBMITTED,
+        NotificationEventType.REQUEST_APPROVED,
+        NotificationEventType.GRANT_CREATED,
+    }
 
 
 async def test_memory_approval_commits_nothing_when_a_precondition_fails() -> None:
     repository = InMemoryEntitlementRepository()
-    await repository.create_access_request(_pending_request(), _event("accessRequest.created"))
+    read = await repository.create_access_request(
+        _pending_request(), _event("accessRequest.created")
+    )
     await repository.create_entitlement(_grant(), _event("entitlement.created"))
     before = set(repository.audit_events)
+    notifications_before = deepcopy(repository.notification_events)
 
     with pytest.raises(ConflictError):
-        await repository.approve_access_request(
-            _approved(_pending_request()), _grant(), _approval_events()
-        )
+        await repository.approve_access_request(_approved(read), _grant(), _approval_events())
     assert repository.access_requests["accessRequest_1"].state == AccessRequestState.PENDING
     assert set(repository.audit_events) == before
+    assert repository.notification_events == notifications_before
 
     # A request someone else already decided is not overwritten either.
     del repository.entitlements["entitlement_1"]
     denied = AccessRequest.model_validate(
-        {**_pending_request().model_dump(by_alias=False), "state": AccessRequestState.DENIED}
+        {**read.model_dump(by_alias=False), "state": AccessRequestState.DENIED}
     )
     await repository.save_access_request(denied, _event("accessRequest.denied"))
+    notifications_before = deepcopy(repository.notification_events)
     with pytest.raises(ConflictError):
-        await repository.approve_access_request(
-            _approved(_pending_request()), _grant(), _approval_events()
-        )
-    assert repository.access_requests["accessRequest_1"].state == AccessRequestState.DENIED
+        await repository.approve_access_request(_approved(read), _grant(), _approval_events())
+    stored = await repository.get_access_request("tenant", "accessRequest_1")
+    assert stored is not None and stored.state == AccessRequestState.DENIED
     assert repository.entitlements == {}
+    assert repository.notification_events == notifications_before
+
+
+async def test_memory_approval_with_a_stale_pending_etag_commits_nothing() -> None:
+    repository = InMemoryEntitlementRepository()
+    read = await repository.create_access_request(
+        _pending_request(), _event("accessRequest.created")
+    )
+    current = await repository.save_access_request(
+        read.model_copy(update={"justification": "Updated request"}),
+        _event("accessRequest.updated"),
+    )
+    assert current.state == AccessRequestState.PENDING and current.etag != read.etag
+    before = deepcopy(repository.access_requests)
+    audited = deepcopy(repository.audit_events)
+    notifications = deepcopy(repository.notification_events)
+
+    with pytest.raises(ConflictError):
+        await repository.approve_access_request(_approved(read), _grant(), _approval_events())
+
+    assert repository.access_requests == before
+    assert repository.entitlements == {}
+    assert repository.audit_events == audited
+    assert repository.notification_events == notifications
+    await repository.approve_access_request(_approved(current), _grant(), _approval_events())
+    assert repository.access_requests[current.id].state == AccessRequestState.APPROVED
 
 
 def _entitlement_repository(cosmos: Cosmos) -> CosmosEntitlementRepository:
@@ -336,11 +377,47 @@ async def test_cosmos_approval_is_one_transactional_batch() -> None:
     assert await repository.get_entitlement("tenant", "entitlement_1") is not None
     audit_items = cosmos.containers["audit"].items
     assert all(("tenant", event.id) in audit_items for event in events)
-    # Projected events leave the outbox; only the two documents remain as desired state.
-    assert {key[1] for key in cosmos.containers["desired"].items} == {
+    desired = cosmos.containers["desired"]
+    approved = _approved(read)
+    expected_notifications = [
+        access_request_event(read),
+        access_request_event(approved),
+        grant_event(
+            _grant(),
+            events[0],
+            NotificationEventType.GRANT_CREATED,
+            user_object_id=read.requester_object_id,
+            request_id=read.id,
+        ),
+    ]
+    # Audit projection removes audit outbox documents, not durable notification source events.
+    assert {key[1] for key in desired.items} == {
         "accessRequest_1",
         "entitlement_1",
+        *(event.id for event in expected_notifications),
     }
+    assert {event.event_type for event in expected_notifications} == {
+        NotificationEventType.REQUEST_SUBMITTED,
+        NotificationEventType.REQUEST_APPROVED,
+        NotificationEventType.GRANT_CREATED,
+    }
+    for event in expected_notifications:
+        document = desired.items[("tenant", event.id)]
+        assert {key: value for key, value in document.items() if key != "_etag"} == (
+            event.model_dump(mode="json", by_alias=True, exclude={"etag"})
+        )
+    partition, operations = desired.batches[-1]
+    assert partition == "tenant"
+    assert len(operations) == 6
+    created_ids = {operation[1][0]["id"] for operation in operations if operation[0] == "create"}
+    assert created_ids == {
+        "entitlement_1",
+        *(event.id for event in events),
+        *(event.id for event in expected_notifications[1:]),
+    }
+    [replacement] = [operation for operation in operations if operation[0] == "replace"]
+    assert replacement[1][0] == read.id
+    assert replacement[2] == {"if_match_etag": read.etag}
 
 
 async def test_cosmos_approval_with_a_stale_etag_commits_nothing() -> None:
@@ -358,6 +435,7 @@ async def test_cosmos_approval_with_a_stale_etag_commits_nothing() -> None:
     )
     await repository.save_access_request(denied, _event("accessRequest.denied"))
     audited = set(cosmos.containers["audit"].items)
+    desired_before = deepcopy(cosmos.containers["desired"].items)
 
     with pytest.raises(ConflictError, match="decided or its grant already exists"):
         await repository.approve_access_request(_approved(read), _grant(), _approval_events())
@@ -366,6 +444,7 @@ async def test_cosmos_approval_with_a_stale_etag_commits_nothing() -> None:
     assert stored is not None and stored.state == AccessRequestState.DENIED
     assert await repository.get_entitlement("tenant", "entitlement_1") is None
     assert set(cosmos.containers["audit"].items) == audited
+    assert cosmos.containers["desired"].items == desired_before
 
 
 async def test_cosmos_approval_over_an_existing_grant_commits_nothing() -> None:
@@ -376,6 +455,7 @@ async def test_cosmos_approval_over_an_existing_grant_commits_nothing() -> None:
     read = await repository.get_access_request("tenant", "accessRequest_1")
     assert read is not None
     audited = set(cosmos.containers["audit"].items)
+    desired_before = deepcopy(cosmos.containers["desired"].items)
 
     with pytest.raises(ConflictError):
         await repository.approve_access_request(_approved(read), _grant(), _approval_events())
@@ -385,6 +465,7 @@ async def test_cosmos_approval_over_an_existing_grant_commits_nothing() -> None:
     assert stored.state == AccessRequestState.PENDING
     assert stored.etag == read.etag
     assert set(cosmos.containers["audit"].items) == audited
+    assert cosmos.containers["desired"].items == desired_before
 
 
 async def test_cosmos_approval_requires_the_etag_it_was_read_with() -> None:

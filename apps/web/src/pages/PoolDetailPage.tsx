@@ -13,6 +13,7 @@ import {
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { PublishNotificationRun } from '../components/NotificationOperationRun'
 import { HistoryRegular, HeartPulseRegular, InfoRegular, LayerRegular, ShieldKeyholeRegular } from '@fluentui/react-icons'
 import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
@@ -786,6 +787,7 @@ function PoolDetail({ poolId, embedded = false }: { poolId: string; embedded?: b
       </>}
 
       {section === 'plans' && <>
+      <PublishNotificationRun publicationId={pool.id} target="pool" />
       {detail.data.facets.length > 0 && (
         <Card className={styles.card} aria-labelledby="pool-policy-heading">
           <div className={styles.sectionHeading}>
