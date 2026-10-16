@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import cast
 from unittest.mock import AsyncMock
 
@@ -13,6 +14,8 @@ from mosaic_api.integrations.apim.client import ArmClient
 from mosaic_api.integrations.azure_connections import AzureClientRegistry
 from pydantic import SecretStr
 from test_azure_connections import ACTOR, SECRET, build, request
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def endpoint(
@@ -129,8 +132,10 @@ def test_main_wires_selected_discovery_without_changing_commercial_defaults(
 
 
 async def test_demo_discovery_uses_only_government_fakes_for_selected_connection(
-    client: TestClient,
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The pytest console entrypoint does not put the repository root on sys.path.
+    monkeypatch.syspath_prepend(str(REPO_ROOT))
     from scripts.screenshots.demo_api import install_demo_services
 
     services = install_demo_services(client.app, [])
