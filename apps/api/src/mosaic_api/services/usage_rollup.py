@@ -145,9 +145,9 @@ def _text(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-def _hashed[ItemT: (UsageFact, UsageSummary)](item: ItemT) -> ItemT:
+def _hashed[ItemT: UsageFact | UsageSummary](item: ItemT) -> ItemT:
     payload = item.model_dump(mode="json", exclude=_HASH_EXCLUDE)
-    return item.model_copy(update={"content_hash": content_hash(payload)})
+    return cast(ItemT, item.model_copy(update={"content_hash": content_hash(payload)}))
 
 
 def _ceil_hour(value: datetime) -> datetime:
@@ -246,7 +246,7 @@ class LinkResolver:
         self, version: str, grant: str, subscription: str
     ) -> tuple[UsageLink, str, AttributionRecord | None] | None:
         if version == TRACE_VERSION and grant:
-            return "trace", grant, self._registry.get(("grant", grant))
+            return "trace", grant, self.grant(grant)
         if subscription:
             key = subscription_attribution_key(self._gateway_id, subscription)
             record = self._registry.get(("subscription", key))
@@ -267,7 +267,8 @@ class LinkResolver:
     def grant(self, key: str) -> AttributionRecord | None:
         """What a trace's grant key stands for, if the registry knows it yet."""
 
-        return self._registry.get(("grant", key)) if key else None
+        record = self._registry.get(("grant", key)) if key else None
+        return record if record is not None and record.gateway_id == self._gateway_id else None
 
     def peak_fact_key(self, link: str) -> tuple[UsageLink, str, str | None] | None:
         kind, _, rest = link.partition(":")
@@ -275,7 +276,7 @@ class LinkResolver:
             grant, _, member = rest.partition("|")
             if not grant:
                 return None
-            return "trace", grant, self.caller(member, self._registry.get(("grant", grant)))
+            return "trace", grant, self.caller(member, self.grant(grant))
         if kind == "s" and rest:
             key = subscription_attribution_key(self._gateway_id, rest)
             record = self._registry.get(("subscription", key))
@@ -496,9 +497,7 @@ class DayFold:
         for fact in self.facts.values():
             grant_key = f"{fact.link}:{fact.link_key}"
             self._entry("grant", grant_key).metrics.add(fact.metrics)
-            self._entry("grantCaller", f"{grant_key}|{fact.caller or ''}").metrics.add(
-                fact.metrics
-            )
+            self._entry("grantCaller", f"{grant_key}|{fact.caller or ''}").metrics.add(fact.metrics)
             if fact.caller:
                 self._entry("caller", fact.caller).metrics.add(fact.metrics.without_members())
         if self.total_hours:
@@ -679,6 +678,7 @@ def merge_apis(
 # and enabling telemetry, write the others, and can do so while a run is going.
 _RUN_FIELDS = (
     "apis",
+    "azure_cloud",
     "last_run_at",
     "last_success_at",
     "last_duration_ms",
@@ -746,8 +746,10 @@ def _subject_identity(
     principal = principals.get(subject.id)
     if principal is None:
         return None, None
-    object_id = None if subject.kind == EntitlementSubjectKind.SECURITY_GROUP else (
-        principal.object_id.casefold()
+    object_id = (
+        None
+        if subject.kind == EntitlementSubjectKind.SECURITY_GROUP
+        else (principal.object_id.casefold())
     )
     return object_id, principal.label or principal.detail
 
@@ -797,9 +799,10 @@ class UsageRollupService:
         gateway_repository: GatewayRepository,
         entitlement_repository: EntitlementRepository,
         directory_repository: DirectoryRepository,
-        logs: LogsQuery,
+        logs: LogsQuery | None = None,
         telemetry: TelemetryService | None,
         tenant_id: str,
+        logs_factory: Callable[[Gateway], LogsQuery] | None = None,
         interval_seconds: float = 900,
         retention_days: int = 400,
         backfill_max_days: int = 90,
@@ -815,6 +818,7 @@ class UsageRollupService:
         self._entitlements = entitlement_repository
         self._directory = directory_repository
         self._logs = logs
+        self._logs_factory = logs_factory
         self._telemetry = telemetry
         self._tenant_id = tenant_id
         self._interval = interval_seconds
@@ -1031,7 +1035,9 @@ class UsageRollupService:
             # a refresh can save its state before then, so "first" means never run, not unsaved.
             state = self._with_backfill(state, today, self._backfill_max_days)
         state = self._with_catch_up(state, today)
-        state = state.model_copy(update={"apis": apis, "last_run_at": now})
+        state = state.model_copy(
+            update={"apis": apis, "last_run_at": now, "azure_cloud": gateway.azure_cloud}
+        )
         state = await self._keep_instrumented(gateway, state)
 
         days = [today, today - timedelta(days=1), *self._backfill_slice(state)]
@@ -1049,9 +1055,7 @@ class UsageRollupService:
                 break
             except DomainError as failure:
                 error = failure.message
-                logger.warning(
-                    "usage_rollup_day_failed", gateway_id=gateway.id, day=iso_day(day)
-                )
+                logger.warning("usage_rollup_day_failed", gateway_id=gateway.id, day=iso_day(day))
                 break
             if fold is None:
                 continue
@@ -1098,9 +1102,7 @@ class UsageRollupService:
             written=written,
             failed=error is not None,
         )
-        return _GatewayRun(
-            state=saved, busy=error is None and saved.backfill_status == "running"
-        )
+        return _GatewayRun(state=saved, busy=error is None and saved.backfill_status == "running")
 
     def _with_catch_up(self, state: UsageRollupState, today: date) -> UsageRollupState:
         """Re-read days a stopped or failing job missed. Each cycle only re-reads two."""
@@ -1214,20 +1216,27 @@ class UsageRollupService:
         )
 
     async def _query(
-        self, resource_id: str, build: Callable[[QueryWindow], str], window: QueryWindow
+        self,
+        resource_id: str,
+        build: Callable[[QueryWindow], str],
+        window: QueryWindow,
+        logs: LogsQuery | None = None,
     ) -> list[Row]:
         """Run a query, halving its window until each part fits Log Analytics' limits."""
 
         start, end = window.timespan
+        logs = logs or self._logs
+        if logs is None:
+            raise ValidationError("No telemetry connection is configured for this gateway.")
         try:
-            return await self._logs.query(resource_id, build(window), start=start, end=end)
+            return await logs.query(resource_id, build(window), start=start, end=end)
         except LogQueryTooLargeError:
             if window.hours <= 1:
                 raise
             first, second = window.split()
             return [
-                *await self._query(resource_id, build, first),
-                *await self._query(resource_id, build, second),
+                *await self._query(resource_id, build, first, logs),
+                *await self._query(resource_id, build, second, logs),
             ]
 
     async def _roll_up_day(
@@ -1251,16 +1260,20 @@ class UsageRollupService:
             if api.deployment_key and DEPLOYMENT_KEY.fullmatch(api.deployment_key)
         }
         resource_id = gateway.azure_resource_id
+        logs = self._logs_factory(gateway) if self._logs_factory else self._logs
         calls = await self._query(
-            resource_id, lambda part: calls_query(part, names, list(pools)), window
+            resource_id, lambda part: calls_query(part, names, list(pools)), window, logs
         )
-        peaks = await self._query(resource_id, lambda part: peaks_query(part, names), window)
-        denials = await self._query(resource_id, lambda part: denials_query(part, names), window)
+        peaks = await self._query(resource_id, lambda part: peaks_query(part, names), window, logs)
+        denials = await self._query(
+            resource_id, lambda part: denials_query(part, names), window, logs
+        )
         deployment_peaks = (
             await self._query(
                 resource_id,
                 lambda part: deployment_peaks_query(part, deployments, pools),
                 window,
+                logs,
             )
             if deployments or pools
             else []
@@ -1297,6 +1310,9 @@ class UsageRollupService:
     async def _replace_bucket(
         self, gateway: Gateway, bucket: str, items: Sequence[RollupItem]
     ) -> int:
+        items = [
+            _hashed(item.model_copy(update={"azure_cloud": gateway.azure_cloud})) for item in items
+        ]
         existing = await self._repository.list_bucket_hashes(gateway.tenant_id, gateway.id, bucket)
         wanted = {item.id for item in items}
         changed = [item for item in items if existing.get(item.id) != item.content_hash]
@@ -1365,6 +1381,9 @@ class UsageRollupService:
             server.id: server for server in await self._gateways.list_mcp_servers(tenant_id)
         }
         model_pools = {pool.id: pool for pool in await self._gateways.list_model_pools(tenant_id)}
+        gateways = {
+            gateway.id: gateway for gateway in await self._gateways.list_gateways(tenant_id)
+        }
         existing: dict[tuple[str, str], AttributionRecord] = {
             (record.kind, record.key): record
             for record in await self._repository.list_attribution_records(tenant_id)
@@ -1400,6 +1419,13 @@ class UsageRollupService:
                     kind="grant" if kind == "grant" else "subscription",
                     key=key,
                     gateway_id=binding.gateway_id,
+                    azure_cloud=(
+                        gateways[binding.gateway_id].azure_cloud
+                        if binding.gateway_id in gateways
+                        else existing[(kind, key)].azure_cloud
+                        if (kind, key) in existing
+                        else "commercial"
+                    ),
                     entitlement_id=entitlement.id,
                     publication_id=publication_id,
                     publication_kind=publication_kind,

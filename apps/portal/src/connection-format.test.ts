@@ -1,5 +1,36 @@
 import { describe, expect, it } from 'vitest'
-import { listOf, sharedKeyModels } from './connection-format'
+import { buildSamples, buildTokenSample, governmentReadiness, keyRevealProblem, listOf, sharedKeyModels } from './connection-format'
+import { connection } from './test/connection'
+
+describe('Government connections', () => {
+  const government = { ...connection, azureCloud: 'government' as const,
+    appliedMethods: { keysEnabled: true, entraEnabled: false }, keyExists: false }
+
+  it('requires applied gateway access AND a confirmed key before declaring readiness', () => {
+    expect(governmentReadiness({ ...government, runtime: { ...connection.runtime!, status: 'pending' } }).applied).toBe(false)
+    expect(governmentReadiness(government).label).toBe('Preparing key')
+    expect(governmentReadiness({ ...government, keyExists: true }).label).toBe('Ready')
+    expect(governmentReadiness({ ...government, runtime: { ...connection.runtime!, keyState: 'deleted' } }).label).toBe('Key deleted')
+    expect(governmentReadiness({ ...government, runtime: { ...connection.runtime!, keyState: 'failed' } }).label).toBe('Key setup failed')
+  })
+
+  it('does not manufacture OAuth samples or fall back to a commercial token', () => {
+    expect(buildTokenSample(government)).toBeNull()
+    expect(buildSamples(government, { credential: 'token' })).toBeNull()
+    expect(buildSamples({ ...government, keysAvailable: false })).toBeNull()
+    const samples = buildSamples(government)
+    expect(JSON.stringify(samples)).toContain('Ocp-Apim-Subscription-Key')
+    expect(JSON.stringify(samples)).not.toContain('Authorization: Bearer')
+  })
+
+  it('does not recommend commercial tokens when Government cost-center keys are off', () => {
+    const problem = keyRevealProblem(Object.assign(new Error('Keys off'), {
+      status: 409, body: { code: 'conflict', details: { reason: 'costCenterKeysOff' } },
+    }), 'government')
+    expect(problem.message).toContain('key-enabled cost center')
+    expect(problem.message).not.toContain('token')
+  })
+})
 
 describe('listOf', () => {
   it.each([

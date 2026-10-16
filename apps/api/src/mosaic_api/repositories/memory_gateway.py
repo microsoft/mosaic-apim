@@ -59,7 +59,7 @@ class InMemoryGatewayRepository:
         return gateway if gateway and gateway.tenant_id == tenant_id else None
 
     async def find_gateway_by_resource_id(
-        self, tenant_id: str, azure_resource_id: str
+        self, tenant_id: str, azure_resource_id: str, *, azure_cloud: str = "commercial"
     ) -> Gateway | None:
         target = azure_resource_id.casefold()
         return next(
@@ -67,6 +67,7 @@ class InMemoryGatewayRepository:
                 gateway
                 for gateway in self.gateways.values()
                 if gateway.tenant_id == tenant_id
+                and gateway.azure_cloud == azure_cloud
                 and gateway.azure_resource_id.casefold() == target
             ),
             None,

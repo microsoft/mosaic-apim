@@ -1,8 +1,9 @@
 # Connect to MCP servers published through MOSAIC
 
 This guide is for people, agent builders and administrators who need to call an MCP server that
-MOSAIC published through API Management. Published servers use Microsoft Entra tokens and API
-Management enforcement. Imported MCP servers are different: MOSAIC records those grants, but the
+MOSAIC published through API Management. Commercial servers use Microsoft Entra tokens;
+Azure Government servers use grant-scoped subscription keys. Both use API Management enforcement.
+Imported MCP servers are different: MOSAIC records those grants, but the
 imported server's own gateway policy decides who can call it.
 
 ## Before you start
@@ -25,6 +26,71 @@ Copy these values from the grant's MCP connection details in the portal, or from
 | `costCenterHeader` | `x-mosaic-cost-center`, the header that names a cost center on a call |
 
 Connection details never include runtime tokens or upstream MCP credentials.
+
+## Azure Government: subscription keys only
+
+Check `azureCloud` before following the sign-in instructions below. For `government`, MOSAIC
+continues to use your commercial portal sign-in, but that token **cannot** authorize a Government
+gateway call. The Entra scope, audience and protected-resource metadata fields are absent. A key-only
+server does not advertise commercial OAuth metadata or a bearer-token challenge.
+
+An administrator must review and apply your **direct** grant. Approval alone changes no gateway
+policy. After a successful apply, MOSAIC automatically issues the initial API-scoped subscription
+if the cost center permits keys. `runtime.keyState` distinguishes pending/preparing, ready, failed,
+deleted and ineligible setup; connect only when the grant is applied and `keyExists` is true.
+Security-group grants do not become shared Government keys, and a cost center that disallows keys
+makes Government key access unavailable.
+
+Use **Reveal key** explicitly; creation never reveals, emails or stores the value in MOSAIC.
+The existing `/api/v1/me/entitlements/{id}/keys` create/delete and `keys/reveal` / `keys/rotate`
+actions also support Government MCP grants. Reveal is authorized, audited and non-cacheable.
+Keep keys in a secure client input or secret store, not a checked-in configuration:
+
+```json
+{
+  "servers": {
+    "mosaic-government-example": {
+      "type": "http",
+      "url": "https://<government-gateway-host>/<api-path>/mcp",
+      "headers": { "Ocp-Apim-Subscription-Key": "${input:mosaic-government-key}" }
+    }
+  },
+  "inputs": [
+    {
+      "id": "mosaic-government-key",
+      "type": "promptString",
+      "description": "Government MCP subscription key",
+      "password": true
+    }
+  ]
+}
+```
+
+Clients must support custom HTTP headers. Do not send a commercial `Authorization` header alongside
+the key: bearer credentials are refused, never an authorization fallback. The validated key maps
+to its exact enabled, applied grant and cost center; shared/product/all-API subscriptions do not
+bypass those checks. A mismatched cost-center header is refused.
+
+Rotation affects only the selected primary or secondary slot. Explicit deletion is durable:
+refreshing the portal or applying again will not silently replace it; choose create explicitly to
+reprovision. Failed or interrupted initial issuance is retried from persisted lifecycle state
+without rotating an existing key. A key attributes usage to its grant holder; it does not prove
+which person physically used it or establish a Government account link.
+
+Before issuance, retry, rotation or reveal, MOSAIC checks the API's live subscription requirement
+and the exact policy confirmed by the reviewed apply. Policy drift blocks these actions until
+an administrator reviews and reapplies the intended enforcement. Government native MCP support
+must be confirmed on the gateway; unknown or unsupported capabilities block publishing.
+
+You still need network connectivity to the Government gateway. The gateway uses its own
+Government managed identity for the registered Government backend and strips caller credentials
+before forwarding. Management and telemetry metadata processed by commercial MOSAIC cross a cloud
+boundary; obtain organizational approval for that arrangement. No live Government feature or
+compliance equivalence is implied by the offline tests.
+
+## Commercial Entra connections
+
+The remaining sign-in instructions apply to Commercial offerings.
 
 ## People and VS Code
 
@@ -90,8 +156,8 @@ runtime token. The token must contain the group's object ID in its `groups` clai
 - People and agent users use `api://<model-runtime-client-id>/Mcp.Invoke`.
 - Applications, managed identities and agent identities use
   `api://<model-runtime-client-id>/.default` and need `Mcp.Invoke.Application`.
-- Security-group grants have no key path. MCP servers published through MOSAIC do not use APIM
-  subscription keys.
+- Security-group grants have no key path. Commercial MCP servers published through MOSAIC use
+  Entra tokens rather than APIM subscription keys.
 
 Each member gets the group's full call allowance in the grant window. If you also have a direct
 grant, the direct grant wins. If you match several groups, the gateway uses the most generous

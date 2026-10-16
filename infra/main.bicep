@@ -101,6 +101,7 @@ var webWebAppName = take('mosaic-${envLabel}-web-${suffix}', 60)
 var portalWebAppName = take('mosaic-${envLabel}-portal-${suffix}', 60)
 var cosmosName = take('cosmos-mosaic-${envLabel}-${suffix}', 44)
 var keyVaultName = toLower(take('kvmosaic${envToken}${suffix}', 24))
+var managementKeyVaultName = toLower(take('kvmgmt${envToken}${suffix}', 24))
 var logAnalyticsName = take('log-mosaic-${envLabel}-${suffix}', 63)
 var appInsightsName = take('appi-mosaic-${envLabel}-${suffix}', 260)
 var apimName = take('apim-mosaic-${envLabel}-${suffix}', 50)
@@ -206,6 +207,10 @@ var apiAppSettings = concat([
   {
     name: 'MOSAIC_KEY_VAULT_RESOURCE_ID'
     value: keyVault.outputs.id
+  }
+  {
+    name: 'MOSAIC_MANAGEMENT_KEY_VAULT_URI'
+    value: managementKeyVault.outputs.vaultUri
   }
   {
     name: 'MOSAIC_CORS_ORIGINS'
@@ -332,6 +337,16 @@ module keyVault './modules/key-vault.bicep' = {
   params: {
     location: location
     name: keyVaultName
+    tags: sharedTags
+    tenantId: tenantId
+  }
+}
+
+module managementKeyVault './modules/key-vault.bicep' = {
+  name: 'managementKeyVault'
+  params: {
+    location: location
+    name: managementKeyVaultName
     tags: sharedTags
     tenantId: tenantId
   }
@@ -555,6 +570,25 @@ resource apiKeyVaultSecretsOfficer 'Microsoft.Authorization/roleAssignments@2022
   ]
 }
 
+resource managementKeyVaultResource 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
+  name: managementKeyVaultName
+}
+
+// APIM's backend-secret read role must never cover management credentials.
+resource apiManagementVaultSecretsOfficer 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(managementKeyVaultName, apiWebAppName, 'KeyVaultSecretsOfficer')
+  scope: managementKeyVaultResource
+  properties: {
+    principalId: apiApp.outputs.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
+  }
+  dependsOn: [
+    #disable-next-line no-unnecessary-dependson
+    managementKeyVault
+  ]
+}
+
 // Publishing a model creates APIs, backends, policy fragments, products and subscriptions in this
 // service, so read access is no longer sufficient. See ADR 0010, which also records that this
 // built-in role carries subscriptions/listSecrets and that MOSAIC never calls it.
@@ -741,6 +775,30 @@ resource apimDiagnosticsSettings 'Microsoft.Insights/diagnosticSettings@2021-05-
   ]
 }
 
+resource managementKeyVaultDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'to-log-analytics'
+  scope: managementKeyVaultResource
+  properties: {
+    logAnalyticsDestinationType: 'Dedicated'
+    logs: [
+      {
+        categoryGroup: 'audit'
+        enabled: true
+      }
+    ]
+    metrics: [
+      {
+        category: 'AllMetrics'
+        enabled: true
+      }
+    ]
+    workspaceId: monitoring.outputs.workspaceId
+  }
+  dependsOn: [
+    managementKeyVault
+  ]
+}
+
 resource apiSiteDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
   name: 'to-log-analytics'
   scope: apiSiteResource
@@ -826,6 +884,7 @@ output APIM_NAME string = apim.outputs.name
 output APIM_GATEWAY_URL string = apimGatewayUrl
 output APIM_RESOURCE_ID string = apim.outputs.id
 output APIM_PRINCIPAL_ID string = apimResource.identity.principalId
+output MANAGEMENT_KEY_VAULT_URI string = managementKeyVault.outputs.vaultUri
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = acr.outputs.loginServer
 output AZURE_CONTAINER_REGISTRY_NAME string = acr.outputs.name
 output COSMOSDB_ACCOUNT_NAME string = cosmos.outputs.name

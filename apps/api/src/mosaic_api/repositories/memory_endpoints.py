@@ -28,7 +28,7 @@ class InMemoryModelEndpointRepository(InMemoryEndpointStateBase):
         return endpoint if endpoint and endpoint.tenant_id == tenant_id else None
 
     async def find_endpoint_by_resource_id(
-        self, tenant_id: str, azure_resource_id: str
+        self, tenant_id: str, azure_resource_id: str, *, azure_cloud: str = "commercial"
     ) -> ModelEndpoint | None:
         target = azure_resource_id.casefold()
         return next(
@@ -36,18 +36,22 @@ class InMemoryModelEndpointRepository(InMemoryEndpointStateBase):
                 endpoint
                 for endpoint in self.endpoints.values()
                 if endpoint.tenant_id == tenant_id
+                and endpoint.azure_cloud == azure_cloud
                 and (endpoint.azure_resource_id or "").casefold() == target
             ),
             None,
         )
 
-    async def find_endpoint_by_url(self, tenant_id: str, endpoint: str) -> ModelEndpoint | None:
+    async def find_endpoint_by_url(
+        self, tenant_id: str, endpoint: str, *, azure_cloud: str = "commercial"
+    ) -> ModelEndpoint | None:
         target = endpoint.casefold().rstrip("/")
         return next(
             (
                 item
                 for item in self.endpoints.values()
                 if item.tenant_id == tenant_id
+                and item.azure_cloud == azure_cloud
                 and str(item.endpoint).casefold().rstrip("/") == target
             ),
             None,

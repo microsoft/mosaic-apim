@@ -362,6 +362,7 @@ class UsageFact(Entity):
     day: str
     bucket: str
     gateway_id: str
+    azure_cloud: Literal["commercial", "government"] = "commercial"
     link: UsageLink
     link_key: str
     caller_object_id: str | None = None
@@ -416,6 +417,7 @@ class UsageSummary(Entity):
     period_start: str
     bucket: str
     gateway_id: str
+    azure_cloud: Literal["commercial", "government"] = "commercial"
     dimension: SummaryDimension
     shard: int = 0
     entries: list[UsageSummaryEntry] = Field(default_factory=list)
@@ -448,6 +450,7 @@ class AttributionRecord(Entity):
     kind: Literal["grant", "subscription"]
     key: str
     gateway_id: str
+    azure_cloud: Literal["commercial", "government"] = "commercial"
     entitlement_id: str
     publication_id: str | None = None
     publication_kind: Literal["model", "mcp", "pool"] | None = None
@@ -617,6 +620,7 @@ class UsageRollupState(Entity):
 
     entity_type: Literal["usageRollupState"] = "usageRollupState"
     gateway_id: str
+    azure_cloud: Literal["commercial", "government"] = "commercial"
     last_run_at: datetime | None = None
     last_success_at: datetime | None = None
     last_duration_ms: int | None = None

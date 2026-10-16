@@ -24,7 +24,7 @@ export function ModelAccessSettingsPanel({
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const [settings, setSettings] = useState(
-    publication.governedAccess ?? { keysEnabled: true, entraEnabled: true },
+    publication.governedAccess ?? { keysEnabled: true, entraEnabled: publication.azureCloud !== 'government' },
   )
   const dirty = !publication.governedAccess
     || settings.keysEnabled !== publication.governedAccess.keysEnabled
@@ -102,20 +102,22 @@ export function ModelAccessSettingsPanel({
         <Switch
           label="Dedicated subscription keys"
           checked={settings.keysEnabled}
-          disabled={save.isPending || busy}
+          disabled={save.isPending || busy || publication.azureCloud === 'government'}
           onChange={(_, data) => setSettings({ ...settings, keysEnabled: data.checked })}
         />
         <Switch
           label="Microsoft Entra bearer tokens"
           checked={settings.entraEnabled}
-          disabled={save.isPending || busy}
+          disabled={save.isPending || busy || publication.azureCloud === 'government'}
           onChange={(_, data) => setSettings({ ...settings, entraEnabled: data.checked })}
         />
       </div>
       <Text>{describeAccessMethods(settings)}</Text>
       <Text size={200}>
-        Either enabled method can be used independently. Both share the same grant and limits.
-        Disabling both means deny all, never anonymous access. MOSAIC derives APIM&apos;s subscription requirement.
+        {publication.azureCloud === 'government'
+          ? 'Azure Government requires subscription keys. Initial keys are prepared automatically for eligible direct grants after the reviewed apply. Commercial Entra tokens are not accepted.'
+          : <>Either enabled method can be used independently. Both share the same grant and limits.
+            Disabling both means deny all, never anonymous access. MOSAIC derives APIM&apos;s subscription requirement.</>}
       </Text>
       <Text>Saved desired methods: {publication.governedAccess ? describeAccessMethods(publication.governedAccess) : 'Legacy — not opted in'}</Text>
       <Text>Last applied methods: {describeAccessMethods(publication.appliedAccess?.settings)}</Text>

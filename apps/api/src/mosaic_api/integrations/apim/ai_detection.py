@@ -15,9 +15,11 @@ from mosaic_api.observed import AiBackendKind
 
 _HOST_SUFFIXES: tuple[tuple[str, AiBackendKind], ...] = (
     (".openai.azure.com", AiBackendKind.AZURE_OPENAI),
+    (".openai.azure.us", AiBackendKind.AZURE_OPENAI),
     (".api.cognitive.microsoft.com", AiBackendKind.AZURE_OPENAI),
     (".services.ai.azure.com", AiBackendKind.AZURE_AI_FOUNDRY),
     (".cognitiveservices.azure.com", AiBackendKind.AZURE_AI_FOUNDRY),
+    (".cognitiveservices.azure.us", AiBackendKind.AZURE_AI_FOUNDRY),
     (".inference.ai.azure.com", AiBackendKind.AZURE_AI_INFERENCE),
     (".models.ai.azure.com", AiBackendKind.AZURE_AI_INFERENCE),
     ("api.openai.com", AiBackendKind.OPEN_AI),

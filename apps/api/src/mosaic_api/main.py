@@ -1,5 +1,6 @@
+import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 import httpx
@@ -14,17 +15,31 @@ from fastapi.responses import JSONResponse, Response
 from mosaic_api.analytics_api import analytics_router
 from mosaic_api.api import portal_router, router
 from mosaic_api.auth import EntraAuthenticator, LocalAuthenticator
+from mosaic_api.azure_connections import (
+    AzureConnectionRepository,
+    AzureConnectionService,
+    CosmosAzureConnectionRepository,
+    InMemoryAzureConnectionRepository,
+)
+from mosaic_api.azure_connections_api import azure_connections_router
 from mosaic_api.budgets_api import budgets_router, portal_budgets_router
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings, get_settings
 from mosaic_api.cost_centers_api import cost_centers_router, portal_cost_centers_router
 from mosaic_api.directory_api import directory_router
-from mosaic_api.errors import DomainError, domain_error_handler, request_validation_error_handler
+from mosaic_api.domain import KeyVaultSecretId
+from mosaic_api.errors import (
+    DomainError,
+    ValidationError,
+    domain_error_handler,
+    request_validation_error_handler,
+)
 from mosaic_api.integrations.aoai import CognitiveServicesClient
 from mosaic_api.integrations.aoai.backend_key_access import KeyVaultLocator
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.aoai.key_check import EndpointKeyProbe
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient, ApimKeyManager
+from mosaic_api.integrations.azure_connections import AzureClientRegistry
 from mosaic_api.integrations.email import AcsEmailClient
 from mosaic_api.integrations.graph import DirectoryLookup, GraphDirectoryLookup
 from mosaic_api.integrations.key_vault import KeyVaultSecretWriter
@@ -102,6 +117,17 @@ def _credential(settings: Settings) -> DefaultAzureCredential | ManagedIdentityC
     return ManagedIdentityCredential()
 
 
+async def _resume_automatic_keys(
+    app: FastAPI, tenant_id: str, *, interval_seconds: float = 300
+) -> None:
+    while True:
+        try:
+            await app.state.portal_access_service.resume_automatic_keys(tenant_id)
+        except Exception:
+            logger.exception("automatic_key_recovery_failed")
+        await asyncio.sleep(interval_seconds)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     app_settings = settings or get_settings()
     configure_logging(app_settings)
@@ -116,6 +142,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         endpoint_repository: ModelEndpointRepository
         entitlement_repository: EntitlementRepository
         environment_repository: EnvironmentRepository
+        connection_repository: AzureConnectionRepository
         mcp_repository: McpEndpointRepository
         rollup_repository: UsageRollupRepository
         pricing_repository: PricingRepository
@@ -123,6 +150,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         budget_repository: BudgetRepository
         if app_settings.repository_backend is RepositoryBackend.MEMORY:
             repository = InMemoryDirectoryRepository()
+            connection_repository = InMemoryAzureConnectionRepository()
             gateway_repository = InMemoryGatewayRepository()
             endpoint_repository = InMemoryModelEndpointRepository()
             entitlement_repository = InMemoryEntitlementRepository()
@@ -135,8 +163,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             cost_center_repository = InMemoryCostCenterRepository()
             budget_repository = InMemoryBudgetRepository()
         else:
-            cosmos_client = CosmosClient(
-                str(app_settings.cosmos_endpoint), credential=credential
+            cosmos_client = CosmosClient(str(app_settings.cosmos_endpoint), credential=credential)
+            connection_repository = CosmosAzureConnectionRepository(
+                cosmos_client,
+                app_settings.cosmos_database,
+                app_settings.cosmos_desired_state_container,
+                app_settings.cosmos_audit_events_container,
+                owns_client=False,
             )
             rollup_repository = CosmosUsageRollupRepository(
                 cosmos_client,
@@ -229,9 +262,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             else None
         )
         arm_client = ArmClient(credential)
+        uses_rollups = app_settings.uses_usage_rollups
+        log_client = (
+            LogAnalyticsClient(credential, endpoint=str(app_settings.log_analytics_endpoint))
+            if uses_rollups
+            else None
+        )
+        management_vault_reader = KeyVaultSecretReader(credential)
+        management_vault_writer = (
+            KeyVaultSecretWriter(credential, str(app_settings.management_key_vault_uri))
+            if app_settings.management_key_vault_uri
+            else None
+        )
+
+        async def read_management_secret(secret_uri: str) -> str:
+            secret = KeyVaultSecretId.parse(secret_uri)
+            configured = app_settings.management_key_vault_uri
+            if configured is None or secret.vault_uri.rstrip("/") != str(configured).rstrip("/"):
+                raise ValidationError(
+                    "Management credentials must be in the isolated credentials vault"
+                )
+            return await management_vault_reader.read(secret_uri)
+
+        connection_service = AzureConnectionService(
+            connection_repository,
+            tenant_id=app_settings.tenant_id,
+            gateways=gateway_repository,
+            endpoints=endpoint_repository,
+            mcps=mcp_repository,
+            secret_reader=read_management_secret,
+            secret_store=management_vault_writer,
+        )
+        azure_clients = AzureClientRegistry(
+            connection_service,
+            host_arm=arm_client,
+            host_credential=credential,
+            host_logs=log_client,
+        )
+        app.state.azure_connection_service = connection_service
+        app.state.azure_connection_repository = connection_repository
+        app.state.azure_clients = azure_clients
         gateway_service = GatewayService(
             gateway_repository,
-            client_factory=lambda resource: ApimClient(arm_client, resource),
+            client_factory=lambda resource: ApimClient(azure_clients.arm_for(resource), resource),
+            connection_validator=connection_service.validate_resource,
             principal_id=app_settings.managed_identity_principal_id,
             identity_resolver=arm_client.caller_object_id,
             bootstrap_resource_id=app_settings.apim_bootstrap_resource_id,
@@ -259,8 +333,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         model_endpoint_service = ModelEndpointService(
             endpoint_repository,
             gateway_repository=gateway_repository,
-            client_factory=lambda resource: CognitiveServicesClient(arm_client, resource),
+            client_factory=lambda resource: CognitiveServicesClient(
+                azure_clients.arm_for(resource), resource
+            ),
+            connection_validator=connection_service.validate_resource,
             scanner=subscription_scanner,
+            scanner_factory=lambda context: SubscriptionScanner(azure_clients.arm_for(context)),
             principal_id=app_settings.managed_identity_principal_id,
             identity_resolver=arm_client.caller_object_id,
             bootstrap_subscription_id=app_settings.apim_subscription_id,
@@ -281,8 +359,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         publishing_service = PublishingService(
             gateway_repository,
             endpoint_repository=endpoint_repository,
-            client_factory=lambda resource: ApimClient(arm_client, resource),
-            writer_factory=lambda resource: ApimWriter(arm_client, resource),
+            client_factory=lambda resource: ApimClient(azure_clients.arm_for(resource), resource),
+            writer_factory=lambda resource: ApimWriter(azure_clients.arm_for(resource), resource),
             directory_repository=repository,
             entitlement_repository=entitlement_repository,
             model_runtime_client_id=app_settings.model_runtime_client_id,
@@ -296,8 +374,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             mcp_endpoint_repository=mcp_repository,
             entitlement_repository=entitlement_repository,
             directory_repository=repository,
-            client_factory=lambda resource: ApimClient(arm_client, resource),
-            writer_factory=lambda resource: ApimWriter(arm_client, resource),
+            client_factory=lambda resource: ApimClient(azure_clients.arm_for(resource), resource),
+            writer_factory=lambda resource: ApimWriter(azure_clients.arm_for(resource), resource),
             runtime_client_id=app_settings.model_runtime_client_id,
             security_group_claims=app_settings.entra_group_claims,
             environment_repository=environment_repository,
@@ -307,8 +385,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         model_pool_service = ModelPoolService(
             gateway_repository,
             endpoint_repository=endpoint_repository,
-            client_factory=lambda resource: ApimClient(arm_client, resource),
-            writer_factory=lambda resource: ApimWriter(arm_client, resource),
+            client_factory=lambda resource: ApimClient(azure_clients.arm_for(resource), resource),
+            writer_factory=lambda resource: ApimWriter(azure_clients.arm_for(resource), resource),
             environment_repository=environment_repository,
             directory_repository=repository,
             entitlement_repository=entitlement_repository,
@@ -329,8 +407,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             gateway_repository=gateway_repository,
             entitlement_repository=entitlement_repository,
             client_factory=build_mcp_client_factory(mcp_http_client),
+            connection_validator=connection_service.validate_resource,
             secret_resolver=key_vault_reader.read,
             token_resolver=EntraTokenProvider(credential).token_for,
+            connection_token_resolver=azure_clients.token_for_connection,
             require_https=app_settings.environment is Environment.AZURE,
             allow_private_endpoints=app_settings.mcp_allow_private_endpoints,
             environment_repository=environment_repository,
@@ -394,10 +474,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             repository=entitlement_repository,
             directory_repository=repository,
             gateway_repository=gateway_repository,
-            credential_factory=lambda resource: ApimCredentialClient(arm_client, resource),
+            credential_factory=lambda resource: ApimCredentialClient(
+                azure_clients.arm_for(resource), resource
+            ),
             model_runtime_client_id=app_settings.model_runtime_client_id,
             model_client_id=app_settings.model_client_id,
-            key_manager_factory=lambda resource: ApimKeyManager(arm_client, resource),
+            key_manager_factory=lambda resource: ApimKeyManager(
+                azure_clients.arm_for(resource), resource
+            ),
         )
         app.state.portal_service = PortalService(
             entitlement_service,
@@ -405,31 +489,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             gateway_repository=gateway_repository,
             endpoint_repository=endpoint_repository,
         )
-        uses_rollups = app_settings.uses_usage_rollups
-        log_client = (
-            LogAnalyticsClient(credential, endpoint=str(app_settings.log_analytics_endpoint))
-            if uses_rollups
-            else None
-        )
         telemetry_service = TelemetryService(
             gateway_repository=gateway_repository,
             rollup_repository=rollup_repository,
             entitlement_repository=entitlement_repository,
-            client_factory=lambda resource: ApimClient(arm_client, resource),
-            writer_factory=lambda resource: ApimWriter(arm_client, resource),
+            client_factory=lambda resource: ApimClient(azure_clients.arm_for(resource), resource),
+            writer_factory=lambda resource: ApimWriter(azure_clients.arm_for(resource), resource),
             logs=log_client,
+            logs_factory=azure_clients.logs_for if uses_rollups else None,
             rollups_enabled=uses_rollups and app_settings.usage_rollup_enabled,
             interval_seconds=app_settings.usage_rollup_interval_seconds,
             principal_id=app_settings.managed_identity_principal_id,
             identity_resolver=arm_client.caller_object_id,
+            gateway_identity_resolver=lambda gateway: (
+                azure_clients.arm_for(gateway).caller_object_id()
+            ),
         )
         pool_health_service = PoolHealthService(
             model_pool_service,
             gateway_repository=gateway_repository,
             endpoint_repository=endpoint_repository,
             logs=log_client,
+            logs_factory=azure_clients.logs_for if uses_rollups else None,
             principal_id=app_settings.managed_identity_principal_id,
             identity_resolver=arm_client.caller_object_id,
+            gateway_identity_resolver=lambda gateway: (
+                azure_clients.arm_for(gateway).caller_object_id()
+            ),
         )
         rollup_service = (
             UsageRollupService(
@@ -438,6 +524,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 entitlement_repository=entitlement_repository,
                 directory_repository=repository,
                 logs=log_client,
+                logs_factory=azure_clients.logs_for,
                 telemetry=telemetry_service,
                 tenant_id=app_settings.tenant_id,
                 interval_seconds=app_settings.usage_rollup_interval_seconds,
@@ -500,8 +587,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             cost_center_repository=cost_center_repository,
             gateway_repository=gateway_repository,
             gate=blocked_list,
-            client_factory=lambda resource: ApimClient(arm_client, resource),
-            writer_factory=lambda resource: ApimWriter(arm_client, resource),
+            client_factory=lambda resource: ApimClient(azure_clients.arm_for(resource), resource),
+            writer_factory=lambda resource: ApimWriter(azure_clients.arm_for(resource), resource),
             analytics=app.state.analytics_service,
             email=email_client,
             portal=app.state.portal_service,
@@ -537,9 +624,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception:
             logger.exception("publish_reap_failed")
         try:
-            reaped = await mcp_publishing_service.reap_stale_publish_runs(
-                app_settings.tenant_id
-            )
+            reaped = await mcp_publishing_service.reap_stale_publish_runs(app_settings.tenant_id)
             if reaped:
                 logger.warning("mcp_publish_runs_reaped", count=reaped)
         except Exception:
@@ -556,6 +641,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 logger.warning("mcp_endpoint_sync_runs_reaped", count=reaped)
         except Exception:
             logger.exception("mcp_endpoint_sync_reap_failed")
+        automatic_keys_task = asyncio.create_task(
+            _resume_automatic_keys(app, app_settings.tenant_id),
+            name="automatic-key-recovery",
+        )
         gateway_service.schedule_bootstrap(app_settings.tenant_id)
         if rollup_service is not None:
             if budget_loop:
@@ -571,6 +660,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
+            automatic_keys_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await automatic_keys_task
             await budget_service.aclose()
             if rollup_service is not None:
                 await rollup_service.aclose()
@@ -583,7 +675,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if directory_lookup:
                 await directory_lookup.close()
             await authenticator.close()
+            await azure_clients.close()
             await arm_client.close()
+            await management_vault_reader.close()
+            if management_vault_writer is not None:
+                await management_vault_writer.close()
             await key_vault_reader.close()
             if key_vault_writer is not None:
                 await key_vault_writer.close()
@@ -597,6 +693,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await endpoint_repository.close()
             await entitlement_repository.close()
             await environment_repository.close()
+            await connection_repository.close()
             await mcp_repository.close()
             await rollup_repository.close()
             await pricing_repository.close()
@@ -660,6 +757,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         entitlement_repository = getattr(request.app.state, "entitlement_repository", None)
         mcp_repository = getattr(request.app.state, "mcp_endpoint_repository", None)
         environment_repository = getattr(request.app.state, "environment_repository", None)
+        connection_repository = getattr(request.app.state, "azure_connection_repository", None)
         rollup_repository = getattr(request.app.state, "usage_rollup_repository", None)
         pricing_repository = getattr(request.app.state, "pricing_repository", None)
         cost_center_repository = getattr(request.app.state, "cost_center_repository", None)
@@ -677,6 +775,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             and await mcp_repository.ready()
             and environment_repository is not None
             and await environment_repository.ready()
+            and connection_repository is not None
+            and await connection_repository.ready()
             and rollup_repository is not None
             and await rollup_repository.ready()
             and pricing_repository is not None
@@ -692,6 +792,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     app.include_router(router)
+    app.include_router(azure_connections_router)
     app.include_router(mcp_publishing_router)
     app.include_router(model_pools_router)
     app.include_router(directory_router)

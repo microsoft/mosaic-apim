@@ -15,6 +15,8 @@ GATEWAY_AUTHORED_FIELDS: frozenset[str] = frozenset(
         "environment_label",
         "environment",
         "management_mode",
+        "azure_cloud",
+        "azure_connection_id",
     }
 )
 
@@ -28,6 +30,8 @@ MODEL_ENDPOINT_AUTHORED_FIELDS: frozenset[str] = frozenset(
         "environment",
         "credential_reference_id",
         "declared_deployments",
+        "azure_cloud",
+        "azure_connection_id",
     }
 )
 
@@ -41,6 +45,8 @@ MCP_ENDPOINT_AUTHORED_FIELDS: frozenset[str] = frozenset(
         "environment",
         "credential_reference_id",
         "resource_audience",
+        "azure_cloud",
+        "azure_connection_id",
     }
 )
 

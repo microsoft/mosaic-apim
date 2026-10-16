@@ -8,6 +8,8 @@ import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader } from '../components/PageHeader'
 import { DetailPanel } from '../components/DetailPanel'
 import { ResourceRow } from '../components/ResourceRow'
+import { CloudBadge } from '../components/CloudBadge'
+import { cloudLabel } from '../cloud-label'
 import { catalogTitle, groupResources, modelGroupKey, resourceKey, uniqueValues } from '../model-presentation'
 import { environmentLabel } from '../environments'
 import {
@@ -79,6 +81,9 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
     ? requestedCostCenters.has(effectiveCostCenterId) || olderPendingState
     : entry.requestState === 'pending'
   const selectedUnavailable = selectedAlreadyGranted || selectedAlreadyRequested
+  const government = entry.azureCloud === 'government'
+  const keysDisallowed = government && costCenters.isSuccess &&
+    loadedCostCenters.find((center) => center.id === effectiveCostCenterId)?.keysAllowed === false
   const pendingRequest = requests.data?.find(
     (request) =>
       request.state === 'pending' &&
@@ -111,6 +116,10 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
   if (entry.entitled && !entry.entitledCostCenterIds && !costCenters.isSuccess) {
     return (
       <div className="action-stack">
+        {government && <Text className="connection-note">Azure Government requires a direct grant and a subscription key.
+          MOSAIC prepares your key after an administrator applies reviewed access. Your selected cost center is charged.
+          You must have network access to the gateway; portal sign-in does not connect you to it.</Text>}
+        {keysDisallowed && <Text className="form-error">This cost center does not allow keys. Choose a key-enabled cost center or contact your administrator.</Text>}
         <Badge appearance="filled">Already entitled</Badge>
       </div>
     )
@@ -118,6 +127,10 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
 
   return (
     <div className="action-stack">
+      {government && <Text className="connection-note">Azure Government requires a direct grant and a subscription key.
+        MOSAIC prepares your key after an administrator applies reviewed access. Your selected cost center is charged.
+        You must have network access to the gateway; portal sign-in does not connect you to it.</Text>}
+      {keysDisallowed && <Text className="form-error">This cost center does not allow keys. Choose a key-enabled cost center or contact your administrator.</Text>}
       {costCenters.isLoading && <Text size={200}>Loading cost centers…</Text>}
       {costCenters.isError && (
         <Text size={200} className="connection-note">
@@ -172,7 +185,7 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
             resize="vertical"
             onChange={(_, data) => setJustification(data.value)}
           />
-          <Button appearance="primary" onClick={() => create.mutate()} disabled={create.isPending}>
+          <Button appearance="primary" onClick={() => create.mutate()} disabled={create.isPending || keysDisallowed}>
             Request access
           </Button>
         </>
@@ -205,6 +218,7 @@ export function CatalogPage() {
   const catalog = useQuery({ queryKey: ['portal', 'catalog'], queryFn: api.listCatalog })
   const environments = usePortalEnvironments()
   const [environmentFilter, setEnvironmentFilter] = useState('all')
+  const [cloudFilter, setCloudFilter] = useState('all')
   const [kindFilter, setKindFilter] = useState<KindFilter>('all')
   const [search, setSearch] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -215,10 +229,10 @@ export function CatalogPage() {
       const matchesEnvironment =
         environmentFilter === 'all' ||
         (environmentFilter === 'unclassified' ? entry.environment === null : entry.environment === environmentFilter)
-      return matchesEnvironment && matchesKind(entry, kindFilter) &&
+      return matchesEnvironment && (cloudFilter === 'all' || (entry.azureCloud ?? 'commercial') === cloudFilter) && matchesKind(entry, kindFilter) &&
         `${catalogTitle(entry)} ${entry.displayName} ${entry.summary ?? ''} ${entry.gatewayName ?? ''}`.toLowerCase().includes(search.trim().toLowerCase())
     })
-  }, [catalog.data, environmentFilter, kindFilter, search])
+  }, [catalog.data, environmentFilter, cloudFilter, kindFilter, search])
   const groups = groupResources(filteredCatalog, (entry) => ({
     key: modelGroupKey(resourceFromCatalog(entry), entry.model), title: catalogTitle(entry),
   })).sort((a, b) => Number(!a.items.some((entry) => entry.model?.name.trim())) -
@@ -232,6 +246,7 @@ export function CatalogPage() {
   )
   const clearFilters = () => {
     setEnvironmentFilter('all')
+    setCloudFilter('all')
     setKindFilter('all')
     setSearch('')
   }
@@ -254,6 +269,9 @@ export function CatalogPage() {
           <div className="filter-row" role="group" aria-label="Catalog filters">
             <Input className="resource-search" aria-label="Search catalog" placeholder="Search models and MCP servers" value={search}
               onChange={(_, data) => setSearch(data.value)} />
+            <label><span>Cloud</span><select value={cloudFilter} onChange={(event) => setCloudFilter(event.currentTarget.value)}>
+              <option value="all">All clouds</option><option value="commercial">Azure Commercial</option><option value="government">Azure Government</option>
+            </select></label>
             <label>
               <span>Environment</span>
               <select
@@ -307,8 +325,9 @@ export function CatalogPage() {
                     <ResourceRow key={group.key} title={group.title}
                       subtitle={<>{isModelResource(group.items[0].kind) ? 'Model' : 'MCP server'}
                         {group.items.length > 1 && ` · ${group.items.length} options`}</>}
-                      environments={uniqueValues(group.items.map((entry) => entry.environment)).map((key) =>
-                        <EnvironmentBadge key={key ?? 'unclassified'} environment={key} environments={environments.data} />)}
+                      environments={<>{uniqueValues(group.items.map((entry) => entry.azureCloud ?? 'commercial')).map((cloud) =>
+                        <CloudBadge key={cloud} cloud={cloud} />)}{uniqueValues(group.items.map((entry) => entry.environment)).map((key) =>
+                        <EnvironmentBadge key={key ?? 'unclassified'} environment={key} environments={environments.data} />)}</>}
                       status={<>
                         <span>{granted > 0 ? (group.items.length === 1 ? 'Access granted' : `${granted} of ${group.items.length} options granted`) : 'Not granted'}</span>
                         {pending > 0 && <small>{pending} {pending === 1 ? 'request' : 'requests'} pending</small>}
@@ -329,7 +348,7 @@ export function CatalogPage() {
                   <option value="">Choose an environment and offering</option>
                   {selected.items.map((entry) => (
                     <option key={resourceKey(resourceFromCatalog(entry))} value={resourceKey(resourceFromCatalog(entry))}>
-                      {environmentLabel(environments.data, entry.environment)} · {entry.displayName}
+                      {cloudLabel(entry.azureCloud)} · {environmentLabel(environments.data, entry.environment)} · {entry.displayName}
                       {entry.model?.version ? ` · ${entry.model.version}` : ''}
                       {entry.apiStyle ? ` · ${apiStyleLabel(entry.apiStyle)}` : ''}
                       {entry.gatewayName ? ` · ${entry.gatewayName}` : ''}
@@ -340,7 +359,7 @@ export function CatalogPage() {
             )}
             {offering ? <div key={resourceKey(resourceFromCatalog(offering))} className="drawer-content">
               <div className="badge-row">
-                <EnvironmentBadge environment={offering.environment} environments={environments.data} />
+                <EnvironmentBadge azureCloud={offering.azureCloud ?? 'commercial'} environment={offering.environment} environments={environments.data} />
                 <CatalogEnforcementBadge entry={offering} />
                 <CatalogCapacityBadge entry={offering} />
               </div>

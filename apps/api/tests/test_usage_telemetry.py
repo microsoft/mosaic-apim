@@ -426,8 +426,8 @@ def test_diagnostic_setting_command_creates_resource_specific_logs() -> None:
         "az monitor diagnostic-settings create --name mosaic-gateway-logs "
         f"--resource {RESOURCE_ID} --workspace <log-analytics-workspace-resource-id> "
         "--export-to-resource-specific true --logs "
-        "'[{\"category\":\"GatewayLogs\",\"enabled\":true},"
-        "{\"category\":\"GatewayLlmLogs\",\"enabled\":true}]'"
+        '\'[{"category":"GatewayLogs","enabled":true},'
+        '{"category":"GatewayLlmLogs","enabled":true}]\''
     )
 
 
@@ -445,9 +445,9 @@ def test_diagnostic_setting_command_preserves_existing_logs_and_metrics() -> Non
 
     assert f"--name existing --resource {RESOURCE_ID} --workspace {WORKSPACE_ID}" in command
     assert (
-        "--logs '[{\"categoryGroup\":\"audit\",\"enabled\":true},"
-        "{\"category\":\"GatewayLogs\",\"enabled\":true},"
-        "{\"category\":\"GatewayLlmLogs\",\"enabled\":true}]'"
+        '--logs \'[{"categoryGroup":"audit","enabled":true},'
+        '{"category":"GatewayLogs","enabled":true},'
+        '{"category":"GatewayLlmLogs","enabled":true}]\''
     ) in command
     assert '--metrics \'[{"category":"AllMetrics","enabled":true}]\'' in command
 
@@ -506,6 +506,37 @@ async def test_status_is_ready_when_every_telemetry_check_is_ok() -> None:
         1,
         1,
     )
+
+
+async def test_government_telemetry_selects_logs_client_without_using_host_principal() -> None:
+    harness = _service_harness()
+    gateway = await _seed_gateway(harness)
+    await _seed_governed_apis(harness)
+    await harness.gateways.save_gateway(
+        gateway.model_copy(
+            update={
+                "azure_cloud": "government",
+                "azure_connection_id": "gov-connection",
+            }
+        ),
+        _audit("gateway"),
+    )
+    selected: list[tuple[str, str | None]] = []
+
+    def logs_for(gateway: Gateway) -> FakeLogs:
+        selected.append((gateway.azure_cloud, gateway.azure_connection_id))
+        return harness.logs
+
+    harness.service._logs_factory = logs_for
+    harness.apim.settings = []
+    report = await harness.service.status(_actor(), GATEWAY_ID)
+    assert selected == [("government", "gov-connection")]
+    commands = [check.command for check in report.checks if check.command]
+    assert commands
+    assert all(
+        command.startswith("az cloud set --name AzureUSGovernment && ") for command in commands
+    )
+    assert all("mosaic-principal" not in command for command in commands)
 
 
 @pytest.mark.parametrize(("minutes", "expected"), [(60, "ok"), (61, "warning")])

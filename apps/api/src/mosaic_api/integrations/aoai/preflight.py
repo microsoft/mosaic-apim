@@ -11,6 +11,7 @@ itself a role, so when access is missing it reports the exact role, scope, and c
 from dataclasses import dataclass
 from typing import Any
 
+from mosaic_api.clouds import management_identity_label
 from mosaic_api.domain import (
     READER_ROLE_ID,
     READER_ROLE_NAME,
@@ -96,6 +97,8 @@ def build_endpoint_remediation(
 
     scope = resource.account_scope
     assignee = principal_id or "<mosaic-managed-identity-object-id>"
+    if principal_id is None and resource.azure_cloud == "government":
+        assignee = "<government-service-principal-object-id>"
     command = (
         "az role assignment create"
         f' --assignee-object-id "{assignee}"'
@@ -103,6 +106,8 @@ def build_endpoint_remediation(
         f' --role "{READER_ROLE_NAME}"'
         f' --scope "{scope}"'
     )
+    if resource.azure_cloud == "government":
+        command = f"az cloud set --name AzureUSGovernment && {command}"
     return AccessRemediation(
         role_name=READER_ROLE_NAME,
         role_definition_id=READER_ROLE_ID,
@@ -247,6 +252,7 @@ async def run_endpoint_preflight(
     """Read the account, then confirm MOSAIC holds every control-plane action it needs."""
 
     resource = client.resource
+    identity_label = management_identity_label(resource.azure_cloud, resource.azure_connection_id)
     checked_at = utc_now()
 
     try:
@@ -260,7 +266,7 @@ async def run_endpoint_preflight(
                 missing_actions=list(MODEL_READ_ACTIONS),
                 remediation=build_endpoint_remediation(resource, principal_id=principal_id),
                 message=(
-                    "MOSAIC's managed identity cannot read this Azure AI resource. Grant it the "
+                    f"{identity_label} cannot read this Azure AI resource. Grant it the "
                     f"role shown below. {ROLE_DELAY_NOTE}"
                 ),
             ),
@@ -287,7 +293,7 @@ async def run_endpoint_preflight(
                 checked_at=checked_at,
                 message=(
                     "No Azure AI resource exists at this resource ID, or it is not visible to "
-                    "MOSAIC's managed identity."
+                    f"{identity_label}."
                 ),
             ),
             capabilities=ModelEndpointCapabilities(),
@@ -328,7 +334,7 @@ async def run_endpoint_preflight(
                 missing_actions=missing,
                 remediation=build_endpoint_remediation(resource, principal_id=principal_id),
                 message=(
-                    "MOSAIC's managed identity is missing permissions needed to enumerate models "
+                    f"{identity_label} is missing permissions needed to enumerate models "
                     f"on this endpoint. Grant it the role shown below. {ROLE_DELAY_NOTE}"
                 ),
             ),

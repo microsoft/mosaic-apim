@@ -194,6 +194,11 @@ const unpublishPlan: PublishPlan = {
 }
 
 const api = {
+  listAzureConnections: vi.fn().mockImplementation(async () => [{
+    id: 'host', name: 'Host managed identity', azureCloud: 'commercial',
+    azureTenantId: 'tenant-test', authentication: 'managedIdentity', clientId: null,
+    status: 'ready', statusMessage: null, revision: 1, inUse: true,
+  }]),
   getEnvironmentCatalog: vi.fn(),
   listEnvironmentFindings: vi.fn(),
   listGateways: vi.fn(),

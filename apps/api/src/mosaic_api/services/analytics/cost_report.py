@@ -129,9 +129,7 @@ def _cost_rows(
     return found
 
 
-def _utilization(
-    costs: CostBook, key: str, metrics: UsageMetrics, minutes: float
-) -> float | None:
+def _utilization(costs: CostBook, key: str, metrics: UsageMetrics, minutes: float) -> float | None:
     facts = costs.pricer.facts_for(key)
     if facts is None or not facts.provisioned or not facts.capacity or minutes <= 0:
         return None
@@ -349,6 +347,7 @@ CHARGEBACK_COLUMNS = [
     ("Model", "model"),
     ("Deployment", "deployment"),
     ("Endpoint", "endpoint"),
+    ("Cloud", "azure_cloud"),
     ("Requests", "requests"),
     ("Prompt tokens", "prompt_tokens"),
     ("Completion tokens", "completion_tokens"),
@@ -392,6 +391,7 @@ class _Charge:
     model: str
     deployment: str | None
     endpoint: str | None
+    azure_cloud: str | None = None
     whole: _Amount = field(default_factory=_Amount)
     # The same calls split by the person an MCP server's application made them for, keyed by
     # object ID, with "" for the rest: the application's own use. Holds no one until some of
@@ -527,13 +527,34 @@ def chargeback_rows(
         metrics: UsageMetrics,
         priced: Priced,
         cost_center: CostCenterRef | None = None,
+        gateway_cloud: str | None = None,
     ) -> _Charge:
         facts = costs.pricer.facts_for(key)
         model = (facts.model if facts else None) or UNKNOWN_MODEL
         deployment = facts.deployment_name if facts else None
         endpoint = facts.endpoint_name if facts else None
         code = cost_center.code if cost_center else None
-        identity = (month, party[1], party[2] or party[0], code, model, deployment, endpoint)
+        served_clouds = {
+            scope.gateway_cloud(gateway_id)
+            for (gateway_id, _), api in scope.apis.items()
+            if key in api.deployment_keys()
+        } - {None}
+        cloud = (
+            gateway_cloud
+            or (next(iter(served_clouds)) if len(served_clouds) == 1 else None)
+            or (facts.cloud if facts and facts.cloud_source != "override" else None)
+        )
+        identity = (
+            month,
+            party[1],
+            party[2] or party[0],
+            cost_center.id if cost_center else None,
+            cloud,
+            key,
+            model,
+            deployment,
+            endpoint,
+        )
         item = charges.get(identity)
         if item is None:
             item = charges[identity] = _Charge(
@@ -546,6 +567,7 @@ def chargeback_rows(
                 model=model,
                 deployment=deployment,
                 endpoint=endpoint,
+                azure_cloud=cloud,
             )
         item.add(metrics, priced)
         return item
@@ -566,6 +588,7 @@ def chargeback_rows(
                 metrics,
                 priced,
                 scope.cost_center(grant),
+                summary.azure_cloud,
             )
             if not shared:
                 item.parts.setdefault("", _Amount()).add(metrics, priced)
@@ -599,6 +622,7 @@ def chargeback_rows(
                 key,
                 metrics,
                 priced,
+                gateway_cloud=summary.azure_cloud,
             )
 
     for key in costs.idle_keys():
@@ -635,6 +659,7 @@ def chargeback_rows(
             "model": item.model,
             "deployment": item.deployment,
             "endpoint": item.endpoint,
+            "azure_cloud": item.azure_cloud,
         }
         people = item.people
         if not people:
@@ -652,9 +677,7 @@ def chargeback_rows(
                 ),
             ),
         ]
-        split = split_cost(
-            round_cost(item.whole.cost), [amount.cost for _, amount in parts]
-        )
+        split = split_cost(round_cost(item.whole.cost), [amount.cost for _, amount in parts])
         for (person, amount), cost in zip(parts, split, strict=True):
             if not person and not (amount.metrics.requests or amount.metrics.total_tokens or cost):
                 continue

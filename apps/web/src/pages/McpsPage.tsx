@@ -24,6 +24,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
+import { CloudBadge } from '../components/CloudBadge'
 import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
 import { PageHeader } from '../components/PageHeader'
 import { SectionLayout, usePageSection } from '../components/SectionLayout'
@@ -424,6 +425,7 @@ function RegisteredMcpServers({ onBanner }: { onBanner: (message: string) => voi
         </EmptyState>}
         renderListItem={(endpoint) => <div className={styles.resourceRow}>
           <span className={styles.resourceName}>{endpoint.name}</span>
+          <CloudBadge cloud={endpoint.azureCloud} />
           <span className={styles.secondaryCell}>{endpoint.inventory.tools} tools · {environmentLabel(catalog.data, endpoint.environment)}</span>
           <Badge appearance="tint" className={statusClasses[endpoint.status]}>{statusLabels[endpoint.status]}</Badge>
         </div>}
@@ -449,7 +451,7 @@ function RegisteredMcpServers({ onBanner }: { onBanner: (message: string) => voi
             </dd></div>
             <div><dt>Authentication</dt><dd>{authLabels[endpoint.authMode]}</dd></div>
             {endpoint.resourceAudience && <div><dt>Token audience</dt><dd>{endpoint.resourceAudience}</dd></div>}
-            <div><dt>Environment</dt><dd><EnvironmentBadge environment={endpoint.environment} catalog={catalog.data} />
+            <div><dt>Environment</dt><dd><EnvironmentBadge azureCloud={endpoint.azureCloud ?? 'commercial'} environment={endpoint.environment} catalog={catalog.data} />
               {endpoint.environmentLabel && <Text block size={200}>Legacy label: {endpoint.environmentLabel}</Text>}
             </dd></div>
             <div><dt>Last synced</dt><dd>{formatTimestamp(endpoint.lastSyncedAt)}</dd></div>
@@ -728,6 +730,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
             </EmptyState>}
         renderListItem={(publication) => <div className={styles.resourceRow}>
           <span className={styles.resourceName}>{publication.displayName}</span>
+          <CloudBadge cloud={publication.azureCloud ?? gatewaysById.get(publication.gatewayId)?.azureCloud} />
           <span className={styles.secondaryCell}>
             {gatewaysById.get(publication.gatewayId)?.name ?? 'Gateway unavailable'} ·{' '}
             {servers.data?.find((server) => server.id === publication.mcpServerId)?.toolCount ?? 'Unknown'} tools
@@ -931,6 +934,7 @@ function ImportedMcpServers({ onBanner }: { onBanner: (message: string) => void 
             </EmptyState>}
         renderListItem={(server) => <div className={styles.resourceRow}>
           <span className={styles.resourceName}>{server.displayName}</span>
+          <CloudBadge cloud={gatewayNames.get(server.gatewayId)?.azureCloud} />
           <span className={styles.secondaryCell}>{server.toolCount} tool{server.toolCount === 1 ? '' : 's'} · {gatewayNames.get(server.gatewayId)?.name ?? 'Gateway unavailable'}</span>
           <span className={styles.secondaryCell}>{server.publicationId ? 'Published by MOSAIC' : 'Imported'}</span>
         </div>}

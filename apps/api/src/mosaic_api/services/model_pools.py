@@ -41,6 +41,7 @@ from mosaic_api.domain import (
     KeyVaultSecretId,
     ManagementMode,
     McpPublication,
+    ModelAccessSettings,
     ModelEndpoint,
     ModelProvider,
     Publication,
@@ -65,6 +66,7 @@ from mosaic_api.domain import (
 )
 from mosaic_api.environments import EnvironmentCatalog, compatibility_fingerprint, permits
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
+from mosaic_api.integrations.access_policy import validate_cloud_access
 from mosaic_api.integrations.apim import ApimClient
 from mosaic_api.integrations.apim.model_apis import (
     DeploymentFit,
@@ -140,6 +142,11 @@ from mosaic_api.repositories import (
     GatewayRepository,
     ModelEndpointRepository,
     PricingRepository,
+)
+from mosaic_api.services.automatic_keys import (
+    ApimInitialKeyManager,
+    reconcile_initial_keys,
+    verify_key_runtime,
 )
 from mosaic_api.services.budget_gate import BlockedListGate, ensure_blocked_list, is_blocked_list
 from mosaic_api.services.cost_centers import load_book
@@ -509,6 +516,14 @@ def _fit(entry: _Inventory, deployment: ObservedModelDeployment, gateway: Gatewa
     """The API a member's deployment is served with, judged the way publishing judges it."""
 
     endpoint = entry.endpoint
+    if gateway.azure_cloud != endpoint.azure_cloud:
+        raise ValidationError("A pool and every member must be in the same Azure cloud.")
+    if gateway.azure_cloud == "government" and (
+        endpoint.uses_backend_key() or endpoint.is_bedrock()
+    ):
+        raise ValidationError(
+            "Government pool backends require the gateway's Government managed identity."
+        )
     declared = entry.declared.get(deployment.deployment_name.casefold())
     if declared is not None:
         return assess_declared_deployment(
@@ -675,9 +690,7 @@ def _in_catalog(pool: ModelPool) -> bool:
     return pool.governed_access is not None and pool.visibility == ModelPoolVisibility.LISTED
 
 
-def _published_twice(
-    deployment: str, publication: Publication, model: PoolModel, pool: str
-) -> str:
+def _published_twice(deployment: str, publication: Publication, model: PoolModel, pool: str) -> str:
     """Why portal users would see a pool model twice: a member is also published on its own."""
 
     return (
@@ -1019,7 +1032,7 @@ def _desired(
 ) -> list[_Resource]:
     """Everything the pool writes, in the order apply writes it."""
 
-    base = ApimResourceId.parse(gateway.azure_resource_id).canonical
+    base = gateway.arm_resource().canonical
     breakers = uses_backend_pools(pool.pool_type)
     resources: list[_Resource] = []
     for model in pool.models:
@@ -1053,9 +1066,7 @@ def _desired(
                         # A member reached with a key is tried once, after the backend pool, so
                         # a tripped breaker would only end the attempts left to the others.
                         "circuitBreaker": (
-                            circuit_breaker(pool.breaker_preset)
-                            if breakers and not keyed
-                            else None
+                            circuit_breaker(pool.breaker_preset) if breakers and not keyed else None
                         ),
                     },
                 )
@@ -1258,7 +1269,10 @@ class ModelPoolService:
             if gateway is None:
                 summaries.append(
                     ModelPoolSummary(
-                        pool=pool, problem_count=1, unapplied_changes=has_unapplied_changes(pool)
+                        pool=pool,
+                        azure_cloud=pool.azure_cloud,
+                        problem_count=1,
+                        unapplied_changes=has_unapplied_changes(pool),
                     )
                 )
                 continue
@@ -1277,6 +1291,7 @@ class ModelPoolService:
             summaries.append(
                 ModelPoolSummary(
                     pool=pool,
+                    azure_cloud=gateway.azure_cloud,
                     gateway_name=gateway.name,
                     gateway_environment=gateway.environment,
                     capacity=capacity,
@@ -1400,6 +1415,7 @@ class ModelPoolService:
         """
 
         settings = pool.governed_access
+        validate_cloud_access(gateway.azure_cloud, settings)
         if settings is None:
             if pool.applied_access is not None:
                 raise ValidationError("An applied governed pool can't return to open access.")
@@ -1584,8 +1600,9 @@ class ModelPoolService:
         return (
             PoolAccessSnapshot(
                 version=pool.applied_access.version + 1 if pool.applied_access else 1,
+                azure_cloud=gateway.azure_cloud,
                 settings=settings,
-                audience=self._runtime_audience,
+                audience=self._runtime_audience if gateway.azure_cloud == "commercial" else None,
                 token_metering=metered,
                 grants=grants,
                 quotas=sorted(
@@ -1639,6 +1656,7 @@ class ModelPoolService:
                 id=pool_id,
                 tenant_id=actor.tenant_id,
                 gateway_id=gateway.id,
+                azure_cloud=gateway.azure_cloud,
                 display_name=request.display_name,
                 description=request.description,
                 visibility=request.visibility,
@@ -1652,6 +1670,11 @@ class ModelPoolService:
                 product_name=request.product_name or api_name,
                 subscription_name=api_name,
                 safeguard=request.safeguard,
+                governed_access=(
+                    ModelAccessSettings(keys_enabled=True, entra_enabled=False)
+                    if gateway.azure_cloud == "government"
+                    else None
+                ),
             )
             if request.models:
                 pool = await self._with_models(actor, pool, gateway, request.models)
@@ -1706,6 +1729,7 @@ class ModelPoolService:
                     changes[name] = getattr(request, name)
             pool = pool.model_copy(update=changes)
             gateway = await self._load_gateway(actor, pool.gateway_id)
+            validate_cloud_access(gateway.azure_cloud, pool.governed_access)
             if (problem := _pool_type_problem(gateway, pool.pool_type)) is not None:
                 raise ValidationError(problem, details={"poolType": str(pool.pool_type)})
             if request.models is not None:
@@ -2283,6 +2307,12 @@ class ModelPoolService:
                 "Remove the deployment from the pool."
             )
         else:
+            if gateway.azure_cloud != endpoint.azure_cloud:
+                problems.append("A pool and every member must be in the same Azure cloud.")
+            if gateway.azure_cloud == "government" and (
+                endpoint.uses_backend_key() or endpoint.is_bedrock()
+            ):
+                problems.append("Government pool backends require Government managed identity.")
             verdict = permits(catalog, gateway.environment, endpoint.environment)
             fingerprint = (
                 f"{member.backend_name}:"
@@ -2353,6 +2383,7 @@ class ModelPoolService:
                 f"{label} also serves {', '.join(shared)}, so those pools share its capacity."
             )
         view = PoolMemberView(
+            azure_cloud=endpoint.azure_cloud if endpoint is not None else gateway.azure_cloud,
             model_endpoint_id=member.model_endpoint_id,
             endpoint_name=endpoint.name if endpoint is not None else None,
             deployment_name=member.deployment_name,
@@ -2439,6 +2470,7 @@ class ModelPoolService:
         if gateway is None:
             return ModelPoolDetail(
                 pool=pool,
+                azure_cloud=pool.azure_cloud,
                 problems=["The pool's gateway is no longer registered with MOSAIC."],
                 unapplied_changes=has_unapplied_changes(pool),
             )
@@ -2470,6 +2502,7 @@ class ModelPoolService:
                 facets = []
         return ModelPoolDetail(
             pool=pool,
+            azure_cloud=gateway.azure_cloud,
             gateway_name=gateway.name,
             gateway_environment=gateway.environment,
             base_url=_base_url(gateway, pool),
@@ -2523,6 +2556,7 @@ class ModelPoolService:
                 ]
                 suggestions.append(
                     PoolSuggestion(
+                        azure_cloud=gateway.azure_cloud,
                         gateway_id=gateway.id,
                         gateway_name=gateway.name,
                         gateway_environment=gateway.environment,
@@ -2575,6 +2609,8 @@ class ModelPoolService:
         unknown: list[tuple[str, ApiShape | None, PoolCandidateDeployment]] = []
         for entry in entries:
             endpoint = entry.endpoint
+            if gateway.azure_cloud != endpoint.azure_cloud:
+                continue
             verdict = permits(catalog, gateway.environment, endpoint.environment)
             readiness, message = _readiness(endpoint, gateway.id)
             for deployment in entry.deployments.values():
@@ -2584,6 +2620,7 @@ class ModelPoolService:
                 declared = deployment.deployment_name.casefold() in entry.declared
                 reason = self._ineligible(deployment, fit, verdict, readiness, message)
                 candidate = PoolCandidateDeployment(
+                    azure_cloud=endpoint.azure_cloud,
                     model_endpoint_id=endpoint.id,
                     endpoint_name=endpoint.name,
                     region=entry.region,
@@ -3057,9 +3094,7 @@ class ModelPoolService:
         )
         for step in suspensions:
             usable = [
-                grant
-                for grant in keys.get(step.name, [])
-                if grant.enabled and grant.keys_allowed
+                grant for grant in keys.get(step.name, []) if grant.enabled and grant.keys_allowed
             ]
             if usable and snapshot.settings.keys_enabled:
                 steps.append(
@@ -3123,7 +3158,7 @@ class ModelPoolService:
             assessment = await self._assess(actor, pool, gateway)
             shape = self._require_shape(pool, assessment)
             await self._reject_desired_collisions(actor, pool)
-            resource = ApimResourceId.parse(gateway.azure_resource_id)
+            resource = gateway.arm_resource()
             client = self._client_factory(resource)
             await self._reject_collisions(actor, pool, gateway, client)
             snapshot, access_warnings = await self._access_snapshot(pool, gateway, shape)
@@ -3233,7 +3268,7 @@ class ModelPoolService:
         run = self._claim(actor, pool, plan, owner)
         await self._repository.save_publish_run(run)
         await self._mark_applying(pool, run.id)
-        client = self._client_factory(ApimResourceId.parse(gateway.azure_resource_id))
+        client = self._client_factory(gateway.arm_resource())
         if snapshot is None:
             self._spawn(self._run_apply(pool, gateway, client, plan, policy, desired, run))
         else:
@@ -3284,8 +3319,7 @@ class ModelPoolService:
         applied: bool = False,
         unpublished: bool = False,
         access_snapshot: PoolAccessSnapshot | None = None,
-        access_state: Literal["pending", "applying", "applied", "failed", "unknown"]
-        | None = None,
+        access_state: Literal["pending", "applying", "applied", "failed", "unknown"] | None = None,
         applied_model_ids: list[str] | None = None,
         policy_digests: tuple[str | None, str | None] | None = None,
     ) -> None:
@@ -3323,6 +3357,11 @@ class ModelPoolService:
                 }
             )
         if unpublished:
+            update["key_policy_hashes"] = {}
+            update["key_lifecycle"] = {
+                name: "deleted" if state == "deleted" else "pending"
+                for name, state in current.key_lifecycle.items()
+            }
             update.update(
                 {
                     "unpublished_at": now,
@@ -3411,7 +3450,7 @@ class ModelPoolService:
         run: PublishRun,
     ) -> None:
         started = utc_now()
-        writer = self._writer_factory(ApimResourceId.parse(gateway.azure_resource_id))
+        writer = self._writer_factory(gateway.arm_resource())
         resources = {(item.kind, item.name): item for item in desired}
         tracked = list(pool.resources)
         results: list[PublishStepResult] = []
@@ -3534,7 +3573,7 @@ class ModelPoolService:
         """
 
         started = utc_now()
-        resource = ApimResourceId.parse(gateway.azure_resource_id)
+        resource = gateway.arm_resource()
         writer = self._writer_factory(resource)
         items = {(item.kind, item.name): item for item in desired}
         owned = list(pool.resources)
@@ -3679,6 +3718,18 @@ class ModelPoolService:
                 logger.exception("pool_apply_failed", pool_id=pool.id)
                 failure = failure or str(error)
             if failure is None:
+                if gateway.azure_cloud == "government":
+                    try:
+                        await verify_key_runtime(
+                            client,
+                            pool,
+                            repository=self._repository,
+                            fragment_xml=policy.fragment_xml,
+                            api_policy_xml=policy.api_policy_xml,
+                        )
+                    except Exception as error:
+                        failure = str(error)
+            if failure is None:
                 await self._finish_success(
                     pool,
                     client,
@@ -3767,9 +3818,7 @@ class ModelPoolService:
                 return
             await writer.put_api_subscription(
                 step.name,
-                display_name=pool_key_display_name(
-                    pool, snapshot.key_grants().get(step.name, [])
-                ),
+                display_name=pool_key_display_name(pool, snapshot.key_grants().get(step.name, [])),
                 api_name=pool.api_name,
                 state=state,
             )
@@ -3888,9 +3937,7 @@ class ModelPoolService:
     ) -> RecoveryJournal:
         """Record each recovery write as a step of the run, and what it made as the pool's."""
 
-        async def record(
-            kind: PublishedResourceKind, name: str, created: bool, stage: str
-        ) -> None:
+        async def record(kind: PublishedResourceKind, name: str, created: bool, stage: str) -> None:
             resource_id = next(
                 (
                     item.resource_id
@@ -4165,6 +4212,27 @@ class ModelPoolService:
         )
         if access_snapshot is not None:
             await self._project_bindings(pool, access_snapshot, run)
+            gateway = await self._repository.get_gateway(pool.tenant_id, pool.gateway_id)
+            current = await self._repository.get_model_pool(pool.tenant_id, pool.id)
+            if (
+                current is not None
+                and gateway is not None
+                and gateway.azure_cloud == "government"
+                and self._directory is not None
+                and self._entitlements is not None
+            ):
+                await reconcile_initial_keys(
+                    current,
+                    gateway,
+                    repository=self._repository,
+                    directory=self._directory,
+                    entitlements=self._entitlements,
+                    book=await load_book(self._cost_centers, pool.tenant_id),
+                    manager=ApimInitialKeyManager(
+                        client, self._writer_factory(gateway.arm_resource())
+                    ),
+                    actor_object_id=run.actor_object_id or "system:publishing",
+                )
         await self._finish_run(
             run,
             PublishRunStatus.SUCCEEDED,
@@ -4414,7 +4482,7 @@ class ModelPoolService:
         self, pool: ModelPool, gateway: Gateway, plan: PublishPlan, run: PublishRun
     ) -> None:
         started = utc_now()
-        writer = self._writer_factory(ApimResourceId.parse(gateway.azure_resource_id))
+        writer = self._writer_factory(gateway.arm_resource())
         results: list[PublishStepResult] = []
         remaining = list(pool.resources)
         errors: list[str] = []
@@ -4589,7 +4657,7 @@ class ModelPoolService:
         if pool_id in self._active:
             raise ConflictError("This process still has an active run for this pool")
         gateway = await self._load_gateway(actor, pool.gateway_id)
-        client = self._client_factory(ApimResourceId.parse(gateway.azure_resource_id))
+        client = self._client_factory(gateway.arm_resource())
         resources = list(pool.resources)
         for step in run.steps:
             if not step.created_by_mosaic or step.action == PublishAction.DELETE:
@@ -4613,7 +4681,7 @@ class ModelPoolService:
             # Nobody knows what the stopped run left in force, so recovery shuts the pool before
             # it lets go: every call refused, every key MOSAIC made suspended.
             self._require_writable(gateway)
-            writer = self._writer_factory(ApimResourceId.parse(gateway.azure_resource_id))
+            writer = self._writer_factory(gateway.arm_resource())
             await self._assert_lock(pool, run)
             actual = pool.model_copy(update={"resources": resources})
             journal = self._recovery_journal(actual, writer, run, recovery_steps, resources)

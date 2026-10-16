@@ -2,6 +2,7 @@ from collections.abc import Callable, Sequence
 from typing import Protocol
 
 from mosaic_api.budgets import Budget, BudgetState, EmailSettings, GateState
+from mosaic_api.clouds import AzureCloud
 from mosaic_api.cost_centers import CostCenter, CostCenterSettings
 from mosaic_api.domain import (
     AccessRequest,
@@ -128,7 +129,7 @@ class GatewayRepository(Protocol):
     async def get_gateway(self, tenant_id: str, gateway_id: str) -> Gateway | None: ...
 
     async def find_gateway_by_resource_id(
-        self, tenant_id: str, azure_resource_id: str
+        self, tenant_id: str, azure_resource_id: str, *, azure_cloud: AzureCloud = "commercial"
     ) -> Gateway | None: ...
 
     async def create_gateway(self, gateway: Gateway, audit_event: AuditEvent) -> Gateway: ...
@@ -357,10 +358,12 @@ class ModelEndpointRepository(EndpointStateRepository, Protocol):
     async def get_endpoint(self, tenant_id: str, endpoint_id: str) -> ModelEndpoint | None: ...
 
     async def find_endpoint_by_resource_id(
-        self, tenant_id: str, azure_resource_id: str
+        self, tenant_id: str, azure_resource_id: str, *, azure_cloud: AzureCloud = "commercial"
     ) -> ModelEndpoint | None: ...
 
-    async def find_endpoint_by_url(self, tenant_id: str, endpoint: str) -> ModelEndpoint | None: ...
+    async def find_endpoint_by_url(
+        self, tenant_id: str, endpoint: str, *, azure_cloud: AzureCloud = "commercial"
+    ) -> ModelEndpoint | None: ...
 
     async def create_endpoint(
         self, endpoint: ModelEndpoint, audit_event: AuditEvent
@@ -414,7 +417,9 @@ class McpEndpointRepository(EndpointStateRepository, Protocol):
 
     async def get_endpoint(self, tenant_id: str, endpoint_id: str) -> McpEndpoint | None: ...
 
-    async def find_endpoint_by_url(self, tenant_id: str, endpoint: str) -> McpEndpoint | None: ...
+    async def find_endpoint_by_url(
+        self, tenant_id: str, endpoint: str, *, azure_cloud: AzureCloud = "commercial"
+    ) -> McpEndpoint | None: ...
 
     async def create_endpoint(
         self, endpoint: McpEndpoint, audit_event: AuditEvent

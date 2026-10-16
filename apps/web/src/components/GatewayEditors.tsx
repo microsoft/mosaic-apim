@@ -5,6 +5,7 @@ import { useMosaicApi } from '../api'
 import { environmentLabel, grantsAcknowledgmentDetails, invalidateEnvironmentQueries, publicationsBlockedDetails, useEnvironmentCatalog } from '../environments'
 import type { EnvironmentAssignment, Gateway, GatewaySuggestion } from '../types'
 import { ErrorState } from './AsyncState'
+import { AzureConnectionPicker, type ConnectionSelection } from './AzureConnectionPicker'
 import { EnvironmentPicker } from './EnvironmentPicker'
 import { GrantsAcknowledgmentRefusal, PublicationsBlockedRefusal } from './EnvironmentRefusal'
 import { WorkspaceEditorFrame } from './WorkspaceEditorFrame'
@@ -20,6 +21,10 @@ export function GatewayRegistrationEditor({ suggestion, onClose, onSaved }: {
   const queryClient = useQueryClient()
   const catalog = useEnvironmentCatalog()
   const [resourceId, setResourceId] = useState(suggestion?.azureResourceId ?? '')
+  const [connection, setConnection] = useState<ConnectionSelection>({
+    azureCloud: suggestion?.azureCloud ?? 'commercial',
+    azureConnectionId: suggestion?.azureConnectionId ?? null,
+  })
   const [name, setName] = useState(suggestion?.serviceName ?? '')
   const [environment, setEnvironment] = useState<string | null>(suggestion?.suggestedEnvironment ?? null)
   const [touched, setTouched] = useState(false)
@@ -32,7 +37,8 @@ export function GatewayRegistrationEditor({ suggestion, onClose, onSaved }: {
     }
   }, [catalog.data, suggestion])
   const register = useMutation({
-    mutationFn: () => api.registerGateway({ azureResourceId: resourceId.trim(), name: name.trim() || undefined, environment }),
+    mutationFn: () => api.registerGateway({ azureResourceId: resourceId.trim(), name: name.trim() || undefined, environment,
+      ...(connection.azureConnectionId || connection.azureCloud !== 'commercial' ? connection : {}) }),
     onSuccess: (gateway) => {
       queryClient.setQueryData(['gateway', gateway.id], gateway)
       queryClient.setQueryData<Gateway[]>(['gateways'], (items = []) => [...items.filter((item) => item.id !== gateway.id), gateway])
@@ -51,7 +57,8 @@ export function GatewayRegistrationEditor({ suggestion, onClose, onSaved }: {
     primaryAction={{ label: 'Check access and onboard', onClick: submit, disabled: register.isPending }}>
     <form className={styles.form} onSubmit={(event) => { event.preventDefault(); submit() }}
       onChangeCapture={() => setDirty(true)}>
-      <Text>MOSAIC checks whether its managed identity can read the service. New gateways are observe-only.
+      <AzureConnectionPicker value={connection} onChange={(selection) => { setConnection(selection); setResourceId(''); setDirty(true) }} />
+      <Text>MOSAIC checks whether the selected connection can read the service. New gateways are observe-only.
         If access is missing, MOSAIC shows the exact role to grant.</Text>
       <Field label="API Management resource ID" required
         hint="/subscriptions/{id}/resourceGroups/{group}/providers/Microsoft.ApiManagement/service/{name}"

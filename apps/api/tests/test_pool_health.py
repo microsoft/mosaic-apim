@@ -143,6 +143,26 @@ def _health(harness: Harness, **params: Any) -> Any:
     return harness.get(HEALTH, **params)
 
 
+async def test_health_uses_selected_gateway_logs_client(harness: Harness) -> None:
+    await _seeded(harness, _call(0, _east()))
+    selected = []
+
+    def logs_for(gateway: Any) -> Any:
+        selected.append((gateway.id, gateway.azure_cloud, gateway.azure_connection_id))
+        return harness.logs
+
+    harness.state.pool_health_service = PoolHealthService(
+        harness.state.model_pool_service,
+        gateway_repository=harness.state.gateway_repository,
+        endpoint_repository=harness.state.model_endpoint_repository,
+        logs_factory=logs_for,
+        clock=lambda: harness.now,
+    )
+    report = _health(harness)
+    assert selected == [(GATEWAY, "commercial", None)]
+    assert report["status"] == "ok"
+
+
 def _health_queries(harness: Harness) -> list[tuple[str, str]]:
     return [query for query in harness.logs.queries if query[0] == "poolHealth"]
 

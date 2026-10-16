@@ -55,6 +55,7 @@ from mosaic_api.domain import (
     RuntimeRoleFindingKind,
     utc_now,
 )
+from mosaic_api.errors import ValidationError
 from mosaic_api.integrations.aoai.client import CognitiveServicesClient
 from mosaic_api.integrations.apim.client import JsonObject
 from mosaic_api.integrations.apim.model_apis import required_data_actions
@@ -782,6 +783,10 @@ def _result(
         (finding for finding in findings if finding.kind == RuntimeRoleFindingKind.SUFFICIENT),
         None,
     )
+    if remediation is not None and context.gateway.azure_cloud == "government":
+        remediation = remediation.model_copy(update={
+            "command": f"az cloud set --name AzureUSGovernment && {remediation.command}"
+        })
     return GatewayRuntimeAccess(
         gateway_id=context.gateway.id,
         gateway_name=context.gateway.name,
@@ -821,8 +826,10 @@ async def verify_gateway_runtime_access(
     reported as unknown rather than guessed.
     """
 
-    check = check or RuntimeAccessCheck(client)
     resource = client.resource
+    if gateway.azure_cloud != resource.azure_cloud:
+        raise ValidationError("Gateway and model endpoint must belong to the same Azure cloud.")
+    check = check or RuntimeAccessCheck(client)
     scope = resource.account_scope
     role_name, role_definition_id = recommended_runtime_role(kind)
     shapes = published_shapes(kind, provider)

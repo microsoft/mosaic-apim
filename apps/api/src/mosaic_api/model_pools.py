@@ -24,6 +24,7 @@ from mosaic_api.domain import (
     ApiShape,
     Entity,
     EnvironmentVerdict,
+    KeyState,
     ModelAccessSettings,
     ModelProvider,
     MosaicModel,
@@ -323,6 +324,7 @@ class ModelPool(Entity):
 
     entity_type: Literal["modelPool"] = "modelPool"
     gateway_id: str
+    azure_cloud: Literal["commercial", "government"] = "commercial"
     display_name: str
     description: str | None = None
     visibility: ModelPoolVisibility = ModelPoolVisibility.LISTED
@@ -364,6 +366,8 @@ class ModelPool(Entity):
     # authorizes every call against grants on its models, and its bootstrap subscription is
     # suspended. A pool can't go back.
     governed_access: ModelAccessSettings | None = None
+    key_lifecycle: dict[str, KeyState] = Field(default_factory=dict)
+    key_policy_hashes: dict[str, str] = Field(default_factory=dict)
     applied_access: PoolAccessSnapshot | None = None
     access_state: Literal["pending", "applying", "applied", "failed", "unknown"] = "pending"
     # The models the gateway serves, as of the last successful apply. An unpublish clears them.
@@ -640,6 +644,7 @@ class ModelPoolUpdate(MosaicModel):
 class PoolMemberView(MosaicModel):
     """One member as a plan or the console sees it, with what inventory says about it."""
 
+    azure_cloud: Literal["commercial", "government"] = "commercial"
     model_endpoint_id: str
     endpoint_name: str | None = None
     deployment_name: str
@@ -677,6 +682,7 @@ class PoolMemberView(MosaicModel):
 class PoolCandidateDeployment(MosaicModel):
     """A deployment a pool could use on a gateway, grouped under the model it serves."""
 
+    azure_cloud: Literal["commercial", "government"] = "commercial"
     model_endpoint_id: str
     endpoint_name: str
     region: str | None = None
@@ -734,6 +740,7 @@ class PoolModelView(MosaicModel):
 class ModelPoolDetail(MosaicModel):
     """A pool as the console shows it: its intent, and what inventory says about its members."""
 
+    azure_cloud: Literal["commercial", "government"] = "commercial"
     pool: ModelPool
     gateway_name: str | None = None
     gateway_environment: str | None = None
@@ -764,6 +771,7 @@ class PoolMemberProblem(MosaicModel):
 class ModelPoolSummary(MosaicModel):
     """A pool as the console's list shows it, with its active members counted."""
 
+    azure_cloud: Literal["commercial", "government"] = "commercial"
     pool: ModelPool
     gateway_name: str | None = None
     gateway_environment: str | None = None
@@ -818,6 +826,7 @@ class PoolSuggestion(MosaicModel):
     """A pool an administrator could create: one vendor's models, each deployed on two or more
     endpoints a gateway can front, that no pool on the gateway serves yet."""
 
+    azure_cloud: Literal["commercial", "government"] = "commercial"
     gateway_id: str
     gateway_name: str
     gateway_environment: str | None = None

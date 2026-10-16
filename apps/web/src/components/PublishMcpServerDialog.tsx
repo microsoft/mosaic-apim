@@ -253,12 +253,15 @@ function McpAccessReview({ plan }: { plan: PublishPlan }) {
       <Title3 as="h3">MCP access changes</Title3>
       <Text>
         This plan applies the complete target grant set for this MCP server. The gateway enforces
-        Entra tokens and per-grant call limits; MCP token limits are not supported.
+        {snapshot.azureCloud === 'government' ? ' subscription keys' : ' Entra tokens'} and per-grant call limits; MCP token limits are not supported.
       </Text>
+      {snapshot.azureCloud === 'government' && <Text>
+        Azure Government needs direct grants and a key-enabled cost center. Initial keys are prepared only after this reviewed plan applies successfully.
+      </Text>}
       <Text size={200}>Access version: {plan.previousAccessVersion ?? 'none'} → {snapshot.version}</Text>
-      <Text size={200}>Audience: {snapshot.audience}</Text>
+      {snapshot.azureCloud !== 'government' && <><Text size={200}>Audience: {snapshot.audience}</Text>
       <Text size={200}>Delegated scope: api://{snapshot.audience}/{snapshot.delegatedScope}</Text>
-      <Text size={200}>Application role: {snapshot.applicationRole}</Text>
+      <Text size={200}>Application role: {snapshot.applicationRole}</Text></>}
       <Text size={200}>
         {snapshot.modelCaller
           ? `Model-calling identity: ${snapshot.modelCaller.displayName} · ${snapshot.modelCaller.objectId}. The server receives each call's reference to pass on to its model calls.`
@@ -592,7 +595,7 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
                 {selectedGateway && (
                   <Text size={200}>
                     Gateway environment:{' '}
-                    <EnvironmentBadge environment={selectedGateway.environment} catalog={catalog.data} size="small" />
+                    <EnvironmentBadge azureCloud={selectedGateway.azureCloud ?? 'commercial'} environment={selectedGateway.environment} catalog={catalog.data} size="small" />
                   </Text>
                 )}
                 {gateways.isError && <ErrorState error={gateways.error} />}
@@ -646,7 +649,7 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
                                   <Text size={200}>{item.inventory.tools} tools · {item.authMode}</Text>
                                   <Text size={200}>
                                     Server environment:{' '}
-                                    <EnvironmentBadge environment={item.environment} catalog={catalog.data} size="small" />
+                                    <EnvironmentBadge azureCloud={item.azureCloud ?? 'commercial'} environment={item.environment} catalog={catalog.data} size="small" />
                                   </Text>
                                 </div>
                               </TableCell>

@@ -54,6 +54,10 @@ RESOURCE_NAMES = [
     *(person.display_name for person in EXTRA_DIRECTORY_OBJECTS),
     *(name for name, _description, _members in GROUPS),
     "Contoso AI Gateway",
+    "Contoso Government Gateway",
+    "Contoso Government Azure OpenAI",
+    "Government Docs Search",
+    "contoso-government-docs",
     "Contoso AI Dev Gateway",
     "Partner Gateway",
     "Contoso AI Foundry",
@@ -86,6 +90,10 @@ RESOURCE_NAMES = [
     "contoso-foundry",
     "contoso-safety",
     "kv-contoso-ai",
+    "kv-contoso-management",
+    "apim-contoso-gov",
+    "contoso-gov-aoai",
+    "rg-contoso-gov",
     "fabrikam-foundry",
     "partner-models",
     "log-contoso-ai",
@@ -110,6 +118,8 @@ REDACTION_PATTERNS = [
     # Bare hostnames of the services MOSAIC talks to.
     r"\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:azure-api\.net|openai\.azure\.com|"
     r"cognitiveservices\.azure\.com|services\.ai\.azure\.com|vault\.azure\.net|contoso\.com|"
+    r"azure-api\.us|openai\.azure\.us|cognitiveservices\.azure\.us|"
+    r"vault\.usgovcloudapi\.net|"
     r"communication\.azure\.com|azurecomm\.net)\b",
     # IPv4 addresses, such as gateway egress addresses.
     r"\b\d{1,3}(?:\.\d{1,3}){3}\b",
@@ -410,7 +420,7 @@ def fill_labelled(pattern: str, text: str) -> Action:
     return act
 
 
-def open_grant_connection(model: str, cost_center: str) -> Action:
+def open_grant_connection(model: str, cost_center: str, *, cloud: str | None = None) -> Action:
     def act(page: Page) -> None:
         page.get_by_role("button", name=f"View access for {model}", exact=True).click()
         _settle(page)
@@ -423,6 +433,7 @@ def open_grant_connection(model: str, cost_center: str) -> Action:
                 if text.startswith(cost_center + " ·")
                 and "Granted directly to you" in text
                 and "Applied to APIM" in text
+                and (cloud is None or cloud in text)
             ]
             if len(choices) != 1:
                 raise CaptureError(f"Expected one applied direct {model} grant in {cost_center}")
@@ -431,6 +442,23 @@ def open_grant_connection(model: str, cost_center: str) -> Action:
             visible=True
         ).first.wait_for()
         dialog.get_by_role("button", name="Connection details", exact=True).click()
+
+    return act
+
+
+def select_access_offering(cloud: str) -> Action:
+    def act(page: Page) -> None:
+        select = page.get_by_role("dialog").get_by_role(
+            "combobox", name="Access option", exact=True
+        )
+        choices = [
+            text.strip()
+            for text in select.locator("option").all_inner_texts()
+            if cloud in text
+        ]
+        if len(choices) != 1:
+            raise CaptureError(f"Expected one {cloud} access offering")
+        select.select_option(label=choices[0])
 
     return act
 
@@ -502,6 +530,12 @@ SHOTS: list[Shot] = [
     # Capability galleries: light shots sit in the README's left column and dark in its right.
     Shot("console-gateways", "console", "/gateways", "light", "Partner Gateway",
          actions=OPEN_GATEWAY, height=1600),
+    Shot(
+        "console-government-gateway", "console", "/gateways", "light",
+        "Contoso Government Gateway",
+        actions=(click_button("Contoso Government Gateway"), wait_for_text("Read-only")),
+        height=1600,
+    ),
     Shot(
         "console-gateway-overview",
         "console",
@@ -943,6 +977,10 @@ SHOTS: list[Shot] = [
         "console-environments", "console", "/settings", "light", "needs classification", height=1178
     ),
     Shot(
+        "console-azure-connections", "console", "/settings?tab=connections", "dark",
+        "Government management", height=1100,
+    ),
+    Shot(
         "console-environment-findings",
         "console",
         "/settings?tab=findings",
@@ -978,7 +1016,10 @@ SHOTS: list[Shot] = [
         "/catalog",
         "light",
         "Docs search MCP",
-        actions=(click_button("View access options for gpt-4o-mini"),),
+        actions=(
+            click_button("View access options for gpt-4o-mini"),
+            select_access_offering("Azure Commercial"),
+        ),
         height=1100,
     ),
     Shot(
@@ -1034,6 +1075,22 @@ SHOTS: list[Shot] = [
             wait_for_text("VS Code"),
         ),
         height=1240,
+    ),
+    Shot(
+        "portal-government-connection", "portal", "/access", "light", "My access",
+        actions=(
+            open_grant_connection("gpt-4o-mini", "Customer Insights", cloud="AzGov"),
+            wait_for_text("Authentication"),
+        ),
+        height=1420,
+    ),
+    Shot(
+        "portal-government-mcp-connection", "portal", "/access", "dark", "My access",
+        actions=(
+            open_grant_connection("Government Docs Search", "Customer Insights", cloud="AzGov"),
+            wait_for_text("VS Code"),
+        ),
+        height=1420,
     ),
     Shot("portal-requests", "portal", "/requests", "dark", "Approved for the churn analysis"),
     # Tall enough for the budget banner, the figures, the daily trend, and the last 24 hours.

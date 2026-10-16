@@ -669,7 +669,9 @@ def deployment_facts(
     """One deployment's facts: what Azure reports, then what an administrator filled in."""
 
     name = observed.deployment_name if observed else declared.deployment_name if declared else ""
-    detected = detect_cloud(str(endpoint.endpoint))
+    detected = (
+        endpoint.azure_cloud if endpoint.azure_resource_id else detect_cloud(str(endpoint.endpoint))
+    )
     override = settings.cloud if settings else None
     region = (settings.region if settings else None) or normalize_region(
         endpoint.capabilities.location

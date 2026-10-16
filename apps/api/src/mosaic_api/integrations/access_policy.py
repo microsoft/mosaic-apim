@@ -29,15 +29,19 @@ from mosaic_api.domain import (
     EntitlementEnforcement,
     EntitlementSubject,
     EntitlementSubjectKind,
+    McpAccessGrant,
+    McpAccessSnapshot,
     ModelAccessGrant,
     ModelAccessSettings,
     ModelAccessSnapshot,
     PolicyFacet,
     PolicyFacetKind,
     PolicySection,
+    PoolAccessGrant,
     Publication,
     QuotaPeriod,
     grant_precedence_key,
+    model_access_subscription_name,
 )
 from mosaic_api.errors import ValidationError
 from mosaic_api.integrations.apim.model_apis import OperationSpec, operations_for
@@ -102,9 +106,7 @@ MCP_CALL = '(string)context.Variables["mosaic-mcp-call"]'
 # What a governed model records for a reference an application sent that isn't one GUID, so the
 # server's builder can see it's wrong. Nothing else about the call changes.
 MCP_CALL_MALFORMED = "!"
-_MCP_CALL_PATTERN = (
-    "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-)
+_MCP_CALL_PATTERN = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 # Readers split the message on spaces into key=value pairs and ignore keys they don't know.
 # Only a change that breaks those readers bumps the version.
 GRANT_ATTRIBUTION_TRACE_PREFIX = "mosaic-attribution v=1"
@@ -591,6 +593,17 @@ def classify_traces(
 
 
 def _validate(publication: Publication, snapshot: ModelAccessSnapshot) -> None:
+    if publication.azure_cloud != snapshot.azure_cloud:
+        raise ValidationError(
+            "The publication and applied access snapshot must use the same cloud."
+        )
+    if snapshot.azure_cloud == "government" and publication.backend_key_name is not None:
+        raise ValidationError("Government model backends require Government managed identity.")
+    validate_cloud_access(
+        snapshot.azure_cloud,
+        snapshot.settings,
+        deny_all=not any(g.enabled for g in snapshot.grants),
+    )
     if not all(
         _RESOURCE_NAME.fullmatch(name)
         for name in (publication.backend_name, publication.fragment_name)
@@ -632,6 +645,16 @@ def _validate(publication: Publication, snapshot: ModelAccessSnapshot) -> None:
                 raise ValidationError("Security-group grants require governed Entra access.")
             if not _GUID.fullmatch(grant.object_id):
                 raise ValidationError("Security-group grants require a GUID object ID.")
+        if (
+            snapshot.azure_cloud == "government"
+            and grant.enabled
+            and not grant.is_group_grant
+            and grant.subscription_name
+            != model_access_subscription_name(
+                publication.tenant_id, publication.id, grant.entitlement_id
+            )
+        ):
+            raise ValidationError("Government keys must map to the exact direct grant.")
         if not all(
             value.strip() for value in (grant.entitlement_id, grant.object_id, grant.subject.id)
         ):
@@ -774,7 +797,10 @@ def _key_shape_check() -> str:
     )
 
 
-def _key_lookup(publication: Publication, grants: list[ModelAccessGrant]) -> str:
+def _key_lookup(
+    publication: AccessPolicyPublication,
+    grants: Sequence[ModelAccessGrant | McpAccessGrant],
+) -> str:
     """A key's grant, as ``identity|code``; ``-`` for a key its cost center turned off."""
 
     lines = [
@@ -860,6 +886,52 @@ def mcp_call_reference(application_role: str = "Models.Invoke.Application") -> s
             '} catch { return ""; }',
         ]
     )
+
+
+def key_mcp_call_reference(
+    publication: AccessPolicyPublication,
+    grants: Sequence[ModelAccessGrant | PoolAccessGrant],
+) -> str:
+    """Read a correlation reference only after a direct application's key matched its grant."""
+
+    permitted = [
+        _literal(_match(publication, grant).split("|", 1)[0])
+        for grant in grants
+        if grant.enabled and grant.subject.kind == EntitlementSubjectKind.APPLICATION
+    ]
+    if not permitted:
+        return ""
+    eligible = " || ".join(f"{_GRANT} == {identity}" for identity in permitted)
+    return _expression(
+        [
+            f'if (!({eligible})) {{ return ""; }}',
+            "var values = context.Request.Headers.GetValueOrDefault("
+            f'{_literal(ON_BEHALF_HEADER)}, "");',
+            'if (String.IsNullOrEmpty(values)) { return ""; }',
+            "if (!System.Text.RegularExpressions.Regex.IsMatch(values, "
+            f"{_literal(_MCP_CALL_PATTERN)})) {{ return {_literal(MCP_CALL_MALFORMED)}; }}",
+            "return values.ToLowerInvariant();",
+        ]
+    )
+
+
+def validate_cloud_access(
+    cloud: str, settings: ModelAccessSettings | None, *, deny_all: bool = False
+) -> None:
+    if (
+        deny_all
+        and settings is not None
+        and not settings.keys_enabled
+        and not settings.entra_enabled
+    ):
+        return
+    if cloud == "government" and (
+        settings is None or not settings.keys_enabled or settings.entra_enabled
+    ):
+        raise ValidationError(
+            "Azure Government runtime access requires governed subscription keys only; "
+            "commercial Microsoft Entra bearer tokens cannot authorize Government offerings."
+        )
 
 
 def _token_lookup(
@@ -1074,9 +1146,9 @@ def _select_grant(fragment: ET.Element) -> None:
 
 def _authentication(
     fragment: ET.Element,
-    publication: Publication,
-    snapshot: ModelAccessSnapshot,
-    grants: list[ModelAccessGrant],
+    publication: AccessPolicyPublication,
+    snapshot: ModelAccessSnapshot | McpAccessSnapshot,
+    grants: Sequence[ModelAccessGrant | McpAccessGrant],
     *,
     delegated_scope: str = "Models.Invoke",
     application_role: str = "Models.Invoke.Application",
@@ -1741,11 +1813,15 @@ def render_governed_policy(
         _variable(
             fragment,
             "mosaic-mcp-call",
-            mcp_call_reference(application_role) if snapshot.settings.entra_enabled else "",
+            (
+                key_mcp_call_reference(publication, grants)
+                if snapshot.azure_cloud == "government"
+                else mcp_call_reference(application_role)
+                if snapshot.settings.entra_enabled
+                else ""
+            ),
         )
-        append_grant_attribution_trace(
-            fragment, grants, keys=[("r", MCP_CALL, "mosaic-mcp-call")]
-        )
+        append_grant_attribution_trace(fragment, grants, keys=[("r", MCP_CALL, "mosaic-mcp-call")])
         _limits(fragment, publication, snapshot, grants)
         removed_headers = (
             "Ocp-Apim-Subscription-Key",
@@ -1781,7 +1857,9 @@ def render_governed_policy(
                 fragment,
                 "authentication-managed-identity",
                 {
-                    "resource": managed_identity_resource(publication.api_shape),
+                    "resource": managed_identity_resource(
+                        publication.api_shape, azure_cloud=snapshot.azure_cloud
+                    ),
                 },
             )
         ET.SubElement(fragment, "set-backend-service", {"backend-id": publication.backend_name})

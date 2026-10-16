@@ -38,6 +38,7 @@ from mosaic_api.domain import (
     KeyVaultSecretId,
     ManagementMode,
     ModelAccessGrant,
+    ModelAccessSettings,
     ModelAccessSnapshot,
     ModelApi,
     ModelEndpoint,
@@ -72,6 +73,7 @@ from mosaic_api.environments import (
     refuse_blocked_pairing,
 )
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
+from mosaic_api.integrations.access_policy import validate_cloud_access
 from mosaic_api.integrations.apim import ApimClient
 from mosaic_api.integrations.apim.model_apis import (
     CURATED_SHAPE_VERSION,
@@ -98,6 +100,11 @@ from mosaic_api.repositories import (
     GatewayRepository,
     ModelEndpointRepository,
 )
+from mosaic_api.services.automatic_keys import (
+    ApimInitialKeyManager,
+    reconcile_initial_keys,
+    verify_key_runtime,
+)
 from mosaic_api.services.budget_gate import BlockedListGate, ensure_blocked_list, is_blocked_list
 from mosaic_api.services.cost_centers import load_book
 from mosaic_api.services.directory import Actor
@@ -122,12 +129,12 @@ RecoveryJournal = Callable[[PublishedResourceKind, str, bool, str], Awaitable[No
 
 STALE_RUN_MESSAGE = "The API restarted while this apply was running; its result is unknown."
 DENY_ALL_POLICY = (
-    "<policies><inbound><return-response><set-status code=\"403\" reason=\"Access unavailable\"/>"
+    '<policies><inbound><return-response><set-status code="403" reason="Access unavailable"/>'
     "</return-response></inbound><backend><base/></backend><outbound><base/></outbound>"
     "<on-error><base/></on-error></policies>"
 )
 DENY_ALL_FRAGMENT = (
-    "<fragment><return-response><set-status code=\"403\" reason=\"Access unavailable\"/>"
+    '<fragment><return-response><set-status code="403" reason="Access unavailable"/>'
     "</return-response></fragment>"
 )
 
@@ -559,7 +566,25 @@ class PublishingService:
 
     async def _create(self, actor: Actor, request: PublicationCreate) -> Publication:
         gateway = await self._load_gateway(actor, request.gateway_id)
+        if gateway.azure_cloud == "government":
+            if request.governed_access is None:
+                request = request.model_copy(
+                    update={
+                        "governed_access": ModelAccessSettings(
+                            keys_enabled=True, entra_enabled=False
+                        )
+                    }
+                )
+            validate_cloud_access(gateway.azure_cloud, request.governed_access)
         endpoint = await self._load_endpoint(actor, request.model_endpoint_id)
+        if gateway.azure_cloud != endpoint.azure_cloud:
+            raise ValidationError(
+                "A gateway and its model backend must be in the same Azure cloud."
+            )
+        if gateway.azure_cloud == "government" and endpoint.uses_backend_key():
+            raise ValidationError(
+                "Government model backends require the gateway's managed identity."
+            )
         catalog = await load_environment_catalog(self._environments, actor.tenant_id)
         verdict = permits(catalog, gateway.environment, endpoint.environment)
         refuse_blocked_pairing(verdict)
@@ -575,9 +600,7 @@ class PublishingService:
                 "pool on the gateway instead.",
                 details={"modelEndpointId": endpoint.id, "provider": str(endpoint.provider)},
             )
-        deployment = await self._require_known_deployment(
-            actor, endpoint, request.deployment_name
-        )
+        deployment = await self._require_known_deployment(actor, endpoint, request.deployment_name)
         fit = self._fit(endpoint, deployment, gateway)
         if not fit.publishable:
             raise ValidationError(
@@ -592,9 +615,7 @@ class PublishingService:
             self._require_key_identity(gateway)
 
         names = default_names(endpoint.name, request.deployment_name)
-        target = publication_id(
-            actor.tenant_id, gateway.id, endpoint.id, request.deployment_name
-        )
+        target = publication_id(actor.tenant_id, gateway.id, endpoint.id, request.deployment_name)
         existing = await self._repository.get_publication(actor.tenant_id, target)
         if existing and (
             existing.created_resources()
@@ -610,6 +631,7 @@ class PublishingService:
             id=target,
             tenant_id=actor.tenant_id,
             gateway_id=gateway.id,
+            azure_cloud=gateway.azure_cloud,
             model_endpoint_id=endpoint.id,
             deployment_name=request.deployment_name,
             provider=endpoint.provider,
@@ -736,9 +758,7 @@ class PublishingService:
             )
         return match
 
-    async def update(
-        self, actor: Actor, target_id: str, request: PublicationUpdate
-    ) -> Publication:
+    async def update(self, actor: Actor, target_id: str, request: PublicationUpdate) -> Publication:
         async with publication_lock(self._repository, actor.tenant_id, target_id):
             return await self._update(actor, target_id, request)
 
@@ -766,6 +786,8 @@ class PublishingService:
             if note is not None:
                 raise ValidationError(note)
         settings = request.governed_access or publication.governed_access
+        gateway = await self._load_gateway(actor, publication.gateway_id)
+        validate_cloud_access(gateway.azure_cloud, settings)
         if settings:
             changes["subscription_required"] = not settings.entra_enabled
         updated = Publication.model_validate(
@@ -820,7 +842,7 @@ class PublishingService:
                 or not self._owns(publication, PublishedResourceKind.API, publication.api_name)
             ):
                 raise ConflictError("Only an owned, successfully published API can be linked")
-            client = self._client_factory(ApimResourceId.parse(gateway.azure_resource_id))
+            client = self._client_factory(gateway.arm_resource())
             if await client.get_api(publication.api_name) is None:
                 raise ConflictError("The publication's owned API no longer exists in the gateway")
             return await self._materialize_model_api(actor, publication)
@@ -960,7 +982,7 @@ class PublishingService:
         origin = backend.origin
         snapshot, access_warnings = await self._access_snapshot(publication, gateway)
         policy = self._policy(publication, snapshot)
-        resource = ApimResourceId.parse(gateway.azure_resource_id)
+        resource = gateway.arm_resource()
         client = self._client_factory(resource)
 
         await self._reject_collisions(actor, publication, gateway, client)
@@ -1064,6 +1086,14 @@ class PublishingService:
         its own because the digest covers it.
         """
 
+        if gateway.azure_cloud != endpoint.azure_cloud:
+            raise ValidationError(
+                "A gateway and its model backend must be in the same Azure cloud."
+            )
+        if gateway.azure_cloud == "government" and endpoint.uses_backend_key():
+            raise ValidationError(
+                "Government model backends require the gateway's managed identity."
+            )
         origin = backend_origin(publication.api_shape, str(endpoint.endpoint))
         if publication.backend_key_name is None:
             if endpoint.uses_backend_key():
@@ -1102,6 +1132,7 @@ class PublishingService:
         self, publication: Publication, gateway: Gateway
     ) -> tuple[ModelAccessSnapshot | None, list[str]]:
         settings = publication.governed_access
+        validate_cloud_access(gateway.azure_cloud, settings)
         if settings is None:
             if publication.applied_access is not None:
                 raise ValidationError(
@@ -1138,9 +1169,7 @@ class PublishingService:
                 or model.gateway_id != publication.gateway_id
                 or model.api_name != publication.api_name
                 or model.id
-                != model_api_id(
-                    publication.tenant_id, publication.gateway_id, publication.api_name
-                )
+                != model_api_id(publication.tenant_id, publication.gateway_id, publication.api_name)
             ):
                 raise ConflictError("The publication has no trustworthy model API association")
             entitlements = await self._entitlements.list_entitlements(
@@ -1292,8 +1321,9 @@ class PublishingService:
         return (
             ModelAccessSnapshot(
                 version=publication.applied_access.version + 1 if publication.applied_access else 1,
+                azure_cloud=gateway.azure_cloud,
                 settings=settings,
-                audience=self._runtime_audience,
+                audience=self._runtime_audience if gateway.azure_cloud == "commercial" else None,
                 publication_enforcement=publication.enforcement,
                 grants=grants,
                 pools=sorted(pools.values(), key=lambda pool: pool.cost_center_id),
@@ -1465,12 +1495,7 @@ class PublishingService:
         )
         for step in subscriptions:
             grant = grants.get(step.name)
-            if (
-                grant
-                and grant.enabled
-                and grant.keys_allowed
-                and snapshot.settings.keys_enabled
-            ):
+            if grant and grant.enabled and grant.keys_allowed and snapshot.settings.keys_enabled:
                 steps.append(
                     step.model_copy(
                         update={
@@ -1519,9 +1544,7 @@ class PublishingService:
         return f"{'Replace' if existed else 'Create'} {subject}."
 
     @staticmethod
-    def _warnings(
-        publication: Publication, gateway: Gateway, endpoint: ModelEndpoint
-    ) -> list[str]:
+    def _warnings(publication: Publication, gateway: Gateway, endpoint: ModelEndpoint) -> list[str]:
         """Report what an administrator should know without blocking a legitimate publish.
 
         A gateway that cannot yet call the endpoint is a real problem, but it is fixed with a role
@@ -1593,9 +1616,8 @@ class PublishingService:
                 PublishedResourceKind.API_POLICY,
             }:
                 continue
-            if (
-                await self._exists(client, publication, item)
-                and not self._owns(publication, item.kind, item.name)
+            if await self._exists(client, publication, item) and not self._owns(
+                publication, item.kind, item.name
             ):
                 raise ConflictError(
                     "MOSAIC will not replace customer resources or policy it does not own",
@@ -1619,9 +1641,7 @@ class PublishingService:
                 details={"apiPath": publication.api_path, "conflictingApi": clash.name},
             )
 
-    async def _exists(
-        self, client: ApimClient, publication: Publication, item: _Resource
-    ) -> bool:
+    async def _exists(self, client: ApimClient, publication: Publication, item: _Resource) -> bool:
         match item.kind:
             case PublishedResourceKind.NAMED_VALUE:
                 return await client.get_named_value(item.name) is not None
@@ -1632,15 +1652,12 @@ class PublishingService:
             case PublishedResourceKind.API:
                 return await client.get_api(item.name) is not None
             case PublishedResourceKind.API_OPERATION:
-                return (
-                    await client.get_api_operation(publication.api_name, item.name) is not None
-                )
+                return await client.get_api_operation(publication.api_name, item.name) is not None
             case PublishedResourceKind.API_POLICY:
                 return await client.get_api_policy(publication.api_name) is not None
             case PublishedResourceKind.API_OPERATION_POLICY:
                 return (
-                    await client.get_operation_policy(publication.api_name, item.name)
-                    is not None
+                    await client.get_operation_policy(publication.api_name, item.name) is not None
                 )
             case PublishedResourceKind.PRODUCT:
                 return await client.get_product(item.name) is not None
@@ -1650,9 +1667,7 @@ class PublishingService:
             case PublishedResourceKind.SUBSCRIPTION:
                 return await client.get_subscription(item.name) is not None
 
-    async def apply(
-        self, actor: Actor, target_id: str, plan_id: str | None = None
-    ) -> PublishRun:
+    async def apply(self, actor: Actor, target_id: str, plan_id: str | None = None) -> PublishRun:
         owner = new_id("publishrun")
         await self._repository.acquire_publication_lock(actor.tenant_id, target_id, owner)
         self._active.add(target_id)
@@ -1731,7 +1746,7 @@ class PublishingService:
         run = self._claim(actor, publication, plan, owner)
         await self._repository.save_publish_run(run)
         await self._mark_applying(publication, run.id)
-        resource = ApimResourceId.parse(gateway.azure_resource_id)
+        resource = gateway.arm_resource()
         client = self._client_factory(resource)
         if snapshot:
             self._spawn(
@@ -1937,9 +1952,7 @@ class PublishingService:
             applied=False,
         )
 
-    async def _interrupted(
-        self, publication: Publication, run: PublishRun, message: str
-    ) -> None:
+    async def _interrupted(self, publication: Publication, run: PublishRun, message: str) -> None:
         # Best effort diagnostics are not a successful apply. The non-expiring lock remains even
         # if storage is unavailable, so a different instance cannot apply or release credentials.
         try:
@@ -1982,7 +1995,7 @@ class PublishingService:
         run: PublishRun,
     ) -> None:
         started = utc_now()
-        writer = self._writer_factory(ApimResourceId.parse(gateway.azure_resource_id))
+        writer = self._writer_factory(gateway.arm_resource())
         results: list[PublishStepResult] = []
         owned = list(publication.resources)
         failure: str | None = None
@@ -2073,6 +2086,14 @@ class PublishingService:
                                 )
                         break
                 if failure is None:
+                    if gateway.azure_cloud == "government":
+                        await verify_key_runtime(
+                            client,
+                            publication,
+                            repository=self._repository,
+                            fragment_xml=policy.fragment_xml,
+                            api_policy_xml=policy.api_policy_xml,
+                        )
                     await self._finish_success(
                         publication, run, results, started, access_snapshot=plan.access_snapshot
                     )
@@ -2136,14 +2157,19 @@ class PublishingService:
         if step.kind == PublishedResourceKind.API_POLICY and step.stage == "prepare":
             await writer.put_api_policy(publication.api_name, DENY_ALL_POLICY)
         elif step.kind == PublishedResourceKind.SUBSCRIPTION:
-            grant = next(
-                (
-                    grant
-                    for grant in snapshot.grants
-                    if grant.subscription_name is not None and grant.subscription_name == step.name
-                ),
-                None,
-            ) if snapshot else None
+            grant = (
+                next(
+                    (
+                        grant
+                        for grant in snapshot.grants
+                        if grant.subscription_name is not None
+                        and grant.subscription_name == step.name
+                    ),
+                    None,
+                )
+                if snapshot
+                else None
+            )
             if step.name == publication.subscription_name:
                 await writer.put_subscription(
                     step.name,
@@ -2274,9 +2300,7 @@ class PublishingService:
         results: list[PublishStepResult],
         resources: list[PublishedResource],
     ) -> RecoveryJournal:
-        async def record(
-            kind: PublishedResourceKind, name: str, created: bool, stage: str
-        ) -> None:
+        async def record(kind: PublishedResourceKind, name: str, created: bool, stage: str) -> None:
             item = next(
                 (
                     item
@@ -2462,7 +2486,7 @@ class PublishingService:
         run: PublishRun,
     ) -> None:
         started = utc_now()
-        writer = self._writer_factory(ApimResourceId.parse(gateway.azure_resource_id))
+        writer = self._writer_factory(gateway.arm_resource())
         resources = {(item.kind, item.name): item for item in _desired_resources(publication)}
         tracked = list(publication.resources)
         results: list[PublishStepResult] = []
@@ -2540,7 +2564,7 @@ class PublishingService:
         self, publication: Publication, gateway: Gateway, plan: PublishPlan, run: PublishRun
     ) -> None:
         started = utc_now()
-        writer = self._writer_factory(ApimResourceId.parse(gateway.azure_resource_id))
+        writer = self._writer_factory(gateway.arm_resource())
         results: list[PublishStepResult] = []
         remaining: list[PublishedResource] = list(publication.resources)
         errors: list[str] = []
@@ -2558,9 +2582,7 @@ class PublishingService:
                 client = self._client_factory(writer.resource)
                 denied, guard_errors = await self._establish_deny(publication, client, writer)
                 errors.extend(guard_errors)
-                errors.extend(
-                    await self._suspend_owned_subscriptions(publication, client, writer)
-                )
+                errors.extend(await self._suspend_owned_subscriptions(publication, client, writer))
                 if not denied:
                     raise ConflictError(
                         "Unpublish could not establish a fail-closed runtime policy"
@@ -2606,9 +2628,7 @@ class PublishingService:
             succeeded = not errors
             await self._record_state(
                 publication,
-                status=(
-                    PublicationStatus.DRAFT if succeeded else PublicationStatus.FAILED
-                ),
+                status=(PublicationStatus.DRAFT if succeeded else PublicationStatus.FAILED),
                 resources=remaining,
                 run_id=run.id,
                 error="; ".join(errors) or None,
@@ -2697,14 +2717,10 @@ class PublishingService:
                 "MOSAIC replaced these existing resources before the failure and cannot restore "
                 "their previous contents: " + ", ".join(sorted(replaced))
             )
-        status = (
-            PublishRunStatus.ROLLBACK_FAILED if orphaned else PublishRunStatus.ROLLED_BACK
-        )
+        status = PublishRunStatus.ROLLBACK_FAILED if orphaned else PublishRunStatus.ROLLED_BACK
         await self._record_state(
             publication,
-            status=(
-                PublicationStatus.FAILED if orphaned else PublicationStatus.ROLLED_BACK
-            ),
+            status=(PublicationStatus.FAILED if orphaned else PublicationStatus.ROLLED_BACK),
             resources=resources,
             run_id=run.id,
             error=failure,
@@ -2767,6 +2783,26 @@ class PublishingService:
         )
         if access_snapshot:
             await self._project_bindings(current, access_snapshot, run)
+            gateway = await self._repository.get_gateway(current.tenant_id, current.gateway_id)
+            if (
+                gateway is not None
+                and gateway.azure_cloud == "government"
+                and self._directory is not None
+                and self._entitlements is not None
+            ):
+                resource = gateway.arm_resource()
+                await reconcile_initial_keys(
+                    current,
+                    gateway,
+                    repository=self._repository,
+                    directory=self._directory,
+                    entitlements=self._entitlements,
+                    book=await load_book(self._cost_centers, current.tenant_id),
+                    manager=ApimInitialKeyManager(
+                        self._client_factory(resource), self._writer_factory(resource)
+                    ),
+                    actor_object_id=run.actor_object_id or "system:publishing",
+                )
         await self._finish_run(
             run, PublishRunStatus.SUCCEEDED, started, results=results, errors=[], orphaned=[]
         )
@@ -2815,16 +2851,17 @@ class PublishingService:
         records = await self._entitlements.list_entitlements(
             publication.tenant_id,
             resource_id=publication.model_api_id
-            or model_api_id(
-                publication.tenant_id, publication.gateway_id, publication.api_name
-            ),
+            or model_api_id(publication.tenant_id, publication.gateway_id, publication.api_name),
         )
         actor = Actor(run.actor_object_id or "system:publishing", publication.tenant_id)
         for entitlement in records:
             grant = grants.get(entitlement.id)
             binding = entitlement.binding
-            if grant and grant.enabled and snapshot and (
-                snapshot.settings.keys_enabled or snapshot.settings.entra_enabled
+            if (
+                grant
+                and grant.enabled
+                and snapshot
+                and (snapshot.settings.keys_enabled or snapshot.settings.entra_enabled)
             ):
                 binding = EntitlementBinding(
                     gateway_id=publication.gateway_id,
@@ -2886,6 +2923,11 @@ class PublishingService:
             updates["unpublished_at"] = None
         if unpublished:
             updates["unpublished_at"] = utc_now()
+            updates["key_policy_hashes"] = {}
+            updates["key_lifecycle"] = {
+                name: "deleted" if state == "deleted" else "pending"
+                for name, state in current.key_lifecycle.items()
+            }
         if access_snapshot is not None:
             updates["applied_access"] = access_snapshot
         if access_state is not None:
@@ -3138,8 +3180,8 @@ class PublishingService:
             )
         gateway = await self._load_gateway(actor, publication.gateway_id)
         self._require_writable(gateway)
-        client = self._client_factory(ApimResourceId.parse(gateway.azure_resource_id))
-        writer = self._writer_factory(ApimResourceId.parse(gateway.azure_resource_id))
+        client = self._client_factory(gateway.arm_resource())
+        writer = self._writer_factory(gateway.arm_resource())
         await self._assert_lock(publication, run)
         # Pending steps identify writes the old process may have completed before it lost storage.
         # Recovery retains that evidence rather than dropping an unrecorded resource on the floor.
@@ -3166,9 +3208,7 @@ class PublishingService:
         safe: ModelAccessSnapshot | None = None
         recovery_steps = list(run.steps)
         if governed:
-            journal = self._recovery_journal(
-                actual, writer, run, recovery_steps, resources
-            )
+            journal = self._recovery_journal(actual, writer, run, recovery_steps, resources)
             denied, errors = await self._establish_deny(actual, client, writer, journal)
             errors.extend(await self._suspend_owned_subscriptions(actual, client, writer, journal))
             if not denied or errors:
@@ -3185,7 +3225,8 @@ class PublishingService:
                         "version": max(
                             snapshot.version,
                             publication.applied_access.version if publication.applied_access else 0,
-                        ) + 1
+                        )
+                        + 1
                     }
                 )
         message = (

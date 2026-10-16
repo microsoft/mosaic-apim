@@ -738,6 +738,72 @@ def test_export_route_adds_utf8_bom_and_rejects_unknown_views(client: TestClient
     assert bad.status_code == 422
 
 
+async def test_cloud_filter_keeps_removed_gateway_history_and_export_scope(
+    client: TestClient,
+) -> None:
+    state = client.app.state
+    state.analytics_service._clock = lambda: NOW
+    for cloud, gateway, requests in (
+        ("commercial", "removed-commercial", 2),
+        ("government", "removed-government", 3),
+    ):
+        await state.usage_rollup_repository.upsert_rollups(
+            [
+                _summary(
+                    "api",
+                    NOW.date(),
+                    UsageSummaryEntry(
+                        key="chat",
+                        metrics=UsageMetrics(requests=requests),
+                    ),
+                ).model_copy(
+                    update={
+                        "id": f"summary-{cloud}",
+                        "gateway_id": gateway,
+                        "azure_cloud": cloud,
+                    }
+                ),
+            ]
+        )
+        await state.usage_rollup_repository.update_rollup_state(
+            TENANT,
+            gateway,
+            lambda current, cloud=cloud: current.model_copy(
+                update={
+                    "azure_cloud": cloud,
+                    "last_success_at": NOW,
+                    "queried_through": NOW,
+                    "data_available_from": NOW.date().isoformat(),
+                }
+            ),
+        )
+    all_clouds = client.get("/api/v1/analytics/overview", params={"range": "7d"}).json()
+    gov = client.get(
+        "/api/v1/analytics/overview", params={"range": "7d", "azureCloud": "government"}
+    ).json()
+    commercial = client.get(
+        "/api/v1/analytics/overview", params={"range": "7d", "azureCloud": "commercial"}
+    ).json()
+    assert all_clouds["kpis"]["requests"] == 5
+    assert gov["kpis"]["requests"] == 3
+    assert commercial["kpis"]["requests"] == 2
+    exported = client.get(
+        "/api/v1/analytics/export",
+        params={
+            "view": "trend",
+            "range": "7d",
+            "azureCloud": "government",
+        },
+    )
+    rows = list(csv.DictReader(io.StringIO(exported.text.lstrip("\ufeff"))))
+    assert rows and {row["Cloud scope"] for row in rows} == {"government"}
+    assert {row["Cloud"] for row in rows} == {"government"}
+    assert (
+        client.get("/api/v1/analytics/overview", params={"azureCloud": "unknown"}).status_code
+        == 422
+    )
+
+
 def _base_report() -> dict[str, object]:
     window = resolve_window(AnalyticsFilters(range="30d"), NOW).model()
     return {

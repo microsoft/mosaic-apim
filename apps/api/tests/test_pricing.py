@@ -51,15 +51,17 @@ TENANT = "tenant-test"
 
 
 def _schema_file() -> dict[str, object]:
-    text = resources.files("mosaic_api").joinpath("data/model_prices.schema.json").read_text(
-        encoding="utf-8"
+    text = (
+        resources.files("mosaic_api")
+        .joinpath("data/model_prices.schema.json")
+        .read_text(encoding="utf-8")
     )
     return dict(json.loads(text))
 
 
 def _seed_file() -> dict[str, object]:
-    text = resources.files("mosaic_api").joinpath("data/model_prices.json").read_text(
-        encoding="utf-8"
+    text = (
+        resources.files("mosaic_api").joinpath("data/model_prices.json").read_text(encoding="utf-8")
     )
     return dict(json.loads(text))
 
@@ -509,8 +511,14 @@ def test_tokens_are_priced_per_million_with_cached_tokens_at_the_input_price() -
 
 def test_ptu_cost_is_capacity_times_the_hourly_rate() -> None:
     facts = _facts(deployment_type="GlobalProvisionedManaged", capacity=15)
-    rate = _entry("ptu", model="*", deployment_type="GlobalProvisionedManaged", ptu_hourly=1.0,
-                  input_per_million=None, output_per_million=None)
+    rate = _entry(
+        "ptu",
+        model="*",
+        deployment_type="GlobalProvisionedManaged",
+        ptu_hourly=1.0,
+        input_per_million=None,
+        output_per_million=None,
+    )
     pricer = Pricer(PriceBook([rate]), {facts.key: facts})
     day = pricer.rate(facts.key, date(2026, 3, 18))
     assert day.kind == "provisioned"
@@ -528,11 +536,22 @@ def test_a_monthly_amount_for_one_deployment_replaces_the_hourly_rate() -> None:
     facts = _facts(deployment_type="GlobalProvisionedManaged", capacity=15)
     book = PriceBook(
         [
-            _entry("ptu", model="*", deployment_type="GlobalProvisionedManaged", ptu_hourly=1.0,
-                   input_per_million=None, output_per_million=None),
-            _entry("reservation", deployment=facts.key, monthly_amount=3_100.0,
-                   input_per_million=None, output_per_million=None,
-                   effective_from=date(2026, 3, 1)),
+            _entry(
+                "ptu",
+                model="*",
+                deployment_type="GlobalProvisionedManaged",
+                ptu_hourly=1.0,
+                input_per_million=None,
+                output_per_million=None,
+            ),
+            _entry(
+                "reservation",
+                deployment=facts.key,
+                monthly_amount=3_100.0,
+                input_per_million=None,
+                output_per_million=None,
+                effective_from=date(2026, 3, 1),
+            ),
         ]
     )
     pricer = Pricer(book, {facts.key: facts})
@@ -543,8 +562,16 @@ def test_a_monthly_amount_for_one_deployment_replaces_the_hourly_rate() -> None:
 def test_a_provisioned_deployment_needs_its_capacity() -> None:
     facts = _facts(deployment_type="ProvisionedManaged", capacity=None)
     book = PriceBook(
-        [_entry("ptu", model="*", deployment_type="ProvisionedManaged", ptu_hourly=2.0,
-                input_per_million=None, output_per_million=None)]
+        [
+            _entry(
+                "ptu",
+                model="*",
+                deployment_type="ProvisionedManaged",
+                ptu_hourly=2.0,
+                input_per_million=None,
+                output_per_million=None,
+            )
+        ]
     )
     match = book.match(facts, date(2026, 3, 1))
     assert isinstance(match, Unpriced) and match.reason == "noCapacity"
@@ -555,8 +582,16 @@ def test_reserved_capacity_is_priced_from_when_it_was_deployed() -> None:
         deployment_type="GlobalProvisionedManaged", capacity=10, deployed_on=date(2026, 3, 10)
     )
     book = PriceBook(
-        [_entry("ptu", model="*", deployment_type="GlobalProvisionedManaged", ptu_hourly=1.0,
-                input_per_million=None, output_per_million=None)]
+        [
+            _entry(
+                "ptu",
+                model="*",
+                deployment_type="GlobalProvisionedManaged",
+                ptu_hourly=1.0,
+                input_per_million=None,
+                output_per_million=None,
+            )
+        ]
     )
     pricer = Pricer(book, {facts.key: facts})
     assert pricer.rate(facts.key, date(2026, 3, 9)).kind == "unpriced"
@@ -620,6 +655,27 @@ def _endpoint(**changes: object) -> ModelEndpoint:
     }
     values.update(changes)
     return ModelEndpoint(**values)  # type: ignore[arg-type]
+
+
+def test_managed_government_pricing_uses_resource_cloud_not_custom_hostname() -> None:
+    endpoint = _endpoint(
+        azure_cloud="government",
+        endpoint="https://models.example.test",
+        azure_resource_id="/subscriptions/sub/resourceGroups/rg/providers/Microsoft.CognitiveServices/accounts/model",
+    )
+    facts = deployment_facts(endpoint)
+    assert facts.cloud == "government"
+    overridden = deployment_facts(
+        endpoint,
+        settings=EndpointPricing(
+            id="pricing",
+            tenant_id=TENANT,
+            endpoint_id=endpoint.id,
+            cloud="sovereign-x",
+        ),
+    )
+    assert overridden.cloud == "sovereign-x"
+    assert overridden.cloud_source == "override"
 
 
 def test_observed_deployments_bring_their_own_facts() -> None:
@@ -748,9 +804,7 @@ def test_an_administrator_version_is_matched_like_a_seeded_one() -> None:
     )
     entry = version_entry(version)
     book = PriceBook([entry])
-    facts = _facts(
-        cloud="openai", publisher=None, deployment_type=None, version=None, region=None
-    )
+    facts = _facts(cloud="openai", publisher=None, deployment_type=None, version=None, region=None)
     assert _matched(book, facts, date(2026, 2, 1)).id == "price_1"
     assert entry.sources[0].url == "https://openai.com/api/pricing"
     assert entry.recorded_at <= utc_now() + timedelta(seconds=1)

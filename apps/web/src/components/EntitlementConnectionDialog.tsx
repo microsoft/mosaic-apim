@@ -22,6 +22,7 @@ import { runtimeConfig } from '../runtime-config'
 import type { Entitlement, KeySlot, McpConnection, ModelConnection } from '../types'
 import { ErrorState, Loading } from './AsyncState'
 import { ModelAccessRecovery } from './ModelAccessRecovery'
+import { CloudBadge } from './CloudBadge'
 import styles from '../pages/EntitlementsPage.module.css'
 
 export function EntitlementConnectionDialog({
@@ -48,7 +49,21 @@ export function EntitlementConnectionDialog({
   )
 }
 
+function governmentStatus(info: ModelConnection | McpConnection) {
+  if (info.runtime?.status !== 'applied') return 'Waiting for reviewed apply.'
+  if (info.keysAvailable === false || info.keysAllowedByCostCenter === false || info.runtime.keyState === 'ineligible')
+    return 'Key access unavailable. Azure Government requires a direct grant and a key-enabled cost center.'
+  if (info.keyExists ?? info.runtime.keyExists) return 'Ready · key available.'
+  if (info.runtime.keyState === 'failed') return 'Key setup failed. Refresh status or ask your administrator to retry.'
+  if (info.runtime.keyState === 'deleted') return 'Key deleted. Create one explicitly to reconnect.'
+  return 'Key setup is preparing. Refresh key status before connecting.'
+}
+
 function PrincipalConnectionNotice({ info }: { info: ModelConnection }) {
+  if (info.azureCloud === 'government') return <MessageBar intent="info"><MessageBarBody>
+    Azure Government requires this direct grant&apos;s subscription key. Commercial Entra tokens are not accepted.
+    Initial key setup follows a successful reviewed apply; a key does not provide network connectivity.
+  </MessageBarBody></MessageBar>
   if (!info.principalKind) return null
   if (info.principalKind === 'agentIdentity') {
     return (
@@ -98,10 +113,12 @@ function PrincipalConnectionNotice({ info }: { info: ModelConnection }) {
 function codeSnippet(info: McpConnection): string {
   const name = info.displayName || 'mosaic-mcp'
   return JSON.stringify({
+    ...(info.azureCloud === 'government' ? { inputs: [{ id: 'mosaic-key', type: 'promptString', description: 'MOSAIC subscription key', password: true }] } : {}),
     servers: {
       [name]: {
         type: 'http',
         url: info.serverUrl ?? '<server URL unavailable>',
+        ...(info.azureCloud === 'government' ? { headers: { [info.subscriptionHeader ?? 'Ocp-Apim-Subscription-Key']: '${input:mosaic-key}' } } : {}),
       },
     },
   }, null, 2)
@@ -110,6 +127,8 @@ function codeSnippet(info: McpConnection): string {
 function McpConnectionDetails({ info }: { info: McpConnection }) {
   return (
     <>
+      <CloudBadge cloud={info.azureCloud} />
+      {info.azureCloud === 'government' && <Text>{governmentStatus(info)}</Text>}
       <MessageBar intent={info.enforced ? 'success' : 'warning'}>
         <MessageBarBody>
           {info.enforced ? 'Enforced by the gateway.' : 'Recorded, not enforced.'}{' '}
@@ -130,7 +149,11 @@ function McpConnectionDetails({ info }: { info: McpConnection }) {
         {info.clientId && <div><dt>Client ID</dt><dd>{info.clientId}</dd></div>}
         {info.viaGroupName && <div><dt>Security group</dt><dd>{info.viaGroupName}</dd></div>}
       </dl>
-      {info.principalKind === 'securityGroup' && (
+      {info.azureCloud === 'government' && <Text>
+        Key-only Azure Government access. Use a client supporting custom headers and secure input.
+        Your network must reach the gateway; no commercial OAuth sign-in or Government account linking is used.
+      </Text>}
+      {info.principalKind === 'securityGroup' && info.azureCloud !== 'government' && (
         <MessageBar intent="warning">
           <MessageBarBody>
             Members sign in as themselves. People use delegated tokens; agents and applications use
@@ -178,19 +201,22 @@ function ConnectionSession({
   const info = connection.data
   const modelInfo = !isMcp ? (info as ModelConnection | undefined) : undefined
   const mcpInfo = isMcp ? (info as McpConnection | undefined) : undefined
-  const keyExists = modelInfo?.keyExists ?? entitlement.runtime?.keyExists ?? true
-  const keysAllowedByCostCenter = modelInfo?.keysAllowedByCostCenter !== false
+  const keyInfo = modelInfo ?? (mcpInfo?.azureCloud === 'government' ? mcpInfo : undefined)
+  const keyExists = keyInfo?.keyExists ?? entitlement.runtime?.keyExists ?? keyInfo?.azureCloud !== 'government'
+  const keysAllowedByCostCenter = keyInfo?.keysAllowedByCostCenter !== false
   const keyCapable = Boolean(
-    !closed && !connection.isError && modelInfo && modelInfo.keysAvailable !== false
+    !closed && !connection.isError && keyInfo && keyInfo.keysAvailable !== false
     && keysAllowedByCostCenter
     && entitlement.enabled && entitlement.subject.kind !== 'group'
-    && (isPool || (entitlement.resource.kind === 'modelApi' && entitlement.binding?.source === 'orchestrated'))
+    && (isPool || ((entitlement.resource.kind === 'modelApi' || (isMcp && keyInfo.azureCloud === 'government')) && entitlement.binding?.source === 'orchestrated'))
     && entitlement.runtime?.status === 'applied' && entitlement.runtime.appliedMethods?.keysEnabled
-    && modelInfo.runtime?.status === 'applied' && modelInfo.appliedMethods?.keysEnabled
-    && modelInfo.entitlementId === entitlement.id
-    && modelInfo.publicationId === entitlement.runtime.publicationId,
+    && keyInfo.runtime?.status === 'applied' && keyInfo.appliedMethods?.keysEnabled
+    && keyInfo.entitlementId === entitlement.id
+    && keyInfo.publicationId === entitlement.runtime.publicationId,
   )
   const eligible = Boolean(keyCapable && keyExists)
+  const preparing = keyInfo?.azureCloud === 'government' && !keyExists
+    && ['pending', 'preparing'].includes(keyInfo.runtime?.keyState ?? '')
   const sharedWith = modelInfo?.keySharedWith ?? []
   const sharedNames = sharedWith.map((model) => model.displayName).join(', ')
 
@@ -306,7 +332,7 @@ function ConnectionSession({
       const result = await api.revealEntitlementKey(entitlement.id, slot, abort.signal)
       if (!mounted.current || generation.current !== request) return
       if (result.entitlementId !== entitlement.id || result.slot !== slot || !result.key
-        || (modelInfo?.runtime?.subscriptionName && result.subscriptionName !== modelInfo.runtime.subscriptionName)) {
+        || (keyInfo?.runtime?.subscriptionName && result.subscriptionName !== keyInfo.runtime.subscriptionName)) {
         throw new Error('The service returned unexpected credential metadata. No key was displayed.')
       }
       setSecret({ slot, key: result.key })
@@ -354,6 +380,8 @@ function ConnectionSession({
             {mcpInfo && <McpConnectionDetails info={mcpInfo} />}
             {modelInfo && (
               <>
+                <CloudBadge cloud={modelInfo.azureCloud} />
+                {modelInfo.azureCloud === 'government' && <Text>{governmentStatus(modelInfo)}</Text>}
                 <dl className={styles.detailList}>
                   <div><dt>Endpoint</dt><dd>{modelInfo.endpoint}</dd></div>
                   {isPool && modelInfo.poolName && <div><dt>Pool</dt><dd>{modelInfo.poolName}</dd></div>}
@@ -363,16 +391,16 @@ function ConnectionSession({
                   {modelInfo.costCenterHeader && modelInfo.costCenter && <div><dt>Cost center header</dt><dd>{modelInfo.costCenterHeader}: {modelInfo.costCenter.code}</dd></div>}
                   <div><dt>Runtime state</dt><dd>{modelInfo.runtime?.status ?? 'unknown'}</dd></div>
                   <div><dt>Last applied methods</dt><dd>{describeAccessMethods(modelInfo.appliedMethods)}</dd></div>
-                  <div><dt>Model-runtime audience</dt><dd>{modelInfo.entraAudience ?? 'Not configured'}</dd></div>
-                  <div><dt>Model-runtime scope</dt><dd>{modelInfo.entraScope ?? 'Not configured'}</dd></div>
+                  {modelInfo.azureCloud !== 'government' && <><div><dt>Model-runtime audience</dt><dd>{modelInfo.entraAudience ?? 'Not configured'}</dd></div>
+                  <div><dt>Model-runtime scope</dt><dd>{modelInfo.entraScope ?? 'Not configured'}</dd></div></>}
                   {modelInfo.entraClientId && <div><dt>Client ID</dt><dd>{modelInfo.entraClientId}</dd></div>}
                   {modelInfo.entraApplicationScope && <div><dt>Application scope</dt><dd>{modelInfo.entraApplicationScope}</dd></div>}
                   {modelInfo.requiredAppRole && <div><dt>Required app role</dt><dd>{modelInfo.requiredAppRole}</dd></div>}
                   {modelInfo.viaGroupName && <div><dt>Security group</dt><dd>{modelInfo.viaGroupName}</dd></div>}
                 </dl>
                 <PrincipalConnectionNotice info={modelInfo} />
-                <Text size={200}>A MOSAIC control-plane token is not a model-runtime token. Entra consent and application permissions are configured separately.</Text>
-                {modelInfo.runtime?.error && (
+                {modelInfo.azureCloud !== 'government' && <Text size={200}>A MOSAIC control-plane token is not a model-runtime token. Entra consent and application permissions are configured separately.</Text>}
+                {modelInfo.azureCloud !== 'government' && modelInfo.runtime?.error && (
                   <MessageBar intent="warning"><MessageBarBody>{modelInfo.runtime.error}</MessageBarBody></MessageBar>
                 )}
                 {modelInfo.runtime?.status === 'unknown' && (
@@ -412,19 +440,23 @@ function ConnectionSession({
                 {modelInfo.keysAvailable === false ? (
                   <MessageBar intent="warning">
                     <MessageBarBody>
-                      Key authentication is not available for this grant. Use an Entra token.
+                      {modelInfo.azureCloud === 'government'
+                        ? 'Azure Government requires an eligible direct grant; group grants cannot supply shared keys.'
+                        : 'Key authentication is not available for this grant. Use an Entra token.'}
                     </MessageBarBody>
                   </MessageBar>
                 ) : modelInfo.keysAllowedByCostCenter === false ? (
                   <MessageBar intent="warning">
                     <MessageBarBody>
-                      Keys are off for this cost center. Use Microsoft Entra bearer tokens or turn keys on for the cost center and apply the model.
+                      {modelInfo.azureCloud === 'government'
+                        ? 'Keys are off for this cost center. Azure Government access is blocked until an administrator selects a key-enabled cost center.'
+                        : 'Keys are off for this cost center. Use Microsoft Entra bearer tokens or turn keys on for the cost center and apply the model.'}
                     </MessageBarBody>
                   </MessageBar>
                 ) : (
                   <>
                     <Text>Use one enabled credential. Examples contain placeholders, never your actual key:</Text>
-                    <pre className={styles.secretValue}>{`${modelInfo.subscriptionHeader}: <YOUR_APIM_KEY>\n\nEntra access token: <YOUR_ENTRA_TOKEN>`}</pre>
+                    <pre className={styles.secretValue}>{`${modelInfo.subscriptionHeader}: <YOUR_APIM_KEY>${modelInfo.azureCloud === 'government' ? '' : '\n\nEntra access token: <YOUR_ENTRA_TOKEN>'}`}</pre>
                   </>
                 )}
               </>
@@ -443,16 +475,16 @@ function ConnectionSession({
             )}
             {keyCapable && !keyExists && <Text>No key exists for this grant yet.</Text>}
             {/* A browser takes focus off a button that becomes disabled, so a busy button stays focusable. */}
-            {modelInfo?.keysAvailable !== false && !isMcp && keysAllowedByCostCenter && (
+            {(!isMcp || keyInfo) && keyInfo?.keysAvailable !== false && keysAllowedByCostCenter && (
               <>
                 <div className={styles.rowActions}>
                   {!keyExists ? (
                     <Button
                       appearance="primary"
                       disabled={!keyCapable || createKey.isPending}
-                      onClick={() => createKey.mutate()}
+                      onClick={() => preparing || keyInfo?.runtime?.keyState === 'failed' ? void refreshKeys() : createKey.mutate()}
                     >
-                      Create key
+                      {preparing || keyInfo?.runtime?.keyState === 'failed' ? 'Refresh key status' : 'Create key'}
                     </Button>
                   ) : (
                     <>

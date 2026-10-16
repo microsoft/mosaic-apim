@@ -513,9 +513,7 @@ class PricingService:
         """Record a price, or a new version of one. Nothing already recorded changes."""
 
         if request.deployment is not None:
-            facts = await self.deployments(
-                actor.tenant_id, [request.deployment.partition("/")[0]]
-            )
+            facts = await self.deployments(actor.tenant_id, [request.deployment.partition("/")[0]])
             if request.deployment not in facts:
                 raise ValidationError(
                     "MOSAIC has no record of that deployment",
@@ -734,7 +732,11 @@ class PricingService:
         views: list[EndpointPricingView] = []
         for endpoint in endpoints:
             current = settings.get(endpoint.id)
-            detected = detect_cloud(str(endpoint.endpoint))
+            detected = (
+                endpoint.azure_cloud
+                if endpoint.azure_resource_id
+                else detect_cloud(str(endpoint.endpoint))
+            )
             override = current.cloud if current else None
             cloud = override or detected
             detected_region = normalize_region(endpoint.capabilities.location)
@@ -793,9 +795,7 @@ class PricingService:
         observed = await self._endpoints.list_observed_for_endpoint(
             ObservedModelDeployment, tenant, endpoint_id, "observedModelDeployment"
         )
-        typed = {
-            item.deployment_name.casefold() for item in observed if item.sku_name
-        }
+        typed = {item.deployment_name.casefold() for item in observed if item.sku_name}
         known = {item.deployment_name.casefold() for item in observed} | {
             item.deployment_name.casefold() for item in endpoint.declared_deployments
         }
@@ -812,7 +812,11 @@ class PricingService:
                     "MOSAIC uses those.",
                     details={"deploymentName": item.deployment_name},
                 )
-        detected = detect_cloud(str(endpoint.endpoint))
+        detected = (
+            endpoint.azure_cloud
+            if endpoint.azure_resource_id
+            else detect_cloud(str(endpoint.endpoint))
+        )
         fields = update.model_fields_set
         for attempt in range(SAVE_ATTEMPTS):
             current = await self._repository.get_endpoint_pricing(tenant, endpoint_id)

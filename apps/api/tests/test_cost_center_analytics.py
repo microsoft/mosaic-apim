@@ -18,7 +18,9 @@ from test_cost import (
     ANALYSTS,
     BOB,
     CAROL,
+    ENDPOINT,
     FEBRUARY_IDLE,
+    GATEWAY,
     MARCH_SO_FAR,
     TENANT,
     Harness,
@@ -131,6 +133,48 @@ async def test_the_chargeback_names_each_rows_cost_center(harness: Harness) -> N
     rows = csv.DictReader(io.StringIO(filtered.text.lstrip("\ufeff")))
     charged = {row["Charged to"] for row in rows}
     assert charged == {"Bob", "Analysts"}
+
+
+async def test_government_chargeback_keeps_cloud_and_never_substitutes_commercial_prices(
+    harness: Harness,
+) -> None:
+    await seed(harness)
+    state = harness.state
+    gateway = await state.gateway_repository.get_gateway(TENANT, GATEWAY)
+    endpoint = await state.model_endpoint_repository.get_endpoint(TENANT, ENDPOINT)
+    assert gateway is not None and endpoint is not None
+    await state.gateway_repository.save_gateway(
+        gateway.model_copy(update={"azure_cloud": "government"}),
+        _audit("gateway"),
+    )
+    await state.model_endpoint_repository.save_endpoint(
+        endpoint.model_copy(
+            update={
+                "azure_cloud": "government",
+                "endpoint": "https://model.example.test",
+                "azure_resource_id": (
+                    "/subscriptions/sub/resourceGroups/rg"
+                    "/providers/Microsoft.CognitiveServices/accounts/model"
+                ),
+            }
+        ),
+        _audit("endpoint"),
+    )
+    await _roll_up(harness)
+    exported = harness.client.get(
+        "/api/v1/analytics/export",
+        params={
+            "view": "chargeback",
+            "range": "30d",
+            "azureCloud": "government",
+        },
+    )
+    assert exported.status_code == 200, exported.text
+    rows = list(csv.DictReader(io.StringIO(exported.text.lstrip("\ufeff"))))
+    assert rows and {row["Cloud"] for row in rows} == {"government"}
+    chat_rows = [row for row in rows if row["Deployment"] == "chat"]
+    assert chat_rows
+    assert all(row["Priced"] == "no" and not row["Cost (USD)"] for row in chat_rows)
 
 
 async def test_a_cost_centers_spend_is_ready_for_budget_checks(harness: Harness) -> None:

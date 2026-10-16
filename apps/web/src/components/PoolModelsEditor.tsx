@@ -252,7 +252,7 @@ function PoolModelCard({
                         </Text>
                         {deployment && (
                           <span className={styles.accessBadges}>
-                            <EnvironmentBadge environment={deployment.environment ?? null} catalog={catalog} size="small" />
+                            <EnvironmentBadge azureCloud={deployment.azureCloud ?? 'commercial'} environment={deployment.environment ?? null} catalog={catalog} size="small" />
                             <PoolMemberAccessBadges
                               apiKey={deployment.apiKey}
                               declared={deployment.declared}

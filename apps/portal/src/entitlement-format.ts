@@ -77,6 +77,17 @@ export function runtimeStatusLabel(status: EntitlementRuntime['status']) {
 }
 
 export function describeRuntime(entitlement: Entitlement) {
+  if (entitlement.runtime?.appliedMethods?.keysEnabled &&
+    entitlement.runtime.appliedMethods.entraEnabled === false && entitlement.runtime.keyState) {
+    if (entitlement.runtime.status !== 'applied') return runtimeStatusLabel(entitlement.runtime.status)
+    switch (entitlement.runtime.keyState) {
+      case 'ready': return entitlement.runtime.keyExists ? 'Ready' : 'Preparing key'
+      case 'failed': return 'Key setup failed'
+      case 'deleted': return 'Key deleted'
+      case 'ineligible': return 'Key access unavailable'
+      default: return 'Preparing key'
+    }
+  }
   if (entitlement.resource.kind === 'mcpServer') {
     return entitlement.runtime
       ? runtimeStatusLabel(entitlement.runtime.status)

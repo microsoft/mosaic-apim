@@ -557,7 +557,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                 {selectedGateway && (
                   <Text size={200}>
                     Gateway environment:{' '}
-                    <EnvironmentBadge environment={selectedGateway.environment} catalog={catalog.data} size="small" />
+                    <EnvironmentBadge azureCloud={selectedGateway.azureCloud ?? 'commercial'} environment={selectedGateway.environment} catalog={catalog.data} size="small" />
                   </Text>
                 )}
                 {gateways.isPending && <Loading label="Loading gateways" />}

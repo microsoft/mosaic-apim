@@ -18,6 +18,12 @@ import httpx
 import structlog
 from pydantic import AnyHttpUrl
 
+from mosaic_api.clouds import (
+    AzureCloud,
+    ConnectionValidator,
+    known_azure_host_cloud,
+    validate_resource_connection,
+)
 from mosaic_api.domain import (
     AuditEvent,
     CapabilitySupport,
@@ -73,6 +79,17 @@ TOOL_ENTITY_TYPE = "observedMcpTool"
 McpClientFactory = Callable[[str, str | None], McpClient]
 SecretResolver = Callable[[str], Awaitable[str]]
 TokenResolver = Callable[[str], Awaitable[str]]
+ConnectionTokenResolver = Callable[[McpEndpoint, str], Awaitable[str]]
+
+
+def _validate_cloud_audience(cloud: AzureCloud, audience: str | None) -> None:
+    normalized = (audience or "").rstrip("/").removesuffix("/.default")
+    if cloud == "government" and normalized in {
+        "https://cognitiveservices.azure.com", "https://ai.azure.com",
+    }:
+        raise ValidationError(
+            "A Government MCP backend cannot use a commercial Azure token audience."
+        )
 
 
 def _validate_environment_key(catalog_keys: set[str], value: str) -> None:
@@ -142,6 +159,8 @@ class McpEndpointService:
         require_https: bool = True,
         allow_private_endpoints: bool = False,
         environment_repository: EnvironmentRepository | None = None,
+        connection_validator: ConnectionValidator | None = None,
+        connection_token_resolver: ConnectionTokenResolver | None = None,
     ) -> None:
         self._repository = repository
         # The gateway repository holds the tenant's environment scope lease, so a catalog edit
@@ -149,6 +168,8 @@ class McpEndpointService:
         self._gateways = gateway_repository
         self._entitlements = entitlement_repository
         self._client_factory = client_factory
+        self._connection_validator = connection_validator
+        self._connection_token_resolver = connection_token_resolver
         self._secret_resolver = secret_resolver
         self._token_resolver = token_resolver
         self._require_https = require_https
@@ -195,11 +216,32 @@ class McpEndpointService:
         return endpoint
 
     async def register(self, actor: Actor, request: McpEndpointCreate) -> McpEndpoint:
+        if request.azure_connection_id is not None or request.azure_cloud != "commercial":
+            async with scope_lease(self._gateways, actor.tenant_id, "azure-connections"):
+                return await self._register(actor, request)
+        return await self._register(actor, request)
+
+    async def _register(self, actor: Actor, request: McpEndpointCreate) -> McpEndpoint:
+        await validate_resource_connection(
+            self._connection_validator, actor.tenant_id,
+            request.azure_connection_id, request.azure_cloud,
+        )
+        _validate_cloud_audience(request.azure_cloud, request.resource_audience)
+        detected_cloud = known_azure_host_cloud(str(request.endpoint))
+        if detected_cloud is not None and detected_cloud != request.azure_cloud:
+            raise ValidationError("The MCP endpoint hostname belongs to a different Azure cloud.")
+        if request.azure_cloud == "government" and request.auth_mode == McpAuthMode.API_KEY:
+            raise ValidationError(
+                "Government MCP backend secrets require an explicitly configured sovereign "
+                "backend vault; this deployment does not support that credential path."
+            )
         # Admit the URL exactly as submitted. Canonicalising first would strip any embedded
         # credentials before the guard could object to them.
         self._admit(str(request.endpoint))
         url = canonical_mcp_url(str(request.endpoint))
-        existing = await self._repository.find_endpoint_by_url(actor.tenant_id, url)
+        existing = await self._repository.find_endpoint_by_url(
+            actor.tenant_id, url, azure_cloud=request.azure_cloud
+        )
         if existing:
             raise ConflictError(
                 "This MCP server is already registered with MOSAIC",
@@ -227,12 +269,18 @@ class McpEndpointService:
                 "read at discovery time and never persisted."
             )
         endpoint = McpEndpoint(
-            id=mcp_endpoint_id(actor.tenant_id, url),
+            id=(
+                mcp_endpoint_id(actor.tenant_id, url)
+                if request.azure_cloud == "commercial"
+                else deterministic_id("mcpEndpoint", actor.tenant_id, request.azure_cloud, url)
+            ),
             tenant_id=actor.tenant_id,
             name=(request.name or url).strip(),
             # The canonical form, not the submitted one: it is what MOSAIC actually dials, and
             # storing the raw value would echo anything the URL carried back to every caller.
             endpoint=AnyHttpUrl(url),
+            azure_cloud=request.azure_cloud,
+            azure_connection_id=request.azure_connection_id,
             environment_label=request.environment_label,
             auth_mode=request.auth_mode,
             credential_reference_id=credential_id,
@@ -265,6 +313,9 @@ class McpEndpointService:
         changes = request.model_dump(exclude_unset=True, by_alias=False)
         secret_uri = changes.pop("credential_secret_uri", None)
         audience = changes.get("resource_audience")
+        _validate_cloud_audience(endpoint.azure_cloud, audience)
+        if secret_uri is not None and endpoint.azure_cloud == "government":
+            raise ValidationError("Government backend-secret resolution is not configured.")
         if "name" in changes and changes["name"] is not None:
             changes["name"] = str(changes["name"]).strip()
         if secret_uri is not None:
@@ -424,7 +475,10 @@ class McpEndpointService:
     async def _authorization_for(self, endpoint: McpEndpoint) -> str | None:
         """Resolve the credential to present, at call time and never before."""
 
+        _validate_cloud_audience(endpoint.azure_cloud, endpoint.resource_audience)
         if endpoint.auth_mode == McpAuthMode.API_KEY:
+            if endpoint.azure_cloud == "government":
+                raise ValidationError("Government backend-secret resolution is not configured.")
             if not endpoint.credential_reference_id or self._secret_resolver is None:
                 raise ValidationError(
                     "This MCP server needs a Key Vault secret that MOSAIC cannot resolve.",
@@ -440,6 +494,13 @@ class McpEndpointService:
                 )
             return f"Bearer {await self._secret_resolver(str(credential.secret_uri))}"
         if endpoint.auth_mode == McpAuthMode.MANAGED_IDENTITY:
+            if endpoint.azure_connection_id is not None or endpoint.azure_cloud != "commercial":
+                if self._connection_token_resolver is None or not endpoint.resource_audience:
+                    raise ValidationError(
+                        "This MCP server needs its selected Azure connection for discovery tokens."
+                    )
+                token = await self._connection_token_resolver(endpoint, endpoint.resource_audience)
+                return f"Bearer {token}"
             if not endpoint.resource_audience or self._token_resolver is None:
                 raise ValidationError(
                     "This MCP server needs an audience MOSAIC cannot resolve a token for.",
@@ -449,6 +510,9 @@ class McpEndpointService:
         return None
 
     async def _connect(self, endpoint: McpEndpoint) -> McpClient:
+        detected_cloud = known_azure_host_cloud(str(endpoint.endpoint))
+        if detected_cloud is not None and detected_cloud != endpoint.azure_cloud:
+            raise ValidationError("The MCP endpoint hostname belongs to a different Azure cloud.")
         url = self._admit(canonical_mcp_url(str(endpoint.endpoint)))
         return self._client_factory(url, await self._authorization_for(endpoint))
 

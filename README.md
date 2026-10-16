@@ -67,8 +67,39 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   </tr>
   <tr>
     <td colspan="2"><b>Portal catalog.</b> Model-first rows group known offerings and show their
-    environments and existing access. Search and environment/type filters narrow the list;
+    clouds, environments, and existing access. Search and cloud/environment/type filters narrow the list;
     access options open in an overlay drawer without rearranging the catalog.</td>
+  </tr>
+</table>
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/portal-government-connection.png" alt="A Government model grant with its AzGov cloud, Production environment, shared cost center, and subscription-key connection details">
+      <p><b>Government key access.</b> The exact Government offering shows its cloud, environment,
+      cost center, and applied key-only access. Connection details keep key reveal explicit and
+      show how to call that offering without commercial Entra authentication.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-azure-connections.png" alt="Settings Azure connections with separate Commercial host identity and Government service-principal connection, authentication status and management actions">
+      <p><b>Azure connections.</b> Manage the separate identities used for Commercial and
+      Government resources, test authentication, and replace a write-only secret. Cloud is
+      independent of environment classification.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-government-gateway.png" alt="A Government gateway overview with a separate AzGov cloud badge, Production environment, management connection, and inventory">
+      <p><b>Government gateway.</b> Inspect a Government APIM service through its selected
+      management connection while keeping its cloud and environment distinct. The same reviewed
+      management controls govern its model and tool publications.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/portal-government-mcp-connection.png" alt="A Government MCP grant's key-only connection details and custom-header client configuration">
+      <p><b>Government MCP connection.</b> An applied Government tool grant uses its own
+      subscription key rather than commercial OAuth discovery. Connection details show
+      compatible custom-header client configuration without revealing the key automatically.</p>
+    </td>
   </tr>
 </table>
 
@@ -79,7 +110,7 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-gateways.png" alt="A compact registered-gateway list beside the selected gateway's overview and inventory counts">
       <p><b>Gateways.</b> A compact list selects an existing API Management service and opens its
-      overview in the same workspace. The selected gateway shows its environment, read/manage mode,
+      overview in the same workspace. The selected gateway shows its cloud, environment, read/manage mode,
       inventory counts, and service details.</p>
     </td>
     <td width="50%" valign="top">
@@ -241,7 +272,7 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-analytics.png" alt="Analytics with request, token, cost, caller, error, and latency figures, a daily trend, and the top models, callers, and cost centers">
       <p><b>Analytics.</b> Real gateway usage rolled up from Log Analytics, filtered by time range,
-      gateway, environment, resource, cost center, and kind of subject. The overview compares the
+      cloud, gateway, environment, resource, cost center, and kind of subject. The overview compares the
       headline figures, cost among them, with the previous period and ranks the top models,
       callers, cost centers, and APIs, and each report has a CSV export.</p>
     </td>
@@ -392,7 +423,7 @@ resource lists, forms, and connection drawers remain solid for readability.
   <tr>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/portal-access.png" alt="A model grant with its cost center, environment, limits, and expanded connection details">
-      <p><b>My access.</b> Models and servers appear once in a searchable list, with environments,
+      <p><b>My access.</b> Models and servers appear once in a searchable list, with clouds, environments,
       cost centers, and gateway state. Choose an exact grant in the overlay drawer to see its
       limits, attribution, and connection instructions.</p>
     </td>
@@ -414,7 +445,7 @@ resource lists, forms, and connection drawers remain solid for readability.
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/portal-requests.png" alt="Model-first access requests with exact offerings, known versions, environments and cost centers">
       <p><b>My requests.</b> Model-first requests show exact offerings and known versions,
-      environment, cost center, justification, state, and administrator decisions, with status
+      cloud, environment, cost center, justification, state, and administrator decisions, with status
       filters and exact grant links.
       Withdrawing a pending request requires confirmation.</p>
     </td>
@@ -430,7 +461,7 @@ resource lists, forms, and connection drawers remain solid for readability.
       <img src="docs/images/screenshots/portal-usage-resources.png" alt="Usage by granted resource with requests, tokens, estimated cost, quotas, rate limits, and usage tracking">
       <p><b>Usage by resource.</b> A scrollable table retains each offering and shows its grant's
       requests, tokens, estimated cost or <b>No price</b>, quota use, busiest minute, and attribution.
-      Overview and breakdowns share the same period and resource/environment filters.</p>
+      Overview and breakdowns share the same period and cloud/resource/environment filters.</p>
     </td>
   </tr>
   <tr>
@@ -661,6 +692,23 @@ also creates each gateway's `mosaic-blocked-cost-centers` named value. Budget em
 Communication Services: set `MOSAIC_DEPLOY_EMAIL` to `true` before `azd provision` to create it,
 then turn email on in **Settings > Email**. See [Budgets and alerts](docs/budgets-and-alerts.md).
 
+## Azure Government from a commercial deployment
+
+Use **Settings > Azure connections** to configure a Government-tenant service principal whose
+client secret stays in a separate commercial management-credentials vault. Select the connection
+when registering resources; **AzGov** identifies the cloud independently of **Production** or
+other environment labels. Commercial sign-in and shared cost centers remain unchanged.
+The infrastructure update configures `MOSAIC_MANAGEMENT_KEY_VAULT_URI`; without that isolated
+vault, existing Commercial resources work but new external management credentials cannot be saved.
+
+Government runtime offerings use grant-scoped subscription keys, not commercial Entra tokens.
+Initial keys are prepared after an eligible direct grant is successfully applied; reveal remains
+explicit and audited. Government gateways use their own Government identity for backend calls.
+This arrangement transfers management metadata and usage into commercial MOSAIC and requires
+organizational approval; it is not a sovereignty/compliance claim. See the
+[Government operator guide](docs/azure-government.md) for identity, permissions, networking,
+capability checks, and consolidated pricing/reporting.
+
 ## Prerequisites
 
 - Azure subscription where the deployer can create resources and role assignments
@@ -726,7 +774,7 @@ Usage figures have their own settings. See [Usage analytics](docs/usage-analytic
 | `MOSAIC_USAGE_ROLLUP_INTERVAL_SECONDS` | `900` | How often the job runs, from 60 to 86,400 seconds. |
 | `MOSAIC_USAGE_ROLLUP_RETENTION_DAYS` | `400` | How long daily figures are kept, from 62 to 3,650 days. Monthly figures are kept for good. |
 | `MOSAIC_USAGE_ROLLUP_BACKFILL_MAX_DAYS` | `90` | How far back a gateway's first rollup, a catch-up after downtime, and a backfill without `days` read, from 1 to 730 days. |
-| `MOSAIC_LOG_ANALYTICS_ENDPOINT` | `https://api.loganalytics.azure.com` | The Log Analytics query endpoint. `azd` sets the one for its cloud, such as `https://api.loganalytics.us` for Azure Government. |
+| `MOSAIC_LOG_ANALYTICS_ENDPOINT` | `https://api.loganalytics.azure.com` | The host/default Log Analytics query endpoint. External resources use their connection's cloud profile; this setting does not redirect Government queries or select their credentials. |
 
 Budgets and their email have these. See [Budgets and alerts](docs/budgets-and-alerts.md#settings).
 
@@ -1004,6 +1052,9 @@ measured scale, not speculation.
   writes to Entra or grants Graph permissions. API Management never calls Graph.
 - Cosmos local/key authentication and ACR admin credentials are disabled.
 - Key Vault uses RBAC, soft delete, and purge protection.
+- External Azure management connections keep service-principal secrets in a separate commercial
+  management vault accessible only to the API identity, never APIM. See
+  [Managing Government resources](docs/azure-government.md).
 - Backend access is scoped to Cosmos data contributor, Key Vault Secrets User, Key Vault Secrets
   Officer and Reader on MOSAIC's Key Vault, API Management contributor, Log Analytics Reader, and
   Monitoring Reader, and, when `azd` deploys Communication Services for budget email,
@@ -2482,9 +2533,10 @@ Prices API, and every price cites its source. On the console's **Pricing** page,
 prices for custom clouds and other providers, such as an OpenAI-compatible endpoint or AWS Bedrock,
 or override one from a date. Each is a new version, audited, and never changes the days before it.
 
-A deployment's cloud comes from its endpoint's host, where `.azure.us` means Azure Government, and
-an administrator can override it. A host outside Azure, such as AWS Bedrock's, names no cloud, so
-an administrator names it. The most specific price wins, by deployment, model, version,
+A managed Azure deployment's default pricing cloud comes from its explicit resource cloud; a
+URL-only endpoint uses its verified host family, where `.azure.us` means Azure Government.
+An administrator can override the pricing cloud, or name one for a host outside Azure such as
+AWS Bedrock, without changing management credentials or runtime cloud. The most specific price wins, by deployment, model, version,
 region, deployment type, and publisher. Provisioned throughput costs its PTUs by the hour, or a
 monthly amount, shared among its callers by their share of its tokens. A
 [model pool](#model-pools)'s calls are priced at the member deployment that served each one. Usage

@@ -66,9 +66,7 @@ def _set_usage_service(client: TestClient, source: Any | None = None) -> None:
     client.app.state.usage_service = UsageService(
         client.app.state.portal_service,
         source=source
-        or SimulatedUsageSource(
-            environment_repository=client.app.state.environment_repository
-        ),
+        or SimulatedUsageSource(environment_repository=client.app.state.environment_repository),
         gateway_repository=client.app.state.gateway_repository,
         endpoint_repository=client.app.state.model_endpoint_repository,
         environment_repository=client.app.state.environment_repository,
@@ -136,9 +134,7 @@ async def _seed_resource_catalog(client: TestClient) -> None:
         endpoint="https://aoai.example.openai.azure.com",
         environment="staging",
     )
-    await client.app.state.model_endpoint_repository.save_endpoint(
-        endpoint, _audit("endpoint")
-    )
+    await client.app.state.model_endpoint_repository.save_endpoint(endpoint, _audit("endpoint"))
     await client.app.state.model_endpoint_repository.replace_observed_for_endpoint(
         TENANT,
         endpoint.id,
@@ -179,9 +175,7 @@ async def _seed_resource_catalog(client: TestClient) -> None:
         shape_version="v1",
         api_shape=ApiShape.AZURE_OPENAI,
     )
-    await client.app.state.gateway_repository.save_publication(
-        publication, _audit("publication")
-    )
+    await client.app.state.gateway_repository.save_publication(publication, _audit("publication"))
     await client.app.state.gateway_repository.save_model_api(
         ModelApi(
             id="model-api-known",
@@ -485,8 +479,7 @@ async def test_usage_for_a_day_is_the_same_in_every_period(usage_client: TestCli
 
     def points(period: str) -> dict[tuple[str, str], dict[str, Any]]:
         return {
-            (point["entitlementId"], point["date"]): point
-            for point in reports[period]["timeline"]
+            (point["entitlementId"], point["date"]): point for point in reports[period]["timeline"]
         }
 
     week, month, quarter = points("7d"), points("30d"), points("90d")
@@ -502,9 +495,7 @@ async def test_usage_for_a_day_is_the_same_in_every_period(usage_client: TestCli
     )
     assert 0 < august <= 400_000
     quotas = {
-        period: [
-            quota for row in report["byResource"] for quota in row["quotas"]
-        ]
+        period: [quota for row in report["byResource"] for quota in row["quotas"]]
         for period, report in reports.items()
     }
     assert quotas["7d"] == quotas["30d"] == quotas["90d"]
@@ -615,6 +606,46 @@ class _FailingUsageSource:
         end: object,
     ) -> Mapping[str, Mapping[object, DailyUsage] | None]:
         raise RuntimeError("telemetry unavailable")
+
+
+async def test_removed_resource_retains_measured_government_cloud(usage_client: TestClient) -> None:
+    class HistoricalUsageSource(SimulatedUsageSource):
+        data_source = "logAnalytics"
+
+        async def daily_usage(self, *args: Any, **kwargs: Any) -> Any:
+            return {
+                "grant-removed": {
+                    NOW.date(): DailyUsage(
+                        requests=3,
+                        prompt_tokens=0,
+                        completion_tokens=0,
+                        azure_cloud="government",
+                    ),
+                }
+            }
+
+    _set_usage_service(
+        usage_client,
+        HistoricalUsageSource(environment_repository=usage_client.app.state.environment_repository),
+    )
+    principal = await _principal(usage_client)
+    await _grant(
+        usage_client,
+        principal,
+        "grant-removed",
+        EntitlementResource(kind="modelApi", id="model-api-removed"),
+    )
+
+    response = usage_client.get("/api/v1/me/usage", params={"period": "7d"})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    row = body["byResource"][0]
+    assert row["resourceSummary"]["available"] is False
+    assert row["resourceSummary"]["azureCloud"] == "government"
+    assert row["azureCloud"] == "government"
+    assert row["requests"] == 3
+    assert {point["azureCloud"] for point in body["timeline"]} == {"government"}
 
 
 async def test_real_source_failure_does_not_fall_back(settings: Settings) -> None:

@@ -19,8 +19,16 @@ from urllib.parse import urlparse
 import structlog
 from pydantic import AnyHttpUrl, SecretStr
 
+from mosaic_api.clouds import (
+    AzureCloud,
+    AzureResourceContext,
+    ConnectionValidator,
+    azure_ai_cloud,
+    cloud_profile,
+    cloud_qualified_key,
+    validate_resource_connection,
+)
 from mosaic_api.domain import (
-    AZURE_AI_HOST_SUFFIXES,
     KEY_VAULT_GET_SECRET_DATA_ACTION,
     MAX_DECLARED_DEPLOYMENTS,
     READER_ROLE_ID,
@@ -118,6 +126,7 @@ from mosaic_api.services.model_access import (
 logger = structlog.get_logger()
 
 EndpointClientFactory = Callable[[CognitiveServicesResourceId], CognitiveServicesClient]
+ScannerFactory = Callable[[AzureResourceContext], SubscriptionScanner]
 IdentityResolver = Callable[[], Awaitable[str | None]]
 # Reads a Key Vault secret's value, for one request, with MOSAIC's identity.
 SecretResolver = Callable[[str], Awaitable[str]]
@@ -133,6 +142,7 @@ PARTIAL_SCAN_MESSAGE = (
     "MOSAIC can read only some resources in this subscription, so any Azure AI resources it "
     "cannot read are not suggested here. Endpoints can still be registered by resource ID."
 )
+_HOST_CONTEXT = AzureResourceContext()
 
 
 def _validate_environment_key(catalog_keys: set[str], value: str) -> None:
@@ -152,9 +162,11 @@ _SUBSCRIPTION_ID_PATTERN = re.compile(r"[0-9a-fA-F-]{36}")
 
 _PROVIDER_BY_HOST_SUFFIX: tuple[tuple[str, ModelProvider], ...] = (
     (".openai.azure.com", ModelProvider.AZURE_OPENAI),
+    (".openai.azure.us", ModelProvider.AZURE_OPENAI),
     (".api.cognitive.microsoft.com", ModelProvider.AZURE_OPENAI),
     (".services.ai.azure.com", ModelProvider.AZURE_AI_FOUNDRY),
     (".cognitiveservices.azure.com", ModelProvider.AZURE_AI_FOUNDRY),
+    (".cognitiveservices.azure.us", ModelProvider.AZURE_AI_FOUNDRY),
 )
 
 
@@ -173,23 +185,28 @@ def provider_for(kind: str | None, endpoint: str | None) -> ModelProvider:
     return ModelProvider.AZURE_AI_FOUNDRY
 
 
-def _reader_at_subscription(subscription_id: str, principal_id: str | None) -> AccessRemediation:
+def _reader_at_subscription(
+    subscription_id: str, principal_id: str | None, *, azure_cloud: AzureCloud = "commercial"
+) -> AccessRemediation:
     """Reader for MOSAIC's identity at one subscription's scope, which is what the scan needs."""
 
     scope = f"/subscriptions/{subscription_id}"
     assignee = principal_id or IDENTITY_PLACEHOLDER
+    command = (
+        "az role assignment create"
+        f' --assignee-object-id "{assignee}"'
+        " --assignee-principal-type ServicePrincipal"
+        f' --role "{READER_ROLE_NAME}"'
+        f' --scope "{scope}"'
+    )
+    if azure_cloud == "government":
+        command = f"az cloud set --name AzureUSGovernment && {command}"
     return AccessRemediation(
         role_name=READER_ROLE_NAME,
         role_definition_id=READER_ROLE_ID,
         scope=scope,
         principal_id=principal_id,
-        command=(
-            "az role assignment create"
-            f' --assignee-object-id "{assignee}"'
-            " --assignee-principal-type ServicePrincipal"
-            f' --role "{READER_ROLE_NAME}"'
-            f' --scope "{scope}"'
-        ),
+        command=command,
     )
 
 
@@ -208,7 +225,7 @@ def _registered_resource(endpoint: ModelEndpoint) -> CognitiveServicesResourceId
     if not endpoint.azure_resource_id:
         return None
     try:
-        return CognitiveServicesResourceId.parse(endpoint.azure_resource_id)
+        return endpoint.arm_resource()
     except ValueError:
         return None
 
@@ -316,11 +333,15 @@ class ModelEndpointService:
         key_probe: KeyProbe | None = None,
         vault_locator: KeyVaultLocator | None = None,
         key_store: KeyStore | None = None,
+        connection_validator: ConnectionValidator | None = None,
+        scanner_factory: ScannerFactory | None = None,
     ) -> None:
         self._repository = repository
         self._gateways = gateway_repository
         self._client_factory = client_factory
+        self._connection_validator = connection_validator
         self._scanner = scanner
+        self._scanner_factory = scanner_factory
         self._principal_id = principal_id
         self._identity_resolver = identity_resolver
         self._identity_resolved = principal_id is not None
@@ -384,6 +405,25 @@ class ModelEndpointService:
         return endpoint
 
     async def register(self, actor: Actor, request: ModelEndpointCreate) -> ModelEndpoint:
+        if request.azure_connection_id is not None or request.azure_cloud != "commercial":
+            async with scope_lease(self._gateways, actor.tenant_id, "azure-connections"):
+                return await self._register(actor, request)
+        return await self._register(actor, request)
+
+    async def _register(self, actor: Actor, request: ModelEndpointCreate) -> ModelEndpoint:
+        await validate_resource_connection(
+            self._connection_validator, actor.tenant_id,
+            request.azure_connection_id, request.azure_cloud,
+        )
+        if request.endpoint is not None:
+            detected_cloud = azure_ai_cloud(str(request.endpoint))
+            if detected_cloud is not None and detected_cloud != request.azure_cloud:
+                raise ValidationError("The endpoint hostname belongs to a different Azure cloud.")
+        if request.azure_cloud == "government" and not request.azure_resource_id:
+            raise ValidationError(
+                "Government model endpoints must be registered by ARM resource ID. "
+                "Government backend-key vault access is not configured for this deployment."
+            )
         if request.azure_resource_id:
             return await self._register_azure(actor, request)
         if request.provider == ModelProvider.AWS_BEDROCK:
@@ -396,9 +436,12 @@ class ModelEndpointService:
         self, actor: Actor, request: ModelEndpointCreate
     ) -> ModelEndpoint:
         assert request.azure_resource_id is not None
-        resource = CognitiveServicesResourceId.parse(request.azure_resource_id)
+        resource = CognitiveServicesResourceId.parse(
+            request.azure_resource_id, azure_cloud=request.azure_cloud,
+            azure_connection_id=request.azure_connection_id,
+        )
         existing = await self._repository.find_endpoint_by_resource_id(
-            actor.tenant_id, resource.canonical
+            actor.tenant_id, resource.canonical, azure_cloud=resource.azure_cloud
         )
         if existing:
             raise ConflictError(
@@ -420,8 +463,13 @@ class ModelEndpointService:
             provider=request.provider or ModelProvider.AZURE_AI_FOUNDRY,
             # Replaced by the account's real endpoint during preflight. A resource-derived
             # placeholder keeps the record valid if preflight cannot read the account.
-            endpoint=f"https://{resource.account_name}.cognitiveservices.azure.com",
+            endpoint=(
+                f"https://{resource.account_name}."
+                f"{cloud_profile(resource.azure_cloud).cognitive_audience.removeprefix('https://')}"
+            ),
             azure_resource_id=resource.canonical,
+            azure_cloud=resource.azure_cloud,
+            azure_connection_id=resource.azure_connection_id,
             subscription_id=resource.subscription_id,
             resource_group=resource.resource_group,
             account_name=resource.account_name,
@@ -464,6 +512,8 @@ class ModelEndpointService:
 
         account = resource.account_scope.casefold()
         for endpoint in await self._repository.list_endpoints(tenant_id):
+            if endpoint.azure_cloud != resource.azure_cloud:
+                continue
             registered = _registered_resource(endpoint)
             if registered is not None and registered.account_scope.casefold() == account:
                 return registered, endpoint
@@ -488,14 +538,21 @@ class ModelEndpointService:
             if name
         }
         for existing in await self._repository.list_endpoints(tenant_id):
-            if existing.uses_backend_key() and _account_subdomains(existing) & wanted:
+            if (
+                existing.azure_cloud == endpoint.azure_cloud
+                and existing.uses_backend_key() and _account_subdomains(existing) & wanted
+            ):
                 return existing
         return None
 
-    async def _refuse_registered_account(self, tenant_id: str, subdomain: str) -> None:
+    async def _refuse_registered_account(
+        self, tenant_id: str, subdomain: str, *, azure_cloud: AzureCloud = "commercial"
+    ) -> None:
         """Refuse a key registration of a resource another registration already reaches."""
 
         for existing in await self._repository.list_endpoints(tenant_id):
+            if existing.azure_cloud != azure_cloud:
+                continue
             if subdomain not in _account_subdomains(existing):
                 continue
             if existing.uses_backend_key():
@@ -529,7 +586,9 @@ class ModelEndpointService:
         assert request.endpoint is not None
         assert request.provider is not None
         url = AzureAiEndpointUrl.parse(str(request.endpoint))
-        await self._refuse_registered_account(actor.tenant_id, url.subdomain)
+        await self._refuse_registered_account(
+            actor.tenant_id, url.subdomain, azure_cloud=request.azure_cloud
+        )
         target = _KeyedTarget(
             host=url.host,
             origin=url.origin,
@@ -644,6 +703,8 @@ class ModelEndpointService:
             name=(request.name or target.default_name).strip(),
             provider=request.provider,
             endpoint=target.origin,
+            azure_cloud=request.azure_cloud,
+            azure_connection_id=request.azure_connection_id,
             account_name=target.account_name,
             project_name=target.project_name,
             environment_label=request.environment_label,
@@ -738,6 +799,8 @@ class ModelEndpointService:
             name=(request.name or host).strip(),
             provider=ModelProvider.OPENAI_COMPATIBLE,
             endpoint=request.endpoint,
+            azure_cloud=request.azure_cloud,
+            azure_connection_id=request.azure_connection_id,
             environment_label=request.environment_label,
             auth_mode=EndpointAuthMode.API_KEY,
             credential_reference_id=credential.id,
@@ -898,6 +961,8 @@ class ModelEndpointService:
         the new version at once, and API Management within four hours.
         """
 
+        if endpoint.azure_cloud == "government":
+            raise ValidationError("Government backend-secret resolution is not configured.")
         if not endpoint.uses_backend_key():
             raise ValidationError(
                 "Only an endpoint MOSAIC reaches with an API key from Key Vault takes a new key: "
@@ -1310,11 +1375,20 @@ class ModelEndpointService:
             # A key-based endpoint has no ARM surface to preflight. Its access is proven or
             # disproven by discovery itself, so it is left pending rather than claimed connected.
             return endpoint
-        resource = CognitiveServicesResourceId.parse(endpoint.azure_resource_id)
+        resource = endpoint.arm_resource()
         client = self._client_factory(resource)
-        result = await run_endpoint_preflight(
-            client, principal_id=await self._resolve_principal_id()
+        principal_id = (
+            await client._arm.caller_object_id()
+            if resource.azure_connection_id is not None or resource.azure_cloud != "commercial"
+            else await self._resolve_principal_id()
         )
+        result = await run_endpoint_preflight(client, principal_id=principal_id)
+        if result.endpoint_url:
+            detected_cloud = azure_ai_cloud(result.endpoint_url)
+            if detected_cloud != endpoint.azure_cloud:
+                raise ValidationError(
+                    "Azure returned an endpoint outside the selected cloud's verified hosts."
+                )
         provider = provider_for(result.capabilities.kind, result.endpoint_url)
         runtime = await self._runtime_access(
             client, endpoint.tenant_id, result.capabilities, provider
@@ -1371,6 +1445,8 @@ class ModelEndpointService:
         but never sent (ADR 0024).
         """
 
+        if endpoint.azure_cloud == "government":
+            raise ValidationError("Government backend-secret resolution is not configured.")
         secret = await self._key_secret(endpoint, secret)
         checked_at = utc_now()
         principal_id = await self._resolve_principal_id()
@@ -1580,6 +1656,8 @@ class ModelEndpointService:
         check = RuntimeAccessCheck(client) if client is not None else None
         results: list[GatewayRuntimeAccess] = []
         for gateway in gateways:
+            if gateway.azure_cloud != "commercial":
+                continue
             try:
                 results.append(
                     await verify_gateway_key_access(
@@ -1612,6 +1690,8 @@ class ModelEndpointService:
         check = RuntimeAccessCheck(client)
         results: list[GatewayRuntimeAccess] = []
         for gateway in gateways:
+            if gateway.azure_cloud != client.resource.azure_cloud:
+                continue
             try:
                 results.append(
                     await verify_gateway_runtime_access(
@@ -1704,7 +1784,7 @@ class ModelEndpointService:
                 "MOSAIC can only discover models on Azure AI endpoints in this release.",
                 details={"endpointId": endpoint.id},
             )
-        resource = CognitiveServicesResourceId.parse(endpoint.azure_resource_id)
+        resource = endpoint.arm_resource()
         client = self._client_factory(resource)
         collector = ModelInventoryCollector(
             client, tenant_id=endpoint.tenant_id, endpoint_id=endpoint.id
@@ -1870,7 +1950,7 @@ class ModelEndpointService:
             return results
         if not endpoint.azure_resource_id:
             return []
-        resource = CognitiveServicesResourceId.parse(endpoint.azure_resource_id)
+        resource = endpoint.arm_resource()
         client = self._client_factory(resource)
         results = await self._runtime_access(
             client, actor.tenant_id, endpoint.capabilities, endpoint.provider
@@ -1880,7 +1960,10 @@ class ModelEndpointService:
         )
         return results
 
-    async def suggestions(self, actor: Actor) -> ModelEndpointSuggestionView:
+    async def suggestions(
+        self, actor: Actor, *, azure_cloud: AzureCloud = "commercial",
+        azure_connection_id: str | None = None,
+    ) -> ModelEndpointSuggestionView:
         """Endpoints worth registering, from every source MOSAIC can reach.
 
         The three sources cost very different amounts of privilege. Backends already observed in a
@@ -1889,7 +1972,19 @@ class ModelEndpointService:
         including a subscription it could list but can read only in part.
         """
 
-        registered = await self._repository.list_endpoints(actor.tenant_id)
+        await validate_resource_connection(
+            self._connection_validator, actor.tenant_id, azure_connection_id, azure_cloud
+        )
+        context = AzureResourceContext(azure_cloud, azure_connection_id)
+        scanner = (
+            self._scanner_factory(context) if self._scanner_factory is not None
+            else self._scanner if azure_cloud == "commercial" and azure_connection_id is None
+            else None
+        )
+        registered = [
+            endpoint for endpoint in await self._repository.list_endpoints(actor.tenant_id)
+            if endpoint.azure_cloud == azure_cloud
+        ]
         catalog = await load_environment_catalog(self._environments, actor.tenant_id)
         # Keyed on the account, because every registration covers its whole account: a Foundry
         # project's deployments live on its parent resource, so suggesting that resource once the
@@ -1910,18 +2005,18 @@ class ModelEndpointService:
                 continue
             for name in _account_subdomains(endpoint):
                 by_account.setdefault(_subdomain_key(name), endpoint)
-                for suffix in AZURE_AI_HOST_SUFFIXES:
+                for suffix in cloud_profile(endpoint.azure_cloud).azure_ai_suffixes:
                     by_host.setdefault(f"{name}{suffix}", endpoint)
 
         suggestions: list[ModelEndpointSuggestion] = []
         seen: set[str] = set()
 
         def add(suggestion: ModelEndpointSuggestion) -> None:
-            key = (
+            key = cloud_qualified_key((
                 suggestion.azure_resource_id.casefold()
                 if suggestion.azure_resource_id
                 else f"host:{(urlparse(str(suggestion.endpoint)).hostname or '').casefold()}"
-            )
+            ), suggestion.azure_cloud)
             if not key or key in seen:
                 return
             seen.add(key)
@@ -1929,16 +2024,22 @@ class ModelEndpointService:
 
         # Read once: gateways are both a source of suggestions and, when the scan can see nothing,
         # the subscriptions worth naming in its remediation.
-        gateways = await self._gateways.list_gateways(actor.tenant_id)
+        gateways = [
+            gateway for gateway in await self._gateways.list_gateways(actor.tenant_id)
+            if gateway.azure_cloud == azure_cloud
+            and gateway.azure_connection_id == azure_connection_id
+        ]
         for suggestion in await self._gateway_backend_suggestions(actor, gateways, by_host):
             add(suggestion)
 
-        if self._scanner is None:
+        if scanner is None:
             return ModelEndpointSuggestionView(
                 suggestions=suggestions, scan_status=SubscriptionScanStatus.NOT_CONFIGURED
             )
 
-        scan = await self._scan_subscriptions(catalog, by_account, add, gateways)
+        scan = await self._scan_subscriptions(
+            catalog, by_account, add, gateways, scanner=scanner, context=context
+        )
         return ModelEndpointSuggestionView(
             suggestions=suggestions,
             scan_issues=scan.issues,
@@ -1978,6 +2079,11 @@ class ModelEndpointService:
             urls = [backend.url for backend in backends if backend.url]
             urls.extend(api.service_url for api in apis if api.service_url)
             for url in urls:
+                detected_cloud = azure_ai_cloud(url)
+                if detected_cloud is not None and detected_cloud != gateway.azure_cloud:
+                    continue
+                if gateway.azure_cloud == "government" and detected_cloud is None:
+                    continue
                 if classify_url(url) == AiBackendKind.NONE:
                     continue
                 host = (urlparse(url).hostname or "").casefold()
@@ -1987,6 +2093,8 @@ class ModelEndpointService:
                 found.append(
                     ModelEndpointSuggestion(
                         source=SuggestionSource.GATEWAY_BACKEND,
+                        azure_cloud=gateway.azure_cloud,
+                        azure_connection_id=gateway.azure_connection_id,
                         endpoint=f"https://{host}",
                         provider=provider_for(None, url),
                         already_registered=existing is not None,
@@ -2005,6 +2113,9 @@ class ModelEndpointService:
         by_account: dict[str, ModelEndpoint],
         add: Callable[[ModelEndpointSuggestion], None],
         gateways: list[Gateway],
+        *,
+        scanner: SubscriptionScanner | None = None,
+        context: AzureResourceContext = _HOST_CONTEXT,
     ) -> _SubscriptionScan:
         """Enumerate Azure AI accounts across visible subscriptions.
 
@@ -2019,22 +2130,25 @@ class ModelEndpointService:
         so the result is never presented as complete.
         """
 
-        assert self._scanner is not None
+        scanner = scanner or self._scanner
+        assert scanner is not None
         try:
-            listed = await self._scanner.list_subscriptions()
+            listed = await scanner.list_subscriptions()
         except DomainError as error:
             logger.warning("endpoint_subscription_list_failed", reason=error.message)
             return await self._unscanned(
                 SubscriptionScanStatus.LIST_FAILED,
                 gateways,
                 message=_list_failure_message(error.summary),
+                scanner=scanner, context=context,
             )
         except Exception:
             # Unlike a DomainError's summary, arbitrary exception text can carry upstream or
             # credential detail, so it is logged and never returned.
             logger.exception("endpoint_subscription_list_failed")
             return await self._unscanned(
-                SubscriptionScanStatus.LIST_FAILED, gateways, message=UNEXPECTED_LIST_FAILURE
+                SubscriptionScanStatus.LIST_FAILED, gateways, message=UNEXPECTED_LIST_FAILURE,
+                scanner=scanner, context=context,
             )
 
         subscriptions: list[tuple[str, str | None]] = []
@@ -2047,15 +2161,22 @@ class ModelEndpointService:
                 (subscription_id, display_name if isinstance(display_name, str) else None)
             )
         if not subscriptions:
-            return await self._unscanned(SubscriptionScanStatus.NO_VISIBLE_SUBSCRIPTIONS, gateways)
+            return await self._unscanned(
+                SubscriptionScanStatus.NO_VISIBLE_SUBSCRIPTIONS, gateways,
+                scanner=scanner, context=context,
+            )
 
         scanned = 0
         issues: list[SubscriptionScanIssue] = []
         partial: list[SubscriptionScanIssue] = []
-        principal_id = await self._resolve_principal_id()
+        principal_id = (
+            await scanner._arm.caller_object_id()
+            if context.azure_connection_id is not None or context.azure_cloud != "commercial"
+            else await self._resolve_principal_id()
+        )
         for subscription_id, display_name in subscriptions:
             try:
-                accounts = await self._scanner.list_accounts(subscription_id)
+                accounts = await scanner.list_accounts(subscription_id)
             except DomainError as error:
                 issues.append(
                     SubscriptionScanIssue(
@@ -2066,30 +2187,38 @@ class ModelEndpointService:
                             "any endpoints it holds are not suggested here. Endpoints can still "
                             f"be registered by resource ID. ({error.summary})"
                         ),
-                        remediation=_reader_at_subscription(subscription_id, principal_id),
+                        remediation=_reader_at_subscription(
+                            subscription_id, principal_id, azure_cloud=context.azure_cloud
+                        ),
                     )
                 )
                 continue
 
             scanned += 1
             for account in accounts:
-                suggestion = self._account_suggestion(catalog, account, by_account)
+                suggestion = self._account_suggestion(
+                    catalog, account, by_account, context=context
+                )
                 if suggestion is not None:
                     add(suggestion)
-            if await self._reads_only_part_of(subscription_id):
+            if await self._reads_only_part_of(subscription_id, scanner=scanner):
                 partial.append(
                     SubscriptionScanIssue(
                         subscription_id=subscription_id,
                         display_name=display_name,
                         message=PARTIAL_SCAN_MESSAGE,
-                        remediation=_reader_at_subscription(subscription_id, principal_id),
+                        remediation=_reader_at_subscription(
+                            subscription_id, principal_id, azure_cloud=context.azure_cloud
+                        ),
                     )
                 )
         return _SubscriptionScan(
             status=SubscriptionScanStatus.SCANNED, scanned=scanned, issues=issues, partial=partial
         )
 
-    async def _reads_only_part_of(self, subscription_id: str) -> bool:
+    async def _reads_only_part_of(
+        self, subscription_id: str, *, scanner: SubscriptionScanner | None = None
+    ) -> bool:
         """Does MOSAIC know that it cannot read every Azure AI account in this subscription?
 
         Only the permissions MOSAIC holds at the subscription itself can answer that, since the
@@ -2097,9 +2226,10 @@ class ModelEndpointService:
         answer is no: MOSAIC reports a partial scan only when it knows the scan was partial.
         """
 
-        assert self._scanner is not None
+        scanner = scanner or self._scanner
+        assert scanner is not None
         try:
-            permissions = await self._scanner.subscription_permissions(subscription_id)
+            permissions = await scanner.subscription_permissions(subscription_id)
         except Exception:
             logger.exception(
                 "endpoint_subscription_permissions_failed", subscription_id=subscription_id
@@ -2115,6 +2245,8 @@ class ModelEndpointService:
         gateways: list[Gateway],
         *,
         message: str | None = None,
+        scanner: SubscriptionScanner | None = None,
+        context: AzureResourceContext = _HOST_CONTEXT,
     ) -> _SubscriptionScan:
         """A scan with nothing to read, and the Reader assignments that would give it something.
 
@@ -2123,9 +2255,15 @@ class ModelEndpointService:
         known, a placeholder scope keeps the command's shape for an operator to complete.
         """
 
-        principal_id = await self._resolve_principal_id()
+        principal_id = (
+            await scanner._arm.caller_object_id()
+            if scanner is not None and (
+                context.azure_connection_id is not None or context.azure_cloud != "commercial"
+            )
+            else await self._resolve_principal_id()
+        )
         candidates = [
-            self._bootstrap_subscription_id,
+            self._bootstrap_subscription_id if context == AzureResourceContext() else None,
             *(gateway.subscription_id for gateway in gateways),
         ]
         remediation: list[AccessRemediation] = []
@@ -2138,9 +2276,13 @@ class ModelEndpointService:
             if key in seen:
                 continue
             seen.add(key)
-            remediation.append(_reader_at_subscription(subscription_id, principal_id))
+            remediation.append(_reader_at_subscription(
+                subscription_id, principal_id, azure_cloud=context.azure_cloud
+            ))
         if not remediation:
-            remediation.append(_reader_at_subscription(SUBSCRIPTION_PLACEHOLDER, principal_id))
+            remediation.append(_reader_at_subscription(
+                SUBSCRIPTION_PLACEHOLDER, principal_id, azure_cloud=context.azure_cloud
+            ))
         return _SubscriptionScan(status=status, message=message, remediation=remediation)
 
     @staticmethod
@@ -2148,12 +2290,16 @@ class ModelEndpointService:
         catalog: EnvironmentCatalog,
         account: dict[str, object],
         by_account: dict[str, ModelEndpoint],
+        *, context: AzureResourceContext = _HOST_CONTEXT,
     ) -> ModelEndpointSuggestion | None:
         resource_id = account.get("id")
         if not isinstance(resource_id, str) or not resource_id:
             return None
         try:
-            resource = CognitiveServicesResourceId.parse(resource_id)
+            resource = CognitiveServicesResourceId.parse(
+                resource_id, azure_cloud=context.azure_cloud,
+                azure_connection_id=context.azure_connection_id,
+            )
         except ValueError:
             return None
         kind = account.get("kind")
@@ -2175,6 +2321,8 @@ class ModelEndpointService:
         suggested = suggest_environment(catalog, tag)
         return ModelEndpointSuggestion(
             source=SuggestionSource.SUBSCRIPTION_SCAN,
+            azure_cloud=context.azure_cloud,
+            azure_connection_id=context.azure_connection_id,
             endpoint=endpoint,
             azure_resource_id=resource.canonical,
             account_name=resource.account_name,

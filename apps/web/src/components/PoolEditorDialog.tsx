@@ -349,7 +349,7 @@ export function PoolEditorDialog({ pool, initialGatewayId, prefill, onClose, onS
                     <dd>
                       {gateway?.name ?? pool.gatewayId}{' '}
                       {gateway && (
-                        <EnvironmentBadge environment={gateway.environment} catalog={catalog.data} size="small" />
+                        <EnvironmentBadge azureCloud={gateway.azureCloud ?? 'commercial'} environment={gateway.environment} catalog={catalog.data} size="small" />
                       )}
                     </dd>
                     <dt>API name</dt>
@@ -597,7 +597,7 @@ export function PoolEditorDialog({ pool, initialGatewayId, prefill, onClose, onS
                   <dd>
                     {gateway?.name ?? 'None chosen'}{' '}
                     {gateway && (
-                      <EnvironmentBadge environment={gateway.environment} catalog={catalog.data} size="small" />
+                      <EnvironmentBadge azureCloud={gateway.azureCloud ?? 'commercial'} environment={gateway.environment} catalog={catalog.data} size="small" />
                     )}
                   </dd>
                   <dt>Serves</dt>

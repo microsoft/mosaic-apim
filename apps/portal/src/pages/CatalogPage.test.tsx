@@ -157,6 +157,18 @@ async function openAccessOptions(name = 'Weather tools') {
 }
 
 describe('CatalogPage', () => {
+  it('shows Government key and network requirements before requesting and blocks key-disallowed cost centers', async () => {
+    const { createAccessRequest } = renderPage(
+      [{ ...catalogEntry, azureCloud: 'government' }], [],
+      costCenters.map((center) => ({ ...center, keysAllowed: false })),
+    )
+    expect(await screen.findByLabelText('Azure Government')).toBeVisible()
+    await openAccessOptions()
+    expect(screen.getByText(/Azure Government requires a direct grant and a subscription key/)).toBeVisible()
+    expect(screen.getByText(/This cost center does not allow keys/)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Request access' })).toBeDisabled()
+    expect(createAccessRequest).not.toHaveBeenCalled()
+  })
   it('groups a model and requires an exact offering before requesting access', async () => {
     const first: CatalogEntry = { ...servedModelEntry, model: { name: 'claude-opus-4-5', format: 'Anthropic', version: null } }
     const second: CatalogEntry = { ...first, scopeId: 'other-pool', displayName: 'Other endpoint / Opus', environment: 'development' }

@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 
 import structlog
 
-from mosaic_api.domain import ApimResourceId, ApiShape, utc_now
+from mosaic_api.domain import ApiShape, Gateway, utc_now
 from mosaic_api.errors import DomainError, ValidationError
 from mosaic_api.integrations.apim.diagnostics import monitoring_reader_command
 from mosaic_api.integrations.loganalytics import (
@@ -179,17 +179,21 @@ class PoolHealthService:
         *,
         gateway_repository: GatewayRepository,
         endpoint_repository: ModelEndpointRepository,
-        logs: LogsQuery | None,
+        logs: LogsQuery | None = None,
+        logs_factory: Callable[[Gateway], LogsQuery] | None = None,
         principal_id: str | None = None,
         identity_resolver: IdentityResolver | None = None,
+        gateway_identity_resolver: Callable[[Gateway], Awaitable[str | None]] | None = None,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._pools = pools
         self._gateways = gateway_repository
         self._endpoints = endpoint_repository
         self._logs = logs
+        self._logs_factory = logs_factory
         self._principal_id = principal_id
         self._identity_resolver = identity_resolver
+        self._gateway_identity_resolver = gateway_identity_resolver
         self._identity_resolved = principal_id is not None
         self._clock = clock
 
@@ -204,21 +208,26 @@ class PoolHealthService:
         return self._principal_id
 
     async def _query(
-        self, resource_id: str, build: Callable[[QueryWindow], str], window: QueryWindow
+        self,
+        resource_id: str,
+        build: Callable[[QueryWindow], str],
+        window: QueryWindow,
+        logs: LogsQuery | None = None,
     ) -> list[Row]:
         """Run a query, halving its window until each part fits Log Analytics' limits."""
 
-        assert self._logs is not None
+        logs = logs or self._logs
+        assert logs is not None
         start, end = window.timespan
         try:
-            return await self._logs.query(resource_id, build(window), start=start, end=end)
+            return await logs.query(resource_id, build(window), start=start, end=end)
         except LogQueryTooLargeError:
             if window.hours <= 1:
                 raise
             first, second = window.split()
             return [
-                *await self._query(resource_id, build, first),
-                *await self._query(resource_id, build, second),
+                *await self._query(resource_id, build, first, logs),
+                *await self._query(resource_id, build, second, logs),
             ]
 
     async def health(self, actor: Actor, pool_id: str, hours: int = HEALTH_HOURS) -> PoolHealth:
@@ -236,7 +245,7 @@ class PoolHealthService:
         end = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
         window = QueryWindow(end - timedelta(hours=hours), end)
         result = PoolHealth(status="noData", hours=hours, start=window.start, end=window.end)
-        if self._logs is None:
+        if self._logs is None and self._logs_factory is None:
             return result.model_copy(
                 update={
                     "status": "notConfigured",
@@ -258,17 +267,29 @@ class PoolHealthService:
                     "message": "The pool's gateway is no longer registered with MOSAIC.",
                 }
             )
-        resource = ApimResourceId.parse(gateway.azure_resource_id)
+        resource = gateway.arm_resource()
         trip_count, trip_errors = breaker_trip_rule(pool.breaker_preset)
         try:
+            logs = self._logs_factory(gateway) if self._logs_factory else self._logs
             rows = await self._query(
                 resource.canonical,
                 lambda part: pool_health_query(
                     part, pool.api_name, trip_count=trip_count, trip_errors=trip_errors
                 ),
                 window,
+                logs,
             )
         except LogQueryAccessError:
+            principal = (
+                await self._gateway_identity_resolver(gateway)
+                if self._gateway_identity_resolver
+                else await self._principal()
+                if gateway.azure_cloud == "commercial" and not gateway.azure_connection_id
+                else None
+            )
+            command = monitoring_reader_command(resource.canonical, principal)
+            if gateway.azure_cloud == "government":
+                command = f"az cloud set --name AzureUSGovernment && {command}"
             return result.model_copy(
                 update={
                     "status": "accessDenied",
@@ -276,9 +297,7 @@ class PoolHealthService:
                         "MOSAIC's identity may not read this gateway's logs. Monitoring Reader on "
                         "the gateway lets it, if the workspace allows resource permissions."
                     ),
-                    "command": monitoring_reader_command(
-                        resource.canonical, await self._principal()
-                    ),
+                    "command": command,
                 }
             )
         except DomainError as error:

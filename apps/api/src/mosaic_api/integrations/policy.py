@@ -2,6 +2,7 @@ import hashlib
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
+from mosaic_api.clouds import AzureCloud, azure_ai_cloud, cloud_profile
 from mosaic_api.domain import (
     ApiShape,
     PolicyFacet,
@@ -80,12 +81,26 @@ ANTHROPIC_VERSION = "2023-06-01"
 METRIC_NAMESPACE = "mosaic"
 
 
-def managed_identity_resource(shape: str | None) -> str:
+def managed_identity_resource(
+    shape: str | None, *, azure_cloud: AzureCloud | None = None,
+    backend_url: str | None = None,
+) -> str:
     """The Entra resource the gateway's managed identity requests a backend token for."""
 
+    if backend_url is not None:
+        detected = azure_ai_cloud(backend_url)
+        if detected is None:
+            raise ValueError("Backend managed identity requires a verified Azure AI host")
+        if azure_cloud is not None and azure_cloud != detected:
+            raise ValueError("Backend URL and Azure cloud do not match")
+        azure_cloud = detected
+    azure_cloud = azure_cloud or "commercial"
+    profile = cloud_profile(azure_cloud)
     if shape == ApiShape.ANTHROPIC_MESSAGES:
+        if azure_cloud == "government":
+            raise ValueError("Anthropic managed identity is not verified in Azure Government")
         return ANTHROPIC_MANAGED_IDENTITY_RESOURCE
-    return MANAGED_IDENTITY_RESOURCE
+    return profile.cognitive_audience
 
 
 def add_shape_headers(parent: ET.Element, shape: str | None) -> None:
@@ -153,7 +168,9 @@ def render_publication_policy(publication: Publication) -> PublicationPolicy:
         ET.SubElement(
             fragment,
             "authentication-managed-identity",
-            {"resource": managed_identity_resource(publication.api_shape)},
+            {"resource": managed_identity_resource(
+                publication.api_shape, azure_cloud=publication.azure_cloud
+            )},
         )
     ET.SubElement(fragment, "set-backend-service", {"backend-id": publication.backend_name})
     # Without enforcement the shape can't be token-metered on this gateway's tier, and neither
