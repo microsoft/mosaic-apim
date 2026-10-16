@@ -146,6 +146,19 @@ describe('usage-format', () => {
     expect(aggregated.totals).toBe(report.totals)
   })
 
+  it('filters cloud totals and timeline by the exact authorized grant without mixing same-named resources', () => {
+    const government = { ...report, byResource: [
+      { ...report.byResource[0], azureCloud: 'government' as const, resourceSummary: { ...summary, azureCloud: 'government' as const } },
+      report.byResource[1],
+    ] }
+    const aggregated = aggregateUsage(government, { environment: 'all', resource: 'all', azureCloud: 'government' })
+    expect(aggregated.byResource.map((resource) => resource.entitlementId)).toEqual(['grant-1'])
+    expect(aggregated.timeline.map((point) => point.entitlementId)).toEqual(['grant-1'])
+    expect(aggregated.totals.requests).toBe(10)
+    expect(aggregated.totals.totalTokens).toBe(150)
+    expect(aggregated.totals).not.toBe(report.totals)
+  })
+
   it('counts a partly priced resource as leaving cost out when filtered, as the server does', () => {
     const partly = {
       ...report,

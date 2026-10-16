@@ -16,6 +16,9 @@ from mosaic_api.domain import (
     GrantKey,
     KeyRevealResult,
     KeySharedModel,
+    KeyState,
+    ManagementMode,
+    McpAccessGrant,
     McpConnection,
     McpPublication,
     McpServer,
@@ -47,6 +50,12 @@ from mosaic_api.repositories import (
     EntitlementRepository,
     GatewayRepository,
 )
+from mosaic_api.services.automatic_keys import (
+    KeyOwner,
+    reconcile_initial_keys,
+    record_key_owner,
+    validate_owner_runtime,
+)
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.entitlements import EntitlementService
 from mosaic_api.services.mcp_access import entitlement_mcp_publication
@@ -73,9 +82,23 @@ logger = structlog.get_logger()
 
 APPLICATION_ROLE = "Models.Invoke.Application"
 
-_ENTRA_ONLY = (
-    "Access granted to a security group uses Entra tokens only; there's no key to reveal."
-)
+_ENTRA_ONLY = "Access granted to a security group uses Entra tokens only; there's no key to reveal."
+
+
+def _direct_key_required(gateway: Gateway) -> str:
+    if gateway.azure_cloud == "government":
+        return (
+            "Government keys require an eligible direct grant; group grants cannot authorize calls."
+        )
+    return _ENTRA_ONLY
+
+
+def _keys_disallowed(gateway: Gateway) -> str:
+    if gateway.azure_cloud == "government":
+        return "Keys are turned off for this cost center; Government key access is unavailable."
+    return "Keys are turned off for this grant's cost center. Use a Microsoft Entra token."
+
+
 # A pool model grant's routes never say "pool": the portal shows users models (ADR 0024).
 _NOT_PUBLISHED = (
     "This model isn't published in API Management right now, so there's nothing to connect to"
@@ -127,13 +150,22 @@ class KeyManager(Protocol):
 
     async def delete(self, name: str) -> None: ...
 
+    async def verify_runtime(
+        self,
+        *,
+        api_name: str,
+        fragment_name: str,
+        policy_hashes: dict[str, str],
+        mcp: bool = False,
+        metadata_name: str | None = None,
+        legacy_metadata: bool = False,
+    ) -> None: ...
 
-def _owns_subscription(
-    gateway: Gateway, resources: list[PublishedResource], name: str
-) -> bool:
+
+def _owns_subscription(gateway: Gateway, resources: list[PublishedResource], name: str) -> bool:
     """Whether the record says MOSAIC created this subscription, at its exact resource ID."""
 
-    resource = ApimResourceId.parse(gateway.azure_resource_id)
+    resource = gateway.arm_resource()
     expected_id = f"{resource.canonical}/subscriptions/{name}"
     return any(
         item.kind == PublishedResourceKind.SUBSCRIPTION
@@ -161,7 +193,7 @@ def _with_subscription(
 ) -> list[PublishedResource]:
     """The resources, recording that MOSAIC created a key, or that it's gone."""
 
-    resource = ApimResourceId.parse(gateway.azure_resource_id)
+    resource = gateway.arm_resource()
     kept = [
         item
         for item in resources
@@ -182,7 +214,7 @@ def _with_subscription(
 def _require_scope(gateway: Gateway, api_name: str, live: dict[str, Any]) -> None:
     """Refuse to touch a subscription that isn't scoped to this grant's model API."""
 
-    resource = ApimResourceId.parse(gateway.azure_resource_id)
+    resource = gateway.arm_resource()
     relative = f"/apis/{api_name}"
     properties = live.get("properties") or {}
     scope = str(properties.get("scope", "") if isinstance(properties, dict) else "")
@@ -296,6 +328,56 @@ class PortalAccessService:
         self._runtime_client_id = model_runtime_client_id
         self._model_client_id = model_client_id
 
+    async def resume_automatic_keys(self, tenant_id: str) -> None:
+        """Resume durable Government key setup, without applying policy or recovering runs.
+
+        Call after the model, MCP and pool ``reap_stale_publish_runs`` startup passes. Retained
+        durable locks are never stolen: interrupted applies still need explicit, quiesced
+        recovery and a reviewed apply. Only published, applied owners are eligible.
+
+        A sequential maintenance pass every five minutes is sufficient; there is no internal
+        timer or background task. Key-operation failures persist safe per-grant status, and
+        owner-level domain errors defer that owner. Repository/unexpected errors can propagate,
+        so the caller should log a failed pass and retry later. Cancellation is not swallowed;
+        cancel and await the caller's maintenance task before closing repositories/ARM clients.
+        """
+
+        if self._key_manager_factory is None:
+            return
+        owners: list[KeyOwner] = [
+            *await self._gateways.list_publications(tenant_id),
+            *await self._gateways.list_mcp_publications(tenant_id),
+            *await self._gateways.list_model_pools(tenant_id),
+        ]
+        for owner in owners:
+            gateway = await self._gateways.get_gateway(tenant_id, owner.gateway_id)
+            if gateway is None or gateway.azure_cloud != "government":
+                continue
+            try:
+                async with publication_lock(self._gateways, tenant_id, owner.id):
+                    if isinstance(owner, ModelPool):
+                        current: KeyOwner | None = await self._gateways.get_model_pool(
+                            tenant_id, owner.id
+                        )
+                    elif isinstance(owner, McpPublication):
+                        current = await self._gateways.get_mcp_publication(tenant_id, owner.id)
+                    else:
+                        current = await self._gateways.get_publication(tenant_id, owner.id)
+                    if current is not None:
+                        await reconcile_initial_keys(
+                            current,
+                            gateway,
+                            repository=self._gateways,
+                            directory=self._directory,
+                            entitlements=self._repository,
+                            book=await self._entitlements.cost_center_book(tenant_id),
+                            manager=self._key_manager(gateway),
+                        )
+            except DomainError:
+                logger.warning(
+                    "automatic_key_retry_deferred", tenant_id=tenant_id, owner_id=owner.id
+                )
+
     async def list_for_caller(self, actor: Actor) -> list[Entitlement]:
         principal = await self._directory.find_principal_by_object_id(
             actor.tenant_id, actor.object_id
@@ -392,9 +474,7 @@ class PortalAccessService:
         """The grant and its principal, when the caller holds it or uses an administrator route."""
 
         entitlement = await self._entitlements.get_entitlement(actor, entitlement_id)
-        principal = await self._directory.get_principal(
-            actor.tenant_id, entitlement.subject.id
-        )
+        principal = await self._directory.get_principal(actor.tenant_id, entitlement.subject.id)
         if (
             principal is None
             or entitlement.subject.kind == "group"
@@ -435,9 +515,7 @@ class PortalAccessService:
         )
         if entitlement.resource.kind != "modelApi":
             raise ConflictError("Connection details are available for published model grants only")
-        model_api = await self._gateways.get_model_api(
-            actor.tenant_id, entitlement.resource.id
-        )
+        model_api = await self._gateways.get_model_api(actor.tenant_id, entitlement.resource.id)
         if model_api is None or model_api.publication_id is None:
             raise ConflictError("This model API is not linked to a MOSAIC publication")
         publication = await self._gateways.get_publication(
@@ -466,9 +544,7 @@ class PortalAccessService:
         self, actor: Actor, entitlement_id: str, *, administrator: bool = False
     ) -> ModelConnection:
         if await self._grant_pool_id(actor, entitlement_id) is not None:
-            return await self._pool_connection(
-                actor, entitlement_id, administrator=administrator
-            )
+            return await self._pool_connection(actor, entitlement_id, administrator=administrator)
         context = await self._context(actor, entitlement_id, administrator=administrator)
         publication = context.publication
         url = context.gateway.capabilities.gateway_url
@@ -477,6 +553,17 @@ class PortalAccessService:
         snapshot = publication.applied_access
         audience = snapshot.audience if snapshot else self._runtime_client_id
         entra = self._entra_details(context.entitlement, context.principal, audience)
+        if context.gateway.azure_cloud == "government":
+            audience = None
+            entra = _EntraDetails(
+                None,
+                None,
+                None,
+                None,
+                entra.keys_available,
+                entra.via_group_id,
+                entra.via_group_name,
+            )
         operations = (
             governed_operations(publication)
             if publication.governed_access is not None or snapshot is not None
@@ -486,6 +573,7 @@ class PortalAccessService:
         intent = cost_center_intent(context.entitlement, context.principal, book)
         return ModelConnection(
             entitlement_id=entitlement_id,
+            azure_cloud=context.gateway.azure_cloud,
             publication_id=publication.id,
             gateway_id=publication.gateway_id,
             endpoint=f"{str(url).rstrip('/')}/{publication.api_path.strip('/')}",
@@ -521,7 +609,16 @@ class PortalAccessService:
             via_group_name=entra.via_group_name,
             cost_center=book.ref(context.entitlement.cost_center_id),
             key_exists=entra.keys_available
-            and owns_grant_subscription(publication, context.entitlement.id),
+            and owns_grant_subscription(publication, context.entitlement.id)
+            and (
+                context.gateway.azure_cloud == "commercial"
+                or publication.key_lifecycle.get(
+                    model_access_subscription_name(
+                        publication.tenant_id, publication.id, context.entitlement.id
+                    )
+                )
+                == "ready"
+            ),
             keys_allowed_by_cost_center=intent.keys_allowed if intent else False,
         )
 
@@ -613,12 +710,24 @@ class PortalAccessService:
         snapshot = pool.applied_access
         audience = snapshot.audience if snapshot else self._runtime_client_id
         entra = self._entra_details(context.entitlement, context.principal, audience)
+        if context.gateway.azure_cloud == "government":
+            audience = None
+            entra = _EntraDetails(
+                None,
+                None,
+                None,
+                None,
+                entra.keys_available,
+                entra.via_group_id,
+                entra.via_group_name,
+            )
         book = await self._entitlements.cost_center_book(actor.tenant_id)
         intent = cost_center_intent(context.entitlement, context.principal, book)
         key_name = entitlement_key_name(pool, context.entitlement) if entra.keys_available else None
         safeguard = pool.safeguard
         return ModelConnection(
             entitlement_id=entitlement_id,
+            azure_cloud=context.gateway.azure_cloud,
             publication_id=pool.id,
             gateway_id=pool.gateway_id,
             endpoint=f"{str(url).rstrip('/')}/{pool.api_path.strip('/')}",
@@ -662,7 +771,12 @@ class PortalAccessService:
             via_group_id=entra.via_group_id,
             via_group_name=entra.via_group_name,
             cost_center=book.ref(context.entitlement.cost_center_id),
-            key_exists=key_name is not None and _owns_pool_key(context, key_name),
+            key_exists=key_name is not None
+            and _owns_pool_key(context, key_name)
+            and (
+                context.gateway.azure_cloud == "commercial"
+                or pool.key_lifecycle.get(key_name) == "ready"
+            ),
             keys_allowed_by_cost_center=intent.keys_allowed if intent else False,
             pool_id=pool.id,
             # Administrators manage pools; the portal shows users only models.
@@ -689,6 +803,10 @@ class PortalAccessService:
         snapshot = pool.applied_access
         if (
             not entitlement.enabled
+            or (
+                context.gateway.azure_cloud == "government"
+                and context.gateway.management_mode != ManagementMode.MANAGE
+            )
             or pool.status != PublicationStatus.PUBLISHED
             or pool.access_state != "applied"
             or pool.governed_access is None
@@ -700,14 +818,12 @@ class PortalAccessService:
             raise ConflictError(
                 "Key access requires an enabled grant successfully applied to API Management"
             )
-        matches = [
-            grant for grant in snapshot.grants if grant.entitlement_id == entitlement.id
-        ]
+        matches = [grant for grant in snapshot.grants if grant.entitlement_id == entitlement.id]
         if len(matches) != 1:
             raise ConflictError("This grant has not been applied to API Management")
         grant = matches[0]
         if grant.is_group_grant or grant.key_name is None:
-            raise ConflictError(_ENTRA_ONLY)
+            raise ConflictError(_direct_key_required(context.gateway))
         expected_name = entitlement_key_name(pool, entitlement)
         if (
             not grant.enabled
@@ -724,7 +840,7 @@ class PortalAccessService:
             raise ConflictError("Apply the pending changes to this grant before using its key")
         if not grant.keys_allowed or not intent.keys_allowed:
             raise ConflictError(
-                "Keys are turned off for this grant's cost center. Use a Microsoft Entra token.",
+                _keys_disallowed(context.gateway),
                 details={"reason": "costCenterKeysOff"},
             )
         if require_key and not _owns_pool_key(context, grant.key_name):
@@ -733,6 +849,12 @@ class PortalAccessService:
                 details={"reason": "noKey"},
             )
         return grant
+
+    async def _verify_government_runtime(
+        self, gateway: Gateway, owner: Publication | McpPublication | ModelPool
+    ) -> None:
+        if gateway.azure_cloud == "government":
+            await validate_owner_runtime(self._key_manager(gateway), owner)
 
     async def _pool_key_context(
         self, actor: Actor, entitlement_id: str, *, administrator: bool
@@ -743,7 +865,9 @@ class PortalAccessService:
                 "A change to this model's access is in progress or needs recovery; key retrieval "
                 "is blocked"
             )
-        return context, self._applied_pool_grant(context, await self._intent(context))
+        return context, self._applied_pool_grant(
+            context, await self._intent(context, require_current=True)
+        )
 
     async def _mcp_context(
         self, actor: Actor, entitlement_id: str, *, administrator: bool
@@ -774,27 +898,25 @@ class PortalAccessService:
     async def mcp_connection(
         self, actor: Actor, entitlement_id: str, *, administrator: bool = False
     ) -> McpConnection:
-        context = await self._mcp_context(
-            actor, entitlement_id, administrator=administrator
-        )
+        context = await self._mcp_context(actor, entitlement_id, administrator=administrator)
         if context.publication is None:
             connection = self._adopted_mcp_connection(actor, context, administrator=administrator)
         else:
-            connection = self._published_mcp_connection(
-                actor, context, administrator=administrator
-            )
+            connection = self._published_mcp_connection(actor, context, administrator=administrator)
         book = await self._entitlements.cost_center_book(actor.tenant_id)
+        intent = cost_center_intent(context.entitlement, context.principal, book)
         return connection.model_copy(
-            update={"cost_center": book.ref(context.entitlement.cost_center_id)}
+            update={
+                "cost_center": book.ref(context.entitlement.cost_center_id),
+                "keys_allowed_by_cost_center": intent.keys_allowed if intent else False,
+            }
         )
 
     def _adopted_mcp_connection(
         self, actor: Actor, context: _McpAccessContext, *, administrator: bool
     ) -> McpConnection:
         gateway_url = context.gateway.capabilities.gateway_url
-        route_name = (
-            "sse" if context.server.transport_type == McpTransportType.SSE else "message"
-        )
+        route_name = "sse" if context.server.transport_type == McpTransportType.SSE else "message"
         route = next(
             (item for item in context.server.endpoints if item.name == route_name),
             None,
@@ -808,6 +930,7 @@ class PortalAccessService:
             )
         return McpConnection(
             entitlement_id=context.entitlement.id,
+            azure_cloud=context.gateway.azure_cloud,
             mcp_server_id=context.server.id,
             gateway_id=context.server.gateway_id,
             display_name=context.server.display_name,
@@ -836,6 +959,7 @@ class PortalAccessService:
         assert publication is not None
         gateway_url = context.gateway.capabilities.gateway_url
         snapshot = publication.applied_access
+        government = context.gateway.azure_cloud == "government"
         audience = snapshot.audience if snapshot else self._runtime_client_id
         current_audience = bool(
             audience and audience.casefold() == (self._runtime_client_id or "").casefold()
@@ -857,10 +981,7 @@ class PortalAccessService:
             required_app_role = MCP_APPLICATION_ROLE
         elif context.principal.kind == PrincipalKind.AGENT_USER:
             client_id = context.principal.identity_parent_id
-        elif (
-            context.entitlement.subject.kind in {"user", "securityGroup"}
-            and current_audience
-        ):
+        elif context.entitlement.subject.kind in {"user", "securityGroup"} and current_audience:
             client_id = self._model_client_id
         if context.entitlement.subject.kind == "securityGroup":
             via_group_id = context.principal.id
@@ -868,9 +989,27 @@ class PortalAccessService:
             required_app_role = MCP_APPLICATION_ROLE
 
         runtime = context.entitlement.runtime
-        enforced = bool(runtime and runtime.status == "applied")
+        enforced = bool(
+            runtime and runtime.status == "applied" and (not government or runtime.key_exists)
+        )
+        status_message = _mcp_status_message(runtime.status if runtime else "pending")
+        if government and runtime and runtime.status == "applied" and not runtime.key_exists:
+            status_message = {
+                "deleted": "Your key was deleted. Explicitly create a new key to reconnect.",
+                "failed": "Key setup failed. Ask an administrator to retry automatic key setup.",
+                "ineligible": (
+                    "Government access requires a direct grant whose cost center allows keys."
+                ),
+            }.get(
+                runtime.key_state or "", "Approved access is applied; MOSAIC is preparing your key."
+            )
         return McpConnection(
             entitlement_id=context.entitlement.id,
+            azure_cloud=context.gateway.azure_cloud,
+            applied_methods=snapshot.settings if snapshot else None,
+            keys_available=government
+            and context.entitlement.subject.kind in {"user", "application"},
+            key_exists=bool(runtime and runtime.key_exists),
             mcp_server_id=context.server.id,
             publication_id=publication.id,
             gateway_id=publication.gateway_id,
@@ -883,19 +1022,19 @@ class PortalAccessService:
             ),
             transport=context.server.transport_type,
             enforced=enforced,
-            status_message=_mcp_status_message(runtime.status if runtime else "pending"),
+            status_message=status_message,
             runtime=runtime if administrator else portal_runtime(runtime),
-            entra_audience=audience,
-            delegated_scope=delegated_scope,
-            application_scope=application_scope,
-            required_app_role=required_app_role,
-            client_id=client_id,
+            entra_audience=audience if not government else None,
+            delegated_scope=delegated_scope if not government else None,
+            application_scope=application_scope if not government else None,
+            required_app_role=required_app_role if not government else None,
+            client_id=client_id if not government else None,
             principal_kind=context.principal.kind,
             via_group_id=via_group_id,
             via_group_name=via_group_name,
             resource_metadata_url=(
                 mcp_resource_metadata_url(str(gateway_url), publication.api_path)
-                if gateway_url is not None
+                if gateway_url is not None and not government
                 else None
             ),
             limits=context.entitlement.enforcement,
@@ -917,7 +1056,11 @@ class PortalAccessService:
         publication = context.publication
         snapshot = publication.applied_access
         if (
-            not entitlement.enabled
+            (
+                context.gateway.azure_cloud == "government"
+                and context.gateway.management_mode != ManagementMode.MANAGE
+            )
+            or not entitlement.enabled
             or publication.status != PublicationStatus.PUBLISHED
             or publication.access_state != "applied"
             or publication.governed_access is None
@@ -930,14 +1073,12 @@ class PortalAccessService:
             raise ConflictError(
                 "Key access requires an enabled grant successfully applied to API Management"
             )
-        matches = [
-            grant for grant in snapshot.grants if grant.entitlement_id == entitlement.id
-        ]
+        matches = [grant for grant in snapshot.grants if grant.entitlement_id == entitlement.id]
         if len(matches) != 1:
             raise ConflictError("This grant has not been applied to API Management")
         grant = matches[0]
         if grant.is_group_grant or grant.subscription_name is None:
-            raise ConflictError(_ENTRA_ONLY)
+            raise ConflictError(_direct_key_required(context.gateway))
         expected_name = model_access_subscription_name(
             publication.tenant_id, publication.id, entitlement.id
         )
@@ -954,7 +1095,7 @@ class PortalAccessService:
             raise ConflictError("Apply the pending changes to this grant before using its key")
         if not grant.keys_allowed or not intent.keys_allowed:
             raise ConflictError(
-                "Keys are turned off for this grant's cost center. Use a Microsoft Entra token.",
+                _keys_disallowed(context.gateway),
                 details={"reason": "costCenterKeysOff"},
             )
         if require_key and not _owns_key(context, expected_name):
@@ -968,19 +1109,45 @@ class PortalAccessService:
         self, actor: Actor, entitlement_id: str, *, administrator: bool
     ) -> tuple[_AccessContext, ModelAccessGrant]:
         context = await self._context(actor, entitlement_id, administrator=administrator)
-        if await self._gateways.get_publication_lock(
-            actor.tenant_id, context.publication.id
-        ) is not None:
+        if (
+            await self._gateways.get_publication_lock(actor.tenant_id, context.publication.id)
+            is not None
+        ):
             raise ConflictError(
                 "A publication operation is in progress or needs recovery; key retrieval is blocked"
             )
-        return context, self._applied_grant(context, await self._intent(context))
+        return context, self._applied_grant(
+            context, await self._intent(context, require_current=True)
+        )
 
     async def _intent(
-        self, context: _AccessContext | _PoolAccessContext
+        self,
+        context: _AccessContext | _PoolAccessContext | _McpAccessContext,
+        *,
+        require_current: bool = False,
     ) -> CostCenterIntent | None:
         book = await self._entitlements.cost_center_book(context.entitlement.tenant_id)
-        return cost_center_intent(context.entitlement, context.principal, book)
+        charged = book.get(context.entitlement.cost_center_id)
+        if (
+            require_current
+            and context.gateway.azure_cloud == "government"
+            and charged is not None
+            and charged.recheck_pending(context.entitlement.id, context.principal.id)
+        ):
+            raise ConflictError(
+                "This grant's cost-center access needs review before using its key."
+            )
+        return cost_center_intent(
+            context.entitlement,
+            context.principal,
+            book,
+            key_capable=True
+            if (
+                isinstance(context, _McpAccessContext)
+                and context.gateway.azure_cloud == "government"
+            )
+            else None,
+        )
 
     async def _audit(
         self,
@@ -1017,12 +1184,35 @@ class PortalAccessService:
     ) -> _KeyTarget:
         """The key a reveal reads, refusing anything not exactly applied."""
 
+        entitlement = await self._repository.get_entitlement(actor.tenant_id, entitlement_id)
+        if entitlement is not None and entitlement.resource.kind == "mcpServer":
+            mcp_context = await self._mcp_context(
+                actor, entitlement_id, administrator=administrator
+            )
+            publication = mcp_context.publication
+            if publication is None:
+                raise ConflictError("Imported MCP grants do not have MOSAIC-managed keys.")
+            if await self._gateways.get_publication_lock(actor.tenant_id, publication.id):
+                raise ConflictError("An MCP publication operation is in progress; try again later.")
+            mcp_grant = self._applied_mcp_grant(
+                mcp_context, await self._intent(mcp_context, require_current=True)
+            )
+            await self._verify_government_runtime(mcp_context.gateway, publication)
+            assert mcp_grant.subscription_name is not None
+            return _KeyTarget(
+                entitlement=mcp_context.entitlement,
+                gateway=mcp_context.gateway,
+                api_name=publication.api_name,
+                subscription_name=mcp_grant.subscription_name,
+                fingerprint=(publication.applied_access, mcp_grant),
+            )
         if pool:
             pool_context, pool_grant = await self._pool_key_context(
                 actor, entitlement_id, administrator=administrator
             )
             if pool_grant.key_name is None:
-                raise ConflictError(_ENTRA_ONLY)
+                raise ConflictError(_direct_key_required(pool_context.gateway))
+            await self._verify_government_runtime(pool_context.gateway, pool_context.pool)
             return _KeyTarget(
                 entitlement=pool_context.entitlement,
                 gateway=pool_context.gateway,
@@ -1030,11 +1220,10 @@ class PortalAccessService:
                 subscription_name=pool_grant.key_name,
                 fingerprint=(pool_context.pool.applied_access, pool_grant),
             )
-        context, grant = await self._key_context(
-            actor, entitlement_id, administrator=administrator
-        )
+        context, grant = await self._key_context(actor, entitlement_id, administrator=administrator)
+        await self._verify_government_runtime(context.gateway, context.publication)
         if grant.subscription_name is None:
-            raise ConflictError(_ENTRA_ONLY)
+            raise ConflictError(_direct_key_required(context.gateway))
         return _KeyTarget(
             entitlement=context.entitlement,
             gateway=context.gateway,
@@ -1059,9 +1248,7 @@ class PortalAccessService:
                 actor, entitlement_id, administrator=administrator, pool=pool_id is not None
             )
             subscription_name = target.subscription_name
-            reader = self._credential_factory(
-                ApimResourceId.parse(target.gateway.azure_resource_id)
-            )
+            reader = self._credential_factory(target.gateway.arm_resource())
             key = await reader.read_key(subscription_name, target.api_name, slot)
 
             # A revoke or identity/configuration change can arrive during the ARM round trip.
@@ -1142,10 +1329,15 @@ class PortalAccessService:
     def _key_manager(self, gateway: Gateway) -> KeyManager:
         if self._key_manager_factory is None:
             raise ConflictError("This deployment can't manage keys")
-        return self._key_manager_factory(ApimResourceId.parse(gateway.azure_resource_id))
+        return self._key_manager_factory(gateway.arm_resource())
 
     async def _record_key(
-        self, context: _AccessContext, name: str, *, present: bool
+        self,
+        context: _AccessContext,
+        name: str,
+        *,
+        present: bool,
+        state: KeyState | None = None,
     ) -> None:
         """Record that the publication owns, or no longer owns, a grant's key."""
 
@@ -1157,15 +1349,24 @@ class PortalAccessService:
         await self._gateways.record_publication_state(
             current.model_copy(
                 update={
+                    "key_lifecycle": {
+                        **current.key_lifecycle,
+                        name: state or ("ready" if present else "deleted"),
+                    },
                     "resources": _with_subscription(
                         current.resources, context.gateway, name, present=present
-                    )
+                    ),
                 }
             )
         )
 
     async def _record_pool_key(
-        self, context: _PoolAccessContext, name: str, *, present: bool
+        self,
+        context: _PoolAccessContext,
+        name: str,
+        *,
+        present: bool,
+        state: KeyState | None = None,
     ) -> None:
         """Record that the pool owns, or no longer owns, a key.
 
@@ -1178,9 +1379,13 @@ class PortalAccessService:
         await self._gateways.record_model_pool_state(
             current.model_copy(
                 update={
+                    "key_lifecycle": {
+                        **current.key_lifecycle,
+                        name: state or ("ready" if present else "deleted"),
+                    },
                     "resources": _with_subscription(
                         current.resources, context.gateway, name, present=present
-                    )
+                    ),
                 }
             )
         )
@@ -1207,14 +1412,32 @@ class PortalAccessService:
         )
         change = _KeyChange()
         try:
-            if pool_id is None:
+            entitlement = await self._repository.get_entitlement(actor.tenant_id, entitlement_id)
+            if entitlement is not None and entitlement.resource.kind == "mcpServer":
+                result = await self._change_mcp_key(
+                    actor,
+                    entitlement_id,
+                    action,
+                    administrator=administrator,
+                    slot=slot,
+                    change=change,
+                )
+            elif pool_id is None:
                 result = await self._change_publication_key(
-                    actor, entitlement_id, action, administrator=administrator, slot=slot,
+                    actor,
+                    entitlement_id,
+                    action,
+                    administrator=administrator,
+                    slot=slot,
                     change=change,
                 )
             else:
                 result = await self._change_pool_key(
-                    actor, entitlement_id, action, administrator=administrator, slot=slot,
+                    actor,
+                    entitlement_id,
+                    action,
+                    administrator=administrator,
+                    slot=slot,
                     change=change,
                 )
             await self._key_audit(
@@ -1278,11 +1501,14 @@ class PortalAccessService:
                 live = await manager.get_subscription(name)
                 if live is not None:
                     _require_key_scope(context, live)
+                await self._record_key(context, name, present=True, state="deleted")
+                if live is not None:
                     await manager.delete(name)
                 await self._record_key(context, name, present=False)
             else:
-                intent = await self._intent(context)
+                intent = await self._intent(context, require_current=True)
                 grant = self._applied_grant(context, intent, require_key=action == "rotated")
+                await self._verify_government_runtime(context.gateway, context.publication)
                 live = await manager.get_subscription(name)
                 if action == "rotated":
                     if live is None:
@@ -1308,13 +1534,19 @@ class PortalAccessService:
                         )
                     # Recorded before it's created, so a create that fails part way is still
                     # MOSAIC's to delete, and unpublish removes it.
-                    await self._record_key(context, name, present=True)
+                    await self._record_key(context, name, present=True, state="preparing")
                     assert intent is not None
                     await manager.create(
                         name,
                         display_name=grant_key_display_name(grant.display_name, intent.code),
                         api_name=context.publication.api_name,
                     )
+                    if context.gateway.azure_cloud == "government":
+                        live = await manager.get_subscription(name)
+                        if live is None or (live.get("properties") or {}).get("state") != "active":
+                            raise ConflictError("APIM has not confirmed this key is active.")
+                        _require_key_scope(context, live)
+                    await self._record_key(context, name, present=True)
         return GrantKey(
             entitlement_id=entitlement_id,
             subscription_name=name,
@@ -1341,13 +1573,11 @@ class PortalAccessService:
         manager = self._key_manager(context.gateway)
         async with publication_lock(self._gateways, actor.tenant_id, context.pool.id):
             # Read again under the lock, which every apply and change to the pool also holds.
-            context = await self._pool_context(
-                actor, entitlement_id, administrator=administrator
-            )
+            context = await self._pool_context(actor, entitlement_id, administrator=administrator)
             pool = context.pool
             name = entitlement_key_name(pool, context.entitlement)
             if name is None:
-                raise ConflictError(_ENTRA_ONLY)
+                raise ConflictError(_direct_key_required(context.gateway))
             change.subscription_name = name
             if action == "deleted":
                 if not _owns_pool_key(context, name):
@@ -1357,12 +1587,17 @@ class PortalAccessService:
                 live = await manager.get_subscription(name)
                 if live is not None:
                     _require_scope(context.gateway, pool.api_name, live)
+                await self._record_pool_key(context, name, present=True, state="deleted")
+                if live is not None:
                     await manager.delete(name)
                 await self._record_pool_key(context, name, present=False)
             else:
                 grant = self._applied_pool_grant(
-                    context, await self._intent(context), require_key=action == "rotated"
+                    context,
+                    await self._intent(context, require_current=True),
+                    require_key=action == "rotated",
                 )
+                await self._verify_government_runtime(context.gateway, pool)
                 live = await manager.get_subscription(name)
                 if action == "rotated":
                     if live is None:
@@ -1390,7 +1625,7 @@ class PortalAccessService:
                         )
                     # Recorded before it's created, so a create that fails part way is still
                     # MOSAIC's to delete, and the pool's next apply or unpublish removes it.
-                    await self._record_pool_key(context, name, present=True)
+                    await self._record_pool_key(context, name, present=True, state="preparing")
                     snapshot = pool.applied_access
                     grants = (snapshot.key_grants().get(name) if snapshot else None) or [grant]
                     await manager.create(
@@ -1398,6 +1633,12 @@ class PortalAccessService:
                         display_name=pool_key_display_name(pool, grants),
                         api_name=pool.api_name,
                     )
+                    if context.gateway.azure_cloud == "government":
+                        live = await manager.get_subscription(name)
+                        if live is None or (live.get("properties") or {}).get("state") != "active":
+                            raise ConflictError("APIM has not confirmed this key is active.")
+                        _require_scope(context.gateway, pool.api_name, live)
+                    await self._record_pool_key(context, name, present=True)
         return GrantKey(
             entitlement_id=entitlement_id,
             subscription_name=name,
@@ -1410,8 +1651,151 @@ class PortalAccessService:
     async def create_key(
         self, actor: Actor, entitlement_id: str, *, administrator: bool = False
     ) -> GrantKey:
-        return await self._manage_key(
-            actor, entitlement_id, "created", administrator=administrator
+        return await self._manage_key(actor, entitlement_id, "created", administrator=administrator)
+
+    @staticmethod
+    def _applied_mcp_grant(
+        context: _McpAccessContext, intent: CostCenterIntent | None, *, require_key: bool = True
+    ) -> McpAccessGrant:
+        publication = context.publication
+        entitlement = context.entitlement
+        snapshot = publication.applied_access if publication is not None else None
+        if (
+            publication is None
+            or snapshot is None
+            or context.gateway.management_mode != ManagementMode.MANAGE
+            or publication.status != PublicationStatus.PUBLISHED
+            or publication.access_state != "applied"
+            or not publication.has_applied_api()
+            or not snapshot.settings.keys_enabled
+            or not entitlement.enabled
+        ):
+            raise ConflictError("MCP keys require an enabled, successfully applied direct grant.")
+        matches = [grant for grant in snapshot.grants if grant.entitlement_id == entitlement.id]
+        expected = model_access_subscription_name(
+            publication.tenant_id, publication.id, entitlement.id
+        )
+        if len(matches) != 1:
+            raise ConflictError("This MCP grant has not been applied to API Management.")
+        grant = matches[0]
+        if grant.is_group_grant:
+            raise ConflictError(_direct_key_required(context.gateway))
+        if (
+            not grant.enabled
+            or grant.revoked
+            or intent is None
+            or grant.subject != entitlement.subject
+            or grant.object_id.casefold() != context.principal.object_id.casefold()
+            or grant.subscription_name != expected
+            or grant.intent_digest
+            != entitlement_intent_digest(entitlement, context.principal, intent)
+            or grant.enforcement != effective_enforcement(entitlement, intent)
+            or grant.cost_center_id != entitlement.cost_center_id
+        ):
+            raise ConflictError("Apply pending changes to this MCP grant before using its key.")
+        if not intent.keys_allowed or not grant.keys_allowed:
+            raise ConflictError(
+                "Keys are turned off for this cost center; Government access is unavailable.",
+                details={"reason": "costCenterKeysOff"},
+            )
+        if require_key and not _owns_subscription(context.gateway, publication.resources, expected):
+            raise ConflictError("This MCP grant has no key.", details={"reason": "noKey"})
+        return grant
+
+    async def _change_mcp_key(
+        self,
+        actor: Actor,
+        entitlement_id: str,
+        action: Literal["created", "rotated", "deleted"],
+        *,
+        administrator: bool,
+        slot: Literal["primary", "secondary"] | None,
+        change: _KeyChange,
+    ) -> GrantKey:
+        context = await self._mcp_context(actor, entitlement_id, administrator=administrator)
+        if context.publication is None:
+            raise ConflictError("Imported MCP grants do not have MOSAIC-managed keys.")
+        async with publication_lock(self._gateways, actor.tenant_id, context.publication.id):
+            context = await self._mcp_context(actor, entitlement_id, administrator=administrator)
+            publication = context.publication
+            if publication is None:
+                raise ConflictError("The MCP publication disappeared.")
+            name = model_access_subscription_name(
+                publication.tenant_id, publication.id, entitlement_id
+            )
+            change.subscription_name = name
+            change.cost_center_id = context.entitlement.cost_center_id
+            manager = self._key_manager(context.gateway)
+            owned = _owns_subscription(context.gateway, publication.resources, name)
+            live = await manager.get_subscription(name)
+            if live is not None and not owned:
+                raise ConflictError("MOSAIC did not create this MCP subscription.")
+            if live is not None:
+                _require_scope(context.gateway, publication.api_name, live)
+            if action == "deleted":
+                if not owned:
+                    raise ConflictError("This MCP grant has no key.", details={"reason": "noKey"})
+                publication = publication.model_copy(
+                    update={"key_lifecycle": {**publication.key_lifecycle, name: "deleted"}}
+                )
+                await record_key_owner(self._gateways, publication)
+                if live is not None:
+                    await manager.delete(name)
+                present, state = False, "deleted"
+            else:
+                grant = self._applied_mcp_grant(
+                    context,
+                    await self._intent(context, require_current=True),
+                    require_key=action == "rotated",
+                )
+                await self._verify_government_runtime(context.gateway, publication)
+                if action == "rotated":
+                    if live is None:
+                        raise ConflictError("The MCP key is missing. Delete and reprovision it.")
+                    assert slot is not None
+                    await manager.regenerate(name, slot)
+                else:
+                    if live is not None:
+                        raise ConflictError(
+                            "This MCP grant already has a key.", details={"reason": "keyExists"}
+                        )
+                    publication = publication.model_copy(
+                        update={
+                            "resources": _with_subscription(
+                                publication.resources, context.gateway, name, present=True
+                            ),
+                            "key_lifecycle": {**publication.key_lifecycle, name: "preparing"},
+                        }
+                    )
+                    await record_key_owner(self._gateways, publication)
+                    await manager.create(
+                        name,
+                        api_name=publication.api_name,
+                        display_name=grant_key_display_name(
+                            grant.display_name, grant.cost_center_code
+                        ),
+                    )
+                    live = await manager.get_subscription(name)
+                    if live is None or (live.get("properties") or {}).get("state") != "active":
+                        raise ConflictError("APIM has not confirmed this MCP key is active.")
+                    _require_scope(context.gateway, publication.api_name, live)
+                present, state = True, "ready"
+            await record_key_owner(
+                self._gateways,
+                publication.model_copy(
+                    update={
+                        "resources": _with_subscription(
+                            publication.resources, context.gateway, name, present=present
+                        ),
+                        "key_lifecycle": {**publication.key_lifecycle, name: state},
+                    }
+                ),
+            )
+        return GrantKey(
+            entitlement_id=entitlement_id,
+            subscription_name=name,
+            exists=present,
+            rotated=slot if action == "rotated" else None,
         )
 
     async def rotate_key(
@@ -1429,6 +1813,4 @@ class PortalAccessService:
     async def delete_key(
         self, actor: Actor, entitlement_id: str, *, administrator: bool = False
     ) -> GrantKey:
-        return await self._manage_key(
-            actor, entitlement_id, "deleted", administrator=administrator
-        )
+        return await self._manage_key(actor, entitlement_id, "deleted", administrator=administrator)

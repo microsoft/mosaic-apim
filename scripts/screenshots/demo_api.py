@@ -27,11 +27,18 @@ from typing import Any, cast
 
 import httpx
 import uvicorn
+from azure.core.credentials import AccessToken
 from azure.core.credentials_async import AsyncTokenCredential
 from fastapi import FastAPI, Request
 from mosaic_api.approvals import ApprovalPolicySaveInput
 from mosaic_api.auth import AuthContext
+from mosaic_api.azure_connections import (
+    AzureConnection,
+    AzureConnectionCreate,
+    AzureConnectionService,
+)
 from mosaic_api.budgets import BudgetAction, BudgetUpdate, EmailSettingsUpdate, EmailTest
+from mosaic_api.clouds import AzureCloud, azure_ai_cloud, cloud_profile
 from mosaic_api.config import (
     AuthMode,
     Environment,
@@ -52,6 +59,7 @@ from mosaic_api.domain import (
     AccessRequestCreate,
     AccessRequestState,
     CatalogEntryUpdate,
+    CognitiveServicesResourceId,
     DirectoryObject,
     Entitlement,
     EntitlementCreate,
@@ -62,6 +70,7 @@ from mosaic_api.domain import (
     GatewayUpdate,
     GroupCreate,
     ImportRequest,
+    McpEndpoint,
     McpEndpointCreate,
     McpModelCallerUpdate,
     McpPublicationCreate,
@@ -146,6 +155,7 @@ from mosaic_api.services.telemetry import TelemetryService, member_host
 from mosaic_api.services.usage import RollupUsageSource
 from mosaic_api.services.usage_rollup import UsageRollupService
 from PIL import Image, ImageDraw
+from pydantic import SecretStr
 
 from scripts.screenshots.demo_fakes import (
     AI_RESOURCE_ID,
@@ -154,11 +164,14 @@ from scripts.screenshots.demo_fakes import (
     FOUNDRY_RESOURCE_ID,
     FOUNDRY_WEST_RESOURCE_ID,
     GATEWAY_RESOURCE_ID,
+    GOV_AI_RESOURCE_ID,
+    GOV_GATEWAY_RESOURCE_ID,
     KEY_VAULT_ID,
     PARTNER_GATEWAY_RESOURCE_ID,
     DemoApim,
     DemoLogs,
     FakeCredential,
+    FakeKeyStore,
     PoolMemberTraffic,
     TrafficStream,
     build_cognitive_accounts,
@@ -176,10 +189,10 @@ TENANT_ID = "5f2d7c1e-8a3b-4c9d-b0e1-f2a3b4c5d6e7"
 MOSAIC_PRINCIPAL_ID = "6e3f8d2a-9b4c-4d0e-a1f2-a3b4c5d6e7f8"
 MODEL_RUNTIME_CLIENT_ID = "7f4a9e3b-0c5d-4e1f-b2a3-b4c5d6e7f809"
 MODEL_CLIENT_ID = "8a5b0f4c-1d6e-4f2a-83b4-c5d6e7f8091a"
+GOV_TENANT_ID = "9b6c1a5d-2e7f-4031-94c5-d6e7f8091a2b"
+GOV_CLIENT_ID = "ac7d2b6e-3f80-4142-a5d6-e7f8091a2b3c"
 SUBSCRIPTION_COUNTER = "@(context.Subscription.Id)"
-PARTNER_FOUNDRY_URL = (
-    "https://fabrikam-foundry.services.ai.azure.com/api/projects/partner-models"
-)
+PARTNER_FOUNDRY_URL = "https://fabrikam-foundry.services.ai.azure.com/api/projects/partner-models"
 # Fictional. The console masks it, and MOSAIC keeps it only in the demo's Key Vault double.
 PARTNER_FOUNDRY_DEMO_KEY = "demo-foundry-key-not-a-real-key-0000"
 
@@ -234,15 +247,11 @@ SCHEDULING_ASSISTANT_AGENT = Person(
 SCHEDULING_ASSISTANT = Person(
     "Scheduling Assistant", "708192a3-b4c5-4def-8012-6d7e8f901a2b", "agentUser"
 )
-AI_MODEL_USERS = Person(
-    "AI Model Users", "8192a3b4-c5d6-4ef0-9123-7e8f901a2b3c", "securityGroup"
-)
+AI_MODEL_USERS = Person("AI Model Users", "8192a3b4-c5d6-4ef0-9123-7e8f901a2b3c", "securityGroup")
 FINANCE_AI_PILOT = Person(
     "Finance AI Pilot", "92a3b4c5-d6e7-4f01-8234-8f901a2b3c4d", "securityGroup"
 )
-AGENT_BUILDERS = Person(
-    "Agent Builders", "a3b4c5d6-e7f8-4012-9345-901a2b3c4d5e", "securityGroup"
-)
+AGENT_BUILDERS = Person("Agent Builders", "a3b4c5d6-e7f8-4012-9345-901a2b3c4d5e", "securityGroup")
 
 AGENT_BLUEPRINTS = {
     MARKET_RESEARCH_AGENT.object_id: "2b3c4d5e-6f70-489a-9bcd-1e2f3a4b5c6d",
@@ -440,6 +449,7 @@ class DemoEmail:
     async def close(self) -> None:
         return None
 
+
 # Every string that identifies a resource, endpoint, or account in the estate. Captures blur these
 # wherever they render, alongside the generic patterns in capture.py.
 SENSITIVE_LITERALS = [
@@ -450,11 +460,7 @@ SENSITIVE_LITERALS = [
     *(person.object_id for person in PEOPLE),
     *(blueprint for blueprint in AGENT_BLUEPRINTS.values()),
     *(item.object_id for item in EXTRA_DIRECTORY_OBJECTS),
-    *(
-        item.blueprint_id
-        for item in EXTRA_DIRECTORY_OBJECTS
-        if item.blueprint_id is not None
-    ),
+    *(item.blueprint_id for item in EXTRA_DIRECTORY_OBJECTS if item.blueprint_id is not None),
 ]
 
 
@@ -610,6 +616,7 @@ class DemoServices:
     """The fake-backed services that replace the Azure-facing ones in ``app.state``."""
 
     directory: DirectoryService
+    connections: AzureConnectionService
     gateways: GatewayService
     endpoints: ModelEndpointService
     publishing: PublishingService
@@ -644,9 +651,19 @@ class DemoServices:
             await client.aclose()
 
 
-def _arm(handler: Any) -> tuple[ArmClient, httpx.AsyncClient]:
+def _arm(
+    handler: Any,
+    azure_cloud: AzureCloud = "commercial",
+) -> tuple[ArmClient, httpx.AsyncClient]:
     http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    arm = ArmClient(cast(AsyncTokenCredential, FakeCredential()), client=http, sleep=_no_sleep)
+    profile = cloud_profile(azure_cloud)
+    arm = ArmClient(
+        cast(AsyncTokenCredential, FakeCredential()),
+        client=http,
+        sleep=_no_sleep,
+        base_url=profile.arm_endpoint,
+        scope=profile.arm_scope,
+    )
     return arm, http
 
 
@@ -658,16 +675,65 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         raise SeedError("The demo estate needs the in-memory entitlement repository")
     apim = DemoApim()
     dev_apim = DemoApim(DEV_GATEWAY_RESOURCE_ID, public_ip="203.0.113.25")
+    gov_apim = DemoApim(GOV_GATEWAY_RESOURCE_ID, public_ip="203.0.113.26", azure_cloud="government")
     # Both gateways already send their resource logs to Contoso's workspace, and log every call.
     send_logs_to_workspace(apim)
     send_logs_to_workspace(dev_apim)
     log_every_call(apim)
     log_every_call(dev_apim)
+    send_logs_to_workspace(gov_apim)
+    log_every_call(gov_apim)
     gateway_arm, gateway_http = _arm(gateway_handler(apim, dev_apim))
     ai_arm, ai_http = _arm(cognitive_handler(build_cognitive_accounts()))
+    gov_gateway_arm, gov_gateway_http = _arm(gateway_handler(gov_apim), "government")
+    gov_accounts = [
+        account
+        for account in build_cognitive_accounts()
+        if azure_ai_cloud(account.endpoint) == "government"
+    ]
+    for account in gov_accounts:
+        account.accounts_by_subscription = {
+            CognitiveServicesResourceId.parse(account.resource_id).subscription_id: [
+                candidate._account() for candidate in gov_accounts
+            ]
+        }
+    gov_ai_arm, gov_ai_http = _arm(cognitive_handler(gov_accounts), "government")
     vault_arm, vault_http = _arm(build_key_vault().handler)
     mcp_http = httpx.AsyncClient(transport=httpx.MockTransport(mcp_handler(build_mcp_servers())))
     lookup = build_directory_lookup()
+    management_store = FakeKeyStore(vault_name="kv-contoso-management")
+
+    async def management_secret(uri: str) -> str:
+        value = management_store.current(uri)
+        if value is None:
+            raise SeedError("The fictional management credential is missing")
+        return value
+
+    async def management_token(
+        connection: AzureConnection,
+        secret: str,
+        scopes: tuple[str, ...],
+    ) -> AccessToken:
+        return AccessToken("demo-management-token-not-real", 9999999999)
+
+    connections = AzureConnectionService(
+        state.azure_connection_repository,
+        tenant_id=settings.tenant_id,
+        gateways=state.gateway_repository,
+        endpoints=state.model_endpoint_repository,
+        mcps=state.mcp_endpoint_repository,
+        secret_reader=management_secret,
+        secret_store=management_store,
+        token_issuer=management_token,
+    )
+    state.azure_connection_service = connections
+
+    async def connection_token(endpoint: McpEndpoint, audience: str) -> str:
+        return (await connections.mcp_token(endpoint, audience)).token
+
+    def gateway_client(resource: Any) -> ArmClient:
+        return gov_gateway_arm if resource.azure_cloud == "government" else gateway_arm
+
     directory = DirectoryService(
         state.repository,
         gateway_repository=state.gateway_repository,
@@ -680,15 +746,22 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
     # Built as create_app builds them, with only the Azure-facing clients swapped for fakes.
     gateways = GatewayService(
         state.gateway_repository,
-        client_factory=lambda resource: ApimClient(gateway_arm, resource),
+        client_factory=lambda resource: ApimClient(gateway_client(resource), resource),
+        connection_validator=connections.validate_resource,
         principal_id=MOSAIC_PRINCIPAL_ID,
         environment_repository=state.environment_repository,
     )
     endpoints = ModelEndpointService(
         state.model_endpoint_repository,
         gateway_repository=state.gateway_repository,
-        client_factory=lambda resource: CognitiveServicesClient(ai_arm, resource),
+        client_factory=lambda resource: CognitiveServicesClient(
+            gov_ai_arm if resource.azure_cloud == "government" else ai_arm, resource
+        ),
+        connection_validator=connections.validate_resource,
         scanner=SubscriptionScanner(ai_arm),
+        scanner_factory=lambda context: SubscriptionScanner(
+            gov_ai_arm if context.azure_cloud == "government" else ai_arm
+        ),
         principal_id=MOSAIC_PRINCIPAL_ID,
         environment_repository=state.environment_repository,
         secret_resolver=_demo_model_key,
@@ -703,8 +776,8 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
     publishing = PublishingService(
         state.gateway_repository,
         endpoint_repository=state.model_endpoint_repository,
-        client_factory=lambda resource: ApimClient(gateway_arm, resource),
-        writer_factory=lambda resource: ApimWriter(gateway_arm, resource),
+        client_factory=lambda resource: ApimClient(gateway_client(resource), resource),
+        writer_factory=lambda resource: ApimWriter(gateway_client(resource), resource),
         directory_repository=state.repository,
         entitlement_repository=state.entitlement_repository,
         model_runtime_client_id=settings.model_runtime_client_id,
@@ -717,8 +790,8 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         mcp_endpoint_repository=state.mcp_endpoint_repository,
         entitlement_repository=state.entitlement_repository,
         directory_repository=state.repository,
-        client_factory=lambda resource: ApimClient(gateway_arm, resource),
-        writer_factory=lambda resource: ApimWriter(gateway_arm, resource),
+        client_factory=lambda resource: ApimClient(gateway_client(resource), resource),
+        writer_factory=lambda resource: ApimWriter(gateway_client(resource), resource),
         runtime_client_id=settings.model_runtime_client_id,
         security_group_claims=settings.entra_group_claims,
         environment_repository=state.environment_repository,
@@ -730,8 +803,10 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         gateway_repository=state.gateway_repository,
         entitlement_repository=state.entitlement_repository,
         client_factory=build_mcp_client_factory(mcp_http),
+        connection_validator=connections.validate_resource,
         secret_resolver=_demo_secret,
         token_resolver=_demo_token,
+        connection_token_resolver=connection_token,
         require_https=True,
         allow_private_endpoints=False,
         environment_repository=state.environment_repository,
@@ -747,8 +822,8 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
     pools = ModelPoolService(
         state.gateway_repository,
         endpoint_repository=state.model_endpoint_repository,
-        client_factory=lambda resource: ApimClient(gateway_arm, resource),
-        writer_factory=lambda resource: ApimWriter(gateway_arm, resource),
+        client_factory=lambda resource: ApimClient(gateway_client(resource), resource),
+        writer_factory=lambda resource: ApimWriter(gateway_client(resource), resource),
         environment_repository=state.environment_repository,
         directory_repository=state.repository,
         entitlement_repository=state.entitlement_repository,
@@ -763,10 +838,12 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         repository=state.entitlement_repository,
         directory_repository=state.repository,
         gateway_repository=state.gateway_repository,
-        credential_factory=lambda resource: ApimCredentialClient(gateway_arm, resource),
+        credential_factory=lambda resource: ApimCredentialClient(
+            gateway_client(resource), resource
+        ),
         model_runtime_client_id=settings.model_runtime_client_id,
         model_client_id=settings.model_client_id,
-        key_manager_factory=lambda resource: ApimKeyManager(gateway_arm, resource),
+        key_manager_factory=lambda resource: ApimKeyManager(gateway_client(resource), resource),
     )
     state.portal_access_service = portal_access
     state.approval_ai_service._portal = portal_access
@@ -777,8 +854,8 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         gateway_repository=state.gateway_repository,
         rollup_repository=state.usage_rollup_repository,
         entitlement_repository=state.entitlement_repository,
-        client_factory=lambda resource: ApimClient(gateway_arm, resource),
-        writer_factory=lambda resource: ApimWriter(gateway_arm, resource),
+        client_factory=lambda resource: ApimClient(gateway_client(resource), resource),
+        writer_factory=lambda resource: ApimWriter(gateway_client(resource), resource),
         logs=logs,
         rollups_enabled=True,
         interval_seconds=settings.usage_rollup_interval_seconds,
@@ -845,8 +922,8 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         cost_center_repository=state.cost_center_repository,
         gateway_repository=state.gateway_repository,
         gate=blocked_list,
-        client_factory=lambda resource: ApimClient(gateway_arm, resource),
-        writer_factory=lambda resource: ApimWriter(gateway_arm, resource),
+        client_factory=lambda resource: ApimClient(gateway_client(resource), resource),
+        writer_factory=lambda resource: ApimWriter(gateway_client(resource), resource),
         analytics=state.analytics_service,
         email=DemoEmail(),
         portal=state.portal_service,
@@ -858,6 +935,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
     state.authenticator = DemoAuthenticator(settings.tenant_id, portal_origins)
     return DemoServices(
         directory=directory,
+        connections=connections,
         gateways=gateways,
         endpoints=endpoints,
         publishing=publishing,
@@ -876,7 +954,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         analytics=state.analytics_service,
         budgets=budgets,
         pools=pools,
-        clients=[gateway_http, ai_http, vault_http, mcp_http],
+        clients=[gateway_http, ai_http, gov_gateway_http, gov_ai_http, vault_http, mcp_http],
     )
 
 
@@ -1068,6 +1146,10 @@ class Estate:
     gateway_id: str = ""
     dev_gateway_id: str = ""
     partner_gateway_id: str = ""
+    gov_gateway_id: str = ""
+    gov_model_api_id: str = ""
+    gov_mcp_server_id: str = ""
+    gov_mcp_api_name: str = ""
     aoai_endpoint_id: str = ""
     foundry_endpoint_id: str = ""
     foundry_north_central_endpoint_id: str = ""
@@ -1616,9 +1698,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     claude_pool = await services.pools.update(
         admin,
         claude_pool.id,
-        ModelPoolUpdate(
-            governed_access=ModelAccessSettings(keys_enabled=True, entra_enabled=True)
-        ),
+        ModelPoolUpdate(governed_access=ModelAccessSettings(keys_enabled=True, entra_enabled=True)),
     )
     claude_models = {model.display_name: model.id for model in claude_pool.models}
     # A second pool, saved but not yet published. Evaluation runs start in North Central US and
@@ -2039,6 +2119,129 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     await grant(NESTOR, "modelApi", gpt4o)
 
     _require_synced(await services.gateways.sync_now(admin, gateway.id), gateway.name)
+    connection = await services.connections.create(
+        admin,
+        AzureConnectionCreate(
+            name="Government management",
+            azure_cloud="government",
+            azure_tenant_id=GOV_TENANT_ID,
+            client_id=GOV_CLIENT_ID,
+            client_secret=SecretStr("demo-government-management-secret-not-real"),
+        ),
+    )
+    await services.connections.test(admin, connection.id)
+    gov_gateway = await services.gateways.register(
+        admin,
+        GatewayCreate(
+            azure_resource_id=GOV_GATEWAY_RESOURCE_ID,
+            name="Contoso Government Gateway",
+            azure_cloud="government",
+            azure_connection_id=connection.id,
+            environment="production",
+        ),
+    )
+    estate.gov_gateway_id = gov_gateway.id
+    _require_synced(await services.gateways.sync_now(admin, gov_gateway.id), gov_gateway.name)
+    await services.gateways.update(admin, gov_gateway.id, GatewayUpdate(management_mode="manage"))
+    gov_endpoint = await services.endpoints.register(
+        admin,
+        ModelEndpointCreate(
+            azure_resource_id=GOV_AI_RESOURCE_ID,
+            name="Contoso Government Azure OpenAI",
+            azure_cloud="government",
+            azure_connection_id=connection.id,
+            environment="production",
+        ),
+    )
+    _require_synced(await services.endpoints.sync_now(admin, gov_endpoint.id), gov_endpoint.name)
+    gov_model_name = "GPT-4o mini (Government)"
+    gov_publication = await services.publishing.create(
+        admin,
+        PublicationCreate(
+            gateway_id=gov_gateway.id,
+            model_endpoint_id=gov_endpoint.id,
+            deployment_name="gpt-4o-mini",
+            display_name=gov_model_name,
+            enforcement=_tokens(per_minute=30_000),
+            governed_access=ModelAccessSettings(keys_enabled=True, entra_enabled=False),
+        ),
+    )
+    await _publish(services, admin, gov_publication.id, gov_model_name)
+    applied_government = await services.publishing.get_publication(admin, gov_publication.id)
+    if not applied_government.model_api_id:
+        raise SeedError("The fictional Government publication was not read back")
+    estate.gov_model_api_id = applied_government.model_api_id
+    estate.publications[gov_model_name] = applied_government.id
+    estate.model_apis[gov_model_name] = applied_government.model_api_id
+    await services.gateways.update_model_api_catalog(
+        admin,
+        applied_government.model_api_id,
+        CatalogEntryUpdate(
+            summary="Government-hosted chat; an applied direct grant prepares a key."
+        ),
+    )
+    await grant(
+        PORTAL_USER,
+        "modelApi",
+        applied_government.model_api_id,
+        EntitlementEnforcement(tokens=_tokens(per_minute=10_000)),
+        "Government-hosted evaluation, charged to the same Customer Insights cost center.",
+        cost_center="CI-204",
+    )
+    await _publish(services, admin, gov_publication.id, gov_model_name)
+    gov_mcp = await services.mcp_endpoints.register(
+        admin,
+        McpEndpointCreate.model_validate(
+            {
+                "endpoint": "https://government-mcp.contoso.com/mcp",
+                "name": "Government Docs Search",
+                "environment": "production",
+                "azureCloud": "government",
+                "azureConnectionId": connection.id,
+                "resourceAudience": f"api://{GOV_CLIENT_ID}",
+            }
+        ),
+    )
+    _require_synced(await services.mcp_endpoints.sync_now(admin, gov_mcp.id), gov_mcp.name)
+    estate.mcp_endpoints[gov_mcp.name] = gov_mcp.id
+    gov_mcp_publication = await services.mcp_publishing.create(
+        admin,
+        McpPublicationCreate(gateway_id=gov_gateway.id, mcp_endpoint_id=gov_mcp.id),
+    )
+    await _publish_mcp(services, admin, gov_mcp_publication.id, gov_mcp_publication.display_name)
+    applied_government_mcp = await services.mcp_publishing.get_publication(
+        admin, gov_mcp_publication.id
+    )
+    if not applied_government_mcp.mcp_server_id:
+        raise SeedError("The fictional Government MCP publication was not read back")
+    estate.gov_mcp_server_id = applied_government_mcp.mcp_server_id
+    estate.gov_mcp_api_name = applied_government_mcp.api_name
+    estate.mcp_servers[applied_government_mcp.api_name] = applied_government_mcp.mcp_server_id
+    await grant(
+        PORTAL_USER,
+        "mcpServer",
+        applied_government_mcp.mcp_server_id,
+        EntitlementEnforcement(requests=_calls(per_window=30, window_seconds=60)),
+        "Government tool access under the shared Customer Insights cost center.",
+        cost_center="CI-204",
+    )
+    await _publish_mcp(services, admin, gov_mcp_publication.id, gov_mcp_publication.display_name)
+    _require_synced(await services.gateways.sync_now(admin, gov_gateway.id), gov_gateway.name)
+    await services.pricing.add_price(
+        admin,
+        PriceCreate(
+            cloud="government",
+            publisher="OpenAI",
+            model="gpt-4o-mini",
+            version="2024-07-18",
+            deployment_type="Standard",
+            input_per_million=0.2,
+            output_per_million=0.8,
+            effective_from=month_start - timedelta(days=100),
+            source_url="https://contoso.example/agreements/government-demo",
+            note="Fictional demo-only Government contract rate, not an Azure price quote.",
+        ),
+    )
     return estate
 
 
@@ -2601,6 +2804,39 @@ async def seed_usage(services: DemoServices, estate: Estate, tenant_id: str) -> 
 
     await services.telemetry.enable(Actor(ADMIN.object_id, tenant_id), estate.gateway_id)
     services.logs.streams = await traffic_streams(services, estate, tenant_id)
+    government_publication = await services.publishing.get_publication(
+        Actor(ADMIN.object_id, tenant_id), estate.publications["GPT-4o mini (Government)"]
+    )
+    for resource_id, api_name, name, volume, shape in (
+        (
+            estate.gov_model_api_id,
+            government_publication.api_name,
+            "government-model",
+            150,
+            chat("gpt-4o-mini", 1000, 180, 950),
+        ),
+        (estate.gov_mcp_server_id, estate.gov_mcp_api_name, "government-mcp", 60, {}),
+    ):
+        held = _held_grant(services, estate, PORTAL_USER, resource_id, "CI-204")
+        if (
+            held.binding is None
+            or not held.binding.attribution_key
+            or not held.binding.apim_subscription_name
+        ):
+            raise SeedError("The fictional Government grant and key have not been applied")
+        services.logs.streams.append(
+            TrafficStream(
+                name=name,
+                resource_id=GOV_GATEWAY_RESOURCE_ID,
+                api=api_name,
+                per_day=volume,
+                grant=held.binding.attribution_key,
+                subscription=held.binding.apim_subscription_name,
+                since=held.created_at.date(),
+                **shape,
+            )
+        )
+    await services.telemetry.enable(Actor(ADMIN.object_id, tenant_id), estate.gov_gateway_id)
     for _ in range(MAX_ROLLUP_CYCLES):
         states = await services.usage_rollups.run_cycle()
         failed = next((state for state in states if state.last_error), None)
@@ -2719,6 +2955,7 @@ def build_demo_app(console_port: int, portal_port: int) -> FastAPI:
             services = install_demo_services(demo_app, portal_origins)
             try:
                 estate = await seed_estate(services, TENANT_ID)
+                await services.portal_access.resume_automatic_keys(TENANT_ID)
                 await seed_usage(services, estate, TENANT_ID)
                 await seed_budgets(services, estate, TENANT_ID)
                 await seed_approvals_and_notifications(demo_app, estate)

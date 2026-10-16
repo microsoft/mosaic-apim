@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from mosaic_api.clouds import AzureCloud
 from mosaic_api.pricing import round_cost
 from mosaic_api.services.analytics.cost import HOURS_NOTE, CostBook, CostTally, add_cost
 from mosaic_api.services.analytics.models import (
@@ -81,6 +82,7 @@ class DeploymentInfo:
     model_format: str | None
     sku_name: str | None
     sku_capacity: int | None
+    azure_cloud: AzureCloud | None = None
 
     @property
     def capacity_tokens_per_minute(self) -> int | None:
@@ -255,9 +257,7 @@ def overview(
                 )
                 previous = previous.model_copy(
                     update={
-                        "cost": None
-                        if before_tally.total is None
-                        else round(before_tally.total, 4)
+                        "cost": None if before_tally.total is None else round(before_tally.total, 4)
                     }
                 )
 
@@ -457,6 +457,7 @@ def api_rows(
         known = scope.apis.get((gateway_id, name))
         rows.append(
             AnalyticsApiRow(
+                azure_cloud=scope.gateway_cloud(gateway_id),
                 **usage_values(
                     metrics,
                     combined.requests,
@@ -548,10 +549,12 @@ def models_report(
 
     by_deployment: dict[str, UsageMetrics] = defaultdict(UsageMetrics)
     deployment_costs: dict[str, float | None] = {}
+    deployment_clouds: dict[str, set[AzureCloud]] = defaultdict(set)
     reached: dict[str, set[str]] = defaultdict(set)
     hourly: dict[str, list[int]] = {}
     for summary, entry in entries(deployments, scope, "deployment"):
         by_deployment[entry.key].add(entry.metrics)
+        deployment_clouds[entry.key].add(summary.azure_cloud)
         reached[entry.key].add(summary.gateway_id)
         if costs is not None:
             deployment_costs[entry.key] = add_cost(
@@ -573,8 +576,13 @@ def models_report(
         endpoint_id, _, deployment_name = key.partition("/")
         info = observed.get(key)
         capacity = info.capacity_tokens_per_minute if info else None
+        clouds = deployment_clouds[key]
+        cloud = (info.azure_cloud if info else None) or (
+            next(iter(clouds)) if len(clouds) == 1 else None
+        )
         deployment_rows.append(
             AnalyticsDeploymentRow(
+                azure_cloud=cloud,
                 **usage_values(
                     metrics,
                     deployment_total.requests,
@@ -624,9 +632,9 @@ def models_report(
     shared = any(len(gateways) > 1 for gateways in reached.values())
     cost_summary: AnalyticsCostSummary | None = None
     if costs is not None:
-        cost_summary = window_cost(
-            costs, scope, api, window.first_day, window.last_day
-        ).summary(costs.notes)
+        cost_summary = window_cost(costs, scope, api, window.first_day, window.last_day).summary(
+            costs.notes
+        )
     return AnalyticsModels(
         **context.report(PEAKS_NOTE if shared else ""),
         apis=api_rows(scope, metrics_by_api, models, costs_by_api),
@@ -650,6 +658,7 @@ def denial_rows(
         client_name = scope.application(client, [caller] if caller else ()) if client else None
         lookups.append(
             AnalyticsDenialRow(
+                azure_cloud=scope.gateway_cloud(gateway_id),
                 reason=reason,
                 reason_label=denial_label(reason),
                 caller_object_id=caller or None,
@@ -768,6 +777,7 @@ def unattributed_report(
             )
         rows.append(
             AnalyticsUnattributedRow(
+                azure_cloud=scope.gateway_cloud(gateway_id),
                 gateway_id=gateway_id,
                 gateway_name=scope.gateway_name(gateway_id),
                 api_name=name,

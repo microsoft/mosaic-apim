@@ -37,6 +37,7 @@ import { BarList, type BarListItem } from '../components/charts/BarList'
 import { Histogram } from '../components/charts/Histogram'
 import { TrendChart } from '../components/charts/TrendChart'
 import { PageHeader } from '../components/PageHeader'
+import { CloudBadge } from '../components/CloudBadge'
 import { formatCost, formatCostCompact, formatRate, formatShare } from '../cost-format'
 import { environmentLabel, useEnvironmentCatalog } from '../environments'
 import { BACKFILL_STATUS_LABELS, ENTITLEMENT_SUBJECT_KIND_LABELS, FRESHNESS_STATUS_LABELS, PRINCIPAL_KIND_LABELS, plural } from '../labels'
@@ -100,7 +101,7 @@ const rangeLabels: Record<AnalyticsRange, string> = {
 }
 
 const filterKeys: Array<keyof AnalyticsFilters> = [
-  'range', 'start', 'end', 'gatewayId', 'environment', 'resourceId', 'costCenterId', 'subjectKind',
+  'range', 'start', 'end', 'gatewayId', 'environment', 'resourceId', 'costCenterId', 'subjectKind', 'azureCloud',
 ]
 
 const exportLabels: Record<ExportView, string> = {
@@ -239,6 +240,7 @@ function filtersFromSearch(params: URLSearchParams): AnalyticsFilters {
     end: range === 'custom' ? params.get('end') ?? undefined : undefined,
     gatewayId: params.get('gatewayId') ?? undefined,
     environment: params.get('environment') ?? undefined,
+    azureCloud: params.get('azureCloud') === 'government' ? 'government' : params.get('azureCloud') === 'commercial' ? 'commercial' : undefined,
     resourceId: params.get('resourceId') ?? undefined,
     subjectKind: (params.get('subjectKind') as EntitlementSubjectKind | null) ?? undefined,
     costCenterId: params.get('costCenterId') ?? undefined,
@@ -355,7 +357,7 @@ function GatewayHealthRows({
             <TableEmpty>No gateway telemetry health is available.</TableEmpty>
           ) : gateways.map((gateway) => (
             <tr key={gateway.gatewayId}>
-              <td>{gateway.name}<Text block size={200}>{gateway.environmentName}</Text></td>
+              <td>{gateway.name}<Text block size={200}>{gateway.environmentName}</Text><CloudBadge cloud={gateway.azureCloud} /></td>
               <td><Badge color={gateway.status === 'current' ? 'success' : gateway.status === 'failing' ? 'danger' : gateway.status === 'notLinked' ? 'subtle' : 'warning'}>{FRESHNESS_STATUS_LABELS[gateway.status]}</Badge></td>
               <td>{gateway.lagMinutes == null ? '—' : `${gateway.lagMinutes} min`}</td>
               <td>{BACKFILL_STATUS_LABELS[gateway.backfillStatus]}{gateway.backfillNext ? ` · next ${gateway.backfillNext}` : ''}</td>
@@ -590,7 +592,7 @@ function OnBehalfCard({ report, priced }: { report: AnalyticsConsumers; priced: 
             {rows.length === 0 ? <TableEmpty colSpan={priced ? 7 : 6}>No model calls were made through MCP servers for these filters.</TableEmpty> : rows.map((row) => (
               <tr key={row.key}>
                 <td>{row.personLabel}<Text block size={200}>{row.personDetail ?? ''}</Text></td>
-                <td>{row.mcpLabel}<Text block size={200}>{row.gatewayName}</Text></td>
+                <td>{row.mcpLabel}<Text block size={200}>{row.gatewayName}</Text>{row.azureCloud && <CloudBadge cloud={row.azureCloud} />}</td>
                 <td>{row.applicationLabel}<Text block size={200}>{row.applicationDetail ?? ''}</Text></td>
                 <td>{formatNumber(row.requests)}</td>
                 <td>{formatNumber(row.totalTokens)}</td>
@@ -637,7 +639,7 @@ function ConsumersTab({ report }: { report: AnalyticsConsumers }) {
             <thead><tr><th>Subject</th><th>Resource</th><th>Cost center</th><th>State</th><th>Requests</th><th>Key requests</th><th>Callers</th><th>Peak minute</th>{priced && <th>Cost</th>}</tr></thead>
             <tbody>
               {report.grants.length === 0 ? <TableEmpty>No grants match these filters.</TableEmpty> : report.grants.map((row) => (
-                <tr key={row.key}><td>{row.subjectLabel}<Text block size={200}>{grantSubjectKindLabel(row)} · {row.subjectDetail ?? 'No detail'}</Text></td><td>{row.resourceLabel}<Text block size={200}>{row.gatewayName ?? 'No gateway'}</Text></td><td>{row.costCenterName ?? '—'}<Text block size={200}>{row.costCenterCode ?? ''}</Text></td><td>{grantStateLabels[row.state]}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(row.keyRequests)}</td><td>{row.callers}</td><td>{row.peakMinuteTokens == null ? '—' : `${formatNumber(row.peakMinuteTokens)} tokens`}</td>{priced && <td>{costCell(row.cost, row.totalTokens)}</td>}</tr>
+                <tr key={row.key}><td>{row.subjectLabel}<Text block size={200}>{grantSubjectKindLabel(row)} · {row.subjectDetail ?? 'No detail'}</Text></td><td>{row.resourceLabel}<Text block size={200}>{row.gatewayName ?? 'No gateway'}</Text>{row.azureCloud && <CloudBadge cloud={row.azureCloud} />}</td><td>{row.costCenterName ?? '—'}<Text block size={200}>{row.costCenterCode ?? ''}</Text></td><td>{grantStateLabels[row.state]}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(row.keyRequests)}</td><td>{row.callers}</td><td>{row.peakMinuteTokens == null ? '—' : `${formatNumber(row.peakMinuteTokens)} tokens`}</td>{priced && <td>{costCell(row.cost, row.totalTokens)}</td>}</tr>
               ))}
             </tbody>
           </table>
@@ -683,7 +685,7 @@ function ApiRows({ rows, label, showCost = false }: { rows: AnalyticsApiRow[]; l
         <thead><tr><th>API</th><th>Kind</th><th>Requests</th><th>Denied</th><th>Errors</th><th>Backend 429s</th><th>P95</th><th>Models</th>{showCost && <th>Cost</th>}</tr></thead>
         <tbody>
           {rows.length === 0 ? <TableEmpty>No APIs match these filters.</TableEmpty> : rows.map((row) => (
-            <tr key={row.key}><td>{row.label}<Text block size={200}>{row.gatewayName} · {row.apiName}</Text></td><td>{row.kind ? apiKindLabels[row.kind] : 'Unknown'}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(row.denied)}</td><td>{formatNumber(row.errors)}</td><td>{formatNumber(row.backendThrottled)}</td><td>{formatLatency(row.p95LatencyMs)}</td><td>{row.models?.join(', ') ?? 'Not read in this view'}</td>{showCost && <td>{costCell(row.cost, row.totalTokens)}</td>}</tr>
+            <tr key={row.key}><td>{row.label}<Text block size={200}>{row.gatewayName} · {row.apiName}</Text>{row.azureCloud && <CloudBadge cloud={row.azureCloud} />}</td><td>{row.kind ? apiKindLabels[row.kind] : 'Unknown'}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(row.denied)}</td><td>{formatNumber(row.errors)}</td><td>{formatNumber(row.backendThrottled)}</td><td>{formatLatency(row.p95LatencyMs)}</td><td>{row.models?.join(', ') ?? 'Not read in this view'}</td>{showCost && <td>{costCell(row.cost, row.totalTokens)}</td>}</tr>
           ))}
         </tbody>
       </table>
@@ -707,7 +709,7 @@ function ModelsTab({ report }: { report: AnalyticsModels }) {
             <thead><tr><th>Deployment</th><th>Model</th><th>Requests</th><th>Gateway throttled</th><th>Backend 429s</th><th>Peak TPM</th><th>Capacity</th><th>Utilization</th>{priced && <th>Cost</th>}</tr></thead>
             <tbody>
               {report.deployments.length === 0 ? <TableEmpty>No deployments match these filters.</TableEmpty> : report.deployments.map((row: AnalyticsDeploymentRow) => (
-                <tr key={row.key}><td>{row.deploymentName}<Text block size={200}>{row.endpointName ?? row.endpointId}</Text></td><td>{row.modelName ?? 'Unknown'}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(gatewayThrottled(row.throttled, row.backendThrottled))}</td><td>{formatNumber(row.backendThrottled)}</td><td>{formatNumber(row.peakMinuteTokens)}</td><td>{formatNumber(row.capacityTokensPerMinute)}</td><td>{formatPercent(row.utilization)}</td>{priced && <td>{costCell(row.cost, row.totalTokens)}</td>}</tr>
+                <tr key={row.key}><td>{row.deploymentName}<Text block size={200}>{row.endpointName ?? row.endpointId}</Text>{row.azureCloud && <CloudBadge cloud={row.azureCloud} />}</td><td>{row.modelName ?? 'Unknown'}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(gatewayThrottled(row.throttled, row.backendThrottled))}</td><td>{formatNumber(row.backendThrottled)}</td><td>{formatNumber(row.peakMinuteTokens)}</td><td>{formatNumber(row.capacityTokensPerMinute)}</td><td>{formatPercent(row.utilization)}</td>{priced && <td>{costCell(row.cost, row.totalTokens)}</td>}</tr>
               ))}
             </tbody>
           </table>
@@ -821,7 +823,7 @@ function UnattributedTab({ report }: { report: AnalyticsUnattributed }) {
           <thead><tr><th>API</th><th>Gateway</th><th>Subscription</th><th>Reason</th><th>Requests</th><th>Tokens</th><th>Last seen</th>{priced && <th>Cost</th>}</tr></thead>
           <tbody>
             {report.rows.length === 0 ? <TableEmpty>No unattributed calls match these filters.</TableEmpty> : report.rows.map((row) => (
-              <tr key={`${row.gatewayId}-${row.apiName}-${row.subscription ?? 'none'}`}><td>{row.apiLabel}<Text block size={200}>{row.apiName}</Text></td><td>{row.gatewayName}</td><td>{row.subscription ?? 'No subscription'}</td><td>{unattributedReasons[row.reason]}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(row.totalTokens)}</td><td>{formatDateTime(row.lastSeen)}</td>{priced && <td>{costCell(row.cost, row.totalTokens)}</td>}</tr>
+              <tr key={`${row.gatewayId}-${row.apiName}-${row.subscription ?? 'none'}`}><td>{row.apiLabel}<Text block size={200}>{row.apiName}</Text></td><td>{row.gatewayName}{row.azureCloud && <CloudBadge cloud={row.azureCloud} />}</td><td>{row.subscription ?? 'No subscription'}</td><td>{unattributedReasons[row.reason]}</td><td>{formatNumber(row.requests)}</td><td>{formatNumber(row.totalTokens)}</td><td>{formatDateTime(row.lastSeen)}</td>{priced && <td>{costCell(row.cost, row.totalTokens)}</td>}</tr>
             ))}
           </tbody>
         </table>
@@ -984,7 +986,7 @@ export function AnalyticsPage() {
   const activeExports = activeTab.exports
   const exportView = exportChoice && activeExports.includes(exportChoice) ? exportChoice : activeExports[0]
   const activeFilterCount = Number((filters.range ?? '30d') !== '30d')
-    + [filters.gatewayId, filters.environment, filters.resourceId, filters.costCenterId, filters.subjectKind].filter(Boolean).length
+    + [filters.gatewayId, filters.environment, filters.resourceId, filters.costCenterId, filters.subjectKind, filters.azureCloud].filter(Boolean).length
   const resource = [...(modelApis.data ?? []), ...(modelPools.data ?? []), ...(mcpServers.data ?? [])]
     .find((item) => item.id === filters.resourceId)
   const scopeSummary = [
@@ -992,6 +994,7 @@ export function AnalyticsPage() {
       ? filters.start && filters.end ? `${filters.start} to ${filters.end}` : 'Custom date range'
       : rangeLabels[filters.range ?? '30d'] ?? 'Selected date range',
     filters.environment ? environmentLabel(catalog.data, filters.environment) : 'All environments',
+    filters.azureCloud === 'government' ? 'Azure Government' : filters.azureCloud === 'commercial' ? 'Azure Commercial' : 'All clouds',
     filters.gatewayId ? gateways.data?.find((gateway) => gateway.id === filters.gatewayId)?.name ?? 'Selected gateway' : 'All gateways',
     filters.resourceId ? resource?.displayName ?? 'Selected resource' : null,
     filters.costCenterId ? costCenters.data?.find((center) => center.id === filters.costCenterId)?.name ?? 'Selected cost center' : null,
@@ -1041,6 +1044,12 @@ export function AnalyticsPage() {
                     <span>Range</span>
                     <Select value={draftFilters.range ?? '30d'} onChange={(event) => updateDraftFilter('range', event.target.value as AnalyticsRange)}>
                       {Object.entries(rangeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                    </Select>
+                  </label>
+                  <label className={styles.filterControl}>
+                    <span>Cloud</span>
+                    <Select value={draftFilters.azureCloud ?? ''} onChange={(event) => updateDraftFilter('azureCloud', event.target.value as AnalyticsFilters['azureCloud'])}>
+                      <option value="">All clouds</option><option value="commercial">Azure Commercial</option><option value="government">Azure Government</option>
                     </Select>
                   </label>
                   <label className={styles.filterControl}>

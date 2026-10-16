@@ -6,6 +6,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
+import { AzureConnectionPicker, type ConnectionSelection } from '../components/AzureConnectionPicker'
 import { GatewayRegistrationEditor } from '../components/GatewayEditors'
 import { PageHeader } from '../components/PageHeader'
 import { ResourceWorkbench } from '../components/ResourceWorkbench'
@@ -65,7 +66,8 @@ export function GatewaysPage() {
   const [params, setParams] = useSearchParams()
   const workbench = useWorkbenchLocation({ section })
   const gateways = useQuery({ queryKey: ['gateways'], queryFn: api.listGateways })
-  const suggestions = useQuery({ queryKey: ['gateway-suggestions'], queryFn: api.listSuggestedGateways })
+  const [connection, setConnection] = useState<ConnectionSelection>({ azureCloud: 'commercial', azureConnectionId: null })
+  const suggestions = useQuery({ queryKey: ['gateway-suggestions', connection], queryFn: () => api.listSuggestedGateways(connection) })
   const environmentFilter = params.get('environment') ?? 'all'
   const pending = (suggestions.data ?? []).filter((item) => !item.alreadyRegistered)
   const suggestion = pending.find((item) => item.azureResourceId === workbench.selectedId)
@@ -117,19 +119,21 @@ export function GatewaysPage() {
         <Text weight="semibold">{item.name}</Text>
         <Text size={200} className={styles.muted}>{item.serviceName} · {MANAGEMENT_MODE_LABELS[item.managementMode]}</Text>
         <div className={styles.rowBadges}><GatewayStatusBadge status={item.status} />
-          <EnvironmentBadge environment={item.environment} catalog={catalog.data} size="small" /></div>
+          <EnvironmentBadge azureCloud={item.azureCloud ?? 'commercial'} environment={item.environment} catalog={catalog.data} size="small" /></div>
       </div>}
       renderDetail={(item) => <GatewayDetailPage key={item.id} gatewayId={item.id} embedded />}
       missingSelection={<EmptyState title="Gateway not in this list">It may have been removed or excluded by the environment filter. Clear the selection or change the filter.</EmptyState>}
     />
   } else {
     body = <ResourceWorkbench title="Detected gateways"
+      toolbar={<AzureConnectionPicker value={connection} onChange={(value) => { setConnection(value); workbench.close() }} />}
       description="Existing API Management services available for registration. Nothing changes in Azure."
       items={pending} getId={(item) => item.azureResourceId} selectedId={workbench.selectedId} onSelect={workbench.select}
       listLabel="Detected gateways"
       emptyList={suggestions.isPending ? <Loading label="Loading detected gateways" /> : suggestions.isError
         ? <ErrorState error={suggestions.error} /> : <EmptyState title="No detected gateways">You can onboard a service by its resource ID from Registered gateways.</EmptyState>}
       renderListItem={(item) => <div className={styles.resourceRow}><Text weight="semibold">{item.serviceName}</Text>
+        <EnvironmentBadge azureCloud={item.azureCloud ?? 'commercial'} environment={item.suggestedEnvironment ?? null} catalog={catalog.data} size="small" />
         <Text size={200} className={styles.muted}>{item.resourceGroup}</Text></div>}
       renderDetail={(item) => <section className={styles.suggestionDetail}>
         <div className={styles.detailHeading}><h2>{item.serviceName}</h2>

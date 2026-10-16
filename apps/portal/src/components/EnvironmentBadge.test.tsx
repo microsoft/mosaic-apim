@@ -9,6 +9,11 @@ const environments: PortalEnvironment[] = [
 ]
 
 describe('EnvironmentBadge', () => {
+  it('keeps the Government cloud and production stage separate and accessible', () => {
+    render(<EnvironmentBadge azureCloud="government" environment="production" environments={environments} />)
+    expect(screen.getByLabelText('Azure Government')).toHaveTextContent('AzGov')
+    expect(screen.getByText('Production')).toBeVisible()
+  })
   it('renders a known environment label', () => {
     render(<EnvironmentBadge environment="development" environments={environments} />)
 

@@ -19,6 +19,7 @@ import {
   buildTokenSample,
   connectionProblem,
   describeConnectionRuntime,
+  governmentReadiness,
   isClientError,
   operationUrl,
 } from '../connection-format'
@@ -32,6 +33,7 @@ import { useFocusHandoff, useFocusHandoffSource, type FocusHandoff } from '../fo
 import { runtimeConfig } from '../runtime-config'
 import type { Entitlement, McpConnection, ModelConnection, ResolvedEntitlement } from '../types'
 import { KeyReveal } from './KeyReveal'
+import { CloudBadge } from './CloudBadge'
 
 /** Expandable connection panel for one model grant. Nothing is fetched until it is opened. */
 export function ConnectionDetails({ resolved }: { resolved: ResolvedEntitlement }) {
@@ -76,7 +78,7 @@ function CostCenterHeaderSection({
   kind: 'modelApi' | 'mcpServer'
 }) {
   const headingId = useId()
-  if (!connection.costCenter || !connection.costCenterHeader) return null
+  if (!connection.costCenter || !connection.costCenterHeader || connection.azureCloud === 'government') return null
   // The code samples below use a key when keys are accepted, and a key needs no header, so the
   // token call that does is shown here.
   const model = kind === 'modelApi' ? (connection as ModelConnection) : null
@@ -200,7 +202,15 @@ function DirectGrantConnection({ entitlement }: { entitlement: Entitlement }) {
 
   const info = connection.data
   if (resourceKind === 'mcpServer') {
-    return <McpConnectionPanel connection={info as McpConnection} focusHandoff={focusHandoff} />
+    const mcp = info as McpConnection
+    return <>
+      <McpConnectionPanel connection={mcp} focusHandoff={focusHandoff} />
+      {mcp.azureCloud === 'government' && <KeyReveal
+        key={[identity, location.key, entitlement.id, entitlement.updatedAt, mcp.runtime?.status,
+          mcp.runtime?.keyState, mcp.runtime?.subscriptionName, mcp.keyExists].join('|')}
+        entitlementId={entitlement.id} connection={mcp}
+        onConflict={() => void connection.refetch()} focusHandoff={focusHandoff} />}
+    </>
   }
   const model = info as ModelConnection
   // Any change to who is signed in, the route, the grant, or its applied state discards a key.
@@ -216,6 +226,8 @@ function DirectGrantConnection({ entitlement }: { entitlement: Entitlement }) {
     String(model.appliedMethods?.keysEnabled),
     String(model.runtime?.appliedMethods?.keysEnabled),
     String(model.keysAvailable),
+    String(model.keyExists),
+    model.runtime?.keyState ?? '',
   ].join('|')
 
   return (
@@ -278,14 +290,17 @@ function McpConnectionPanel({
 }) {
   const summary = useRef<HTMLDivElement | null>(null)
   useFocusHandoff(focusHandoff, summary, summary)
+  const government = connection.azureCloud === 'government'
+  const readiness = government ? governmentReadiness(connection) : null
   return (
     <>
       <div className="connection-status" ref={summary} tabIndex={-1}>
         <Badge appearance={connection.enforced ? 'filled' : 'tint'}>
-          {connection.enforced ? 'Enforced by the gateway' : 'Recorded, not enforced'}
+          {readiness?.label ?? (connection.enforced ? 'Enforced by the gateway' : 'Recorded, not enforced')}
         </Badge>
-        <Text>{connection.statusMessage}</Text>
-        {connection.runtime?.error && (
+        <CloudBadge cloud={connection.azureCloud} />
+        <Text>{readiness?.explanation ?? connection.statusMessage}</Text>
+        {!government && connection.runtime?.error && (
           <MessageBar intent="warning" className="connection-status-error">
             <MessageBarBody>
               <MessageBarTitle>Last gateway error</MessageBarTitle>
@@ -296,7 +311,7 @@ function McpConnectionPanel({
       </div>
       <McpEndpointSection connection={connection} />
       {/* Only MOSAIC's applied policy reads the header and strips it before the server sees it. */}
-      {connection.enforced && <CostCenterHeaderSection connection={connection} kind="mcpServer" />}
+      {connection.enforced && !government && <CostCenterHeaderSection connection={connection} kind="mcpServer" />}
       <McpAuthenticationSection connection={connection} />
       <McpLimitsSection connection={connection} />
       <McpAdvancedSection connection={connection} />
@@ -353,12 +368,16 @@ function mcpSnippet(connection: McpConnection) {
   if (!connection.serverUrl) return null
   // A server MOSAIC doesn't enforce would receive the header itself, so it's sent only where
   // MOSAIC's applied policy reads and removes it.
-  const headers =
+  const government = connection.azureCloud === 'government'
+  const headers = government
+    ? { [connection.subscriptionHeader ?? 'Ocp-Apim-Subscription-Key']: '${input:mosaic-key}' }
+    :
     connection.enforced && connection.costCenter && connection.costCenterHeader
       ? { [connection.costCenterHeader]: connection.costCenter.code }
       : undefined
   return JSON.stringify(
     {
+      ...(government ? { inputs: [{ id: 'mosaic-key', type: 'promptString', description: 'MOSAIC subscription key', password: true }] } : {}),
       servers: {
         [connection.displayName]: {
           type: 'http',
@@ -377,7 +396,7 @@ function McpEndpointSection({ connection }: { connection: McpConnection }) {
   const snippet = mcpSnippet(connection)
   const showVsCode =
     Boolean(snippet) &&
-    (connection.principalKind === 'user' ||
+    (connection.azureCloud === 'government' || connection.principalKind === 'user' ||
       connection.principalKind === 'agentUser' ||
       connection.principalKind === 'securityGroup' ||
       Boolean(connection.delegatedScope))
@@ -404,10 +423,12 @@ function McpEndpointSection({ connection }: { connection: McpConnection }) {
         <>
           <h4>VS Code</h4>
           <Text as="p" size={200} className="connection-note">
-            Add this entry to <code>.vscode/mcp.json</code>. VS Code signs in with Microsoft Entra
+            {connection.azureCloud === 'government'
+              ? <>Add this entry to <code>.vscode/mcp.json</code>. Use a client that supports custom headers and secure input; enter your key only when prompted. No Government account linking or OAuth sign-in is used.</>
+              : <>Add this entry to <code>.vscode/mcp.json</code>. VS Code signs in with Microsoft Entra
             ID and discovers the resource metadata from the server URL. Your tenant may need an
             administrator to consent to{' '}
-            {connection.delegatedScope ? <code>{connection.delegatedScope}</code> : 'the delegated scope'}.
+            {connection.delegatedScope ? <code>{connection.delegatedScope}</code> : 'the delegated scope'}.</>}
           </Text>
           <pre className="code-sample"><code>{snippet}</code></pre>
           <div className="key-actions">
@@ -421,6 +442,7 @@ function McpEndpointSection({ connection }: { connection: McpConnection }) {
 
 function McpAuthenticationSection({ connection }: { connection: McpConnection }) {
   const headingId = useId()
+  if (connection.azureCloud === 'government') return <GovernmentAuthentication />
   const isAppCaller =
     connection.principalKind === 'agentIdentity' ||
     connection.principalKind === 'servicePrincipal' ||
@@ -522,7 +544,7 @@ function McpAdvancedSection({ connection }: { connection: McpConnection }) {
               {connection.resourceMetadataUrl ? (
                 <CopyableCode value={connection.resourceMetadataUrl} label="Resource metadata URL" />
               ) : (
-                'Not available yet'
+                connection.azureCloud === 'government' ? 'Not applicable for key-only access' : 'Not available yet'
               )}
             </dd>
           </div>
@@ -551,10 +573,12 @@ function RuntimeSummary({
 }) {
   const summary = useRef<HTMLDivElement | null>(null)
   useFocusHandoff(focusHandoff, summary, summary)
-  const runtime = describeConnectionRuntime(connection.runtime)
+  const runtime = connection.azureCloud === 'government'
+    ? governmentReadiness(connection) : describeConnectionRuntime(connection.runtime)
   return (
     <div className="connection-status" ref={summary} tabIndex={-1}>
       <Badge appearance={runtime.applied ? 'filled' : 'tint'}>{runtime.label}</Badge>
+      <CloudBadge cloud={connection.azureCloud} />
       <Text>{runtime.explanation}</Text>
     </div>
   )
@@ -602,6 +626,7 @@ function EndpointSection({ connection }: { connection: ModelConnection }) {
 
 function AuthenticationSection({ connection }: { connection: ModelConnection }) {
   const headingId = useId()
+  if (connection.azureCloud === 'government') return <GovernmentAuthentication />
   const methods = connection.appliedMethods
   const keysAccepted = connection.keysAvailable === false ? false : methods?.keysEnabled
   const groupGrant = connection.principalKind === 'securityGroup' || connection.keysAvailable === false
@@ -690,6 +715,18 @@ function AuthenticationSection({ connection }: { connection: ModelConnection }) 
       )}
     </section>
   )
+}
+
+function GovernmentAuthentication() {
+  return <section className="connection-section" aria-label="Azure Government authentication">
+    <h3>Authentication</h3>
+    <Text as="p">Azure Government uses your grant&apos;s subscription key only. Your commercial
+      MOSAIC sign-in is for this portal, not for gateway calls. Do not send a commercial bearer token.</Text>
+    <Text as="p" size={200} className="connection-note">Your client must reach the gateway&apos;s network,
+      including any required VPN or private endpoint. A key does not provide network connectivity.
+      Keep keys in secure storage and rotate them if exposed; calls are attributed to the key holder,
+      not a verified Government user identity.</Text>
+  </section>
 }
 
 function SamplesSection({ connection }: { connection: ModelConnection }) {

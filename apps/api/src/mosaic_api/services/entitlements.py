@@ -560,6 +560,7 @@ class EntitlementService:
     @staticmethod
     def _snapshot_from_summary(summary: ResourceSummary) -> AccessRequestResourceSnapshot:
         return AccessRequestResourceSnapshot(
+            azure_cloud=summary.azure_cloud,
             display_name=summary.display_name,
             gateway_id=summary.gateway_id,
             gateway_name=summary.gateway_name,
@@ -580,6 +581,7 @@ class EntitlementService:
             gateway_id=snapshot.gateway_id if snapshot else None,
             gateway_name=snapshot.gateway_name if snapshot else None,
             environment=requested_environment,
+            azure_cloud=snapshot.azure_cloud if snapshot else "commercial",
             available=False,
         )
 
@@ -677,6 +679,7 @@ class EntitlementService:
 
         result: list[ResourceSummary] = []
         for index, resource in enumerate(resources):
+            snapshot = snapshots[index]
             resource_visible = visible
             if isinstance(visible, dict):
                 resource_visible = visible.get(_resource_key(resource), False)
@@ -700,17 +703,26 @@ class EntitlementService:
                         id=resource.id,
                         scope_id=resource.scope_id,
                         display_name=model_api.display_name,
+                        azure_cloud=gateway.azure_cloud,
                         gateway_id=gateway.id,
                         gateway_name=gateway.name,
                         environment=gateway.environment,
                         available=await records.model_api_offered(model_api),
                     )
                 elif model_api:
+                    publication = (await records.publications()).get(model_api.publication_id or "")
                     summary = ResourceSummary(
                         kind=resource.kind,
                         id=resource.id,
                         scope_id=resource.scope_id,
                         display_name=model_api.display_name,
+                        azure_cloud=(
+                            publication.azure_cloud
+                            if publication
+                            else snapshot.azure_cloud
+                            if snapshot
+                            else "commercial"
+                        ),
                         gateway_id=model_api.gateway_id,
                         available=False,
                     )
@@ -723,17 +735,28 @@ class EntitlementService:
                         id=resource.id,
                         scope_id=resource.scope_id,
                         display_name=mcp_server.display_name,
+                        azure_cloud=gateway.azure_cloud,
                         gateway_id=gateway.id,
                         gateway_name=gateway.name,
                         environment=gateway.environment,
                         available=await records.mcp_server_offered(mcp_server),
                     )
                 elif mcp_server:
+                    mcp_publication = (await records.mcp_publications()).get(
+                        mcp_server.publication_id or ""
+                    )
                     summary = ResourceSummary(
                         kind=resource.kind,
                         id=resource.id,
                         scope_id=resource.scope_id,
                         display_name=mcp_server.display_name,
+                        azure_cloud=(
+                            mcp_publication.azure_cloud
+                            if mcp_publication
+                            else snapshot.azure_cloud
+                            if snapshot
+                            else "commercial"
+                        ),
                         gateway_id=mcp_server.gateway_id,
                         available=False,
                     )
@@ -747,6 +770,7 @@ class EntitlementService:
                         id=resource.id,
                         scope_id=resource.scope_id,
                         display_name=product.display_name,
+                        azure_cloud=gateway.azure_cloud,
                         gateway_id=gateway.id,
                         gateway_name=gateway.name,
                         environment=gateway.environment,
@@ -762,6 +786,7 @@ class EntitlementService:
                         id=resource.id,
                         scope_id=resource.scope_id,
                         display_name=f"{deployment.deployment_name} on {endpoint.name}",
+                        azure_cloud=endpoint.azure_cloud,
                         gateway_id=None,
                         gateway_name=None,
                         environment=endpoint.environment,
@@ -777,6 +802,7 @@ class EntitlementService:
                         id=resource.id,
                         scope_id=resource.scope_id,
                         display_name=pool_model.display_name,
+                        azure_cloud=gateway.azure_cloud,
                         gateway_id=gateway.id,
                         gateway_name=gateway.name,
                         environment=gateway.environment,
@@ -788,6 +814,7 @@ class EntitlementService:
                         id=resource.id,
                         scope_id=resource.scope_id,
                         display_name=pool_model.display_name,
+                        azure_cloud=pool.azure_cloud,
                         gateway_id=pool.gateway_id,
                         available=False,
                     )
@@ -935,7 +962,24 @@ class EntitlementService:
             publication is not None or mcp_publication is not None or model_pool is not None
         ) and book is None:
             book = await self.cost_center_book(entitlement.tenant_id)
-        intent = cost_center_intent(entitlement, principal, book)
+        intent = cost_center_intent(
+            entitlement,
+            principal,
+            book,
+            key_capable=True
+            if (mcp_publication is not None and mcp_publication.azure_cloud == "government")
+            else None,
+        )
+        target = publication or mcp_publication or model_pool
+        charged = book.get(entitlement.cost_center_id) if book is not None else None
+        if (
+            target is not None
+            and target.azure_cloud == "government"
+            and principal is not None
+            and charged is not None
+            and charged.recheck_pending(entitlement.id, principal.id)
+        ):
+            intent = None
         if entitlement.resource.kind == "poolModel":
             pool_locked = bool(
                 model_pool

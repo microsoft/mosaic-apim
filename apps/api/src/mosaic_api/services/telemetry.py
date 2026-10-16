@@ -304,11 +304,13 @@ class TelemetryService:
         entitlement_repository: EntitlementRepository,
         client_factory: ClientFactory,
         writer_factory: WriterFactory,
-        logs: LogsQuery | None,
+        logs: LogsQuery | None = None,
         rollups_enabled: bool,
         interval_seconds: int,
+        logs_factory: Callable[[Gateway], LogsQuery] | None = None,
         principal_id: str | None = None,
         identity_resolver: IdentityResolver | None = None,
+        gateway_identity_resolver: Callable[[Gateway], Awaitable[str | None]] | None = None,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._gateways = gateway_repository
@@ -317,10 +319,12 @@ class TelemetryService:
         self._client_factory = client_factory
         self._writer_factory = writer_factory
         self._logs = logs
+        self._logs_factory = logs_factory
         self._rollups_enabled = rollups_enabled
         self._interval = timedelta(seconds=interval_seconds)
         self._principal_id = principal_id
         self._identity_resolver = identity_resolver
+        self._gateway_identity_resolver = gateway_identity_resolver
         self._identity_resolved = principal_id is not None
         self._clock = clock
 
@@ -347,15 +351,21 @@ class TelemetryService:
     async def status(self, actor: Actor, gateway_id: str) -> GatewayTelemetry:
         gateway = await self._gateway(actor, gateway_id)
         now = self._clock()
-        resource = ApimResourceId.parse(gateway.azure_resource_id)
+        resource = gateway.arm_resource()
         client = self._client_factory(resource)
         apis = (await governed_apis(self._gateways, actor.tenant_id, now=now)).get(gateway.id, [])
-        principal = await self._principal()
+        principal = (
+            await self._gateway_identity_resolver(gateway)
+            if self._gateway_identity_resolver
+            else await self._principal()
+            if gateway.azure_cloud == "commercial" and not gateway.azure_connection_id
+            else None
+        )
         state = await self._rollups.get_rollup_state(actor.tenant_id, gateway.id)
         published = any(api.publication_id is not None for api in apis)
         (logger_check, routing_check, routing), access, api_rows = await asyncio.gather(
             self._routing_checks(client, resource, principal, self._can_enable(gateway)),
-            self._access_check(resource, principal, now, published=published),
+            self._access_check(resource, principal, now, published=published, gateway=gateway),
             self._api_checks(client, apis),
         )
         access_check, probe = access
@@ -366,6 +376,15 @@ class TelemetryService:
             self._api_diagnostics_check(gateway, api_rows),
             self._rollup_check(state, now),
         ]
+        if gateway.azure_cloud == "government":
+            checks = [
+                check.model_copy(
+                    update={"command": f"az cloud set --name AzureUSGovernment && {check.command}"}
+                )
+                if check.command
+                else check
+                for check in checks
+            ]
         return GatewayTelemetry(
             gateway_id=gateway.id,
             gateway_name=gateway.name,
@@ -466,10 +485,16 @@ class TelemetryService:
         )
 
     async def _access_check(
-        self, resource: ApimResourceId, principal: str | None, now: datetime, *, published: bool
+        self,
+        resource: ApimResourceId,
+        principal: str | None,
+        now: datetime,
+        *,
+        published: bool,
+        gateway: Gateway | None = None,
     ) -> tuple[TelemetryCheck, TelemetryProbe | None]:
         title = "MOSAIC can read the logs"
-        if self._logs is None:
+        if self._logs is None and self._logs_factory is None:
             return (
                 TelemetryCheck(
                     id="logAccess",
@@ -480,7 +505,10 @@ class TelemetryService:
                 None,
             )
         try:
-            rows = await self._logs.query(
+            logs = self._logs_factory(gateway) if self._logs_factory and gateway else self._logs
+            if logs is None:
+                raise ValidationError("No telemetry connection is configured for this gateway.")
+            rows = await logs.query(
                 resource.canonical,
                 probe_query(),
                 start=now - timedelta(hours=PROBE_HOURS),
@@ -575,9 +603,7 @@ class TelemetryService:
                     kind=api.kind,
                     published=api.publication_id is not None,
                     all_apis=inherits,
-                    gaps=api_diagnostic_gaps(
-                        shared if inherits else diagnostic, llm=api.is_llm
-                    ),
+                    gaps=api_diagnostic_gaps(shared if inherits else diagnostic, llm=api.is_llm),
                 )
             )
         return rows
@@ -700,7 +726,7 @@ class TelemetryService:
                 "create the azuremonitor logger yourself.",
                 details={"gatewayId": gateway.id},
             )
-        resource = ApimResourceId.parse(gateway.azure_resource_id)
+        resource = gateway.arm_resource()
         writer = self._writer_factory(resource)
         await writer.put_azure_monitor_logger()
         apis = (await governed_apis(self._gateways, actor.tenant_id)).get(gateway.id, [])
@@ -725,7 +751,7 @@ class TelemetryService:
         return await self.status(actor, gateway_id)
 
     async def has_logger(self, gateway: Gateway) -> bool:
-        client = self._client_factory(ApimResourceId.parse(gateway.azure_resource_id))
+        client = self._client_factory(gateway.arm_resource())
         return await client.get_logger(AZURE_MONITOR) is not None
 
     async def ensure_api_diagnostics(
@@ -737,7 +763,7 @@ class TelemetryService:
         something, which is how the rollup job keeps new publications instrumented.
         """
 
-        resource = ApimResourceId.parse(gateway.azure_resource_id)
+        resource = gateway.arm_resource()
         writer = self._writer_factory(resource)
         client = self._client_factory(resource)
         logger_id = writer.resource_id(f"loggers/{AZURE_MONITOR}")

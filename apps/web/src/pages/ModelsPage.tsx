@@ -31,6 +31,7 @@ import { useMosaicApi } from '../api'
 import { environmentLabel, lookupCompatibility, useEnvironmentCatalog } from '../environments'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
+import { AzureConnectionPicker, type ConnectionSelection } from '../components/AzureConnectionPicker'
 import { EnvironmentPicker } from '../components/EnvironmentPicker'
 import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
 import { DeclarationFields, DeclaredDeploymentsCard, StoredKeyActions } from '../components/KeyEndpoint'
@@ -267,7 +268,7 @@ function PublishedModels({ onMessage, onPublish }: { onMessage: (message: string
           <span className={styles.primaryCell}>{publication.displayName}</span>
           <span className={styles.secondaryCell}>{publication.deploymentName} · {providerLabel(publication.provider)}</span>
           <div className={styles.resourceBadges}><PublicationStatusBadge publication={publication} />
-            <EnvironmentBadge environment={gatewaysById.get(publication.gatewayId)?.environment ?? null} catalog={catalog.data} /></div>
+            <EnvironmentBadge azureCloud={gatewaysById.get(publication.gatewayId)?.azureCloud ?? 'commercial'} environment={gatewaysById.get(publication.gatewayId)?.environment ?? null} catalog={catalog.data} /></div>
         </div>}
         renderDetail={(publication) => <div className={styles.selectedDetail}>
           <Title3 as="h3">{publication.displayName}</Title3>
@@ -280,7 +281,7 @@ function PublishedModels({ onMessage, onPublish }: { onMessage: (message: string
           <dl className={styles.detailList}>
             <div><dt>Deployment</dt><dd>{publication.deploymentName}</dd></div>
             <div><dt>Provider</dt><dd>{providerLabel(publication.provider)}</dd></div>
-            <div><dt>Environment</dt><dd><EnvironmentBadge environment={gatewaysById.get(publication.gatewayId)?.environment ?? null} catalog={catalog.data} /></dd></div>
+            <div><dt>Environment</dt><dd><EnvironmentBadge azureCloud={gatewaysById.get(publication.gatewayId)?.azureCloud ?? 'commercial'} environment={gatewaysById.get(publication.gatewayId)?.environment ?? null} catalog={catalog.data} /></dd></div>
             <div><dt>Gateway</dt><dd>
                       <Link to={`/gateways/${publication.gatewayId}`}>
                         {gatewaysById.get(publication.gatewayId)?.name ?? publication.gatewayId}
@@ -892,6 +893,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
   const [registerOrigin, setRegisterOrigin] = useState<'dialog' | 'suggestion'>('dialog')
   const [removing, setRemoving] = useState<ModelEndpoint | null>(null)
   const [mode, setMode] = useState<RegistrationMode>('azure')
+  const [connection, setConnection] = useState<ConnectionSelection>({ azureCloud: 'commercial', azureConnectionId: null })
   const [resourceId, setResourceId] = useState('')
   const [endpointUrl, setEndpointUrl] = useState('')
   const [secretUri, setSecretUri] = useState('')
@@ -922,8 +924,8 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
   })
   const catalog = useEnvironmentCatalog()
   const suggestions = useQuery({
-    queryKey: ['model-endpoint-suggestions'],
-    queryFn: api.listSuggestedModelEndpoints,
+    queryKey: ['model-endpoint-suggestions', connection],
+    queryFn: () => api.listSuggestedModelEndpoints(connection),
   })
 
   const initializedSelection = useRef(false)
@@ -1033,6 +1035,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
     setRegisterOrigin('suggestion')
     register.reset()
     setMode('azure')
+    setConnection({ azureCloud: item.azureCloud ?? 'commercial', azureConnectionId: item.azureConnectionId ?? null })
     setResourceId(item.azureResourceId ?? '')
     setName(item.accountName ?? '')
     setEnvironment(item.suggestedEnvironment ?? null)
@@ -1052,6 +1055,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
     if (mode === 'azure') {
       register.mutate({
         azureResourceId: resourceId.trim(),
+        ...(connection.azureConnectionId || connection.azureCloud !== 'commercial' ? connection : {}),
         name: name.trim() || undefined,
         environment,
       })
@@ -1067,6 +1071,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
       }
       register.mutate({
         endpoint: endpointUrl.trim(),
+        ...(connection.azureConnectionId || connection.azureCloud !== 'commercial' ? connection : {}),
         ...(keySource === 'paste'
           ? { apiKey: pastedKey }
           : { credentialSecretUri: secretUri.trim() }),
@@ -1229,7 +1234,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
           renderListItem={(endpoint) => <div className={styles.resourceRow} data-resource-name={endpoint.name}>
             <span className={styles.primaryCell}>{endpoint.name}</span>
             <span className={styles.secondaryCell}>{providerLabels[endpoint.provider]} · {usesBackendKey(endpoint) ? `${endpoint.declaredDeployments?.length ?? 0} declared models` : `${endpoint.inventory.deployments} models`}</span>
-            <div className={styles.resourceBadges}><EndpointStatusBadge status={endpoint.status} /><EnvironmentBadge environment={endpoint.environment} catalog={catalog.data} /></div>
+            <div className={styles.resourceBadges}><EndpointStatusBadge status={endpoint.status} /><EnvironmentBadge azureCloud={endpoint.azureCloud ?? 'commercial'} environment={endpoint.environment} catalog={catalog.data} /></div>
           </div>}
           renderDetail={(endpoint) => <div key={endpoint.id} className={styles.selectedDetail}>
             <Title3 as="h3">{endpoint.name}</Title3>
@@ -1238,10 +1243,10 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
               <div><dt>Endpoint URL</dt><dd>{endpoint.endpoint}</dd></div>
               {endpoint.azureResourceId && <div><dt>Azure resource ID</dt><dd>{endpoint.azureResourceId}</dd></div>}
               <div><dt>Provider</dt><dd>{providerLabels[endpoint.provider]}</dd></div>
-              <div><dt>Environment</dt><dd><EnvironmentBadge environment={endpoint.environment} catalog={catalog.data} /></dd></div>
+              <div><dt>Environment</dt><dd><EnvironmentBadge azureCloud={endpoint.azureCloud ?? 'commercial'} environment={endpoint.environment} catalog={catalog.data} /></dd></div>
               <div><dt>Status</dt><dd><EndpointStatusBadge status={endpoint.status} /></dd></div>
               <div><dt>Models</dt><dd>{usesBackendKey(endpoint) ? `${endpoint.declaredDeployments?.length ?? 0} declared` : endpoint.inventory.deployments}</dd></div>
-              <div><dt>Authentication</dt><dd>{usesBackendKey(endpoint) ? 'API key from Key Vault' : 'Managed identity'}</dd></div>
+              <div><dt>Management authentication</dt><dd>{usesBackendKey(endpoint) ? 'API key from Key Vault' : endpoint.azureConnectionId ? 'Selected Azure connection' : 'Host managed identity'}</dd></div>
               <div><dt>Last synced</dt><dd>{usesBackendKey(endpoint) ? 'Not applicable — declared models' : formatTimestamp(endpoint.lastSyncedAt)}</dd></div>
               {endpoint.environmentLabel && <div><dt>Legacy label</dt><dd>{endpoint.environmentLabel}</dd></div>}
             </dl>
@@ -1299,6 +1304,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
           </div>}
         />}
 
+      <AzureConnectionPicker value={connection} onChange={setConnection} />
       {(pending.length > 0 || scanSummary) && (
         <Card className={styles.panel}>
           <Title3 as="h2">Endpoints MOSAIC found</Title3>
@@ -1419,10 +1425,12 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                 </TabList>
 
                 {mode === 'azure' && (
+                  <>
+                  <AzureConnectionPicker value={connection} onChange={(selection) => { setConnection(selection); setResourceId('') }} />
                   <Field
                     label="Azure resource ID"
                     required
-                    hint="An Azure OpenAI or Azure AI Foundry resource. MOSAIC reads it with its own managed identity."
+                    hint="An Azure OpenAI or Azure AI Foundry resource. MOSAIC reads it with the selected connection."
                   >
                     <Input
                       value={resourceId}
@@ -1430,14 +1438,16 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                       placeholder="/subscriptions/.../providers/Microsoft.CognitiveServices/accounts/my-account"
                     />
                   </Field>
+                  </>
                 )}
                 {mode === 'key' && (
                   <>
+                    <AzureConnectionPicker value={connection} onChange={setConnection} />
                     <MessageBar intent="info">
                       <MessageBarBody>
                         <MessageBarTitle>Only when MOSAIC can&apos;t reach the resource</MessageBarTitle>
                         Register by resource ID whenever you can: MOSAIC then reads the deployments
-                        with its managed identity, and no key is involved. Use an API key when that
+                        with the selected connection, and no runtime key is involved. Use an API key when that
                         isn&apos;t possible, for example when the resource is in another Microsoft
                         Entra tenant.
                       </MessageBarBody>

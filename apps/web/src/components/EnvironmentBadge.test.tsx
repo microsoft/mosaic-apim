@@ -25,6 +25,12 @@ const catalog: EnvironmentCatalogView = {
 }
 
 describe('EnvironmentBadge', () => {
+  it('shows Government as a separate accessible label beside the unchanged environment', () => {
+    render(<EnvironmentBadge azureCloud="government" environment="production" catalog={catalog} />)
+    expect(screen.getByLabelText('Azure Government')).toHaveTextContent('AzGov')
+    expect(screen.getByText('Production')).toBeVisible()
+    expect(screen.getByLabelText('Production-class')).toBeInTheDocument()
+  })
   it('renders unclassified, production, and unknown labels with text', () => {
     const { rerender } = render(<EnvironmentBadge environment={null} catalog={catalog} />)
     expect(screen.getByText('Unclassified')).toBeVisible()

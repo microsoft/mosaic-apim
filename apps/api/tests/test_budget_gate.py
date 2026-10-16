@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 from typing import Any, cast
 
 from conftest import reviewed_unpublish
@@ -21,6 +20,7 @@ from mosaic_api.budgets import (
 from mosaic_api.domain import (
     ApimResourceId,
     AuditEvent,
+    Gateway,
     PublishAction,
     PublishedResourceKind,
     PublishRunStatus,
@@ -296,8 +296,17 @@ class _RacingGateway:
         return {}
 
 
-def _gateway() -> Any:
-    return SimpleNamespace(id="gateway_ai", name="AI gateway", azure_resource_id=GATEWAY_RESOURCE)
+def _gateway() -> Gateway:
+    resource = ApimResourceId.parse(GATEWAY_RESOURCE)
+    return Gateway(
+        id="gateway_ai",
+        tenant_id=TENANT,
+        name="AI gateway",
+        azure_resource_id=GATEWAY_RESOURCE,
+        subscription_id=resource.subscription_id,
+        resource_group=resource.resource_group,
+        service_name=resource.service_name,
+    )
 
 
 async def test_a_write_that_worked_its_list_out_before_another_block_writes_again() -> None:

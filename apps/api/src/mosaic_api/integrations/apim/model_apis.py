@@ -39,7 +39,9 @@ from mosaic_api.errors import ValidationError
 # API published by an older MOSAIC is identifiable rather than silently assumed to be current.
 CURATED_SHAPE_VERSION = "1.0"
 
-AZURE_OPENAI_HOST_SUFFIXES: tuple[str, ...] = (".openai.azure.com", ".api.cognitive.microsoft.com")
+AZURE_OPENAI_HOST_SUFFIXES: tuple[str, ...] = (
+    ".openai.azure.com", ".api.cognitive.microsoft.com", ".openai.azure.us",
+)
 
 _DATA_ACTIONS = "Microsoft.CognitiveServices/accounts"
 
@@ -277,6 +279,11 @@ def anthropic_origin(endpoint: str) -> str:
     """
 
     host = (urlsplit(endpoint).hostname or "").casefold()
+    if host.endswith((".openai.azure.us", ".cognitiveservices.azure.us")):
+        raise ValidationError(
+            "Anthropic/Foundry Messages endpoint availability in Azure Government is not "
+            "verified. MOSAIC will not derive a Government host from a commercial suffix."
+        )
     if bedrock_region(host) is not None:
         return f"https://{host}"
     for suffix in _FOUNDRY_HOST_SUFFIXES:

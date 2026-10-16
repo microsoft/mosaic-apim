@@ -17,6 +17,7 @@ export type UsageEnvironmentFilter = 'all' | 'unclassified' | string
 export interface UsageFilters {
   environment: UsageEnvironmentFilter
   resource: 'all' | string
+  azureCloud?: 'all' | 'commercial' | 'government'
 }
 
 export interface AggregatedUsage {
@@ -46,6 +47,7 @@ export function matchesEnvironmentFilter(environment: string | null, filter: Usa
 function rowMatches(row: UsageResourceRow, filters: UsageFilters) {
   return (
     matchesEnvironmentFilter(row.environment, filters.environment) &&
+    (!filters.azureCloud || filters.azureCloud === 'all' || (row.azureCloud ?? row.resourceSummary.azureCloud ?? 'commercial') === filters.azureCloud) &&
     (filters.resource === 'all' || row.entitlementId === filters.resource)
   )
 }
@@ -53,7 +55,7 @@ function rowMatches(row: UsageResourceRow, filters: UsageFilters) {
 function pointMatches(point: UsageTimelinePoint, entitlementIds: Set<string>, filters: UsageFilters) {
   return (
     matchesEnvironmentFilter(point.environment, filters.environment) &&
-    (filters.resource === 'all' || entitlementIds.has(point.entitlementId))
+    entitlementIds.has(point.entitlementId)
   )
 }
 
@@ -177,7 +179,8 @@ export function aggregateUsage(report: MyUsageReport, filters: UsageFilters): Ag
   const filteredRows = report.byResource.filter((row) => rowMatches(row, filters))
   const entitlementIds = new Set(filteredRows.map((row) => row.entitlementId))
   const filteredTimeline = report.timeline.filter((point) => pointMatches(point, entitlementIds, filters))
-  const hasFilters = filters.environment !== 'all' || filters.resource !== 'all'
+  const hasFilters = filters.environment !== 'all' || filters.resource !== 'all' ||
+    Boolean(filters.azureCloud && filters.azureCloud !== 'all')
   return {
     totals: hasFilters ? aggregateTotals(filteredTimeline, filteredRows) : report.totals,
     byEnvironment: hasFilters ? aggregateByEnvironment(filteredTimeline, filteredRows) : report.byEnvironment,

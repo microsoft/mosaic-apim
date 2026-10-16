@@ -62,6 +62,8 @@ __all__ = [
     "FOUNDRY_RESOURCE_ID",
     "FOUNDRY_WEST_RESOURCE_ID",
     "GATEWAY_RESOURCE_ID",
+    "GOV_AI_RESOURCE_ID",
+    "GOV_GATEWAY_RESOURCE_ID",
     "KEY_VAULT_ID",
     "LOG_WORKSPACE_ID",
     "PARTNER_GATEWAY_RESOURCE_ID",
@@ -70,6 +72,7 @@ __all__ = [
     "DemoLogs",
     "DemoMcpServer",
     "FakeCredential",
+    "FakeKeyStore",
     "PoolMemberTraffic",
     "TrafficStream",
     "build_cognitive_accounts",
@@ -85,6 +88,14 @@ __all__ = [
 ]
 
 GATEWAY_RESOURCE_ID = RESOURCE_ID
+GOV_GATEWAY_RESOURCE_ID = (
+    f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/rg-contoso-gov"
+    "/providers/Microsoft.ApiManagement/service/apim-contoso-gov"
+)
+GOV_AI_RESOURCE_ID = (
+    f"/subscriptions/{AI_SUBSCRIPTION_ID}/resourceGroups/rg-contoso-gov"
+    "/providers/Microsoft.CognitiveServices/accounts/contoso-gov-aoai"
+)
 # A development copy of the Contoso gateway, with the same APIs, so the estate has one of each
 # environment's gateways and the portal can offer Development and Production access separately.
 DEV_GATEWAY_RESOURCE_ID = (
@@ -607,11 +618,17 @@ class DemoApim(FakeApim):
     """
 
     def __init__(
-        self, resource_id: str = GATEWAY_RESOURCE_ID, public_ip: str = "203.0.113.24"
+        self,
+        resource_id: str = GATEWAY_RESOURCE_ID,
+        public_ip: str = "203.0.113.24",
+        azure_cloud: Literal["commercial", "government"] = "commercial",
     ) -> None:
         super().__init__(permissions=CONTRIBUTOR_PERMISSIONS, sku_name="StandardV2")
         self.resource_id = resource_id
         self.public_ip_addresses = [public_ip]
+        self.azure_cloud = azure_cloud
+        if azure_cloud == "government":
+            self.sku_name = "Premium"
 
     async def handle(self, request: httpx.Request) -> httpx.Response:
         if request.method == "POST" and request.url.path.endswith("/listSecrets"):
@@ -634,13 +651,24 @@ class DemoApim(FakeApim):
                 headers=request.headers,
                 content=request.content,
             )
-        return self.handler(request)
+        response = self.handler(request)
+        if self.azure_cloud == "government":
+            for header in ("Azure-AsyncOperation", "Operation-Location", "Location"):
+                location = response.headers.get(header)
+                if location and location.startswith("https://management.azure.com/"):
+                    response.headers[header] = location.replace(
+                        "https://management.azure.com/", "https://management.usgovcloudapi.net/", 1
+                    )
+        return response
 
     def _service(self) -> dict[str, Any]:
         service = super()._service()
         name = self.resource_id.rsplit("/", 1)[-1]
         service["name"] = name
-        service["properties"]["gatewayUrl"] = f"https://{name}.azure-api.net"
+        suffix = "azure-api.us" if self.azure_cloud == "government" else "azure-api.net"
+        service["properties"]["gatewayUrl"] = f"https://{name}.{suffix}"
+        if self.azure_cloud == "government":
+            service["location"] = "usgovvirginia"
         return service
 
     def _written_children(self, prefix: str) -> list[dict[str, Any]]:
@@ -663,6 +691,11 @@ class DemoApim(FakeApim):
         api_filter: str | None,
     ) -> httpx.Response:
         if suffix == "policies/policy":
+            if self.azure_cloud == "government":
+                return self._policy(
+                    "<policies><inbound><base /></inbound><backend><base /></backend>"
+                    "<outbound><base /></outbound><on-error><base /></on-error></policies>"
+                )
             return self._policy(GLOBAL_POLICY)
         if suffix == "apis":
             if api_filter and "mcp" in api_filter:
@@ -673,9 +706,16 @@ class DemoApim(FakeApim):
                 ]
                 names = {item["name"] for item in written}
                 return self._collection(
-                    [item for item in MCP_SERVERS if item["name"] not in names] + written
+                    [
+                        item
+                        for item in MCP_SERVERS
+                        if self.azure_cloud != "government" and item["name"] not in names
+                    ]
+                    + written
                 )
-            return self._merged("apis", [*APIS, *MCP_SERVERS])
+            return self._merged(
+                "apis", [] if self.azure_cloud == "government" else [*APIS, *MCP_SERVERS]
+            )
         parts = suffix.split("/")
         collections: dict[str, list[dict[str, Any]]] = {
             "products": PRODUCTS,
@@ -690,7 +730,9 @@ class DemoApim(FakeApim):
             ],
         }
         if suffix in collections:
-            return self._merged(suffix, collections[suffix])
+            return self._merged(
+                suffix, [] if self.azure_cloud == "government" else collections[suffix]
+            )
         if parts[0] == "apis" and len(parts) >= 2:
             return self._api_route(parts[1], parts[2:])
         if parts[0] == "products" and len(parts) >= 3:
@@ -1021,6 +1063,19 @@ class DemoCognitiveAccount(FakeCognitiveServices):
 def build_cognitive_accounts() -> list[DemoCognitiveAccount]:
     return [
         DemoCognitiveAccount(
+            resource_id=GOV_AI_RESOURCE_ID,
+            kind="OpenAI",
+            endpoint="https://contoso-gov-aoai.openai.azure.us/",
+            deployments=[
+                {**item, "sku": {**item["sku"], "name": "Standard"}}
+                for item in AOAI_DEPLOYMENTS
+                if item["name"] == "gpt-4o-mini"
+            ],
+            models=AOAI_MODELS,
+            runtime_role_id=AZURE_OPENAI_USER_ROLE_ID,
+            location="usgovvirginia",
+        ),
+        DemoCognitiveAccount(
             resource_id=FOUNDRY_RESOURCE_ID,
             kind="AIServices",
             endpoint="https://contoso-foundry.cognitiveservices.azure.com/",
@@ -1149,6 +1204,20 @@ def build_mcp_servers() -> dict[str, DemoMcpServer]:
     """MCP servers keyed by host, each with its own tools and identity."""
 
     return {
+        "government-mcp.contoso.com": DemoMcpServer(
+            server_name="contoso-government-docs",
+            server_title="Government Docs Search",
+            tool_pages=[
+                [
+                    _tool(
+                        "search_documents",
+                        "Search documents",
+                        "Search the fictional Government demonstration library.",
+                        read_only=True,
+                    ),
+                ]
+            ],
+        ),
         "mcp.contoso.com": DemoMcpServer(
             server_name="contoso-docs",
             server_title="Contoso Docs Search",

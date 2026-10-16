@@ -3,6 +3,7 @@ from typing import Annotated, cast
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
 from mosaic_api.auth import AuthContext, require_admin, require_mosaic_role, require_portal_user
+from mosaic_api.clouds import AzureCloud
 from mosaic_api.config import Settings
 from mosaic_api.domain import (
     AccessRequest,
@@ -486,8 +487,14 @@ async def register_gateway(request: Request, auth: Admin, payload: GatewayCreate
 
 
 @router.get("/gateways/suggested", response_model=list[GatewaySuggestion])
-async def suggested_gateways(request: Request, auth: Admin) -> list[GatewaySuggestion]:
-    return await _gateways(request).suggestions(_actor(auth))
+async def suggested_gateways(
+    request: Request, auth: Admin,
+    azure_cloud: Annotated[AzureCloud, Query(alias="azureCloud")] = "commercial",
+    azure_connection_id: Annotated[str | None, Query(alias="azureConnectionId")] = None,
+) -> list[GatewaySuggestion]:
+    return await _gateways(request).suggestions(
+        _actor(auth), azure_cloud=azure_cloud, azure_connection_id=azure_connection_id
+    )
 
 
 @router.get("/gateways/{gateway_id}", response_model=Gateway)
@@ -623,9 +630,13 @@ async def register_model_endpoint(
 
 @router.get("/model-endpoints/suggested", response_model=ModelEndpointSuggestionView)
 async def suggested_model_endpoints(
-    request: Request, auth: Admin
+    request: Request, auth: Admin,
+    azure_cloud: Annotated[AzureCloud, Query(alias="azureCloud")] = "commercial",
+    azure_connection_id: Annotated[str | None, Query(alias="azureConnectionId")] = None,
 ) -> ModelEndpointSuggestionView:
-    return await _endpoints(request).suggestions(_actor(auth))
+    return await _endpoints(request).suggestions(
+        _actor(auth), azure_cloud=azure_cloud, azure_connection_id=azure_connection_id
+    )
 
 
 @router.get("/model-endpoints/{endpoint_id}", response_model=ModelEndpoint)

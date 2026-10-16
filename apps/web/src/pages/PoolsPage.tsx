@@ -143,7 +143,7 @@ export function PoolsPage() {
       renderListItem={(item) => <div className={styles.resourceRow}>
         <Text weight="semibold">{poolFamilyLabel(item.vendor, item.apiShape)}</Text>
         <Text size={200} className={styles.muted}>{item.gatewayName} · {plural(item.models.length, 'model')}</Text>
-        <EnvironmentBadge environment={item.gatewayEnvironment ?? null} catalog={catalog.data} size="small" />
+        <EnvironmentBadge azureCloud={item.azureCloud ?? 'commercial'} environment={item.gatewayEnvironment ?? null} catalog={catalog.data} size="small" />
       </div>}
       renderDetail={(item) => <section className={styles.suggestionDetail}>
         <div className={styles.detailHeading}><div>
@@ -152,7 +152,7 @@ export function PoolsPage() {
         </div><Button appearance="primary" icon={<AddRegular />}
           aria-label={`Create pool for ${item.vendor || 'these models'} on ${item.gatewayName}`}
           onClick={() => workbench.open('new', suggestionId(item))}>Create pool</Button></div>
-        <EnvironmentBadge environment={item.gatewayEnvironment ?? null} catalog={catalog.data} />
+        <EnvironmentBadge azureCloud={item.azureCloud ?? 'commercial'} environment={item.gatewayEnvironment ?? null} catalog={catalog.data} />
         <ul className={styles.suggestedModels}>{item.models.map((model) =>
           <li key={`${model.modelFormat ?? ''}|${model.modelName}`}>
             <Text weight="semibold" block>{model.modelName}</Text>

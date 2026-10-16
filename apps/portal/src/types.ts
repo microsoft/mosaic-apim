@@ -1,3 +1,4 @@
+export type AzureCloud = 'commercial' | 'government'
 export type QuotaPeriod = 'Hourly' | 'Daily' | 'Weekly' | 'Monthly' | 'Yearly'
 
 export type EnvironmentColor =
@@ -59,6 +60,7 @@ export interface PortalModel {
 }
 
 export interface CatalogEntry {
+  azureCloud?: AzureCloud
   kind: PortalResourceKind
   id: string
   /** Set for a `poolModel`: a request for it must send this as its resource's `scopeId`. */
@@ -93,6 +95,7 @@ export interface AccessRequestCreate {
 }
 
 export interface ResourceSummary {
+  azureCloud?: AzureCloud
   kind: EntitlementResource['kind']
   id: string
   scopeId: string | null
@@ -104,6 +107,7 @@ export interface ResourceSummary {
 }
 
 export interface AccessRequestResourceSnapshot {
+  azureCloud?: AzureCloud
   displayName: string | null
   gatewayId: string | null
   gatewayName: string | null
@@ -175,6 +179,8 @@ export interface ModelAccessSettings {
 }
 
 export interface EntitlementRuntime {
+  keyState?: 'pending' | 'preparing' | 'ready' | 'failed' | 'deleted' | 'ineligible' | null
+  keyError?: string | null
   publicationId: string
   status: 'pending' | 'applying' | 'applied' | 'revocationPending' | 'revoked' | 'failed' | 'unknown'
   appliedMethods: ModelAccessSettings | null
@@ -247,6 +253,7 @@ export interface UsageTotals {
 }
 
 export interface UsageTimelinePoint {
+  azureCloud?: AzureCloud
   date: string
   entitlementId: string
   environment: string | null
@@ -306,6 +313,7 @@ export interface UsageRateLimit {
 }
 
 export interface UsageResourceRow {
+  azureCloud?: AzureCloud
   entitlementId: string
   resource: EntitlementResource
   resourceSummary: ResourceSummary
@@ -422,6 +430,7 @@ export interface ConnectionOperation {
 export type ApiShape = 'azureOpenAi' | 'foundryModels' | 'anthropicMessages'
 
 export interface ModelConnection {
+  azureCloud?: AzureCloud
   entitlementId: string
   publicationId: string
   gatewayId: string
@@ -486,6 +495,12 @@ export type PrincipalKind =
   | 'securityGroup'
 
 export interface McpConnection {
+  azureCloud?: AzureCloud
+  appliedMethods?: ModelAccessSettings | null
+  subscriptionHeader?: string
+  keysAvailable?: boolean
+  keyExists?: boolean
+  keysAllowedByCostCenter?: boolean
   entitlementId: string
   mcpServerId: string
   publicationId?: string | null

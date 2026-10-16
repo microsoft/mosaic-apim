@@ -8,6 +8,7 @@ from pydantic import SecretStr
 from mosaic_api.domain import APIM_API_VERSION, ApimResourceId
 from mosaic_api.errors import ConflictError, UpstreamAuthorizationError, UpstreamError
 from mosaic_api.integrations.apim.client import ApimClient, ArmClient
+from mosaic_api.integrations.apim.key_runtime import verify_runtime
 from mosaic_api.integrations.apim.writer import ApimWriter
 
 
@@ -43,9 +44,7 @@ class ApimCredentialClient:
             f"{quote(subscription_name, safe='')}/listSecrets"
         )
         try:
-            payload = await self._arm.post_sensitive(
-                path, params={"api-version": APIM_API_VERSION}
-            )
+            payload = await self._arm.post_sensitive(path, params={"api-version": APIM_API_VERSION})
         except UpstreamAuthorizationError:
             raise UpstreamAuthorizationError(
                 "MOSAIC can only reveal keys when its identity has subscription key-read "
@@ -76,6 +75,26 @@ class ApimKeyManager:
 
     async def get_subscription(self, name: str) -> dict[str, Any] | None:
         return await self._metadata.get_subscription(quote(name, safe=""))
+
+    async def verify_runtime(
+        self,
+        *,
+        api_name: str,
+        fragment_name: str,
+        policy_hashes: dict[str, str],
+        mcp: bool = False,
+        metadata_name: str | None = None,
+        legacy_metadata: bool = False,
+    ) -> None:
+        await verify_runtime(
+            self._metadata,
+            api_name=api_name,
+            fragment_name=fragment_name,
+            policy_hashes=policy_hashes,
+            mcp=mcp,
+            metadata_name=metadata_name,
+            legacy_metadata=legacy_metadata,
+        )
 
     async def create(self, name: str, *, display_name: str, api_name: str) -> None:
         await self._writer.put_api_subscription(

@@ -55,7 +55,7 @@ import {
   limitFormFrom,
   type LimitForm,
 } from '../entitlement-limits'
-import { entitlementResourceEnvironment } from '../entitlement-environment'
+import { entitlementResourceCloud, entitlementResourceEnvironment } from '../entitlement-environment'
 import { environmentLabel, useEnvironmentCatalog } from '../environments'
 import { holdsApi } from '../publication-state'
 import { runtimeConfig } from '../runtime-config'
@@ -976,7 +976,10 @@ export function EntitlementsPage() {
           <Text weight="semibold">{labels.get(entitlement.subject.id) ?? entitlement.subject.id}</Text>
           <Text className={styles.secondaryCell}>{resourceLabel(entitlement.resource) ?? entitlement.resource.id}</Text>
           <div className={styles.rowActions}>
-            <EnvironmentBadge environment={environment} catalog={environmentCatalog.data} />
+            <EnvironmentBadge azureCloud={entitlementResourceCloud(entitlement.resource, {
+              gateways: gateways.data, modelApis: modelApis.data, mcpServers: mcpServers.data,
+              modelEndpoints: modelEndpoints.data, modelPools: modelPools.data,
+            }, entitlement)} environment={environment} catalog={environmentCatalog.data} />
             <Badge appearance="outline">{entitlement.enabled ? 'Desired enabled' : 'Desired disabled'}</Badge>
           </div>
         </div>}
@@ -1080,7 +1083,10 @@ export function EntitlementsPage() {
                           </Text>
                           <Text className={styles.secondaryCell}>{entitlement.resource.kind}</Text>
                           <div role="group" aria-label="Environment">
-                            <EnvironmentBadge environment={environment} catalog={environmentCatalog.data} />
+                            <EnvironmentBadge azureCloud={entitlementResourceCloud(entitlement.resource, {
+                              gateways: gateways.data, modelApis: modelApis.data, mcpServers: mcpServers.data,
+                              modelEndpoints: modelEndpoints.data, modelPools: modelPools.data,
+                            }, entitlement)} environment={environment} catalog={environmentCatalog.data} />
                           </div>
                           <div className={styles.resourceMetadata} role="group" aria-label="Cost center">
                             <Text size={200} weight="semibold">Cost center</Text>
@@ -1363,8 +1369,8 @@ export function EntitlementsPage() {
                 <Text className={styles.codeValue}>{accessRequest.requesterObjectId}</Text>
               </dd></div>
               <div><dt>Cost center</dt><dd>{accessRequest.costCenter ? `${accessRequest.costCenter.name} (${accessRequest.costCenter.code})` : 'Subject default'}</dd></div>
-              <div><dt>Requested environment</dt><dd><EnvironmentBadge environment={accessRequest.requestedEnvironment ?? null} catalog={environmentCatalog.data} /></dd></div>
-              <div><dt>Current environment</dt><dd><EnvironmentBadge environment={accessRequest.resourceSummary?.environment ?? null} catalog={environmentCatalog.data} />
+              <div><dt>Requested environment</dt><dd><EnvironmentBadge azureCloud={accessRequest.resourceSnapshot?.azureCloud ?? 'commercial'} environment={accessRequest.requestedEnvironment ?? null} catalog={environmentCatalog.data} /></dd></div>
+              <div><dt>Current environment</dt><dd><EnvironmentBadge azureCloud={accessRequest.resourceSummary?.azureCloud ?? 'commercial'} environment={accessRequest.resourceSummary?.environment ?? null} catalog={environmentCatalog.data} />
                 {(accessRequest.requestedEnvironment ?? null) !== (accessRequest.resourceSummary?.environment ?? null) && <Text block>Now {environmentLabel(environmentCatalog.data, accessRequest.resourceSummary?.environment ?? null)}</Text>}
               </dd></div>
               <div><dt>Justification</dt><dd>{accessRequest.justification ?? 'No justification given'}</dd></div>

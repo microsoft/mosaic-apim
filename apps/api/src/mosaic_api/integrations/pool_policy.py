@@ -29,6 +29,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
+from mosaic_api.clouds import AzureCloud
 from mosaic_api.domain import (
     COST_CENTER_HEADER,
     ON_BEHALF_HEADER,
@@ -83,7 +84,9 @@ from mosaic_api.integrations.access_policy import (
     describe_limit_facet,
     describe_on_behalf_removal,
     grant_counter_identity,
+    key_mcp_call_reference,
     mcp_call_reference,
+    validate_cloud_access,
 )
 from mosaic_api.integrations.access_policy import _literal as _safe_literal
 from mosaic_api.integrations.apim.model_apis import OperationSpec, shape_operations
@@ -365,14 +368,20 @@ def _balanced_attempts(route: PoolRoute) -> int:
     return first.attempts if first.balanced and len(route.targets) > 1 else 0
 
 
-def _authenticate(fragment: ET.Element, shape: str, routes: Sequence[PoolRoute]) -> None:
+def _authenticate(
+    fragment: ET.Element,
+    shape: str,
+    routes: Sequence[PoolRoute],
+    *,
+    azure_cloud: AzureCloud = "commercial",
+) -> None:
     """Acquire the gateway's managed identity token for the members that are reached with it.
 
     In a pool with a member reached with a key, the token goes into a variable instead, and each
     attempt sets its own member's credential. A pool reached only with keys acquires no token.
     """
 
-    attributes = {"resource": managed_identity_resource(shape)}
+    attributes = {"resource": managed_identity_resource(shape, azure_cloud=azure_cloud)}
     if _keyed(routes):
         if not _uses_identity(routes):
             return
@@ -768,6 +777,17 @@ def _validate_pool(
     routes: Sequence[PoolRoute],
     safeguard: PoolSafeguard | None,
 ) -> None:
+    if pool.azure_cloud != snapshot.azure_cloud:
+        raise ValidationError("The pool and applied access snapshot must use the same cloud.")
+    if snapshot.azure_cloud == "government" and any(
+        target.key_named_value for route in routes for target in route.targets
+    ):
+        raise ValidationError("Government pool backends require Government managed identity.")
+    validate_cloud_access(
+        snapshot.azure_cloud,
+        snapshot.settings,
+        deny_all=not any(g.enabled for g in snapshot.grants),
+    )
     names = [
         pool.fragment_name,
         *(route.model_id for route in routes),
@@ -1145,7 +1165,13 @@ def _governed_fragment(
     _variable(
         fragment,
         "mosaic-mcp-call",
-        mcp_call_reference(application_role) if settings.entra_enabled else "",
+        (
+            key_mcp_call_reference(pool, grants)
+            if snapshot.azure_cloud == "government"
+            else mcp_call_reference(application_role)
+            if settings.entra_enabled
+            else ""
+        ),
     )
     append_grant_attribution_trace(fragment, grants, keys=[("r", MCP_CALL, "mosaic-mcp-call")])
     _grant_limits(fragment, pool, grants, prefix=_COUNTER_PREFIX)
@@ -1174,7 +1200,7 @@ def _governed_fragment(
             removed_query_parameters=("subscription-key",),
         )
     add_shape_headers(fragment, shape)
-    _authenticate(fragment, shape, routes)
+    _authenticate(fragment, shape, routes, azure_cloud=snapshot.azure_cloud)
     _append_rewrites(fragment, shape, operations)
     return fragment
 

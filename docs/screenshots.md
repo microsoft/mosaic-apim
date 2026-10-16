@@ -125,6 +125,11 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
   gateways can read it from, and MCP servers. MOSAIC reaches them through `httpx` mock transports,
   so nothing leaves the machine. A fake Log Analytics workspace answers MOSAIC's usage queries from
   the gateways' generated logs, a day at a time.
+- The same estate includes a fictional Government management connection in a separate fake
+  credentials vault, a Government gateway and Azure OpenAI backend, and Government GPT-4o mini
+  and MCP offerings under the same Customer Insights cost center. Both cloud labels and environment
+  classification come from real resource contracts; all Government authority/ARM traffic remains
+  on mock transports. This illustrates the UI, not live Government service availability.
 - `demo_api.py` runs the production FastAPI app with in-memory repositories and swaps its
   Azure-facing services for the fakes. It then seeds the estate through MOSAIC's own services, in
   the order an operator would: add a custom Partner environment, create cost centers with their
@@ -140,8 +145,10 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
   then governed: Megan Bowen holds both its models under Customer Insights, the Market Research
   Agent holds Opus, and the Agent Builders group holds Sonnet. Customer Insights sets a per-person
   Sonnet limit and a pooled quota that counts every region, and Isaiah Langer's request for Opus is
-  pending. Grants' subscription keys exist only where someone asked for one: the support copilot's,
-  the one Megan Bowen's notebook uses, and the one she calls both Claude models with. One MCP
+  pending. Commercial grants' subscription keys exist only where someone asked for one: the support copilot's,
+  the one Megan Bowen's notebook uses, and the one she calls both Claude models with. Eligible
+  Government model and MCP grants receive their initial keys automatically after reviewed apply.
+  One MCP
   server keeps only a legacy label, so Settings has something to classify, and the development
   gateway's routes to production produce environment findings. Grants and decided requests are then
   dated back as far as 120 days. Last, it enables API diagnostics on the production gateway and
@@ -156,8 +163,9 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
   back, so the Dashboard, Analytics, and the portal's **Usage & cost** page show measured figures.
   They are priced from the price list MOSAIC ships, plus what the seed sets through the pricing
   service: the partner's declared GPT-4.1 mini deployment's type, a negotiated GPT-4o rate from
-  next month, which the **Pricing** page shows as scheduled, and what Contoso pays for Claude Opus
-  4.5, Claude Sonnet 4.5, and Claude Haiku 4.5, which prices each pool call at the deployment that
+  next month, which the **Pricing** page shows as scheduled, a fictional Government-only contract
+  rate, and what Contoso pays for Claude Opus 4.5, Claude Sonnet 4.5, and Claude Haiku 4.5, which
+  prices each pool call at the deployment that
   served it. The partner's Claude, Mistral Large, Cohere, and realtime deployments and the adopted
   APIs stay unpriced, so the **Unpriced deployments** tab has something to show. Every page
   therefore renders what the product would show for that estate. Budget email is turned on against
@@ -185,6 +193,9 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
   viewport, and blurs every sensitive region before it saves the PNG. Administrator shots fail
   rather than save clipped content if the document overflows horizontally. Dates are rendered in UTC,
   and they show the day of the capture.
+- Grant-selection actions use the dropdown's full cloud label (for example, **Azure Government**,
+  not the **AzGov** badge), exact cost center, direct attribution, and either **Ready** or
+  **Applied to APIM** status. This keeps mixed-cloud grants from selecting the wrong offering.
 
 ## Redaction
 
@@ -269,6 +280,7 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-dashboard-light`, `console-dashboard-dark` | Console | `/dashboard` | Both | Light and dark: console overview |
 | `portal-catalog-light`, `portal-catalog-dark` | Portal | `/catalog`, full-width model-grouped rows with filters, blue-tinted glass navigation, and appearance controls | Both | Light and dark: portal catalog |
 | `console-gateways` | Console | `/gateways`, compact list with selected gateway overview | Light | Gateways |
+| `console-government-gateway` | Console | `/gateways`, fictional Government gateway selected with AzGov and Production context | Light | Government gateway |
 | `console-gateway-overview` | Console | Contoso AI Gateway, **Overview** section | Dark | Gateway overview |
 | `console-gateway-apis` | Console | Contoso AI Gateway, **APIs and endpoints** section | Light | APIs and endpoints |
 | `console-models` | Console | `/models`, compact list with selected publication detail | Dark | Models |
@@ -312,14 +324,17 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-gateway-telemetry` | Console | Contoso AI Gateway, **Overview** section, scrolled to **Telemetry** | Light | Gateway telemetry |
 | `console-analytics-reliability` | Console | `/analytics?tab=reliability` | Dark | Reliability |
 | `console-environments` | Console | `/settings` | Light | Environments |
+| `console-azure-connections` | Console | `/settings?tab=connections`, commercial host identity and fictional Government service principal | Dark | Azure connections |
 | `console-environment-findings` | Console | `/settings?tab=findings` | Dark | Environment findings |
 | `console-runtime-configuration` | Console | `/settings?tab=runtime`, read-only deployment details, directory availability, and granted/missing Graph permission status; local demo authentication with a fictional directory double | Light | Runtime configuration |
 | `console-email-settings` | Console | `/settings?tab=email` | Light | Budget email |
-| `portal-request-access` | Portal | `/catalog`, GPT-4o mini access options in an overlay drawer | Light | Request access |
+| `portal-request-access` | Portal | `/catalog`, GPT-4o mini's exact Commercial offering selected in the access drawer, never submitted | Light | Request access |
 | `portal-access` | Portal | `/access`, grouped model rows and an exact grant's **Connection details** open in a drawer | Light | My access |
 | `portal-connection-cost-center` | Portal | `/access`, the GPT-4o grant under General with **Connection details** open, scrolled to **Cost center header** | Light | Choosing a cost center |
 | `portal-pool-connection` | Portal | `/access`, Claude Sonnet 4.5 selected, **Connection details** drawer scrolled to **Authentication** and the shared-key note | Dark | Models that share a key |
 | `portal-mcp-connection` | Portal | `/access`, with an enforced MCP grant's **Connection details** open | Dark | MCP connection |
+| `portal-government-connection` | Portal | `/access`, exact AzGov GPT-4o mini direct grant under Customer Insights, **Connection details** open | Light | Government key access |
+| `portal-government-mcp-connection` | Portal | `/access`, exact AzGov MCP direct grant under Customer Insights, custom-header **Connection details** open | Dark | Government MCP connection |
 | `portal-requests` | Portal | `/requests`, model-first cards with offering and version context | Dark | My requests |
 | `portal-usage` | Portal | `/usage`, the default portal landing page with icon-based, collapsible section navigation | Light | Usage & cost |
 | `portal-usage-resources` | Portal | `/usage?tab=resources`, **By resource** with exact offering context | Dark | Usage by resource |

@@ -226,13 +226,13 @@ export function ApproveAccessRequestDialog({
                 <div>
                   <dt>Requested environment</dt>
                   <dd>
-                    <EnvironmentBadge environment={requestedEnvironment} catalog={environmentCatalog} />
+                    <EnvironmentBadge azureCloud={accessRequest.resourceSnapshot?.azureCloud ?? 'commercial'} environment={requestedEnvironment} catalog={environmentCatalog} />
                   </dd>
                 </div>
                 <div>
                   <dt>Current environment</dt>
                   <dd>
-                    <EnvironmentBadge environment={currentEnvironment} catalog={environmentCatalog} />
+                    <EnvironmentBadge azureCloud={accessRequest.resourceSummary?.azureCloud ?? 'commercial'} environment={currentEnvironment} catalog={environmentCatalog} />
                   </dd>
                 </div>
                 <div>

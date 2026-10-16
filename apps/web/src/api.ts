@@ -5,6 +5,8 @@ import { adminApi, type AdminApi } from './admin-api'
 import type {
   AccessRequest,
   AccessRequestApproval,
+  AzureCloud,
+  AzureConnection,
   AnalyticsConsumers,
   AnalyticsCost,
   AnalyticsFilters,
@@ -152,6 +154,13 @@ function attachmentName(disposition: string | null) {
   return disposition?.match(/filename="([^"]+)"/)?.[1] ?? null
 }
 
+function azureContextQuery(context?: { azureCloud?: AzureCloud; azureConnectionId?: string | null }) {
+  const params = new URLSearchParams()
+  if (context?.azureCloud) params.set('azureCloud', context.azureCloud)
+  if (context?.azureConnectionId) params.set('azureConnectionId', context.azureConnectionId)
+  return params.size ? `?${params}` : ''
+}
+
 /**
  * What a failed request says went wrong. MOSAIC's own refusals carry a message. A request that
  * didn't validate carries where and why, which reads as a sentence once pydantic's prefix is gone.
@@ -170,6 +179,12 @@ export function failureMessage(body: ApiErrorBody | undefined, status: number): 
 }
 
 export interface MosaicApi extends AdminApi {
+  listAzureConnections(): Promise<AzureConnection[]>
+  createAzureConnection(payload: { name: string; azureCloud: AzureCloud; azureTenantId: string; clientId: string; clientSecret: string }): Promise<AzureConnection>
+  renameAzureConnection(id: string, payload: { name: string }): Promise<AzureConnection>
+  testAzureConnection(id: string): Promise<AzureConnection>
+  replaceAzureConnectionSecret(id: string, clientSecret: string): Promise<AzureConnection>
+  deleteAzureConnection(id: string): Promise<void>
   getConsoleAccess(): Promise<ConsoleAccess>
   getAnalyticsStatus(): Promise<AnalyticsStatus>
   refreshAnalytics(): Promise<AnalyticsStatus>
@@ -260,6 +275,8 @@ export interface MosaicApi extends AdminApi {
   listPrincipalMembers(principalId: string, limit?: number): Promise<DirectoryMemberPage>
   listGateways(): Promise<Gateway[]>
   registerGateway(payload: {
+    azureCloud?: AzureCloud
+    azureConnectionId?: string | null
     azureResourceId: string
     name?: string
     environmentLabel?: string
@@ -283,7 +300,7 @@ export interface MosaicApi extends AdminApi {
   syncGateway(gatewayId: string): Promise<GatewaySyncRun>
   getSyncRun(gatewayId: string, runId: string): Promise<GatewaySyncRun>
   listSyncRuns(gatewayId: string): Promise<GatewaySyncRun[]>
-  listSuggestedGateways(): Promise<GatewaySuggestion[]>
+  listSuggestedGateways(context?: { azureCloud?: AzureCloud; azureConnectionId?: string | null }): Promise<GatewaySuggestion[]>
   listPublishableModels(gatewayId: string): Promise<PublishableModel[]>
   listPublications(gatewayId?: string): Promise<Publication[]>
   createPublication(payload: {
@@ -427,6 +444,8 @@ export interface MosaicApi extends AdminApi {
   }): Promise<PolicyPreview>
   listModelEndpoints(): Promise<ModelEndpoint[]>
   registerModelEndpoint(payload: {
+    azureCloud?: AzureCloud
+    azureConnectionId?: string | null
     azureResourceId?: string
     endpoint?: string
     /** Set only for AWS Bedrock; MOSAIC infers every other kind from the URL. */
@@ -463,9 +482,11 @@ export interface MosaicApi extends AdminApi {
   removeDeclaredModelDeployment(endpointId: string, deploymentName: string): Promise<ModelEndpoint>
   listAvailableModels(endpointId: string): Promise<ObservedAvailableModel[]>
   getModelEndpointRuntimeAccess(endpointId: string): Promise<GatewayRuntimeAccess[]>
-  listSuggestedModelEndpoints(): Promise<ModelEndpointSuggestionView>
+  listSuggestedModelEndpoints(context?: { azureCloud?: AzureCloud; azureConnectionId?: string | null }): Promise<ModelEndpointSuggestionView>
   listMcpEndpoints(): Promise<McpEndpoint[]>
   registerMcpEndpoint(payload: {
+    azureCloud?: AzureCloud
+    azureConnectionId?: string | null
     endpoint: string
     name?: string
     environmentLabel?: string
@@ -582,6 +603,7 @@ export function useMosaicApi(): MosaicApi {
         if (filters?.end) params.set('end', filters.end)
       }
       if (filters?.gatewayId) params.set('gatewayId', filters.gatewayId)
+      if (filters?.azureCloud) params.set('azureCloud', filters.azureCloud)
       if (filters?.environment) params.set('environment', filters.environment)
       if (filters?.resourceId) params.set('resourceId', filters.resourceId)
       if (filters?.subjectKind) params.set('subjectKind', filters.subjectKind)
@@ -595,6 +617,12 @@ export function useMosaicApi(): MosaicApi {
 
     return {
       ...adminApi(request),
+      listAzureConnections: () => request<AzureConnection[]>('/api/v1/azure-connections'),
+      createAzureConnection: (payload) => request<AzureConnection>('/api/v1/azure-connections', { method: 'POST', body: payload }),
+      renameAzureConnection: (id, payload) => request<AzureConnection>(`/api/v1/azure-connections/${encodeURIComponent(id)}`, { method: 'PATCH', body: payload }),
+      testAzureConnection: (id) => request<AzureConnection>(`/api/v1/azure-connections/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+      replaceAzureConnectionSecret: (id, clientSecret) => request<AzureConnection>(`/api/v1/azure-connections/${encodeURIComponent(id)}/secret`, { method: 'PUT', body: { clientSecret } }),
+      deleteAzureConnection: (id) => request<void>(`/api/v1/azure-connections/${encodeURIComponent(id)}`, { method: 'DELETE' }),
       getConsoleAccess: () => request<ConsoleAccess>('/api/v1/console/me'),
       getAnalyticsStatus: () => request<AnalyticsStatus>('/api/v1/analytics/status'),
       refreshAnalytics: () =>
@@ -801,8 +829,8 @@ export function useMosaicApi(): MosaicApi {
       getSyncRun: (id, runId) =>
         request<GatewaySyncRun>(`/api/v1/gateways/${encodeURIComponent(id)}/sync-runs/${encodeURIComponent(runId)}`),
       listSyncRuns: (id) => request<GatewaySyncRun[]>(`/api/v1/gateways/${id}/sync-runs`),
-      listSuggestedGateways: () =>
-        request<GatewaySuggestion[]>('/api/v1/gateways/suggested'),
+      listSuggestedGateways: (context) =>
+        request<GatewaySuggestion[]>(`/api/v1/gateways/suggested${azureContextQuery(context)}`),
       getGatewayTelemetry: (id) =>
         request<GatewayTelemetry>(`/api/v1/gateways/${encodeURIComponent(id)}/telemetry`),
       enableGatewayTelemetry: (id) =>
@@ -1145,8 +1173,8 @@ export function useMosaicApi(): MosaicApi {
         request<ObservedAvailableModel[]>(`/api/v1/model-endpoints/${id}/available-models`),
       getModelEndpointRuntimeAccess: (id) =>
         request<GatewayRuntimeAccess[]>(`/api/v1/model-endpoints/${id}/runtime-access`),
-      listSuggestedModelEndpoints: () =>
-        request<ModelEndpointSuggestionView>('/api/v1/model-endpoints/suggested'),
+      listSuggestedModelEndpoints: (context) =>
+        request<ModelEndpointSuggestionView>(`/api/v1/model-endpoints/suggested${azureContextQuery(context)}`),
       listMcpEndpoints: () => request<McpEndpoint[]>('/api/v1/mcp-endpoints'),
       registerMcpEndpoint: (payload) =>
         request<McpEndpoint>('/api/v1/mcp-endpoints', { method: 'POST', body: payload }),

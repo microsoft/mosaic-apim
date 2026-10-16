@@ -1,4 +1,5 @@
 import type {
+  AzureCloud,
   Entitlement,
   EntitlementResource,
   Gateway,
@@ -14,6 +15,24 @@ export interface EntitlementEnvironmentLookups {
   mcpServers?: McpServer[]
   modelEndpoints?: ModelEndpoint[]
   modelPools?: ModelPool[]
+}
+
+export function entitlementResourceCloud(
+  resource: EntitlementResource,
+  lookups: EntitlementEnvironmentLookups,
+  entitlement?: Pick<Entitlement, 'binding'>,
+): AzureCloud {
+  if (resource.kind === 'modelDeployment') {
+    return lookups.modelEndpoints?.find((endpoint) => endpoint.id === (resource.scopeId ?? resource.id))?.azureCloud ?? 'commercial'
+  }
+  const gatewayId = resource.kind === 'modelApi'
+    ? lookups.modelApis?.find((item) => item.id === resource.id)?.gatewayId
+    : resource.kind === 'mcpServer'
+      ? lookups.mcpServers?.find((item) => item.id === resource.id)?.gatewayId
+      : resource.kind === 'poolModel'
+        ? lookups.modelPools?.find((item) => item.id === resource.scopeId)?.gatewayId
+        : resource.scopeId ?? entitlement?.binding?.gatewayId
+  return lookups.gateways?.find((gateway) => gateway.id === gatewayId)?.azureCloud ?? 'commercial'
 }
 
 function gatewayEnvironment(gateways: Gateway[] | undefined, gatewayId: string | null | undefined) {

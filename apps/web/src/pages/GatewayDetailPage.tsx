@@ -118,7 +118,7 @@ function Overview({ gateway, onEdit }: { gateway: Gateway; onEdit: () => void })
         <Title3 as="h3">Service</Title3>
         <div className={styles.environmentRow}>
           <Text weight="semibold">Environment</Text>
-          <EnvironmentBadge environment={gateway.environment} catalog={catalog.data} />
+          <EnvironmentBadge azureCloud={gateway.azureCloud ?? 'commercial'} environment={gateway.environment} catalog={catalog.data} />
           <Button appearance="subtle" size="small" onClick={onEdit}>Change</Button>
         </div>
         {gateway.azureEnvironmentTag && <Text block size={200}>Azure tag: {gateway.azureEnvironmentTag}</Text>}
@@ -854,7 +854,7 @@ function GatewayDetail({ gatewayId, embedded }: { gatewayId: string; embedded: b
         actions={
           <div className={styles.headerActions}>
             <GatewayStatusBadge status={gateway.data.status} />
-            <EnvironmentBadge environment={gateway.data.environment} catalog={catalog.data} />
+            <EnvironmentBadge azureCloud={gateway.data.azureCloud ?? 'commercial'} environment={gateway.data.environment} catalog={catalog.data} />
             <Menu>
               <MenuTrigger disableButtonEnhancement>
                 <MenuButton appearance="secondary" disabled={!gateway.data.lastSyncedAt}>

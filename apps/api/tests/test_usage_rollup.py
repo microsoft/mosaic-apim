@@ -33,6 +33,7 @@ from mosaic_api.services.directory import Actor
 from mosaic_api.services.usage import usage_freshness
 from mosaic_api.services.usage_rollup import (
     BACKFILL_DAYS_PER_CYCLE,
+    LinkResolver,
     TooManyRefreshesError,
     UsageRollupService,
     merge_run,
@@ -271,6 +272,58 @@ def build_harness() -> RollupHarness:
     )
 
 
+async def test_government_rollup_routes_logs_and_persists_cloud_without_duplicates(
+    harness: RollupHarness,
+) -> None:
+    await harness.seed()
+    gateway = harness.gateways.gateways[GATEWAY]
+    harness.gateways.gateways[GATEWAY] = gateway.model_copy(
+        update={"azure_cloud": "government", "azure_connection_id": "connection-gov"}
+    )
+    selected: list[tuple[str, str | None]] = []
+    government_logs = FakeLogs(clock=lambda: NOW)
+    government_logs.calls = [_call()]
+
+    def logs_for(gateway: Gateway) -> FakeLogs:
+        selected.append((gateway.azure_cloud, gateway.azure_connection_id))
+        return government_logs
+
+    harness.service = UsageRollupService(
+        harness.rollups,
+        gateway_repository=harness.gateways,
+        entitlement_repository=harness.entitlements,
+        directory_repository=harness.directory,
+        logs_factory=logs_for,
+        telemetry=None,
+        tenant_id=TENANT,
+        backfill_max_days=10,
+        clock=lambda: NOW,
+        owner_id="gov-rollup",
+    )
+    await harness.run_until_done()
+    await harness.service.run_cycle()
+
+    assert selected and set(selected) == {("government", "connection-gov")}
+    assert await harness.total_requests(TODAY.isoformat()) == 1
+    assert harness.rollups._facts
+    assert {item.azure_cloud for item in harness.rollups._facts.values()} == {"government"}
+    assert {item.azure_cloud for item in harness.rollups._summaries.values()} == {"government"}
+    assert {item.azure_cloud for item in harness.rollups._records.values()} == {"government"}
+    [state] = await harness.rollups.list_rollup_states(TENANT)
+    assert state.azure_cloud == "government"
+
+
+async def test_a_trace_cannot_borrow_another_gateways_grant(harness: RollupHarness) -> None:
+    await harness.seed()
+    await harness.service.sync_registry(TENANT, now=NOW)
+    records = await harness.rollups.list_attribution_records(TENANT)
+    record = next(record for record in records if record.kind == "grant")
+    resolver = LinkResolver("a-different-gateway", {("grant", record.key): record})
+    assert resolver.grant(record.key) is None
+    link = resolver.link("1", record.key, "")
+    assert link is None or link[2] is None
+
+
 def _call(
     *,
     age: int = 0,
@@ -449,9 +502,7 @@ async def test_trace_attribution_wins_over_subscription_attribution(
     harness: RollupHarness,
 ) -> None:
     await harness.seed()
-    harness.logs.calls = [
-        _call(grant="k-alice", member=ALICE, subscription="sub-app", traced=True)
-    ]
+    harness.logs.calls = [_call(grant="k-alice", member=ALICE, subscription="sub-app", traced=True)]
 
     await harness.run_until_done()
 
@@ -475,8 +526,7 @@ async def test_subscription_attribution_is_used_when_trace_is_absent(
         TENANT, start_day=iso_day(TODAY), end_day=iso_day(TODAY)
     )
     assert [
-        (fact.entitlement_id, fact.link, fact.link_key, fact.caller_object_id)
-        for fact in facts
+        (fact.entitlement_id, fact.link, fact.link_key, fact.caller_object_id) for fact in facts
     ] == [
         (
             "grant-app",
@@ -495,9 +545,7 @@ async def test_unknown_subscription_calls_are_reported_as_unattributed(
 
     await harness.run_until_done()
 
-    assert (
-        await harness.summary_entry_requests("unattributed", "chat|mystery", iso_day(TODAY)) == 1
-    )
+    assert await harness.summary_entry_requests("unattributed", "chat|mystery", iso_day(TODAY)) == 1
 
 
 async def test_unknown_trace_keys_are_kept_as_trace_facts_for_later_registry_matches(
@@ -512,11 +560,8 @@ async def test_unknown_trace_keys_are_kept_as_trace_facts_for_later_registry_mat
         TENANT, start_day=iso_day(TODAY), end_day=iso_day(TODAY)
     )
     assert [
-        (fact.link, fact.link_key, fact.entitlement_id, fact.caller_object_id)
-        for fact in facts
-    ] == [
-        ("trace", "k-future", None, "future-user")
-    ]
+        (fact.link, fact.link_key, fact.entitlement_id, fact.caller_object_id) for fact in facts
+    ] == [("trace", "k-future", None, "future-user")]
 
 
 async def test_historical_registry_keys_still_attribute_after_a_binding_changes(
@@ -714,9 +759,7 @@ def test_usage_freshness_reports_the_expected_status(
     expected: str,
     updated_at: datetime | None,
 ) -> None:
-    freshness = usage_freshness(
-        states, gateways=gateways, now=NOW, interval=timedelta(minutes=15)
-    )
+    freshness = usage_freshness(states, gateways=gateways, now=NOW, interval=timedelta(minutes=15))
 
     assert freshness.status == expected
     assert freshness.updated_at == updated_at
@@ -739,9 +782,7 @@ def test_usage_freshness_uses_the_slowest_successful_gateway() -> None:
         data_available_from=iso_day(TODAY - timedelta(days=3)),
     )
 
-    freshness = usage_freshness(
-        [fast, slow], gateways=2, now=NOW, interval=timedelta(minutes=15)
-    )
+    freshness = usage_freshness([fast, slow], gateways=2, now=NOW, interval=timedelta(minutes=15))
 
     assert freshness.status == "current"
     assert freshness.updated_at == slow.last_success_at

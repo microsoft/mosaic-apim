@@ -162,9 +162,14 @@ class ApimResourceId(BaseModel):
     subscription_id: str
     resource_group: str
     service_name: str
+    azure_cloud: Literal["commercial", "government"] = "commercial"
+    azure_connection_id: str | None = None
 
     @classmethod
-    def parse(cls, value: str) -> "ApimResourceId":
+    def parse(
+        cls, value: str, *, azure_cloud: Literal["commercial", "government"] = "commercial",
+        azure_connection_id: str | None = None,
+    ) -> "ApimResourceId":
         candidate = value.strip().rstrip("/")
         if not candidate.startswith("/"):
             candidate = f"/{candidate}"
@@ -179,6 +184,8 @@ class ApimResourceId(BaseModel):
             subscription_id=match.group("subscription").lower(),
             resource_group=match.group("resourceGroup"),
             service_name=match.group("serviceName"),
+            azure_cloud=azure_cloud,
+            azure_connection_id=azure_connection_id,
         )
 
     @property
@@ -191,7 +198,8 @@ class ApimResourceId(BaseModel):
 
     @property
     def dedupe_key(self) -> str:
-        return self.canonical.casefold()
+        key = self.canonical.casefold()
+        return key if self.azure_cloud == "commercial" else f"{self.azure_cloud}:{key}"
 
 
 class CognitiveServicesResourceId(BaseModel):
@@ -208,9 +216,14 @@ class CognitiveServicesResourceId(BaseModel):
     resource_group: str
     account_name: str
     project_name: str | None = None
+    azure_cloud: Literal["commercial", "government"] = "commercial"
+    azure_connection_id: str | None = None
 
     @classmethod
-    def parse(cls, value: str) -> "CognitiveServicesResourceId":
+    def parse(
+        cls, value: str, *, azure_cloud: Literal["commercial", "government"] = "commercial",
+        azure_connection_id: str | None = None,
+    ) -> "CognitiveServicesResourceId":
         candidate = value.strip().rstrip("/")
         if not candidate.startswith("/"):
             candidate = f"/{candidate}"
@@ -226,6 +239,8 @@ class CognitiveServicesResourceId(BaseModel):
             resource_group=match.group("resourceGroup"),
             account_name=match.group("accountName"),
             project_name=match.group("projectName"),
+            azure_cloud=azure_cloud,
+            azure_connection_id=azure_connection_id,
         )
 
     @property
@@ -247,7 +262,8 @@ class CognitiveServicesResourceId(BaseModel):
 
     @property
     def dedupe_key(self) -> str:
-        return self.canonical.casefold()
+        key = self.canonical.casefold()
+        return key if self.azure_cloud == "commercial" else f"{self.azure_cloud}:{key}"
 
 
 # The Key Vault DNS suffixes MOSAIC reads secrets from, one per Azure cloud. The reader in
@@ -371,6 +387,8 @@ AZURE_AI_HOST_SUFFIXES: tuple[str, ...] = (
     ".services.ai.azure.com",
     ".cognitiveservices.azure.com",
     ".openai.azure.com",
+    ".cognitiveservices.azure.us",
+    ".openai.azure.us",
 )
 _CUSTOM_SUBDOMAIN_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 _FOUNDRY_PROJECT_PATH_PATTERN = re.compile(
@@ -382,7 +400,9 @@ _API_BASE_PATHS = frozenset({"/openai", "/openai/v1", "/models", "/anthropic", "
 _AZURE_AI_ENDPOINT_FORM = (
     "https://<resource>.services.ai.azure.com, https://<resource>.cognitiveservices.azure.com, "
     "https://<resource>.openai.azure.com, or a Foundry project endpoint "
-    "https://<resource>.services.ai.azure.com/api/projects/<project>"
+    "https://<resource>.services.ai.azure.com/api/projects/<project>; Azure Government account "
+    "hosts are https://<resource>.openai.azure.us and "
+    "https://<resource>.cognitiveservices.azure.us"
 )
 
 
@@ -397,7 +417,8 @@ def azure_ai_account_subdomain(url: str | None) -> str | None:
     """The account a URL on an Azure AI host belongs to: its custom subdomain.
 
     ``contoso.openai.azure.com``, ``contoso.cognitiveservices.azure.com`` and
-    ``contoso.services.ai.azure.com`` are one account, so this is what duplicates are judged by.
+    ``contoso.services.ai.azure.com`` are one account. Callers also compare the explicit cloud:
+    a matching subdomain in Government is a different account.
     """
 
     try:
@@ -471,7 +492,7 @@ class AzureAiEndpointUrl(BaseModel):
     def provider(self) -> "ModelProvider":
         """The resource kind the hostname implies, which ARM would otherwise report."""
 
-        if self.host.endswith(".openai.azure.com"):
+        if self.host.endswith((".openai.azure.com", ".openai.azure.us")):
             return ModelProvider.AZURE_OPENAI
         return ModelProvider.AZURE_AI_FOUNDRY
 
@@ -808,6 +829,8 @@ class Gateway(Entity):
     name: str
     provider: GatewayProvider = GatewayProvider.APIM
     azure_resource_id: str
+    azure_cloud: Literal["commercial", "government"] = "commercial"
+    azure_connection_id: str | None = None
     subscription_id: str
     resource_group: str
     service_name: str
@@ -825,6 +848,12 @@ class Gateway(Entity):
     inventory: GatewayInventorySummary = Field(default_factory=GatewayInventorySummary)
     last_synced_at: datetime | None = None
     last_sync_error: str | None = None
+
+    def arm_resource(self) -> ApimResourceId:
+        return ApimResourceId.parse(
+            self.azure_resource_id, azure_cloud=self.azure_cloud,
+            azure_connection_id=self.azure_connection_id,
+        )
 
 
 class GatewaySyncStatus(StrEnum):
@@ -1179,7 +1208,9 @@ def validate_declarations(
 class ModelEndpoint(Entity):
     """A registered provider endpoint MOSAIC reads models from.
 
-    Azure endpoints are identified by resource ID and read with MOSAIC's managed identity. An Azure
+    Azure endpoints are identified by resource ID and read through their management connection.
+    Legacy commercial resources use MOSAIC's host managed identity; Government resources require
+    an explicit Government service-principal connection. An Azure
     endpoint MOSAIC can't reach that way, such as one in another Microsoft Entra tenant, can be
     identified by URL instead and authenticated with an API key held in Key Vault; its deployments
     are declared rather than read (ADR 0018). An AWS Bedrock endpoint is identified by its regional
@@ -1193,6 +1224,8 @@ class ModelEndpoint(Entity):
     provider: ModelProvider
     endpoint: AnyHttpUrl
     azure_resource_id: str | None = None
+    azure_cloud: Literal["commercial", "government"] = "commercial"
+    azure_connection_id: str | None = None
     subscription_id: str | None = None
     resource_group: str | None = None
     account_name: str | None = None
@@ -1220,6 +1253,14 @@ class ModelEndpoint(Entity):
     inventory: ModelInventorySummary = Field(default_factory=ModelInventorySummary)
     last_synced_at: datetime | None = None
     last_sync_error: str | None = None
+
+    def arm_resource(self) -> CognitiveServicesResourceId:
+        if self.azure_resource_id is None:
+            raise ValueError("This endpoint has no ARM resource")
+        return CognitiveServicesResourceId.parse(
+            self.azure_resource_id, azure_cloud=self.azure_cloud,
+            azure_connection_id=self.azure_connection_id,
+        )
 
     def uses_backend_key(self) -> bool:
         """Whether MOSAIC and its gateways reach this endpoint with an API key from Key Vault.
@@ -1605,6 +1646,8 @@ class McpEndpoint(Entity):
     entity_type: Literal["mcpEndpoint"] = "mcpEndpoint"
     name: str
     endpoint: AnyHttpUrl
+    azure_cloud: Literal["commercial", "government"] = "commercial"
+    azure_connection_id: str | None = None
     environment_label: str | None = Field(
         default=None,
         description="Deprecated: free-text legacy label. Use environment.",
@@ -1814,6 +1857,9 @@ class ModelAccessSettings(MosaicModel):
     entra_enabled: bool = True
 
 
+KeyState = Literal["pending", "preparing", "ready", "failed", "deleted", "ineligible"]
+
+
 class EntitlementRuntime(MosaicModel):
     """How far a grant has been applied to API Management, derived from its publication.
 
@@ -1824,6 +1870,8 @@ class EntitlementRuntime(MosaicModel):
     """
 
     publication_id: str
+    key_state: KeyState | None = None
+    key_error: str | None = None
     status: Literal[
         "pending", "applying", "applied", "revocationPending", "revoked", "failed", "unknown"
     ]
@@ -2118,6 +2166,7 @@ class AccessRequestApproval(AccessRequestDecision):
 
 
 class AccessRequestResourceSnapshot(MosaicModel):
+    azure_cloud: Literal["commercial", "government"] = "commercial"
     display_name: str | None = None
     gateway_id: str | None = None
     gateway_name: str | None = None
@@ -2132,6 +2181,7 @@ class ResourceSummary(MosaicModel):
     """
 
     kind: EntitlementResourceKind
+    azure_cloud: Literal["commercial", "government"] = "commercial"
     id: str
     scope_id: str | None = None
     display_name: str | None = None
@@ -2171,6 +2221,7 @@ class CatalogEntry(MosaicModel):
     """
 
     kind: CatalogEntryKind
+    azure_cloud: Literal["commercial", "government"] = "commercial"
     id: str
     # The pool, for a pool model: a request for it names the pool as its resource's scope.
     scope_id: str | None = None
@@ -2407,6 +2458,7 @@ class ModelAccessGrant(MosaicModel):
 
 class ModelAccessSnapshot(MosaicModel):
     version: int = Field(ge=1)
+    azure_cloud: Literal["commercial", "government"] = "commercial"
     settings: ModelAccessSettings
     audience: str | None = None
     # None when the publication's API shape can't be token-metered on its gateway's tier. Such a
@@ -2438,6 +2490,9 @@ class McpAccessGrant(MosaicModel):
     # which the gateway matches against the caller token's ``groups`` claim.
     object_id: str
     display_name: str
+    subscription_name: str | None = None
+    keys_allowed: bool = True
+    revoked: bool = False
     enabled: bool
     enforcement: EntitlementEnforcement | None = None
     intent_digest: str
@@ -2479,6 +2534,10 @@ class McpAccessSnapshot(MosaicModel):
     """The grants an MCP publication's fragment enforces, exactly as they were applied."""
 
     version: int = Field(ge=1)
+    azure_cloud: Literal["commercial", "government"] = "commercial"
+    settings: ModelAccessSettings = Field(
+        default_factory=lambda: ModelAccessSettings(keys_enabled=False, entra_enabled=True)
+    )
     # The runtime app registration's client ID: the audience MCP tokens are validated against.
     audience: str
     delegated_scope: str = MCP_DELEGATED_SCOPE
@@ -2554,6 +2613,7 @@ class PoolAccessSnapshot(MosaicModel):
     """The grants a model pool's policy enforces, exactly as an apply compiled them."""
 
     version: int = Field(ge=1)
+    azure_cloud: Literal["commercial", "government"] = "commercial"
     settings: ModelAccessSettings
     audience: str | None = None
     # False when the pool's API shape can't be token-metered on its gateway's tier. Such a
@@ -2584,6 +2644,7 @@ class Publication(Entity):
 
     entity_type: Literal["publication"] = "publication"
     gateway_id: str
+    azure_cloud: Literal["commercial", "government"] = "commercial"
     model_endpoint_id: str
     deployment_name: str
     provider: ModelProvider
@@ -2618,6 +2679,8 @@ class Publication(Entity):
     model_api_id: str | None = None
     governed_access: ModelAccessSettings | None = None
     applied_access: ModelAccessSnapshot | None = None
+    key_lifecycle: dict[str, KeyState] = Field(default_factory=dict)
+    key_policy_hashes: dict[str, str] = Field(default_factory=dict)
     access_state: Literal["pending", "applying", "applied", "failed", "unknown"] = "pending"
 
     @model_validator(mode="after")
@@ -2673,6 +2736,7 @@ class McpPublication(Entity):
 
     entity_type: Literal["mcpPublication"] = "mcpPublication"
     gateway_id: str
+    azure_cloud: Literal["commercial", "government"] = "commercial"
     mcp_endpoint_id: str
     display_name: str
     api_name: str
@@ -2698,6 +2762,8 @@ class McpPublication(Entity):
     unpublished_at: datetime | None = None
     last_error: str | None = None
     applied_access: McpAccessSnapshot | None = None
+    key_lifecycle: dict[str, KeyState] = Field(default_factory=dict)
+    key_policy_hashes: dict[str, str] = Field(default_factory=dict)
     access_state: Literal["pending", "applying", "applied", "failed", "unknown"] = "pending"
     # The application principal the server's tools call governed models as, when an administrator
     # names one. Its model calls are then attributed to the person each MCP call served, never
@@ -2933,6 +2999,8 @@ class GrantOverlapReport(MosaicModel):
 
 class GatewayCreate(MosaicModel):
     azure_resource_id: str = Field(min_length=1, max_length=512)
+    azure_cloud: Literal["commercial", "government"] = "commercial"
+    azure_connection_id: str | None = None
     name: str | None = Field(default=None, max_length=120)
     environment_label: str | None = Field(
         default=None,
@@ -2969,6 +3037,8 @@ class GatewayUpdate(MosaicModel):
 
 class GatewaySuggestion(MosaicModel):
     azure_resource_id: str
+    azure_cloud: Literal["commercial", "government"] = "commercial"
+    azure_connection_id: str | None = None
     service_name: str
     resource_group: str
     subscription_id: str
@@ -2999,6 +3069,8 @@ class ModelEndpointCreate(MosaicModel):
     model_config = ConfigDict(hide_input_in_errors=True)
 
     azure_resource_id: str | None = Field(default=None, max_length=512)
+    azure_cloud: Literal["commercial", "government"] = "commercial"
+    azure_connection_id: str | None = None
     endpoint: AnyHttpUrl | None = None
     name: str | None = Field(default=None, max_length=120)
     environment_label: str | None = Field(
@@ -3178,6 +3250,8 @@ class McpEndpointCreate(MosaicModel):
     """
 
     endpoint: AnyHttpUrl
+    azure_cloud: Literal["commercial", "government"] = "commercial"
+    azure_connection_id: str | None = None
     name: str | None = Field(default=None, max_length=120)
     environment_label: str | None = Field(
         default=None,
@@ -3251,6 +3325,8 @@ class ModelEndpointSuggestion(MosaicModel):
     """
 
     source: SuggestionSource
+    azure_cloud: Literal["commercial", "government"] = "commercial"
+    azure_connection_id: str | None = None
     endpoint: AnyHttpUrl | None = None
     azure_resource_id: str | None = None
     account_name: str | None = None
@@ -3668,6 +3744,7 @@ class KeySharedModel(MosaicModel):
 
 class ModelConnection(MosaicModel):
     entitlement_id: str
+    azure_cloud: Literal["commercial", "government"] = "commercial"
     publication_id: str
     gateway_id: str
     endpoint: str
@@ -3730,6 +3807,12 @@ class McpConnection(MosaicModel):
     """
 
     entitlement_id: str
+    azure_cloud: Literal["commercial", "government"] = "commercial"
+    applied_methods: ModelAccessSettings | None = None
+    subscription_header: str = "Ocp-Apim-Subscription-Key"
+    keys_available: bool = False
+    key_exists: bool = False
+    keys_allowed_by_cost_center: bool = True
     mcp_server_id: str
     publication_id: str | None = None
     gateway_id: str

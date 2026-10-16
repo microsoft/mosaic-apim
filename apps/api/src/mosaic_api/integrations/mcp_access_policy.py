@@ -22,6 +22,7 @@ from mosaic_api.domain import (
     QuotaPeriod,
     grant_precedence_key,
     mcp_metadata_path,
+    model_access_subscription_name,
 )
 from mosaic_api.errors import ValidationError
 from mosaic_api.integrations.access_policy import (
@@ -29,6 +30,7 @@ from mosaic_api.integrations.access_policy import (
     _TOKEN_GRANT,
     COST_CENTER_DENIED,
     MCP_CALL,
+    _authentication,
     _cost_center_ids,
     _expression,
     _grant_counter_key,
@@ -50,6 +52,7 @@ from mosaic_api.integrations.access_policy import (
     cost_center_details,
     describe_on_behalf_removal,
     grant_counter_identity,
+    validate_cloud_access,
 )
 from mosaic_api.integrations.apim.policy_semantics import analyze_policy
 from mosaic_api.integrations.policy import _serialize
@@ -103,9 +106,18 @@ def _validate(
     backend_auth: McpAuthMode,
     backend_audience: str | None,
 ) -> None:
-    if not _GUID.fullmatch(publication.tenant_id):
+    if publication.azure_cloud != snapshot.azure_cloud:
+        raise ValidationError("The MCP publication and access snapshot must use the same cloud.")
+    if snapshot.azure_cloud == "government" and backend_auth != McpAuthMode.MANAGED_IDENTITY:
+        raise ValidationError("Government MCP backends require Government managed identity.")
+    validate_cloud_access(
+        snapshot.azure_cloud,
+        snapshot.settings,
+        deny_all=not any(g.enabled for g in snapshot.grants),
+    )
+    if snapshot.settings.entra_enabled and not _GUID.fullmatch(publication.tenant_id):
         raise ValidationError("MCP access policies require a specific tenant GUID.")
-    if not _GUID.fullmatch(snapshot.audience):
+    if snapshot.settings.entra_enabled and not _GUID.fullmatch(snapshot.audience):
         raise ValidationError(
             "MCP access policies require the runtime application's GUID audience."
         )
@@ -153,6 +165,13 @@ def _validate(
         if not grant.entitlement_id.strip() or grant.entitlement_id.casefold() in seen:
             raise ValidationError("MCP access grants must have nonempty, unambiguous identities.")
         seen.add(grant.entitlement_id.casefold())
+        if snapshot.settings.keys_enabled and grant.enabled and not grant.is_group_grant:
+            if grant.subscription_name != model_access_subscription_name(
+                publication.tenant_id, publication.id, grant.entitlement_id
+            ):
+                raise ValidationError("MCP keys must name their exact direct grant subscription.")
+        if snapshot.azure_cloud == "government" and grant.enabled and grant.is_group_grant:
+            raise ValidationError("Government keys require a direct grant, not a group grant.")
         if grant.enabled:
             # Only enabled grants are compiled; a disabled one carried forward may keep a code
             # its cost center has since changed or given up.
@@ -284,6 +303,9 @@ def _mcp_authentication(
     snapshot: McpAccessSnapshot,
     grants: list[McpAccessGrant],
 ) -> None:
+    if not snapshot.settings.entra_enabled:
+        _authentication(fragment, publication, snapshot, grants)
+        return
     metadata_path = mcp_metadata_path(publication.api_path)
     insufficient = _auth_header_value(
         metadata_path,
@@ -410,7 +432,7 @@ def describe_reference_passing(facet: PolicyFacet, caller: McpModelCaller) -> No
     facet.attributes = {"name": ON_BEHALF_HEADER, "exists-action": "override"}
 
 
-def _api_policy(publication: McpPublication) -> ET.Element:
+def _api_policy(publication: McpPublication, *, key_only: bool = False) -> ET.Element:
     policies = ET.Element("policies")
     inbound = ET.SubElement(policies, "inbound")
     ET.SubElement(inbound, "base")
@@ -419,6 +441,11 @@ def _api_policy(publication: McpPublication) -> ET.Element:
     ET.SubElement(ET.SubElement(policies, "outbound"), "base")
     on_error = ET.SubElement(policies, "on-error")
     ET.SubElement(on_error, "base")
+    if key_only:
+        ET.SubElement(
+            on_error, "set-header", {"name": "WWW-Authenticate", "exists-action": "delete"}
+        )
+        return policies
     choose = ET.SubElement(on_error, "choose")
     when = ET.SubElement(
         choose,
@@ -468,6 +495,14 @@ def _metadata_policy(publication: McpPublication, snapshot: McpAccessSnapshot) -
     inbound = ET.SubElement(policies, "inbound")
     ET.SubElement(inbound, "base")
     response = ET.SubElement(inbound, "return-response")
+    if not snapshot.settings.entra_enabled:
+        ET.SubElement(response, "set-status", {"code": "404", "reason": "Not Found"})
+        ET.SubElement(
+            response, "set-header", {"name": "WWW-Authenticate", "exists-action": "delete"}
+        )
+        for section in ("backend", "outbound", "on-error"):
+            ET.SubElement(ET.SubElement(policies, section), "base")
+        return policies
     ET.SubElement(response, "set-status", {"code": "200", "reason": "OK"})
     content = ET.SubElement(
         response,
@@ -551,12 +586,23 @@ def _facets(
                 "The document advertises the tenant authorization server, header bearer method "
                 "and MCP scope."
             ],
-            attributes={
-                "metadata-path": mcp_metadata_path(publication.api_path)
-            },
+            attributes={"metadata-path": mcp_metadata_path(publication.api_path)},
             managed_by_mosaic=True,
         ),
     ]
+    if not snapshot.settings.entra_enabled:
+        facets[3].summary = "Disables OAuth discovery for key-only MCP access."
+        facets[3].details = [
+            "The metadata endpoint returns 404 rather than advertising a commercial sign-in.",
+            "Clients must send their grant's subscription key in the configured HTTP header.",
+        ]
+        facets[0].element = "choose"
+        facets[0].summary = "Requires an APIM-validated subscription for an applied direct grant."
+        facets[0].details = [
+            "Bearer tokens are refused; no commercial OAuth discovery or fallback is available.",
+            "Shared, product, all-API and unrelated subscriptions grant no access.",
+            *cost_center_details(),
+        ]
     for grant in grants:
         if grant.enforcement is None:
             facets.append(
@@ -720,7 +766,7 @@ def render_mcp_policy(
     fragment_xml = _serialize(fragment)
     if len(fragment_xml.encode("utf-8")) > MAX_FRAGMENT_BYTES:
         raise ValidationError("The MCP policy fragment exceeds APIM's 512 KB UTF-8 size limit.")
-    api = _api_policy(publication)
+    api = _api_policy(publication, key_only=not snapshot.settings.entra_enabled)
     metadata = _metadata_policy(publication, snapshot)
     api_policy_xml = _serialize(api)
     metadata_policy_xml = _serialize(metadata)

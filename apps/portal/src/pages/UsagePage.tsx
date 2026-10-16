@@ -558,7 +558,7 @@ function ResourceTable({
                   )}
                 </th>
                 <td>
-                  <EnvironmentBadge environment={row.environment} environments={environments} />
+                  <EnvironmentBadge azureCloud={row.azureCloud ?? row.resourceSummary.azureCloud ?? 'commercial'} environment={row.environment} environments={environments} />
                 </td>
                 <td>
                   {accessLabel(row)}
@@ -646,20 +646,21 @@ export function UsagePage() {
   const api = usePortalApi()
   const [period, setPeriod] = useState<UsagePeriod>('30d')
   const [environmentFilter, setEnvironmentFilter] = useState('all')
+  const [cloudFilter, setCloudFilter] = useState<'all' | 'commercial' | 'government'>('all')
   const [resourceFilter, setResourceFilter] = useState('all')
   const usage = useQuery({ queryKey: ['my-usage', period], queryFn: () => api.getMyUsage(period) })
   const environments = usePortalEnvironments()
   const filtered = useMemo(() => {
     if (!usage.data) return null
-    return aggregateUsage(usage.data, { environment: environmentFilter, resource: resourceFilter })
-  }, [usage.data, environmentFilter, resourceFilter])
+    return aggregateUsage(usage.data, { environment: environmentFilter, resource: resourceFilter, azureCloud: cloudFilter })
+  }, [usage.data, environmentFilter, resourceFilter, cloudFilter])
   const showCost = usage.data ? hasCost(usage.data) : false
   const recentHours = useMemo(() => {
     if (!usage.data || !filtered) return []
     // The report's own hours cover every grant, so they can stand in only when nothing is filtered out.
-    const unfiltered = environmentFilter === 'all' && resourceFilter === 'all'
+    const unfiltered = environmentFilter === 'all' && resourceFilter === 'all' && cloudFilter === 'all'
     return combineRecentHours(filtered.byResource, unfiltered ? (usage.data.recentHours ?? []) : [])
-  }, [filtered, usage.data, environmentFilter, resourceFilter])
+  }, [filtered, usage.data, environmentFilter, resourceFilter, cloudFilter])
   const environmentFilterOptions = useMemo(
     () => environmentOptions(usage.data, environments.data),
     [usage.data, environments.data],
@@ -667,11 +668,13 @@ export function UsagePage() {
   const onBehalfRows = useMemo(() => {
     if (!usage.data) return []
     return (usage.data.onBehalf ?? []).filter((row) =>
-      matchesEnvironmentFilter(row.resource.environment, environmentFilter),
+      matchesEnvironmentFilter(row.resource.environment, environmentFilter) &&
+      (cloudFilter === 'all' || (row.resource.azureCloud ?? 'commercial') === cloudFilter),
     )
-  }, [usage.data, environmentFilter])
+  }, [usage.data, environmentFilter, cloudFilter])
   const clearFilters = () => {
     setEnvironmentFilter('all')
+    setCloudFilter('all')
     setResourceFilter('all')
   }
 
@@ -711,6 +714,9 @@ export function UsagePage() {
           <UsageNotice report={usage.data} />
           <FreshnessNotice report={usage.data} />
           <div className="filter-row" role="group" aria-label="Usage filters">
+            <label><span>Cloud</span><select value={cloudFilter} onChange={(event) => setCloudFilter(event.currentTarget.value as typeof cloudFilter)}>
+              <option value="all">All clouds</option><option value="commercial">Azure Commercial</option><option value="government">Azure Government</option>
+            </select></label>
             <label>
               <span>Period</span>
               <select

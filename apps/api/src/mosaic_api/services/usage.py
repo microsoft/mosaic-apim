@@ -104,6 +104,7 @@ class UsageTotals(MosaicModel):
 
 
 class UsageTimelinePoint(MosaicModel):
+    azure_cloud: Literal["commercial", "government"] = "commercial"
     date: str
     entitlement_id: str
     environment: str | None
@@ -169,6 +170,7 @@ class UsageRateLimit(MosaicModel):
 
 
 class UsageResourceRow(MosaicModel):
+    azure_cloud: Literal["commercial", "government"] = "commercial"
     entitlement_id: str
     resource: EntitlementResource
     resource_summary: ResourceSummary
@@ -305,6 +307,7 @@ class DailyUsage:
     members: dict[str, MemberUsage] = field(default_factory=dict)
     metered_requests: int | None = None
     successful_requests: int | None = None
+    azure_cloud: Literal["commercial", "government"] | None = None
 
     @property
     def total_tokens(self) -> int | None:
@@ -1049,9 +1052,7 @@ class RollupUsageSource:
                 ends.append(state.queried_through.astimezone(UTC))
         return (max(starts), min(ends)) if starts else (None, None)
 
-    async def on_behalf_usage(
-        self, actor: Actor, *, start: date, end: date
-    ) -> list[OnBehalfUse]:
+    async def on_behalf_usage(self, actor: Actor, *, start: date, end: date) -> list[OnBehalfUse]:
         """Only the caller's own entries, from the facts that hold any. See ADR 0025.
 
         A fact that holds them is still the application's: its own figures, and every other
@@ -1231,15 +1232,14 @@ def _cost_center_ref(
     copied = record is not None and record.cost_center_id == cost_center_id
     return CostCenterRef(
         id=cost_center_id,
-        name=(
-            (record.cost_center_name or record.cost_center_code) if copied and record else None
-        )
+        name=((record.cost_center_name or record.cost_center_code) if copied and record else None)
         or "Removed cost center",
         code=(record.cost_center_code or "") if copied and record else "",
     )
 
 
 def _add_fact(usage: DailyUsage, fact: UsageFact, *, is_mcp: bool) -> None:
+    usage.azure_cloud = fact.azure_cloud
     metrics = fact.metrics
     usage.requests = (usage.requests or 0) + metrics.requests
     usage.metered_requests = (usage.metered_requests or 0) + metrics.metered_requests
@@ -1367,9 +1367,7 @@ class UsageService:
         book = await load_book(self._cost_centers, actor.tenant_id)
         # A grant's limits are its own, or its cost center's per-person limits when it has none.
         entitlements = [
-            item.model_copy(
-                update={"entitlement": with_inherited_limits(item.entitlement, book)}
-            )
+            item.model_copy(update={"entitlement": with_inherited_limits(item.entitlement, book)})
             for item in await self._usage_entitlements(actor)
         ]
         quota_start = self._earliest_quota_window_start(entitlements, now).date()
@@ -1379,9 +1377,7 @@ class UsageService:
         measured = self._source.data_source != "simulated"
         # The caller's model use through MCP servers: only their own share of each application's
         # calls. It's reported apart, because the applications' grants paid for it.
-        behalf = (
-            await self._source.on_behalf_usage(actor, start=start, end=end) if measured else []
-        )
+        behalf = await self._source.on_behalf_usage(actor, start=start, end=end) if measured else []
         behalf_models = await self._on_behalf_models(actor.tenant_id, behalf)
         freshness = await self._source.freshness(
             actor, entitlements, gateway_ids={use.gateway_id for use in behalf}
@@ -1411,6 +1407,12 @@ class UsageService:
             linked_by = _linked_by(entitlement.binding)
             bound = linked_by is not None
             series = usage.get(entitlement.id)
+            if not summary.available and series:
+                remembered_cloud = next(
+                    (point.azure_cloud for point in series.values() if point.azure_cloud), None
+                )
+                if remembered_cloud is not None:
+                    summary = summary.model_copy(update={"azure_cloud": remembered_cloud})
             if pricing is not None:
                 key, model = pricing.deployments.get(entitlement.id, (None, None))
                 cost_note = pricing.note(entitlement, key, series)
@@ -1437,9 +1439,7 @@ class UsageService:
                     pool_members, report_figures, end
                 )
             elif cost_note is None and pricing is not None and key is not None:
-                resource_cost, point_costs, cost_note = pricing.price_days(
-                    key, report_figures, end
-                )
+                resource_cost, point_costs, cost_note = pricing.price_days(key, report_figures, end)
             elif cost_note is None:
                 # Simulated figures use illustrative rates. A grant costs nothing until called.
                 simulated_cost = 0.0
@@ -1469,6 +1469,7 @@ class UsageService:
                     UsageTimelinePoint(
                         date=day.isoformat(),
                         entitlement_id=entitlement.id,
+                        azure_cloud=summary.azure_cloud,
                         environment=summary.environment,
                         requests=None if item is None else item.requests,
                         prompt_tokens=None if item is None else item.prompt_tokens,
@@ -1487,6 +1488,7 @@ class UsageService:
             peak_requests = _max_optional(item.peak_minute_requests for item in present)
             quotas = self._quotas(entitlement, series, now, measured=measured)
             row = UsageResourceRow(
+                azure_cloud=summary.azure_cloud,
                 entitlement_id=entitlement.id,
                 resource=entitlement.resource,
                 resource_summary=summary,
@@ -1601,9 +1603,7 @@ class UsageService:
             if measured
             else [],
             cost_centers=(
-                await self._cost_center_usage(actor, entitlements, book, now)
-                if measured
-                else []
+                await self._cost_center_usage(actor, entitlements, book, now) if measured else []
             ),
             on_behalf=behalf_rows,
         )
@@ -1844,6 +1844,11 @@ class UsageService:
                         ]
                     ),
                     mcp_server=ResourceSummary(
+                        azure_cloud=gateway.azure_cloud
+                        if gateway
+                        else use.record.azure_cloud
+                        if use.record
+                        else "commercial",
                         kind=EntitlementResourceKind.MCP_SERVER,
                         id=use.mcp.resource_id if use.mcp else use.mcp_api,
                         display_name=use.mcp.display_name if use.mcp else use.mcp_api,
@@ -1853,6 +1858,11 @@ class UsageService:
                         available=use.mcp is not None and use.mcp.removed_at is None,
                     ),
                     resource=ResourceSummary(
+                        azure_cloud=gateway.azure_cloud
+                        if gateway
+                        else use.record.azure_cloud
+                        if use.record
+                        else "commercial",
                         kind=group.resource.kind,
                         id=group.resource.id,
                         scope_id=group.resource.scope_id,
@@ -1949,9 +1959,7 @@ class UsageService:
                     continue
                 overall.add(metrics)
                 resource = grant.resource
-                by_resource[(str(resource.kind), resource.id, resource.scope_id or "")].add(
-                    metrics
-                )
+                by_resource[(str(resource.kind), resource.id, resource.scope_id or "")].add(metrics)
             resources: list[CostCenterResourceUsage] = []
             seen: set[tuple[str, str, str]] = set()
             for item in held:
@@ -2306,9 +2314,7 @@ def _combine_hours(
                 quota_refused=_sum_optional(point.quota_refused for point in points),
                 errors=_sum_optional(point.errors for point in points),
                 peak_minute_tokens=_max_optional(point.peak_minute_tokens for point in points),
-                peak_minute_requests=_max_optional(
-                    point.peak_minute_requests for point in points
-                ),
+                peak_minute_requests=_max_optional(point.peak_minute_requests for point in points),
             )
         )
     return combined

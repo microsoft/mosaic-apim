@@ -171,9 +171,7 @@ def _with_past_members(api: RolledUpApi, remembered: RolledUpApi | None) -> Roll
         return api
     current = {member.deployment_key.casefold() for member in api.members}
     past = [
-        member
-        for member in remembered.members
-        if member.deployment_key.casefold() not in current
+        member for member in remembered.members if member.deployment_key.casefold() not in current
     ]
     return api.model_copy(update={"members": [*api.members, *past]}) if past else api
 
@@ -261,6 +259,14 @@ class AnalyticsService:
         )
         all_gateways = {gateway.id: gateway for gateway in gateways}
         selected, gateway_ids = resolve_gateways(filters, all_gateways, catalog)
+        if filters.azure_cloud is not None:
+            historical = {
+                state.gateway_id
+                for state in states
+                if state.azure_cloud == filters.azure_cloud and state.gateway_id not in all_gateways
+            }
+            if filters.gateway_id is None and filters.environment is None:
+                gateway_ids = sorted(set(gateway_ids or []) | historical)
         # APIs a gateway no longer has are still named from what its rollups remember.
         apis: dict[tuple[str, str], RolledUpApi] = {}
         for state in states:
@@ -315,8 +321,10 @@ class AnalyticsService:
         )
         scope.cost_centers = {key: value.ref() for key, value in book.by_id.items()}
         wanted = scope.filters.cost_center_id
-        if wanted is not None and wanted not in scope.cost_centers and not any(
-            record.cost_center_id == wanted for record in records
+        if (
+            wanted is not None
+            and wanted not in scope.cost_centers
+            and not any(record.cost_center_id == wanted for record in records)
         ):
             raise NotFoundError("No cost center has that ID", details={"costCenterId": wanted})
         scope.principals_by_id = {principal.id: principal for principal in principals}
@@ -331,8 +339,7 @@ class AnalyticsService:
         scope.groups = {group.id: group for group in groups}
         # Limits a grant takes from its cost center count as its own, as the gateway applies them.
         scope.entitlements = {
-            entitlement.id: with_inherited_limits(entitlement, book)
-            for entitlement in entitlements
+            entitlement.id: with_inherited_limits(entitlement, book) for entitlement in entitlements
         }
         scope.grants = build_grants(records, entitlements, scope.principals_by_id, scope.groups)
         links: dict[str, set[str]] = defaultdict(set)
@@ -350,6 +357,12 @@ class AnalyticsService:
 
         calls: dict[str, int] = defaultdict(int)
         for summary in summaries:
+            if (
+                summary.azure_cloud == "government"
+                or scope.gateway_cloud(summary.gateway_id) == "government"
+            ):
+                # Unmapped Government identities are not commercial directory identities.
+                continue
             if summary.dimension not in {"grantCaller", "denial", "onBehalf"}:
                 continue
             for entry in summary.entries:
@@ -512,9 +525,7 @@ class AnalyticsService:
                 served = ((observed or {}).get(key) for key in entry.metrics.members or {})
                 named = (info.model_name for info in served if info and info.model_name)
                 model = next(named, None) or (grant.resource_name if grant else None) or ""
-                groups[(*base, "model")][f"{model.casefold()}|{api.api_name}"].add(
-                    entry.metrics
-                )
+                groups[(*base, "model")][f"{model.casefold()}|{api.api_name}"].add(entry.metrics)
         return [
             UsageSummary(
                 id=f"costcenter-{dimension}-{gateway_id}-{period}-{period_start}",
@@ -523,6 +534,7 @@ class AnalyticsService:
                 period_start=period_start,
                 bucket=period_bucket(period, period_start),
                 gateway_id=gateway_id,
+                azure_cloud=scope.gateway_cloud(gateway_id) or "commercial",
                 dimension=dimension,
                 entries=[
                     UsageSummaryEntry(key=key, metrics=metrics)
@@ -594,8 +606,7 @@ class AnalyticsService:
             summary
             for part in await asyncio.gather(*reads)
             for summary in part
-            if summary.period == "day"
-            or date.fromisoformat(summary.period_start) not in demoted
+            if summary.period == "day" or date.fromisoformat(summary.period_start) not in demoted
         ]
 
     async def _priced_read(
@@ -637,9 +648,7 @@ class AnalyticsService:
         through = min(self._clock(), coverage.through) if coverage is not None else None
         return spend_report(costs, scope, api, today, through)
 
-    async def cost_center_spend(
-        self, tenant_id: str, cost_center_id: str
-    ) -> AnalyticsSpend | None:
+    async def cost_center_spend(self, tenant_id: str, cost_center_id: str) -> AnalyticsSpend | None:
         """This month's spend and its forecast for one cost center, for background checks.
 
         The calls its grants carried, at list prices, exactly as the Cost tab's spend shows them
@@ -740,6 +749,7 @@ class AnalyticsService:
             for deployment in deployments:
                 endpoint = endpoints.get(deployment.endpoint_id)
                 found[f"{deployment.endpoint_id}/{deployment.deployment_name}"] = DeploymentInfo(
+                    azure_cloud=endpoint.azure_cloud if endpoint else None,
                     endpoint_name=endpoint.name if endpoint else None,
                     model_name=deployment.model_name,
                     model_format=deployment.model_format,
@@ -771,6 +781,7 @@ class AnalyticsService:
             rows.append(
                 AnalyticsGatewayHealth(
                     gateway_id=gateway.id,
+                    azure_cloud=gateway.azure_cloud,
                     name=gateway.name,
                     environment=gateway.environment,
                     environment_name=scope.environment_name(gateway.environment),
@@ -1091,9 +1102,7 @@ class AnalyticsService:
         summaries = await self._breakdown(
             context.scope, context.window, ["api", "unattributed"], costs
         )
-        return unattributed_report(
-            context, api=summaries, unattributed=summaries, costs=costs
-        )
+        return unattributed_report(context, api=summaries, unattributed=summaries, costs=costs)
 
     async def export(
         self, actor: Actor, filters: AnalyticsFilters, view: ExportView
@@ -1105,7 +1114,10 @@ class AnalyticsService:
             window = report.window
             return (
                 filename(view, window.breakdown_start, window.breakdown_end),
-                to_csv(CHARGEBACK_COLUMNS, rows),
+                to_csv(
+                    [*CHARGEBACK_COLUMNS, ("Cloud scope", "cloud_scope")],
+                    ({**row, "cloud_scope": filters.azure_cloud or "all"} for row in rows),
+                ),
             )
         readers: dict[str, Reader] = {
             "overview": self.overview,
@@ -1119,7 +1131,37 @@ class AnalyticsService:
         }
         report = await readers[REPORT_FOR[view]](actor, filters, limit=EXPORT_LIMIT)
         window = report.window
+        gateways, states = await asyncio.gather(
+            self._gateways.list_gateways(actor.tenant_id),
+            self._repository.list_rollup_states(actor.tenant_id),
+        )
+        clouds = {state.gateway_id: state.azure_cloud for state in states}
+        clouds.update({gateway.id: gateway.azure_cloud for gateway in gateways})
+        endpoint_clouds = {
+            endpoint.id: endpoint.azure_cloud
+            for endpoint in (
+                await self._endpoints.list_endpoints(actor.tenant_id)
+                if self._endpoints is not None
+                else []
+            )
+        }
         return (
             filename(view, window.breakdown_start, window.breakdown_end),
-            to_csv(COLUMNS[view], table(view, report)),
+            to_csv(
+                [*COLUMNS[view], ("Cloud", "azure_cloud"), ("Cloud scope", "cloud_scope")],
+                (
+                    {
+                        **row,
+                        "azure_cloud": (
+                            row.get("azure_cloud")
+                            or clouds.get(row.get("gateway_id") or "")
+                            or endpoint_clouds.get(row.get("endpoint_id") or "")
+                            or filters.azure_cloud
+                            or "all"
+                        ),
+                        "cloud_scope": filters.azure_cloud or "all",
+                    }
+                    for row in table(view, report)
+                ),
+            ),
         )

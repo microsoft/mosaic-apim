@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 from mosaic_api.auth import AuthContext
+from mosaic_api.clouds import AzureCloud
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings, UsageSourceMode
 from mosaic_api.domain import (
     AuditEvent,
@@ -27,7 +28,10 @@ from mosaic_api.domain import (
 )
 from mosaic_api.errors import ValidationError
 from mosaic_api.main import create_app
+from mosaic_api.pricing import PriceBook, Pricer
 from mosaic_api.services.analytics import AnalyticsFilters
+from mosaic_api.services.analytics.cost import CostBook
+from mosaic_api.services.analytics.cost_report import chargeback_rows
 from mosaic_api.services.analytics.export import COLUMNS, cell, filename, table, to_csv
 from mosaic_api.services.analytics.limits import HygieneInputs, _status, hygiene_report
 from mosaic_api.services.analytics.models import AnalyticsConsumerRow, AnalyticsConsumers
@@ -43,12 +47,13 @@ from mosaic_api.services.analytics.rows import (
     share,
 )
 from mosaic_api.services.analytics.scope import GrantInfo, Scope
-from mosaic_api.services.analytics.views import Context, DeploymentInfo, reliability
+from mosaic_api.services.analytics.views import Context, DeploymentInfo, models_report, reliability
 from mosaic_api.services.analytics.window import Coverage, day_start, resolve_window, split_months
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.usage import UsageFreshness
 from mosaic_api.usage_telemetry import (
     LATENCY_BUCKETS_MS,
+    RolledUpApi,
     UsageHour,
     UsageMetrics,
     UsageRollupState,
@@ -738,6 +743,72 @@ def test_export_route_adds_utf8_bom_and_rejects_unknown_views(client: TestClient
     assert bad.status_code == 422
 
 
+async def test_cloud_filter_keeps_removed_gateway_history_and_export_scope(
+    client: TestClient,
+) -> None:
+    state = client.app.state
+    state.analytics_service._clock = lambda: NOW
+    for cloud, gateway, requests in (
+        ("commercial", "removed-commercial", 2),
+        ("government", "removed-government", 3),
+    ):
+        await state.usage_rollup_repository.upsert_rollups(
+            [
+                _summary(
+                    "api",
+                    NOW.date(),
+                    UsageSummaryEntry(
+                        key="chat",
+                        metrics=UsageMetrics(requests=requests),
+                    ),
+                ).model_copy(
+                    update={
+                        "id": f"summary-{cloud}",
+                        "gateway_id": gateway,
+                        "azure_cloud": cloud,
+                    }
+                ),
+            ]
+        )
+        await state.usage_rollup_repository.update_rollup_state(
+            TENANT,
+            gateway,
+            lambda current, cloud=cloud: current.model_copy(
+                update={
+                    "azure_cloud": cloud,
+                    "last_success_at": NOW,
+                    "queried_through": NOW,
+                    "data_available_from": NOW.date().isoformat(),
+                }
+            ),
+        )
+    all_clouds = client.get("/api/v1/analytics/overview", params={"range": "7d"}).json()
+    gov = client.get(
+        "/api/v1/analytics/overview", params={"range": "7d", "azureCloud": "government"}
+    ).json()
+    commercial = client.get(
+        "/api/v1/analytics/overview", params={"range": "7d", "azureCloud": "commercial"}
+    ).json()
+    assert all_clouds["kpis"]["requests"] == 5
+    assert gov["kpis"]["requests"] == 3
+    assert commercial["kpis"]["requests"] == 2
+    exported = client.get(
+        "/api/v1/analytics/export",
+        params={
+            "view": "trend",
+            "range": "7d",
+            "azureCloud": "government",
+        },
+    )
+    rows = list(csv.DictReader(io.StringIO(exported.text.lstrip("\ufeff"))))
+    assert rows and {row["Cloud scope"] for row in rows} == {"government"}
+    assert {row["Cloud"] for row in rows} == {"government"}
+    assert (
+        client.get("/api/v1/analytics/overview", params={"azureCloud": "unknown"}).status_code
+        == 422
+    )
+
+
 def _base_report() -> dict[str, object]:
     window = resolve_window(AnalyticsFilters(range="30d"), NOW).model()
     return {
@@ -753,6 +824,119 @@ def _base_report() -> dict[str, object]:
         ),
         "notes": [],
     }
+
+
+@pytest.mark.parametrize("mixed_clouds", [False, True])
+async def test_removed_deployment_retains_unambiguous_historical_cloud_in_csv(
+    client: TestClient, mixed_clouds: bool
+) -> None:
+    state = client.app.state
+    state.analytics_service._clock = lambda: NOW
+    clouds = ["government", "commercial"] if mixed_clouds else ["government", "government"]
+    for index, cloud in enumerate(clouds):
+        gateway = f"removed-{index}"
+        await state.usage_rollup_repository.upsert_rollups(
+            [
+                _summary(
+                    "deployment",
+                    NOW.date(),
+                    UsageSummaryEntry(key="removed-endpoint/chat", metrics=_metric(requests=2)),
+                ).model_copy(update={"id": gateway, "gateway_id": gateway, "azure_cloud": cloud})
+            ]
+        )
+        await state.usage_rollup_repository.update_rollup_state(
+            TENANT,
+            gateway,
+            lambda current, cloud=cloud: current.model_copy(
+                update={
+                    "azure_cloud": cloud,
+                    "last_success_at": NOW,
+                    "queried_through": NOW,
+                    "data_available_from": NOW.date().isoformat(),
+                }
+            ),
+        )
+    response = client.get("/api/v1/analytics/models", params={"range": "7d"})
+    assert response.status_code == 200, response.text
+    [deployment] = response.json()["deployments"]
+    assert deployment["requests"] == 4
+    assert deployment["azureCloud"] == (None if mixed_clouds else "government")
+    exported = client.get("/api/v1/analytics/export", params={"view": "deployments", "range": "7d"})
+    assert exported.status_code == 200, exported.text
+    [row] = csv.DictReader(io.StringIO(exported.text.lstrip("\ufeff")))
+    assert row["Cloud"] == ("all" if mixed_clouds else "government")
+    assert row["Cloud scope"] == "all"
+
+
+@pytest.mark.parametrize("endpoint_cloud", [None, "commercial", "government"])
+def test_deployment_cloud_prefers_inventory_and_falls_back_to_recorded_usage(
+    endpoint_cloud: AzureCloud | None,
+) -> None:
+    summary = _summary(
+        "deployment",
+        NOW.date(),
+        UsageSummaryEntry(key="removed-endpoint/chat", metrics=_metric(requests=2)),
+    ).model_copy(update={"azure_cloud": "government"})
+    report = models_report(
+        _context(_scope()),
+        api=[],
+        models=[],
+        deployments=[summary],
+        observed={
+            "removed-endpoint/chat": DeploymentInfo(
+                azure_cloud=endpoint_cloud,
+                endpoint_name=None,
+                model_name="gpt-4o",
+                model_format="OpenAI",
+                sku_name="Standard",
+                sku_capacity=1,
+            )
+        },
+    )
+    assert report.deployments[0].azure_cloud == (endpoint_cloud or "government")
+
+
+@pytest.mark.parametrize("cloud", ["commercial", "government"])
+def test_chargeback_with_recorded_cloud_does_not_scan_deployment_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+    cloud: str,
+) -> None:
+    scope = _scope()
+    scope.apis[(GATEWAY, "chat")] = RolledUpApi(
+        api_name="chat",
+        resource_id="chat",
+        kind="model",
+        display_name="Chat",
+        model_endpoint_id="endpoint",
+        deployment_name="chat",
+        first_seen_at=NOW,
+    )
+    costs = CostBook(Pricer(PriceBook([]), {}), scope, NOW.date(), {})
+
+    def forbid_scan(_api: RolledUpApi) -> list[str]:
+        raise AssertionError("A charged row with a recorded cloud must not scan the estate")
+
+    monkeypatch.setattr(RolledUpApi, "deployment_keys", forbid_scan)
+    rows = chargeback_rows(
+        _context(scope),
+        grants=[
+            _summary(
+                "grant",
+                NOW.date(),
+                UsageSummaryEntry(key="trace:removed", metrics=_metric(requests=1)),
+            ).model_copy(update={"azure_cloud": cloud})
+        ],
+        unattributed=[
+            _summary(
+                "unattributed",
+                NOW.date(),
+                UsageSummaryEntry(key="chat|unknown", metrics=_metric(requests=2)),
+            ).model_copy(update={"azure_cloud": cloud})
+        ],
+        costs=costs,
+    )
+    assert len(rows) == 2
+    assert {row["azure_cloud"] for row in rows} == {cloud}
 
 
 def _context(

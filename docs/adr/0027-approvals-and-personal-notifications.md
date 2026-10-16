@@ -1,4 +1,4 @@
-# ADR 0026: Approvals and personal notifications
+# ADR 0027: Approvals and personal notifications
 
 **Status:** Accepted
 

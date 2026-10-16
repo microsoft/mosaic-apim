@@ -39,7 +39,8 @@ export function PoolAccessCard({
 }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
-  const [settings, setSettings] = useState<ModelAccessSettings>(pool.governedAccess ?? BOTH_METHODS)
+  const [settings, setSettings] = useState<ModelAccessSettings>(pool.governedAccess ??
+    (pool.azureCloud === 'government' ? { keysEnabled: true, entraEnabled: false } : BOTH_METHODS))
   const governed = Boolean(pool.governedAccess)
   const dirty =
     !pool.governedAccess ||
@@ -101,19 +102,21 @@ export function PoolAccessCard({
         <Switch
           label="Dedicated subscription keys"
           checked={settings.keysEnabled}
-          disabled={save.isPending || busy}
+          disabled={save.isPending || busy || pool.azureCloud === 'government'}
           onChange={(_, data) => setSettings({ ...settings, keysEnabled: data.checked })}
         />
         <Switch
           label="Microsoft Entra bearer tokens"
           checked={settings.entraEnabled}
-          disabled={save.isPending || busy}
+          disabled={save.isPending || busy || pool.azureCloud === 'government'}
           onChange={(_, data) => setSettings({ ...settings, entraEnabled: data.checked })}
         />
       </div>
       <Text size={200} className={styles.muted}>
-        A key serves every model its holder is granted in this pool under one cost center. Security groups always
-        sign in with Entra tokens. Turning both off denies every call.
+        A key serves every model its holder is granted in this pool under one cost center.
+        {pool.azureCloud === 'government'
+          ? ' Azure Government requires keys and eligible direct grants; initial keys are prepared after reviewed apply.'
+          : ' Security groups always sign in with Entra tokens. Turning both off denies every call.'}
       </Text>
       <dl className={styles.summaryList}>
         <dt>Saved</dt>

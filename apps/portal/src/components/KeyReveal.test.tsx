@@ -79,6 +79,19 @@ describe('KeyReveal', () => {
     vi.restoreAllMocks()
   })
 
+  it.each(['pending', 'preparing', 'failed'] as const)('refreshes %s Government setup without creating or revealing a key', async (keyState) => {
+    const user = userEvent.setup()
+    const { onConflict } = renderKeyReveal({
+      ...connection, azureCloud: 'government', keyExists: false,
+      runtime: { ...connection.runtime!, keyState },
+    })
+    await user.click(screen.getByRole('button', { name: 'Refresh key status' }))
+    expect(onConflict).toHaveBeenCalledOnce()
+    expect(api.createMyEntitlementKey).not.toHaveBeenCalled()
+    expect(api.revealMyEntitlementKey).not.toHaveBeenCalled()
+    expect(screen.queryByText(/Use.*Entra/)).not.toBeInTheDocument()
+  })
+
   it('keeps the key masked and requests nothing until a key is asked for', async () => {
     const user = userEvent.setup()
     const logs = spyOnConsole()

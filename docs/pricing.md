@@ -54,7 +54,9 @@ until an administrator enters one. These have none:
 
 ## Clouds
 
-A price is for one cloud, and a deployment's cloud comes from its endpoint's host:
+A price is for one cloud. An ARM-managed Azure deployment's default pricing cloud comes from its
+explicit resource cloud, not the cloud hosting MOSAIC. URL-only endpoints use their supported
+Azure AI host family:
 
 | Host ends in | Cloud |
 | --- | --- |
@@ -67,6 +69,9 @@ endpoint, or name one for an endpoint whose host doesn't say. A cloud other than
 Azure Government is a custom one, such as `openai` for an OpenAI-compatible provider, or a name for
 another sovereign cloud. Its key is up to 40 lowercase letters, digits, and hyphens. MOSAIC ships no
 prices for custom clouds, so their prices are entered like any other.
+
+These overrides affect prices only. They never change a resource's Azure management connection,
+credential authority, runtime cloud, or same-cloud publishing rules.
 
 The same tab can override an endpoint's region, which MOSAIC otherwise reads from the endpoint.
 Choosing the cloud MOSAIC detected clears the override. If another administrator saves an

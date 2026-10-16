@@ -11,6 +11,7 @@ from typing import Any
 import structlog
 
 from mosaic_api.budgets import BLOCKED_COST_CENTERS_NAMED_VALUE
+from mosaic_api.clouds import known_azure_host_cloud
 from mosaic_api.domain import (
     MCP_METADATA_API_NAME,
     MCP_METADATA_OPERATION,
@@ -39,6 +40,7 @@ from mosaic_api.domain import (
     McpServerKind,
     McpServerRoute,
     McpTransportType,
+    ModelAccessSettings,
     Principal,
     PublicationStatus,
     PublishAction,
@@ -59,6 +61,7 @@ from mosaic_api.domain import (
     mcp_metadata_url_template,
     mcp_publication_id,
     mcp_server_id,
+    model_access_subscription_name,
     new_id,
     subject_kind_for,
     utc_now,
@@ -86,6 +89,13 @@ from mosaic_api.repositories import (
     EnvironmentRepository,
     GatewayRepository,
     McpEndpointRepository,
+)
+from mosaic_api.services.automatic_keys import (
+    ApimInitialKeyManager,
+    owns_key,
+    reconcile_initial_keys,
+    require_key_scope,
+    verify_key_runtime,
 )
 from mosaic_api.services.budget_gate import BlockedListGate, ensure_blocked_list, is_blocked_list
 from mosaic_api.services.cost_centers import load_book
@@ -259,9 +269,7 @@ def _backend_url(endpoint: McpEndpoint) -> str:
 def _disabled_snapshot(snapshot: McpAccessSnapshot) -> McpAccessSnapshot:
     return snapshot.model_copy(
         update={
-            "grants": [
-                grant.model_copy(update={"enabled": False}) for grant in snapshot.grants
-            ]
+            "grants": [grant.model_copy(update={"enabled": False}) for grant in snapshot.grants]
         }
     )
 
@@ -468,10 +476,13 @@ class McpPublishingService:
         if gateway.capabilities.mcp_servers == CapabilitySupport.UNAVAILABLE:
             reasons.append("This gateway does not support MCP servers.")
         elif gateway.capabilities.mcp_servers == CapabilitySupport.UNKNOWN:
-            warnings.append("MCP server support is unknown; synchronize the gateway first.")
+            if gateway.azure_cloud == "government":
+                reasons.append("Government MCP support must be confirmed before publishing.")
+            else:
+                warnings.append("MCP server support is unknown; synchronize the gateway first.")
         if gateway.capabilities.gateway_url is None:
             reasons.append("Gateway URL is unknown; synchronize this gateway first.")
-        if not self._runtime_client_id:
+        if not self._runtime_client_id and gateway.azure_cloud == "commercial":
             reasons.append("The MCP runtime client ID is not configured.")
         if not _is_guid(actor.tenant_id):
             reasons.append("The tenant ID must be a GUID to render MCP access policy.")
@@ -486,12 +497,8 @@ class McpPublishingService:
             warnings=warnings,
         )
 
-    async def list_publications(
-        self, actor: Actor, gateway_id: str | None
-    ) -> list[McpPublication]:
-        return await self._repository.list_mcp_publications(
-            actor.tenant_id, gateway_id=gateway_id
-        )
+    async def list_publications(self, actor: Actor, gateway_id: str | None) -> list[McpPublication]:
+        return await self._repository.list_mcp_publications(actor.tenant_id, gateway_id=gateway_id)
 
     async def get_publication(self, actor: Actor, publication_id: str) -> McpPublication:
         publication = await self._repository.get_mcp_publication(actor.tenant_id, publication_id)
@@ -519,6 +526,8 @@ class McpPublishingService:
         if not capability.supported:
             raise ConflictError(capability.reasons[0], details={"reasons": capability.reasons})
         endpoint = await self._load_endpoint(actor, request.mcp_endpoint_id)
+        if gateway.azure_cloud != endpoint.azure_cloud:
+            raise ValidationError("A gateway and its MCP backend must be in the same Azure cloud.")
         self._validate_endpoint(endpoint)
         catalog = await load_environment_catalog(self._environments, actor.tenant_id)
         verdict = permits(catalog, gateway.environment, endpoint.environment)
@@ -538,6 +547,7 @@ class McpPublishingService:
             id=mcp_publication_id(actor.tenant_id, gateway.id, endpoint.id),
             tenant_id=actor.tenant_id,
             gateway_id=gateway.id,
+            azure_cloud=gateway.azure_cloud,
             mcp_endpoint_id=endpoint.id,
             display_name=request.display_name or endpoint.name,
             api_name=api_name,
@@ -707,9 +717,9 @@ class McpPublishingService:
             backend_auth=endpoint.auth_mode,
             backend_audience=endpoint.resource_audience,
         )
-        resource = ApimResourceId.parse(gateway.azure_resource_id)
+        resource = gateway.arm_resource()
         client = self._client_factory(resource)
-        steps = await self._steps(publication, endpoint, client, resource)
+        steps = await self._steps(publication, endpoint, client, resource, snapshot=snapshot)
         warnings = [*self._warnings(publication, gateway, endpoint, snapshot)]
         if verdict.level == VerdictLevel.WARNING and verdict.reason not in warnings:
             warnings.append(verdict.reason)
@@ -760,9 +770,7 @@ class McpPublishingService:
             raise NotFoundError("MCP publish plan was not found", details={"id": plan_id})
         return plan
 
-    async def apply(
-        self, actor: Actor, publication_id: str, plan_id: str | None
-    ) -> PublishRun:
+    async def apply(self, actor: Actor, publication_id: str, plan_id: str | None) -> PublishRun:
         owner = new_id("publishrun")
         await self._repository.acquire_publication_lock(actor.tenant_id, publication_id, owner)
         self._active.add(publication_id)
@@ -775,9 +783,7 @@ class McpPublishingService:
             self._active.discard(publication_id)
             if publication is not None:
                 await self._release_metadata_lock(publication, owner)
-            await self._repository.release_publication_lock(
-                actor.tenant_id, publication_id, owner
-            )
+            await self._repository.release_publication_lock(actor.tenant_id, publication_id, owner)
             raise
 
     async def _apply_locked(
@@ -834,7 +840,7 @@ class McpPublishingService:
         run = self._claim(actor, publication, plan, owner)
         await self._repository.save_publish_run(run)
         await self._mark_applying(publication, run.id)
-        resource = ApimResourceId.parse(gateway.azure_resource_id)
+        resource = gateway.arm_resource()
         self._spawn(self._run_apply(publication, gateway, endpoint, plan, policy, run, resource))
         return run
 
@@ -945,9 +951,7 @@ class McpPublishingService:
             self._active.discard(publication_id)
             if publication is not None:
                 await self._release_metadata_lock(publication, owner)
-            await self._repository.release_publication_lock(
-                actor.tenant_id, publication_id, owner
-            )
+            await self._repository.release_publication_lock(actor.tenant_id, publication_id, owner)
             raise
 
     async def list_runs(self, actor: Actor, publication_id: str) -> list[PublishRun]:
@@ -958,9 +962,7 @@ class McpPublishingService:
             if run.target == "mcp"
         ]
 
-    async def get_run(
-        self, actor: Actor, publication_id: str, run_id: str
-    ) -> PublishRun:
+    async def get_run(self, actor: Actor, publication_id: str, run_id: str) -> PublishRun:
         run = await self._repository.get_publish_run(actor.tenant_id, run_id)
         if run is None or run.publication_id != publication_id or run.target != "mcp":
             raise NotFoundError("MCP publish run was not found", details={"id": run_id})
@@ -1019,8 +1021,8 @@ class McpPublishingService:
         self._require_writable(gateway)
         # Pre-upgrade interrupted runs may hold only the publication lock.
         await self._acquire_metadata_lock(publication, run.id)
-        client = self._client_factory(ApimResourceId.parse(gateway.azure_resource_id))
-        writer = self._writer_factory(ApimResourceId.parse(gateway.azure_resource_id))
+        client = self._client_factory(gateway.arm_resource())
+        writer = self._writer_factory(gateway.arm_resource())
         resources = list(publication.resources)
         for step in run.steps:
             if not step.created_by_mosaic or step.action == PublishAction.DELETE:
@@ -1183,7 +1185,7 @@ class McpPublishingService:
             "transport_type": McpTransportType.STREAMABLE,
             "endpoints": [McpServerRoute(name="message", uri_template="/mcp")],
             "tool_count": endpoint.inventory.tools,
-            "subscription_required": False,
+            "subscription_required": publication.azure_cloud == "government",
             "selection": "manual",
             "imported_by": actor.object_id,
             "updated_at": utc_now(),
@@ -1324,8 +1326,7 @@ class McpPublishingService:
 
         def holds(item: McpPublication) -> bool:
             return any(
-                _is_shared_metadata_api(resource.kind, resource.name)
-                and resource.created_by_mosaic
+                _is_shared_metadata_api(resource.kind, resource.name) and resource.created_by_mosaic
                 for resource in item.resources
             )
 
@@ -1386,7 +1387,7 @@ class McpPublishingService:
     async def _reject_live_collisions(
         self, tenant_id: str, publication: McpPublication, gateway: Gateway
     ) -> None:
-        resource = ApimResourceId.parse(gateway.azure_resource_id)
+        resource = gateway.arm_resource()
         client = self._client_factory(resource)
         for item in _desired_resources(publication):
             if _is_shared_metadata_api(item.kind, item.name):
@@ -1437,7 +1438,27 @@ class McpPublishingService:
     async def _access_snapshot(
         self, publication: McpPublication, endpoint: McpEndpoint
     ) -> tuple[McpAccessSnapshot, list[str]]:
-        if not self._runtime_client_id:
+        gateway = await self._repository.get_gateway(publication.tenant_id, publication.gateway_id)
+        if gateway is None or gateway.azure_cloud != endpoint.azure_cloud:
+            raise ValidationError("A gateway and its MCP backend must be in the same Azure cloud.")
+        government = gateway.azure_cloud == "government"
+        host_cloud = known_azure_host_cloud(str(endpoint.endpoint))
+        if host_cloud is not None and host_cloud != gateway.azure_cloud:
+            raise ValidationError("The MCP backend hostname belongs to another Azure cloud.")
+        if government and endpoint.auth_mode != McpAuthMode.MANAGED_IDENTITY:
+            raise ValidationError("Government MCP backends require Government managed identity.")
+        if government and (endpoint.resource_audience or "").rstrip("/").removesuffix(
+            "/.default"
+        ).casefold() in {
+            "https://cognitiveservices.azure.com",
+            "https://ai.azure.com",
+            "https://management.azure.com",
+            "https://graph.microsoft.com",
+        }:
+            raise ValidationError(
+                "A Government MCP backend cannot use a commercial token audience."
+            )
+        if not self._runtime_client_id and not government:
             raise ConflictError("The MCP runtime client ID is not configured.")
         warnings = [
             "This is a publication-wide batch: every direct and security-group grant listed in "
@@ -1473,7 +1494,7 @@ class McpPublishingService:
                     "from runtime access."
                 )
                 continue
-            intent = cost_center_intent(entitlement, principal, book)
+            intent = cost_center_intent(entitlement, principal, book, key_capable=government)
             if intent is None:
                 warnings.append(
                     f"Grant {entitlement.id}'s cost center no longer exists; it is excluded from "
@@ -1494,17 +1515,30 @@ class McpPublishingService:
                 )
                 continue
             is_security_group = entitlement.subject.kind == EntitlementSubjectKind.SECURITY_GROUP
+            if government and is_security_group:
+                warnings.append(
+                    f"Grant {entitlement.id} needs a direct Government key grant; "
+                    "security-group bearer access is not supported."
+                )
+                continue
             saw_security_group_grant = saw_security_group_grant or is_security_group
             grants.append(
                 McpAccessGrant(
                     entitlement_id=entitlement.id,
                     subject=entitlement.subject,
                     object_id=(
-                        principal.object_id.casefold()
-                        if is_security_group
-                        else principal.object_id
+                        principal.object_id.casefold() if is_security_group else principal.object_id
                     ),
                     display_name=principal.label or principal.object_id,
+                    subscription_name=(
+                        model_access_subscription_name(
+                            publication.tenant_id, publication.id, entitlement.id
+                        )
+                        if government
+                        else None
+                    ),
+                    keys_allowed=intent.keys_allowed,
+                    revoked=entitlement.revocation is not None,
                     enabled=entitlement.enabled,
                     enforcement=effective_enforcement(entitlement, intent),
                     intent_digest=entitlement_intent_digest(entitlement, principal, intent),
@@ -1552,7 +1586,9 @@ class McpPublishingService:
         return (
             McpAccessSnapshot(
                 version=publication.applied_access.version + 1 if publication.applied_access else 1,
-                audience=self._runtime_client_id,
+                azure_cloud=gateway.azure_cloud,
+                settings=ModelAccessSettings(keys_enabled=government, entra_enabled=not government),
+                audience=self._runtime_client_id if not government else "",
                 grants=grants,
                 pools=sorted(pools.values(), key=lambda pool: pool.cost_center_id),
                 model_caller=model_caller,
@@ -1641,8 +1677,16 @@ class McpPublishingService:
     ) -> list[str]:
         warnings = [
             "API Management must log 0 bytes of response bodies for this API, or streaming breaks.",
-            f"VS Code and other interactive clients need consent for api://{snapshot.audience}/Mcp.Invoke.",
         ]
+        if snapshot.settings.entra_enabled:
+            warnings.append(
+                f"Interactive clients need consent for api://{snapshot.audience}/Mcp.Invoke."
+            )
+        else:
+            warnings.append(
+                "Government MCP clients must support a custom Ocp-Apim-Subscription-Key header "
+                "and have network access to the gateway. No commercial OAuth sign-in is available."
+            )
         if endpoint.status != McpEndpointStatus.CONNECTED:
             warnings.append("This MCP endpoint is not currently connected.")
         if endpoint.auth_mode == McpAuthMode.MANAGED_IDENTITY:
@@ -1661,7 +1705,11 @@ class McpPublishingService:
         endpoint: McpEndpoint,
         client: ApimClient,
         resource: ApimResourceId,
+        *,
+        snapshot: McpAccessSnapshot | None = None,
     ) -> list[PublishPlanStep]:
+        if snapshot is not None and snapshot.settings.keys_enabled:
+            await self._validate_key_ownership(publication, snapshot, client)
         base: dict[tuple[PublishedResourceKind, str], PublishPlanStep] = {}
         for item in _desired_resources(publication):
             if _is_shared_metadata_api(item.kind, item.name):
@@ -1758,6 +1806,39 @@ class McpPublishingService:
                 }
             )
         )
+        if snapshot is not None and snapshot.settings.keys_enabled:
+            grants = {grant.subscription_name: grant for grant in snapshot.grants}
+            for recorded in publication.resources:
+                if (
+                    recorded.kind != PublishedResourceKind.SUBSCRIPTION
+                    or not recorded.created_by_mosaic
+                ):
+                    continue
+                live = await client.get_subscription(recorded.name)
+                if live is None:
+                    continue
+                gateway = await self._repository.get_gateway(
+                    publication.tenant_id, publication.gateway_id
+                )
+                if gateway is None:
+                    raise ConflictError("The MCP publication's gateway disappeared.")
+                require_key_scope(gateway, publication.api_name, live)
+                grant = grants.get(recorded.name)
+                revoked = grant is not None and grant.revoked
+                steps.insert(
+                    -1,
+                    PublishPlanStep(
+                        kind=PublishedResourceKind.SUBSCRIPTION,
+                        name=recorded.name,
+                        action=PublishAction.DELETE if revoked else PublishAction.UPDATE,
+                        reason="Delete revoked key."
+                        if revoked
+                        else "Reconcile the applied grant's key.",
+                        resource_id=recorded.resource_id,
+                        existed=True,
+                        stage="activate",
+                    ),
+                )
         return steps
 
     @staticmethod
@@ -1844,6 +1925,8 @@ class McpPublishingService:
                 if api == publication.api_name:
                     return await client.get_mcp_api_policy(api) is not None
                 return await client.get_api_policy(api) is not None
+            case PublishedResourceKind.SUBSCRIPTION:
+                return await client.get_subscription(item.name) is not None
             case _:
                 return False
 
@@ -1987,9 +2070,11 @@ class McpPublishingService:
         failure: str | None = None
         try:
             try:
-                await self._reject_live_collisions(
-                    publication.tenant_id, publication, gateway
-                )
+                await self._reject_live_collisions(publication.tenant_id, publication, gateway)
+                if plan.mcp_access_snapshot is not None:
+                    await self._validate_key_ownership(
+                        publication, plan.mcp_access_snapshot, client
+                    )
                 for step in plan.steps:
                     await self._assert_lock(publication, run)
                     result = PublishStepResult(
@@ -2037,7 +2122,14 @@ class McpPublishingService:
                         await self._progress(publication, run, results, owned)
                         write_started = True
                         if live is None or self._shared_metadata_api_drifted(live):
-                            await self._write_step(writer, publication, endpoint, policy, step)
+                            await self._write_step(
+                                writer,
+                                publication,
+                                endpoint,
+                                policy,
+                                step,
+                                snapshot=plan.mcp_access_snapshot,
+                            )
                         result.status = PublishStepStatus.SUCCEEDED
                         owned = _merge_resources(
                             owned,
@@ -2073,6 +2165,8 @@ class McpPublishingService:
                                 pass
                         break
                 if failure is None:
+                    if gateway.azure_cloud == "government":
+                        await self._verify_key_runtime(publication, client, policy)
                     await self._finish_success(
                         publication, run, results, started, access_snapshot=plan.mcp_access_snapshot
                     )
@@ -2095,6 +2189,36 @@ class McpPublishingService:
         finally:
             self._active.discard(publication.id)
 
+    async def _validate_key_ownership(
+        self, publication: McpPublication, snapshot: McpAccessSnapshot, client: ApimClient
+    ) -> None:
+        if not snapshot.settings.keys_enabled:
+            return
+        gateway = await self._repository.get_gateway(publication.tenant_id, publication.gateway_id)
+        if gateway is None:
+            raise ConflictError("The MCP publication's gateway disappeared.")
+        for grant in snapshot.grants:
+            if grant.subscription_name is None:
+                continue
+            live = await client.get_subscription(grant.subscription_name)
+            if live is None:
+                continue
+            if not owns_key(publication, gateway, grant.subscription_name):
+                raise ConflictError("An unowned subscription already uses this MCP grant's name.")
+            require_key_scope(gateway, publication.api_name, live)
+
+    async def _verify_key_runtime(
+        self, publication: McpPublication, client: ApimClient, policy: McpPolicyDocuments
+    ) -> None:
+        await verify_key_runtime(
+            client,
+            publication,
+            repository=self._repository,
+            fragment_xml=policy.fragment_xml,
+            api_policy_xml=policy.api_policy_xml,
+            metadata_policy_xml=policy.metadata_policy_xml,
+        )
+
     async def _write_step(
         self,
         writer: ApimWriter,
@@ -2102,6 +2226,8 @@ class McpPublishingService:
         endpoint: McpEndpoint,
         policy: McpPolicyDocuments,
         step: PublishPlanStep,
+        *,
+        snapshot: McpAccessSnapshot | None = None,
     ) -> None:
         if step.kind == PublishedResourceKind.API_POLICY and step.stage == "prepare":
             await writer.put_mcp_api_policy(publication.api_name, DENY_ALL_POLICY)
@@ -2123,9 +2249,45 @@ class McpPublishingService:
                 display_name=publication.display_name,
                 path=publication.api_path,
                 backend_name=publication.backend_name,
-                subscription_required=step.stage != "activate",
+                subscription_required=(
+                    step.stage != "activate" or publication.azure_cloud == "government"
+                ),
                 description=f"Published by MOSAIC for {publication.display_name}.",
+                **(
+                    {"use_default_subscription_key_names": True}
+                    if publication.azure_cloud == "government"
+                    else {}
+                ),
             )
+        elif step.kind == PublishedResourceKind.SUBSCRIPTION:
+            gateway = await self._repository.get_gateway(
+                publication.tenant_id, publication.gateway_id
+            )
+            if gateway is None or not owns_key(publication, gateway, step.name):
+                raise ConflictError("MOSAIC does not own this exact MCP subscription resource.")
+            if step.action == PublishAction.DELETE:
+                await writer.delete_subscription(step.name)
+            else:
+                grant = (
+                    next(
+                        (
+                            grant
+                            for grant in snapshot.grants
+                            if grant.subscription_name == step.name
+                        ),
+                        None,
+                    )
+                    if snapshot is not None
+                    else None
+                )
+                await writer.put_api_subscription(
+                    step.name,
+                    api_name=publication.api_name,
+                    display_name=grant.display_name if grant else step.name,
+                    state="active"
+                    if grant and grant.enabled and grant.keys_allowed
+                    else "suspended",
+                )
         elif step.kind == PublishedResourceKind.API_POLICY and step.name == publication.api_name:
             await writer.put_mcp_api_policy(publication.api_name, policy.api_policy_xml)
         elif step.kind == PublishedResourceKind.API and step.name == publication.metadata_api_name:
@@ -2137,8 +2299,7 @@ class McpPublishingService:
                 description=f"Protected resource metadata for {publication.display_name}.",
             )
         elif (
-            step.kind == PublishedResourceKind.API_OPERATION
-            and step.name == MCP_METADATA_OPERATION
+            step.kind == PublishedResourceKind.API_OPERATION and step.name == MCP_METADATA_OPERATION
         ):
             await writer.put_api_operation(
                 publication.metadata_api_name,
@@ -2281,7 +2442,7 @@ class McpPublishingService:
         self, publication: McpPublication, gateway: Gateway, plan: PublishPlan, run: PublishRun
     ) -> None:
         started = utc_now()
-        resource = ApimResourceId.parse(gateway.azure_resource_id)
+        resource = gateway.arm_resource()
         client = self._client_factory(resource)
         writer = self._writer_factory(resource)
         results: list[PublishStepResult] = []
@@ -2310,9 +2471,7 @@ class McpPublishingService:
                 )
                 try:
                     await self._progress(publication, run, [*results, result], remaining)
-                    removed = await self._remove(
-                        client, writer, publication, step.kind, step.name
-                    )
+                    removed = await self._remove(client, writer, publication, step.kind, step.name)
                 except Exception as error:
                     result.status = PublishStepStatus.FAILED
                     result.error = str(error)
@@ -2429,7 +2588,17 @@ class McpPublishingService:
         await self._assert_lock(publication, run)
         applied_at = utc_now()
         resources = _merge_resources(
-            publication.resources,
+            [
+                item
+                for item in publication.resources
+                if not any(
+                    result.kind == item.kind
+                    and result.name == item.name
+                    and result.action == PublishAction.DELETE
+                    and result.status == PublishStepStatus.SUCCEEDED
+                    for result in results
+                )
+            ],
             [
                 PublishedResource(
                     kind=result.kind,
@@ -2440,6 +2609,7 @@ class McpPublishingService:
                 )
                 for result in results
                 if result.status == PublishStepStatus.SUCCEEDED
+                and result.action != PublishAction.DELETE
                 # The gateway's blocked list is the gateway's, not this publication's.
                 and not is_blocked_list(result.kind, result.name)
             ],
@@ -2455,6 +2625,22 @@ class McpPublishingService:
             access_state="applied",
         )
         await self._project_bindings(publication, access_snapshot, run)
+        gateway = await self._repository.get_gateway(publication.tenant_id, publication.gateway_id)
+        current = await self._repository.get_mcp_publication(publication.tenant_id, publication.id)
+        if current is not None and gateway is not None and gateway.azure_cloud == "government":
+            resource = gateway.arm_resource()
+            await reconcile_initial_keys(
+                current,
+                gateway,
+                repository=self._repository,
+                directory=self._directory,
+                entitlements=self._entitlements,
+                book=await load_book(self._cost_centers, publication.tenant_id),
+                manager=ApimInitialKeyManager(
+                    self._client_factory(resource), self._writer_factory(resource)
+                ),
+                actor_object_id=run.actor_object_id or "system:publishing",
+            )
         await self._finish_run(
             run, PublishRunStatus.SUCCEEDED, started, results=results, errors=[], orphaned=[]
         )
@@ -2514,7 +2700,7 @@ class McpPublishingService:
             if grant and grant.enabled and snapshot:
                 binding = EntitlementBinding(
                     gateway_id=publication.gateway_id,
-                    apim_subscription_name=None,
+                    apim_subscription_name=grant.subscription_name,
                     counter_key_expression=mcp_counter_key_expression(publication, grant),
                     source=BindingSource.ORCHESTRATED,
                     bound_at=utc_now(),
@@ -2580,6 +2766,11 @@ class McpPublishingService:
             updates["unpublished_at"] = None
         if unpublished:
             updates["unpublished_at"] = utc_now()
+            updates["key_policy_hashes"] = {}
+            updates["key_lifecycle"] = {
+                name: "deleted" if state == "deleted" else "pending"
+                for name, state in current.key_lifecycle.items()
+            }
         if access_snapshot is not None:
             updates["applied_access"] = access_snapshot
         if access_state is not None:
@@ -2619,6 +2810,18 @@ class McpPublishingService:
                 await writer.delete_policy_fragment(name)
             case PublishedResourceKind.BACKEND:
                 await writer.delete_backend(name)
+            case PublishedResourceKind.SUBSCRIPTION:
+                live = await client.get_subscription(name)
+                if live is not None:
+                    gateway = await self._repository.get_gateway(
+                        publication.tenant_id, publication.gateway_id
+                    )
+                    if gateway is None:
+                        raise ConflictError("The MCP publication's gateway disappeared.")
+                    if not owns_key(publication, gateway, name):
+                        raise ConflictError("MOSAIC does not own this exact MCP subscription.")
+                    require_key_scope(gateway, publication.api_name, live)
+                    await writer.delete_subscription(name)
             case _:
                 return True
         return True
