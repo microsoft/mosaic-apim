@@ -9,6 +9,8 @@ Administrator and portal preferences are separate even when the same person hold
 
 All paths below are relative to `/api/v1`. Personal paths infer the tenant, user object ID and
 persona from authenticated dependencies; these values are not accepted in update payloads.
+The portal Teams test route also keeps the portal persona for administrators using the portal;
+only the separate administrator-persona route generates console links.
 
 | Method | Path | Access |
 | --- | --- | --- |
@@ -74,10 +76,18 @@ It implements the worker's
 `authorize_recipient(event, object_id, persona)` callback must resolve **current** subject
 visibility from durable source records. Portal delivery fails closed when this callback is
 absent. Administrator recipients additionally require fresh actual-role verification.
-The optional `expand_recipients(event)` callback resolves group grant audiences from durable
-former-holder provenance and fresh membership. It runs at fan-out and again before sending,
-never replaces recipient authorization, rejects incomplete discovery, and is bounded to 10,000
-users. It also runs for provenance-bearing `access.ready` and `access.applyFailed` events;
+The host uses `recipient_visibility=NotificationVisibility(...)`, with the grant resolver's
+`expand` and recipient-specific `contains` callbacks. Fan-out expands group grant audiences once
+per pass, bounded to 10,000 users, and shares an immutable verified membership set across that
+pass's recipient/channel checks. No membership snapshot is cached across passes.
+
+Immediate and digest delivery claims revalidate only their own recipient/channel and current
+membership, without enumerating the full group or unrelated administrators again. MOSAIC group
+claims check the current human principal and exact membership; security-group claims verify the
+person's current Graph membership. Incomplete evidence remains unavailable, not an empty roster
+or an opt-out. The legacy `authorize_recipient` / `expand_recipients` callback pair remains
+supported, but does not provide this pass-local sharing and focused membership verification.
+These checks also apply to provenance-bearing `access.ready` and `access.applyFailed` events;
 group object IDs are never personal recipient IDs. Grant group membership may be transitive;
 this does not change app-role admin discovery.
 

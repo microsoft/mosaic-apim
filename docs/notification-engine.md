@@ -77,6 +77,10 @@ gateway-sync attempt. The deletion-intent journal also recovers a crash between 
 desired budget and deleting its monthly state. It cannot announce an unblock while the desired
 budget still exists.
 
+State/outbox transactions return the exact state and ETag committed by the batch, without a
+post-commit read that could pick up a concurrent writer. Removing the old monthly state remains
+conditional on that version, so a recreated budget's newly judged state survives.
+
 Pass the same `settings.budgets_enabled` switch used by `BudgetService` to the bridge.
 When false, it does not publish new budget source events, and existing owned legacy jobs defer
 without consuming provider attempts or becoming permanent opt-outs. Their ownership and receipts
@@ -96,6 +100,15 @@ as `delivery_authorizer`, and wrap the bridge with
 is digest wrapper → budget bridge → ordinary ACS adapter. Register `digests.reconcile` as another
 source. Teams dispatchers can be wrapped independently; no provider is enabled just by adding it
 to the dispatcher map.
+
+## Source transition replay
+
+Capability failure/recovery events commit atomically with their episode cursor. Environment
+finding/recovery events each commit with their cursor update, removing recovered findings before
+adding replacements to keep a full scan bounded. A lost acknowledgement or interrupted scan
+therefore resumes from committed facts instead of rebuilding the same event ID with newer
+timestamps. Neither path embeds an entire generation of events in a single Cosmos document.
+Incomplete environment scans still cannot announce recovery.
 
 ## Routers and lifecycle
 
@@ -120,6 +133,10 @@ An item's path is the collection path followed by `/{item_id}`. Identity and per
 existing authentication, never query parameters. Both GET and PATCH sanitize no-longer-authorized
 resource references. The admin delivery router exposes delivery/attempt history, audited retries,
 outbox dead letters, and channel health.
+
+Conditional preference, channel-setting and route writes retain their `If-Match` headers across
+origins; the API's CORS policy explicitly allows that header. Historical gateway run reads verify
+both the run ID and its gateway before exposing evidence.
 
 After repository readiness and source composition, host
 `notification_service.run(tenant_id, interval_seconds=settings.notification_interval_seconds)`

@@ -7,11 +7,13 @@ import { MemoryRouter, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { notificationTarget } from '../admin-governance'
 import type { NotificationSubject } from '../admin-types'
+import { GatewayNotificationRun } from './GatewayNotificationRun'
 import { EndpointNotificationRun, PublishNotificationRun } from './NotificationOperationRun'
 
 const api = vi.hoisted(() => ({
   getPublishRun: vi.fn(), getMcpPublishRun: vi.fn(), getModelPoolRun: vi.fn(),
   getModelEndpointSyncRun: vi.fn(), getMcpEndpointSyncRun: vi.fn(),
+  getSyncRun: vi.fn(),
 }))
 vi.mock('../api', () => ({ useMosaicApi: () => api }))
 
@@ -33,6 +35,10 @@ const endpointRun = {
   id: 'run/one', endpointId: 'endpoint/one', status: 'failed',
   startedAt: '2026-01-01T10:00:00Z', completedAt: null, errors: ['Historical endpoint authentication failed'],
 }
+const gatewayRun = {
+  id: 'run/one', gatewayId: 'gateway/one', status: 'failed',
+  startedAt: '2026-01-01T10:00:00Z', completedAt: null, errors: ['Historical gateway sync failed'],
+}
 
 describe('exact notification operation links', () => {
   it.each<[NotificationSubject, string]>([
@@ -42,6 +48,7 @@ describe('exact notification operation links', () => {
     [{ endpointId: 'endpoint/one', endpointKind: 'model', runId: 'run/one', gatewayId: 'gateway' }, '/models?tab=endpoints&selected=endpoint%2Fone&syncRun=run%2Fone'],
     [{ endpointId: 'endpoint/one', endpointKind: 'mcp', runId: 'run/one' }, '/mcps?tab=registered&selected=endpoint%2Fone&syncRun=run%2Fone'],
     [{ gatewayId: 'gateway/one', runId: 'run/one', integration: 'gatewayInventory' }, '/gateways/gateway%2Fone?syncRun=run%2Fone'],
+    [{ resource: { kind: 'mcpServer', id: 'server/one' } }, '/mcps?tab=imported&selected=server%2Fone'],
   ])('resolves source metadata without dropping exact target or run: %j', (subject, expected) => {
     expect(notificationTarget(subject)).toBe(expected)
   })
@@ -55,6 +62,7 @@ describe('historical notification operation evidence', () => {
     api.getModelPoolRun.mockResolvedValue(publishRun)
     api.getModelEndpointSyncRun.mockResolvedValue(endpointRun)
     api.getMcpEndpointSyncRun.mockResolvedValue(endpointRun)
+    api.getSyncRun.mockResolvedValue(gatewayRun)
   })
 
   it.each(['model', 'mcp', 'pool'] as const)('loads only the exact %s publication run without starting an apply', async target => {
@@ -95,6 +103,23 @@ describe('historical notification operation evidence', () => {
     expect(screen.queryByText('Historical policy write failed')).not.toBeInTheDocument()
   })
 
+  it('loads only the exact gateway sync run', async () => {
+    mount(<GatewayNotificationRun gatewayId="gateway/one" />, '/?syncRun=run%2Fone')
+    expect(await screen.findByText('Historical gateway sync failed')).toBeInTheDocument()
+    expect(api.getSyncRun).toHaveBeenCalledExactlyOnceWith('gateway/one', 'run/one')
+  })
+
+  it.each([
+    { gatewayId: 'different-gateway' },
+    { id: 'different-run' },
+  ])('rejects mismatched gateway evidence: %j', async mismatch => {
+    api.getSyncRun.mockResolvedValue({ ...gatewayRun, ...mismatch })
+    mount(<GatewayNotificationRun gatewayId="gateway/one" />, '/?syncRun=run%2Fone')
+    expect(await screen.findByText(/returned run does not match the notified gateway/)).toBeInTheDocument()
+    expect(screen.queryByText('Historical gateway sync failed')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry run details' })).toBeInTheDocument()
+  })
+
   it('removes only the notified run when closing its evidence', async () => {
     const user = userEvent.setup()
     mount(<PublishNotificationRun publicationId="publication/one" target="model" />, '/models?tab=published&selected=publication%2Fone&runId=run%2Fone&q=retained')
@@ -109,7 +134,7 @@ describe('historical notification operation evidence', () => {
   })
 
   it('does not fetch historical evidence on an ordinary detail page', () => {
-    mount(<><PublishNotificationRun publicationId="publication/one" target="model" /><EndpointNotificationRun endpointId="endpoint/one" kind="model" /></>, '/')
+    mount(<><PublishNotificationRun publicationId="publication/one" target="model" /><EndpointNotificationRun endpointId="endpoint/one" kind="model" /><GatewayNotificationRun gatewayId="gateway/one" /></>, '/')
     Object.values(api).forEach(mock => expect(mock).not.toHaveBeenCalled())
   })
 })

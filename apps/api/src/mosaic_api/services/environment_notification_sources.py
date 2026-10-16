@@ -1,4 +1,4 @@
-"""Project persisted environment findings without treating incomplete scans as recovery."""
+"""Commit each environment transition with its cursor, without snapshot-sized journals."""
 
 import json
 from collections.abc import Awaitable, Callable
@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from mosaic_api.notifications import (
     NotificationAudience,
+    NotificationEvent,
     NotificationEventType,
     NotificationSubject,
     NotificationTemplateData,
@@ -67,10 +68,11 @@ class EnvironmentNotificationSource:
         if not changed and not removed:
             return
         generation = cursor.generation + 1
+        events: list[NotificationEvent] = []
         for finding in result.items:
             if finding.id not in changed:
                 continue
-            await self._repository.append_event(
+            events.append(
                 build_notification_event(
                     tenant_id=self._tenant,
                     event_type=NotificationEventType.READINESS_FINDING,
@@ -98,7 +100,7 @@ class EnvironmentNotificationSource:
                 )
             )
         for identifier in sorted(removed):
-            await self._repository.append_event(
+            events.append(
                 build_notification_event(
                     tenant_id=self._tenant,
                     event_type=NotificationEventType.OPERATION_RECOVERED,
@@ -116,23 +118,39 @@ class EnvironmentNotificationSource:
                     ),
                 )
             )
-        next_cursor = _FindingCursor(
-            generation=generation,
-            findings={**cursor.findings, **current} if result.limitations else current,
-        )
-
-        def advance(record: NotificationWorkerState) -> NotificationWorkerState:
-            if record.checkpoint != (state.checkpoint if state else None):
+        # Free removed entries first so replacing a full scan never exceeds 2000 cursor entries.
+        events.sort(key=lambda event: event.event_type != NotificationEventType.OPERATION_RECOVERED)
+        for index, event in enumerate(events):
+            findings = dict(cursor.findings)
+            if event.event_type == NotificationEventType.OPERATION_RECOVERED:
+                findings.pop(event.source_id)
+            else:
+                findings[event.source_id] = current[event.source_id]
+            cursor = _FindingCursor(generation=generation, findings=findings)
+            checkpoint = cursor.model_dump_json()
+            record = state or NotificationWorkerState(
+                id=notification_record_id(
+                    "notificationWorker", self._tenant, "environmentFindings"
+                ),
+                tenant_id=self._tenant,
+                worker="environmentFindings",
+            )
+            await self._repository.commit_source_event(
+                event,
+                checkpoint=record.model_copy(
+                    update={
+                        "checkpoint": checkpoint,
+                        "heartbeat_at": result.generated_at,
+                        "last_succeeded_at": result.generated_at
+                        if index == len(events) - 1
+                        else record.last_succeeded_at,
+                        "last_error": None,
+                        "updated_at": result.generated_at,
+                    }
+                ),
+            )
+            state = await self._repository.get_worker_state(self._tenant, "environmentFindings")
+            if state is None or state.checkpoint != checkpoint:
                 raise ValueError(
                     "Environment notification checkpoint changed during reconciliation"
                 )
-            return record.model_copy(
-                update={
-                    "checkpoint": next_cursor.model_dump_json(),
-                    "heartbeat_at": result.generated_at,
-                    "last_succeeded_at": result.generated_at,
-                    "last_error": None,
-                }
-            )
-
-        await self._repository.update_worker_state(self._tenant, "environmentFindings", advance)

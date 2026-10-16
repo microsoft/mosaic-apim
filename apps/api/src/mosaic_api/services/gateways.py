@@ -576,9 +576,11 @@ class GatewayService:
             )
         )
 
-    async def get_sync_run(self, actor: Actor, run_id: str) -> GatewaySyncRun:
+    async def get_sync_run(
+        self, actor: Actor, run_id: str, *, gateway_id: str | None = None
+    ) -> GatewaySyncRun:
         run = await self._repository.get_sync_run(actor.tenant_id, run_id)
-        if not run:
+        if not run or (gateway_id is not None and run.gateway_id != gateway_id):
             raise NotFoundError("Sync run was not found", details={"id": run_id})
         return run
 

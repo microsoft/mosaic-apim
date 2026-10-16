@@ -9,7 +9,16 @@ export function GatewayNotificationRun({ gatewayId }: { gatewayId: string }) {
   const api = useMosaicApi()
   const [params, setParams] = useSearchParams()
   const runId = params.get('syncRun')
-  const run = useQuery({ queryKey: ['gateway-notification-run', gatewayId, runId], queryFn: () => api.getSyncRun(gatewayId, runId!), enabled: Boolean(runId), retry: false })
+  const run = useQuery({
+    queryKey: ['gateway-notification-run', gatewayId, runId],
+    queryFn: async () => {
+      const exact = await api.getSyncRun(gatewayId, runId!)
+      if (exact.id !== runId || exact.gatewayId !== gatewayId) throw new Error('The returned run does not match the notified gateway and run. No other run is substituted.')
+      return exact
+    },
+    enabled: Boolean(runId),
+    retry: false,
+  })
   if (!runId) return null
   return <section className={styles.section} aria-label="Notified gateway sync run">
     <div className={styles.toolbar}><Title3 as="h2">Notified gateway sync run</Title3><Button onClick={() => setParams(current => { const next = new URLSearchParams(current); next.delete('syncRun'); return next })}>Close run details</Button></div>

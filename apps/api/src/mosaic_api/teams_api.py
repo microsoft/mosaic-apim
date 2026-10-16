@@ -8,7 +8,6 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from mosaic_api.api import Admin, AnyMosaicRole
 from mosaic_api.integrations.teams import TeamsAuthenticationError
 from mosaic_api.notifications import (
-    NotificationPersona,
     PersonalTeamsSettings,
     PersonalTeamsSettingsInput,
     TeamsDestination,
@@ -83,9 +82,7 @@ async def personal_status(request: Request, auth: AnyMosaicRole) -> PersonalTeam
 @teams_router.post("/me/notifications/teams/test", response_model=TeamsTestResult)
 async def test_personal(request: Request, auth: AnyMosaicRole) -> TeamsTestResult:
     # Caller identity, not a body/query recipient, chooses the only conversation tested.
-    settings = request.app.state.settings
-    persona: NotificationPersona = "admin" if settings.required_role in auth.roles else "portal"
-    return await _service(request).test_personal(auth.tenant_id, auth.object_id, persona)
+    return await _service(request).test_personal(auth.tenant_id, auth.object_id, "portal")
 
 
 @teams_router.get("/notifications/me/teams", response_model=PersonalTeamsStatus)

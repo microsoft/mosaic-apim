@@ -759,13 +759,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             entitlement_repository,
             repository,
             grant_recipients=grant_recipients.expand,
+            grant_member=grant_recipients.contains,
             usage_authorizer=usage_producer.authorize_delivery,
         )
         preferences = NotificationPreferenceService(
             notification_repository,
             directory=notification_directory,
-            authorize_recipient=visibility.authorize,
-            expand_recipients=grant_recipients.expand,
+            recipient_visibility=visibility,
         )
         digests = NotificationDigestCoordinator(
             notification_repository,
@@ -1183,7 +1183,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             allow_origins=app_settings.cors_origins,
             allow_credentials=False,
             allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-            allow_headers=["Authorization", "Content-Type", "X-Correlation-ID"],
+            allow_headers=["Authorization", "Content-Type", "If-Match", "X-Correlation-ID"],
             # The console saves each CSV export under the name the API gives it.
             expose_headers=["Content-Disposition", "Retry-After"],
         )

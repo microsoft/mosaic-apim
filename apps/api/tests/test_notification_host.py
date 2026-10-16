@@ -15,6 +15,35 @@ from mosaic_api.services.notifications import NotificationPartialAudienceError, 
 @pytest.mark.parametrize(
     "path",
     [
+        "/me/notifications/preferences",
+        "/notifications/me/preferences",
+        "/settings/notifications",
+        "/notification-routes/route",
+    ],
+)
+def test_revision_bearing_cross_origin_writes_allow_if_match(
+    settings: Settings,
+    path: str,
+) -> None:
+    origin = settings.cors_origins[0]
+    with TestClient(create_app(settings)) as client:
+        response = client.options(
+            "/api/v1" + path,
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "PUT",
+                "Access-Control-Request-Headers": "authorization,content-type,if-match",
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.headers["Access-Control-Allow-Origin"] == origin
+        allowed = response.headers["Access-Control-Allow-Headers"].casefold().split(", ")
+        assert {"authorization", "content-type", "if-match"} <= set(allowed)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
         "/notifications/health",
         "/notifications/me/inbox",
         "/notifications/me/preferences",

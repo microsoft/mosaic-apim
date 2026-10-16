@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import uuid4
 from zipfile import ZipFile
 
@@ -18,7 +19,7 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI
-from mosaic_api.auth import LocalAuthenticator
+from mosaic_api.auth import AuthContext, LocalAuthenticator
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
 from mosaic_api.domain import KeyVaultSecretId
 from mosaic_api.errors import (
@@ -962,6 +963,44 @@ async def test_api_authorization_self_scope_and_callback_never_local_auth(harnes
             },
         )
         assert response.status_code == 422 and "DO-NOT-ECHO" not in response.text
+
+
+@pytest.mark.parametrize("roles", [frozenset({"Admin"}), frozenset({"Admin", "User"})])
+async def test_teams_test_routes_keep_portal_and_admin_personas_separate(
+    harness: Harness,
+    monkeypatch: pytest.MonkeyPatch,
+    roles: frozenset[str],
+) -> None:
+    await harness.install()
+    app = FastAPI()
+    app.state.teams_service = harness.service
+    app.state.settings = Settings(
+        tenant_id=TENANT,
+        auth_mode=AuthMode.LOCAL,
+        environment=Environment.TEST,
+        repository_backend=RepositoryBackend.MEMORY,
+    )
+    authenticator = LocalAuthenticator(TENANT)
+    monkeypatch.setattr(authenticator, "authenticate", AsyncMock(return_value=AuthContext(
+        tenant_id=TENANT, object_id=USER, roles=roles,
+    )))
+    app.state.authenticator = authenticator
+    app.include_router(teams_router)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://test.invalid"
+    ) as client:
+        for path, origin, preferences in (
+            ("/me/notifications/teams/test", "portal", "/notification-preferences"),
+            ("/notifications/me/teams/test", "console", "/profile"),
+        ):
+            response = await client.post("/api/v1" + path)
+            assert response.status_code == 200
+            assert response.json()["outcome"] == "providerAccepted"
+            card = json.loads(harness.provider.requests[-1].content)["attachments"][0]["content"]
+            urls = [action["url"] for action in card["actions"]]
+            assert urls
+            assert all(url.startswith(f"https://{origin}.example.invalid/") for url in urls)
+            assert f"https://{origin}.example.invalid{preferences}" in urls
 
 
 def test_personal_package_is_valid_json_personal_only_and_has_original_icons() -> None:

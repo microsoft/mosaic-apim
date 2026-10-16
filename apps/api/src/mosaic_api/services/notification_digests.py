@@ -31,6 +31,7 @@ from mosaic_api.services.notification_events import notification_record_id
 from mosaic_api.services.notification_preferences import (
     NotificationCandidate,
     NotificationPreferenceService,
+    NotificationRecipientScope,
     _quiet_until,
 )
 from mosaic_api.services.notifications import (
@@ -259,7 +260,12 @@ class NotificationDigestCoordinator:
         event: NotificationEvent,
         definition: DigestDefinition,
     ) -> list[NotificationCandidate]:
-        resolution = await self.preferences.candidate_resolution(event)
+        resolution = await self.preferences.candidate_resolution(
+            event,
+            recipient=NotificationRecipientScope(
+                definition.recipient_reference, definition.persona, definition.channel
+            ),
+        )
         target_candidates = [
             candidate
             for candidate in resolution.candidates

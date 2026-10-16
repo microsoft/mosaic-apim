@@ -483,3 +483,115 @@ async def test_cosmos_state_and_outbox_rollback_together_on_batch_conflict() -> 
     assert await budgets.get_budget_state("tenant", m.budget.id) is None
     assert await budgets.list_notification_outboxes("tenant") == []
     assert cosmos.containers["desired"].items
+
+
+@pytest.mark.parametrize("existing", [False, True])
+async def test_cosmos_outbox_update_returns_its_own_committed_state_and_etag(
+    existing: bool,
+) -> None:
+    cosmos = SourceCosmos()
+    budgets = CosmosBudgetRepository(
+        cast(CosmosClient, cosmos), "db", "desired", "audit", "usage"
+    )
+    identifier = budget_id("tenant", "center")
+    if existing:
+        await budgets.update_budget_state("tenant", identifier, lambda state: state)
+    container = cosmos.containers["usage"]
+    original = container.execute_item_batch
+    concurrent: list[BudgetState] = []
+
+    async def write_between_commit_and_return(**kwargs: Any) -> Any:
+        responses = await original(**kwargs)
+        concurrent.append(await budgets.update_budget_state(
+            "tenant", identifier,
+            lambda state: state.model_copy(update={"blocked": True, "crossed": [80, 100]}),
+        ))
+        return responses
+
+    container.execute_item_batch = write_between_commit_and_return
+    saved = await budgets.update_budget_state_with_outbox(
+        "tenant", identifier,
+        lambda state: state.model_copy(update={"blocked": False, "crossed": [80]}),
+        lambda state: [],
+    )
+
+    assert not saved.blocked and saved.crossed == [80]
+    assert saved.etag and saved.etag != concurrent[0].etag
+    assert not await budgets.delete_budget_state("tenant", identifier, etag=saved.etag)
+    remaining = await budgets.get_budget_state("tenant", identifier)
+    assert remaining == concurrent[0]
+
+
+@pytest.mark.parametrize("responses", [
+    [], [{}], [{"eTag": None}], [{"eTag": ""}], [{"eTag": 1}],
+])
+async def test_cosmos_outbox_update_rejects_missing_or_invalid_committed_etag(
+    responses: list[dict[str, Any]],
+) -> None:
+    cosmos = SourceCosmos()
+    budgets = CosmosBudgetRepository(
+        cast(CosmosClient, cosmos), "db", "desired", "audit", "usage"
+    )
+    identifier = budget_id("tenant", "center")
+    container = cosmos.containers["usage"]
+    original = container.execute_item_batch
+
+    async def omit_saved_version(**kwargs: Any) -> Any:
+        await original(**kwargs)
+        return responses
+
+    container.execute_item_batch = omit_saved_version
+    with pytest.raises(ConflictError, match="saved state version"):
+        await budgets.update_budget_state_with_outbox(
+            "tenant", identifier,
+            lambda state: state.model_copy(update={"crossed": [80]}),
+            lambda state: [],
+        )
+
+    assert len(container.batches) == 1
+    saved = await budgets.get_budget_state("tenant", identifier)
+    assert saved is not None and saved.crossed == [80] and saved.etag
+
+
+async def test_budget_removal_preserves_recreated_budget_judged_before_lift_returns(
+    store: tuple[NotificationPersistence, Clock],
+) -> None:
+    notifications, clock = store
+    cosmos = SourceCosmos()
+    budgets = CosmosBudgetRepository(
+        cast(CosmosClient, cosmos), "db", "desired", "audit", "usage"
+    )
+    m = Migration(budgets, notifications, clock)
+    await m.seed()
+    m.spend = 110
+    await m.service.run_check()
+    blocked = await budgets.get_budget_state("tenant", m.budget.id)
+    assert blocked is not None and blocked.blocked
+    book = await load_book(m.centers, "tenant")
+    figures = (await m.figures()).cost_centers["center"]
+    container = cosmos.containers["usage"]
+    original = container.execute_item_batch
+    concurrent: list[BudgetState] = []
+
+    async def recreate_between_commit_and_return(**kwargs: Any) -> Any:
+        responses = await original(**kwargs)
+        if await budgets.get_budget("tenant", m.budget.id) is not None:
+            return responses
+        container.execute_item_batch = original
+        await budgets.save_budget(
+            m.budget.model_copy(update={"etag": None, "amount": 50}), audit("recreated")
+        )
+        recreated = await budgets.get_budget("tenant", m.budget.id)
+        assert recreated is not None
+        judged = await m.service._judge(recreated, figures, None, clock.now, book)
+        concurrent.append(judged.state)
+        return responses
+
+    container.execute_item_batch = recreate_between_commit_and_return
+    await m.service.delete_budget(Actor(tenant_id="tenant", object_id="admin"), "center")
+
+    [recreated_state] = concurrent
+    assert recreated_state.blocked and recreated_state.amount == 50
+    assert await budgets.get_budget_state("tenant", m.budget.id) == recreated_state
+    recreated_budget = await budgets.get_budget("tenant", m.budget.id)
+    assert recreated_budget is not None and recreated_budget.amount == 50

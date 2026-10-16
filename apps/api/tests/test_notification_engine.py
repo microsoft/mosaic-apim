@@ -6,6 +6,7 @@ from datetime import timedelta
 
 import httpx
 import pytest
+import structlog
 from azure.cosmos.exceptions import CosmosHttpResponseError
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -339,7 +340,7 @@ async def test_partial_audience_commits_safe_inbox_and_replays_unresolved_admins
 
 
 async def test_partial_source_does_not_starve_bounded_fanout_or_queued_private_delivery(
-    store: tuple[NotificationPersistence, Clock],
+    store: tuple[NotificationPersistence, Clock], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository, clock = store
     await enable_email(repository)
@@ -367,7 +368,9 @@ async def test_partial_source_does_not_starve_bounded_fanout_or_queued_private_d
     )]
     for source in sources:
         await engine.publish(source)
-    with capture_logs() as logs:
+    with monkeypatch.context() as scoped_patch, capture_logs() as logs:
+        # Earlier host tests can cache the module logger with production JSON processors.
+        scoped_patch.setattr("mosaic_api.services.notifications.logger", structlog.get_logger())
         await engine.run_once("tenant")
     assert len(dispatcher.sent) == 1 and dispatcher.sent[0].id == queued.id
     assert len([log for log in logs if log["event"] == "notification_partial_audience"]) == 2

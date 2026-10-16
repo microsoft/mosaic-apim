@@ -4,7 +4,7 @@ import hashlib
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from typing import Literal, cast
+from typing import Literal, Protocol, cast
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -56,6 +56,20 @@ from mosaic_api.services.notifications import (
 RecipientAuthorization = Callable[[NotificationEvent, str, NotificationPersona], Awaitable[bool]]
 BudgetRecipients = Callable[[str, str], Awaitable[Sequence[str]]]
 RecipientExpansion = Callable[[NotificationEvent], Awaitable[Sequence[str]]]
+
+
+class RecipientVisibility(Protocol):
+    async def expand(self, event: NotificationEvent) -> Sequence[str]: ...
+
+    async def authorize(
+        self, event: NotificationEvent, object_id: str, persona: NotificationPersona
+    ) -> bool: ...
+
+    def for_fanout(
+        self, event: NotificationEvent, members: frozenset[str] | DirectoryError
+    ) -> RecipientAuthorization: ...
+
+
 DigestWindowValidator = Callable[
     [NotificationDelivery, Sequence[NotificationEvent]], Awaitable[str | None]
 ]
@@ -101,6 +115,14 @@ class NotificationCandidate:
 class NotificationCandidateResolution:
     candidates: Sequence[NotificationCandidate]
     unavailable: Sequence[str] = ()
+
+
+@dataclass(frozen=True)
+class NotificationRecipientScope:
+    recipient_reference: str
+    persona: NotificationPersona | None
+    channel: NotificationChannel
+    route_ids: Sequence[str] | None = None
 
 
 class NotificationCandidateResolutionError(DirectoryError):
@@ -217,6 +239,8 @@ class NotificationPreferenceService:
     ``authorize_recipient`` must resolve current portal visibility from durable source records;
     an event's candidate user IDs are never authorization evidence. With no callback, portal
     delivery is unavailable. Admins must always be in a fresh, complete actual app-role roster.
+    ``recipient_visibility`` additionally shares verified membership within one fan-out pass
+    and verifies only the claimed recipient at delivery time.
     """
 
     def __init__(
@@ -226,6 +250,7 @@ class NotificationPreferenceService:
         directory: NotificationDirectory | None = None,
         authorize_recipient: RecipientAuthorization | None = None,
         expand_recipients: RecipientExpansion | None = None,
+        recipient_visibility: RecipientVisibility | None = None,
         digest_window_validator: DigestWindowValidator | None = None,
         budget_recipients: BudgetRecipients | None = None,
         budget_delivery_migrated: bool = False,
@@ -233,8 +258,13 @@ class NotificationPreferenceService:
     ) -> None:
         self.repository = repository
         self._directory = directory
-        self._authorize_recipient = authorize_recipient
-        self._expand_recipients = expand_recipients
+        self._visibility = recipient_visibility
+        self._authorize_recipient = (
+            recipient_visibility.authorize if recipient_visibility else authorize_recipient
+        )
+        self._expand_recipients = (
+            recipient_visibility.expand if recipient_visibility else expand_recipients
+        )
         self.digest_window_validator = digest_window_validator
         self._budget_recipients = budget_recipients
         self._budget_delivery_migrated = budget_delivery_migrated
@@ -469,6 +499,7 @@ class NotificationPreferenceService:
         route: NotificationRoute | None = None,
         actual_admin: bool = False,
         audience_eligible: bool = False,
+        authorize_recipient: RecipientAuthorization | None = None,
     ) -> NotificationCandidate:
         preferences = await self.get_preferences(event.tenant_id, object_id, persona)
         category = _category(preferences, event)
@@ -504,12 +535,13 @@ class NotificationPreferenceService:
             reasons.append("The user no longer holds the API administrator app role.")
         if persona == "portal" and not audience_eligible:
             reasons.append("The event does not address this user.")
-        if self._authorize_recipient is None:
+        authorizer = authorize_recipient or self._authorize_recipient
+        if authorizer is None:
             if persona == "portal":
                 raise DirectoryError(
                     "Portal notification resource authorization is not configured."
                 )
-        elif not await self._authorize_recipient(event, object_id, persona):
+        elif not await authorizer(event, object_id, persona):
             reasons.append("The recipient no longer has access to this notification's subject.")
         if cadence.mode == "off":
             reasons.append("The personal category/channel preference or route is off.")
@@ -564,7 +596,11 @@ class NotificationPreferenceService:
         )
 
     async def candidate_resolution(
-        self, event: NotificationEvent, *, only_route: NotificationRoute | None = None
+        self,
+        event: NotificationEvent,
+        *,
+        only_route: NotificationRoute | None = None,
+        recipient: NotificationRecipientScope | None = None,
     ) -> NotificationCandidateResolution:
         settings = await self.get_settings(event.tenant_id)
         unavailable: list[str] = []
@@ -604,10 +640,22 @@ class NotificationPreferenceService:
             (event.audience.include_administrators or direct_persona == "admin")
             and (only_route is None or only_route.audience in {"selectedAdmins", "allAdmins"})
             and (all_admins_required or selected_ids)
+            and (recipient is None or recipient.persona == "admin")
+            and (
+                recipient is None
+                or all_admins_required
+                or recipient.recipient_reference.casefold()
+                in {identifier.casefold() for identifier in selected_ids}
+            )
         ):
             try:
                 discovery = await self._discover(
-                    event.tenant_id, None if all_admins_required else sorted(selected_ids)
+                    event.tenant_id,
+                    [recipient.recipient_reference]
+                    if recipient is not None
+                    else None
+                    if all_admins_required
+                    else sorted(selected_ids),
                 )
                 self._require_discovery(discovery)
                 admins = {contact.object_id.casefold() for contact in discovery.administrators}
@@ -615,6 +663,7 @@ class NotificationPreferenceService:
                 admin_unknown = True
                 unavailable.append(exc.message)
         candidates: list[NotificationCandidate] = []
+        fanout_authorizer: RecipientAuthorization | None = None
 
         async def personal(
             object_id: str,
@@ -625,6 +674,12 @@ class NotificationPreferenceService:
             actual_admin: bool = False,
             audience_eligible: bool = False,
         ) -> None:
+            if recipient is not None and (
+                object_id.casefold() != recipient.recipient_reference.casefold()
+                or persona != recipient.persona
+                or channel != recipient.channel
+            ):
+                return
             try:
                 candidates.append(
                     await self._personal_candidate(
@@ -636,14 +691,21 @@ class NotificationPreferenceService:
                         route=route,
                         actual_admin=actual_admin,
                         audience_eligible=audience_eligible,
+                        authorize_recipient=fanout_authorizer,
                     )
                 )
             except _DISCOVERY_ERRORS as exc:
                 unavailable.append(exc.message)
 
         if only_route is None:
+            members: frozenset[str] | DirectoryError
             try:
-                expanded = await self._expand_recipients(event) if self._expand_recipients else ()
+                expanded = (
+                    await self._expand_recipients(event)
+                    if self._expand_recipients
+                    and not (recipient is not None and self._visibility is not None)
+                    else ()
+                )
                 if any(
                     not isinstance(identifier, str)
                     or not identifier.strip()
@@ -657,9 +719,21 @@ class NotificationPreferenceService:
                 }
                 if len(users) > 10000:
                     raise DirectoryError("Recipient expansion exceeds the bounded fan-out limit.")
+                members = frozenset(identifier.casefold() for identifier in expanded)
             except _DISCOVERY_ERRORS as exc:
                 unavailable.append(exc.message)
+                members = DirectoryError(exc.message)
                 users = {identifier.casefold() for identifier in event.audience.user_object_ids}
+            if recipient is None and self._visibility is not None:
+                fanout_authorizer = self._visibility.for_fanout(event, members)
+            if recipient is not None:
+                object_id = recipient.recipient_reference.casefold()
+                expanded_subject = (
+                    self._visibility is not None
+                    and direct_persona == "portal"
+                    and event.subject.grant_subject is not None
+                )
+                users = {object_id} if object_id in users or expanded_subject else set()
             for object_id in (
                 sorted(users) if not (admin_unknown and direct_persona == "admin") else []
             ):
@@ -674,6 +748,11 @@ class NotificationPreferenceService:
             for object_id in sorted(admins) if event.audience.include_administrators else []:
                 await personal(object_id, "admin", "inApp", actual_admin=True)
         for route in routes:
+            if recipient is not None and (
+                (recipient.route_ids is not None and route.id not in recipient.route_ids)
+                or route.channel != recipient.channel
+            ):
+                continue
             if route.audience in {"selectedAdmins", "allAdmins"}:
                 if not event.audience.include_administrators or admin_unknown:
                     continue
@@ -847,7 +926,15 @@ class NotificationPreferenceService:
                 return "Digest window authorization requires the durable digest scheduler."
             return await self.digest_window_validator(delivery, events)
         for event in events:
-            resolution = await self.candidate_resolution(event)
+            resolution = await self.candidate_resolution(
+                event,
+                recipient=NotificationRecipientScope(
+                    delivery.recipient_reference,
+                    delivery.persona,
+                    delivery.channel,
+                    delivery.route_ids,
+                ),
+            )
             candidates = [
                 candidate
                 for candidate in resolution.candidates

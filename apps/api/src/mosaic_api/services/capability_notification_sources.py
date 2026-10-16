@@ -1,4 +1,4 @@
-"""Persist capability transitions before publishing, so a crash can safely replay them."""
+"""Commit capability events and their episode cursors in the same tenant transaction."""
 
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
@@ -54,15 +54,17 @@ class CapabilityNotificationSource:
                 continue
             failed = check.state in {"failed", "degraded"}
             if failed:
-                if previous is None or previous.last_error is None:
-                    previous = await self._repository.update_worker_state(
-                        self._tenant,
-                        name,
-                        self._open(check),
-                    )
-                if not previous.checkpoint:
+                if previous and previous.last_error:
+                    continue
+                current = previous or NotificationWorkerState(
+                    id=notification_record_id("notificationWorker", self._tenant, name),
+                    tenant_id=self._tenant,
+                    worker=name,
+                )
+                opened = self._open(check)(current)
+                if not opened.checkpoint:
                     raise ValueError("A capability failure cursor needs its durable episode ID")
-                await self._repository.append_event(
+                await self._repository.commit_source_event(
                     build_notification_event(
                         tenant_id=self._tenant,
                         event_type=(
@@ -71,8 +73,8 @@ class CapabilityNotificationSource:
                             else NotificationEventType.INTEGRATION_FAILED
                         ),
                         source_id=name,
-                        source_revision=previous.checkpoint,
-                        occurred_at=previous.heartbeat_at or check.checked_at,
+                        source_revision=opened.checkpoint,
+                        occurred_at=check.checked_at,
                         origin="capabilityChecks",
                         subject=NotificationSubject(
                             integration=check.feature,
@@ -89,10 +91,11 @@ class CapabilityNotificationSource:
                             reason_code=check.state,
                         ),
                         severity="warning",
-                    )
+                    ),
+                    checkpoint=opened.model_copy(update={"updated_at": now}),
                 )
             elif check.state == "verified" and previous and previous.last_error:
-                await self._repository.append_event(
+                await self._repository.commit_source_event(
                     build_notification_event(
                         tenant_id=self._tenant,
                         event_type=NotificationEventType.INTEGRATION_RECOVERED,
@@ -105,12 +108,8 @@ class CapabilityNotificationSource:
                         data=NotificationTemplateData(
                             summary="A previously failed capability has fresh verified evidence.",
                         ),
-                    )
-                )
-                await self._repository.update_worker_state(
-                    self._tenant,
-                    name,
-                    self._close(check),
+                    ),
+                    checkpoint=self._close(check)(previous).model_copy(update={"updated_at": now}),
                 )
 
     @staticmethod

@@ -66,6 +66,69 @@ class GrantNotificationRecipientResolver:
         self._directory = directory_repository
         self._lookup = directory_lookup
 
+    async def contains(self, event: NotificationEvent, object_id: str) -> bool:
+        """Verify just the claimed human recipient, without enumerating a group's roster."""
+        subject = event.subject.grant_subject
+        if subject is None or subject.kind == "application":
+            return False
+        if subject.kind == "user":
+            return object_id.casefold() in {
+                member.casefold() for member in await self.expand(event)
+            }
+        if subject.kind == "group":
+            group = await self._directory.get_group(event.tenant_id, subject.id)
+            if group is None or group.tenant_id != event.tenant_id:
+                raise DirectoryError(
+                    "The former MOSAIC group's current membership cannot be verified."
+                )
+            principal = await self._directory.find_principal_by_object_id(
+                event.tenant_id, object_id
+            )
+            if (
+                principal is None
+                or principal.tenant_id != event.tenant_id
+                or principal.kind not in _HUMAN_KINDS
+                or principal.object_id.casefold() != object_id.casefold()
+            ):
+                return False
+            membership = await self._directory.get_membership(
+                event.tenant_id, subject.id, principal.id
+            )
+            return bool(
+                membership
+                and membership.tenant_id == event.tenant_id
+                and membership.group_id == subject.id
+                and membership.principal_id == principal.id
+            )
+        if subject.kind != "securityGroup":
+            return False
+        group_object_id = await self._security_group_object_id(event)
+        assert self._lookup is not None
+        principal_object = await self._lookup.get_object(object_id)
+        if (
+            principal_object is None
+            or principal_object.kind not in _HUMAN_KINDS
+            or principal_object.object_id.casefold() != object_id.casefold()
+        ):
+            return False
+        groups = await self._lookup.member_groups(object_id, [group_object_id])
+        return group_object_id.casefold() in {group.casefold() for group in groups}
+
+    async def _security_group_object_id(self, event: NotificationEvent) -> str:
+        if self._lookup is None:
+            raise DirectoryDisabledError(
+                "Enable Microsoft Graph directory lookup to notify security-group grant members."
+            )
+        group_object_id = event.subject.grant_subject_object_id
+        subject = event.subject.grant_subject
+        if not group_object_id and subject is not None:
+            principal = await self._directory.get_principal(event.tenant_id, subject.id)
+            if principal and principal.kind == PrincipalKind.SECURITY_GROUP:
+                group_object_id = principal.object_id
+        if not group_object_id:
+            raise DirectoryError("The former security group's Entra identity cannot be verified.")
+        return group_object_id
+
     async def expand(self, event: NotificationEvent) -> list[str]:
         subject = event.subject.grant_subject
         if subject is None or subject.kind == "application":
@@ -102,17 +165,8 @@ class GrantNotificationRecipientResolver:
             return sorted(users)
         if subject.kind != "securityGroup":
             return []
-        if self._lookup is None:
-            raise DirectoryDisabledError(
-                "Enable Microsoft Graph directory lookup to notify security-group grant members."
-            )
-        group_object_id = event.subject.grant_subject_object_id
-        if not group_object_id:
-            principal = await self._directory.get_principal(event.tenant_id, subject.id)
-            if principal and principal.kind == PrincipalKind.SECURITY_GROUP:
-                group_object_id = principal.object_id
-        if not group_object_id:
-            raise DirectoryError("The former security group's Entra identity cannot be verified.")
+        group_object_id = await self._security_group_object_id(event)
+        assert self._lookup is not None
         page = await self._lookup.group_members(
             group_object_id, limit=MAX_GRANT_NOTIFICATION_RECIPIENTS
         )

@@ -241,7 +241,7 @@ class CosmosBudgetRepository(CosmosRepositoryBase):
             if len(operations) > 100:
                 raise ConflictError("A budget transaction supports at most 99 new notice mutations")
             try:
-                await self._states.execute_item_batch(
+                responses = await self._states.execute_item_batch(
                     batch_operations=operations, partition_key=tenant_id
                 )
             except exceptions.CosmosBatchOperationError as error:
@@ -249,10 +249,10 @@ class CosmosBudgetRepository(CosmosRepositoryBase):
                 if status in {404, 409, 412}:
                     continue
                 raise
-            saved = await self.get_budget_state(tenant_id, budget_id)
-            if saved is None:
-                raise ConflictError("The budget state was removed after its transaction")
-            return saved
+            etag = responses[0].get("eTag") if responses else None
+            if not isinstance(etag, str) or not etag:
+                raise ConflictError("The budget transaction did not return its saved state version")
+            return stored.model_copy(update={"etag": etag})
         raise ConflictError("The budget notification state kept changing")
 
     async def list_notification_outboxes(self, tenant_id: str) -> list[BudgetNotificationOutbox]:

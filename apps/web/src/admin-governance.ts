@@ -48,7 +48,7 @@ export function notificationTarget(subject: NotificationSubject) {
   if (subject.costCenterId) return `/cost-centers/${encodeURIComponent(subject.costCenterId)}`
   if (subject.resource?.kind === 'poolModel' && subject.resource.scopeId) return `/pools/${encodeURIComponent(subject.resource.scopeId)}`
   if (subject.resource?.kind === 'modelApi') return `/models?tab=imported&selected=${encodeURIComponent(subject.resource.id)}`
-  if (subject.resource?.kind === 'mcpServer') return `/mcps?selected=${encodeURIComponent(subject.resource.id)}`
+  if (subject.resource?.kind === 'mcpServer') return `/mcps?tab=imported&selected=${encodeURIComponent(subject.resource.id)}`
   if (subject.gatewayId) return `/gateways/${encodeURIComponent(subject.gatewayId)}`
   if (subject.endpointId) return null
   if (subject.integration) return '/settings?tab=notifications'

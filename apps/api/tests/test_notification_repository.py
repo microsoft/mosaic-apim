@@ -79,6 +79,7 @@ class NotificationContainer:
     ) -> list[dict[str, Any]]:
         self.batches.append(batch_operations)
         staged = copy.deepcopy(self.items)
+        responses: list[dict[str, Any]] = []
         for index, operation in enumerate(batch_operations):
             verb, args = operation[:2]
             options = operation[2] if len(operation) > 2 else {}
@@ -109,12 +110,18 @@ class NotificationContainer:
                 )
             if verb == "delete":
                 staged.pop(key)
+                responses.append({"statusCode": 204})
             else:
                 assert document is not None and document["tenantId"] == partition_key
                 self.version += 1
                 staged[key] = {**document, "_etag": str(self.version)}
+                responses.append({
+                    "statusCode": 201 if verb == "create" else 200,
+                    "eTag": staged[key]["_etag"],
+                    "resourceBody": copy.deepcopy(staged[key]),
+                })
         self.items = staged
-        return []
+        return responses
 
     def query_items(
         self,
