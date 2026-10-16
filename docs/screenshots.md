@@ -176,6 +176,9 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
   viewport, and blurs every sensitive region before it saves the PNG. Administrator shots fail
   rather than save clipped content if the document overflows horizontally. Dates are rendered in UTC,
   and they show the day of the capture.
+- Grant-selection actions use the dropdown's full cloud label (for example, **Azure Government**,
+  not the **AzGov** badge), exact cost center, direct attribution, and either **Ready** or
+  **Applied to APIM** status. This keeps mixed-cloud grants from selecting the wrong offering.
 
 ## Redaction
 

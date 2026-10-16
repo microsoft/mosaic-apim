@@ -38,6 +38,7 @@ from scripts.screenshots.demo_api import (
     PEOPLE,
     SENSITIVE_LITERALS,
 )
+from scripts.screenshots.selectors import grant_option_matches
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = REPO_ROOT / "docs" / "images" / "screenshots"
@@ -430,13 +431,10 @@ def open_grant_connection(model: str, cost_center: str, *, cloud: str | None = N
             choices = [
                 text.strip()
                 for text in select.locator("option").all_inner_texts()
-                if text.startswith(cost_center + " ·")
-                and "Granted directly to you" in text
-                and "Applied to APIM" in text
-                and (cloud is None or cloud in text)
+                if grant_option_matches(text.strip(), cost_center, cloud)
             ]
             if len(choices) != 1:
-                raise CaptureError(f"Expected one applied direct {model} grant in {cost_center}")
+                raise CaptureError(f"Expected one ready direct {model} grant in {cost_center}")
             select.select_option(label=choices[0])
         dialog.get_by_text(re.compile(rf"^{re.escape(cost_center)} ·")).filter(
             visible=True
@@ -1079,7 +1077,7 @@ SHOTS: list[Shot] = [
     Shot(
         "portal-government-connection", "portal", "/access", "light", "My access",
         actions=(
-            open_grant_connection("gpt-4o-mini", "Customer Insights", cloud="AzGov"),
+            open_grant_connection("gpt-4o-mini", "Customer Insights", cloud="Azure Government"),
             wait_for_text("Authentication"),
         ),
         height=1420,
@@ -1087,7 +1085,9 @@ SHOTS: list[Shot] = [
     Shot(
         "portal-government-mcp-connection", "portal", "/access", "dark", "My access",
         actions=(
-            open_grant_connection("Government Docs Search", "Customer Insights", cloud="AzGov"),
+            open_grant_connection(
+                "Government Docs Search", "Customer Insights", cloud="Azure Government"
+            ),
             wait_for_text("VS Code"),
         ),
         height=1420,

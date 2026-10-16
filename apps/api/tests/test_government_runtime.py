@@ -5,6 +5,7 @@ import inspect
 import xml.etree.ElementTree as ET
 from collections.abc import AsyncIterator
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -33,6 +34,7 @@ from mosaic_api.integrations.access_policy import (
 )
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.apim.credentials import ApimKeyManager
+from mosaic_api.integrations.apim.key_runtime import runtime_policy_hashes
 from mosaic_api.integrations.mcp_access_policy import render_mcp_policy
 from mosaic_api.integrations.pool_policy import _pool_key_lookup
 from mosaic_api.main import create_app
@@ -442,7 +444,7 @@ async def test_government_pending_cost_center_recheck_blocks_reveal_and_rotation
     assert not any("regenerate" in call["path"] for call in government.apim.http_calls)
 
 
-@pytest.mark.parametrize("drift", ["fragment", "subscriptionRequired"])
+@pytest.mark.parametrize("drift", ["fragment", "subscriptionRequired", "operation"])
 async def test_government_restart_rechecks_live_enforcement_before_creating(
     government: Harness,
     drift: str,
@@ -457,10 +459,19 @@ async def test_government_restart_rechecks_live_enforcement_before_creating(
         government.apim.written[f"policyFragments/{publication.fragment_name}"]["properties"][
             "value"
         ] = "<fragment />"
-    else:
+    elif drift == "subscriptionRequired":
         government.apim.written[f"apis/{publication.api_name}"]["properties"][
             "subscriptionRequired"
         ] = False
+    else:
+        government.apim.seed(
+            f"apis/{publication.api_name}/operations/unreviewed",
+            {"properties": {"method": "POST", "urlTemplate": "/unreviewed"}},
+        )
+        government.apim.seed(
+            f"apis/{publication.api_name}/operations/unreviewed/policies/policy",
+            {"properties": {"value": "<policies><inbound /></policies>"}},
+        )
     writes = len(government.apim.payloads)
     await government.keys().resume_automatic_keys(TENANT)
     assert len(government.apim.payloads) == writes
@@ -469,6 +480,100 @@ async def test_government_restart_rechecks_live_enforcement_before_creating(
     assert f"subscriptions/{name}" not in government.apim.written
     with pytest.raises(ConflictError, match="Government"):
         await government.keys().create_key(Actor(USER, TENANT), grant.id)
+
+
+async def test_government_operation_override_blocks_initial_key_issuance(
+    government: Harness,
+) -> None:
+    grant = await government.grant()
+    publication = await government.service.get_publication(ACTOR, government.publication_id)
+    government.apim.seed(
+        f"apis/{publication.api_name}/operations/unreviewed",
+        {"properties": {"method": "POST", "urlTemplate": "/unreviewed"}},
+    )
+    government.apim.seed(
+        f"apis/{publication.api_name}/operations/unreviewed/policies/policy",
+        {"properties": {"value": "<policies><inbound /></policies>"}},
+    )
+    run = await government.apply()
+    assert run.status == PublishRunStatus.FAILED
+    assert any("inherit" in error for error in run.errors)
+    assert f"subscriptions/{government.subscription(grant)}" not in government.apim.written
+
+
+@pytest.mark.parametrize(
+    "inbound",
+    [
+        "",
+        '<choose><when condition="@(false)"><base /></when></choose>',
+        "<return-response /><base />",
+        '<set-header name="Authorization" exists-action="delete" /><base />',
+        '<base /><set-variable name="mosaic-grant" value="unreviewed" />',
+    ],
+)
+async def test_government_operation_override_blocks_reveal_rotation_and_apply(
+    government: Harness, inbound: str
+) -> None:
+    grant = await government.grant()
+    assert (await government.apply()).status == PublishRunStatus.SUCCEEDED
+    publication = await government.service.get_publication(ACTOR, government.publication_id)
+    [operation, *_] = await ApimClient(
+        government.arm,
+        government.gateways.gateways[publication.gateway_id].arm_resource(),
+    ).list_operations(publication.api_name)
+    government.apim.seed(
+        f"apis/{publication.api_name}/operations/{operation['name']}/policies/policy",
+        {
+            "properties": {
+                "value": (
+                    f"<policies><inbound>{inbound}</inbound><backend><base /></backend>"
+                    "<outbound><base /></outbound><on-error><base /></on-error></policies>"
+                )
+            }
+        },
+    )
+    keys = government.keys()
+    owner = Actor(USER, TENANT)
+    with pytest.raises(ConflictError, match="inherit"):
+        await keys.reveal_key(owner, grant.id, "primary")
+    with pytest.raises(ConflictError, match="inherit"):
+        await keys.rotate_key(owner, grant.id, "primary")
+    assert not any("regenerate" in call["path"] for call in government.apim.http_calls)
+    run = await government.apply()
+    assert run.status == PublishRunStatus.FAILED
+    assert any("inherit" in error for error in run.errors)
+
+
+@pytest.mark.parametrize("mcp", [False, True])
+async def test_government_runtime_allows_only_absent_or_inheritance_only_operation_policy(
+    mcp: bool,
+) -> None:
+    client = AsyncMock(spec=ApimClient)
+    properties = {
+        "subscriptionRequired": True,
+        "subscriptionKeyParameterNames": {
+            "header": "Ocp-Apim-Subscription-Key",
+            "query": "subscription-key",
+        },
+    }
+    client.get_api.return_value = client.get_mcp_api.return_value = {"properties": properties}
+    client.get_policy_fragment.return_value = "<fragment />"
+    client.get_api_policy.return_value = client.get_mcp_api_policy.return_value = "<policies />"
+    client.list_operations.return_value = [{"name": "default"}, {"name": "inherited"}]
+    client.get_operation_policy.side_effect = [
+        None,
+        "<policies>\n<inbound><base/></inbound><backend><base/></backend>"
+        "<outbound><base/></outbound><on-error><base/></on-error>\n</policies>",
+    ]
+    hashes = await runtime_policy_hashes(
+        client, api_name="government", fragment_name="access", mcp=mcp
+    )
+    assert set(hashes) == {"api", "fragment"}
+    client.get_operation_policy.assert_any_await("government", "default")
+    client.get_operation_policy.assert_any_await("government", "inherited")
+    client.get_operation_policy.side_effect = [None, "<policies><inbound /></policies>"]
+    with pytest.raises(ConflictError, match="inherit"):
+        await runtime_policy_hashes(client, api_name="government", fragment_name="access", mcp=mcp)
 
 
 async def test_government_unowned_subscription_collision_blocks_reviewed_apply(

@@ -73,6 +73,10 @@ Register Government gateways and backends with the Government connection and cla
 environment independently. Keep the model backend in the same cloud as its gateway. MOSAIC's
 reviewed plan/apply gate and observe/manage distinction still apply.
 
+Government runtime verification requires operations to inherit the reviewed API policy. An
+operation may have no local policy or the standard inheritance-only policy with `<base />` in
+every section; custom operation overrides are rejected during apply and subsequent key operations.
+
 Government runtime access is **subscription-key only**. Configure an eligible direct grant for
 the commercial MOSAIC person or workload and a shared cost center that allows keys. Group-only
 access is not converted into a shared key, and a cost center that disallows keys remains blocked.

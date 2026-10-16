@@ -549,10 +549,12 @@ def models_report(
 
     by_deployment: dict[str, UsageMetrics] = defaultdict(UsageMetrics)
     deployment_costs: dict[str, float | None] = {}
+    deployment_clouds: dict[str, set[AzureCloud]] = defaultdict(set)
     reached: dict[str, set[str]] = defaultdict(set)
     hourly: dict[str, list[int]] = {}
     for summary, entry in entries(deployments, scope, "deployment"):
         by_deployment[entry.key].add(entry.metrics)
+        deployment_clouds[entry.key].add(summary.azure_cloud)
         reached[entry.key].add(summary.gateway_id)
         if costs is not None:
             deployment_costs[entry.key] = add_cost(
@@ -574,9 +576,13 @@ def models_report(
         endpoint_id, _, deployment_name = key.partition("/")
         info = observed.get(key)
         capacity = info.capacity_tokens_per_minute if info else None
+        clouds = deployment_clouds[key]
+        cloud = (info.azure_cloud if info else None) or (
+            next(iter(clouds)) if len(clouds) == 1 else None
+        )
         deployment_rows.append(
             AnalyticsDeploymentRow(
-                azure_cloud=info.azure_cloud if info else None,
+                azure_cloud=cloud,
                 **usage_values(
                     metrics,
                     deployment_total.requests,

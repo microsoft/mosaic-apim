@@ -534,16 +534,16 @@ def chargeback_rows(
         deployment = facts.deployment_name if facts else None
         endpoint = facts.endpoint_name if facts else None
         code = cost_center.code if cost_center else None
-        served_clouds = {
-            scope.gateway_cloud(gateway_id)
-            for (gateway_id, _), api in scope.apis.items()
-            if key in api.deployment_keys()
-        } - {None}
-        cloud = (
-            gateway_cloud
-            or (next(iter(served_clouds)) if len(served_clouds) == 1 else None)
-            or (facts.cloud if facts and facts.cloud_source != "override" else None)
-        )
+        cloud = gateway_cloud
+        if cloud is None:
+            served_clouds = {
+                scope.gateway_cloud(gateway_id)
+                for (gateway_id, _), api in scope.apis.items()
+                if key in api.deployment_keys()
+            } - {None}
+            cloud = (next(iter(served_clouds)) if len(served_clouds) == 1 else None) or (
+                facts.cloud if facts and facts.cloud_source != "override" else None
+            )
         identity = (
             month,
             party[1],

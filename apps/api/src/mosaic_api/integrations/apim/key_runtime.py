@@ -8,6 +8,11 @@ from mosaic_api.errors import ConflictError
 from mosaic_api.integrations.apim.client import ApimClient
 from mosaic_api.integrations.apim.writer import DEFAULT_SUBSCRIPTION_KEY_NAMES
 
+_INHERITED_OPERATION_POLICY = (
+    "<policies><inbound><base /></inbound><backend><base /></backend>"
+    "<outbound><base /></outbound><on-error><base /></on-error></policies>"
+)
+
 
 def policy_hash(xml: str) -> str:
     try:
@@ -39,6 +44,16 @@ async def runtime_policy_hashes(
     )
     if fragment is None or api_policy is None:
         raise ConflictError("The reviewed Government access policy is missing from APIM.")
+    inherited_hash = policy_hash(_INHERITED_OPERATION_POLICY)
+    for operation in await client.list_operations(api_name):
+        name = operation.get("name")
+        if not isinstance(name, str) or not name:
+            raise ConflictError("APIM did not identify a Government API operation.")
+        operation_policy = await client.get_operation_policy(api_name, name)
+        if operation_policy is not None and policy_hash(operation_policy) != inherited_hash:
+            raise ConflictError(
+                "Government API operations must inherit the reviewed policy without overrides."
+            )
     hashes = {"fragment": policy_hash(fragment), "api": policy_hash(api_policy)}
     if metadata_name is not None:
         metadata = (
