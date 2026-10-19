@@ -26,6 +26,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMosaicApi } from '../api'
+import { creationContext, useEditContext } from '../change-review'
 import { describeLimits } from '../entitlement-limits'
 import { environmentBlockedVerdict, lookupCompatibility, useEnvironmentCatalog } from '../environments'
 import { ENTITLEMENT_SUBJECT_KIND_LABELS, PRINCIPAL_KIND_LABELS } from '../labels'
@@ -42,6 +43,7 @@ import type {
   PublishStepStatus,
 } from '../types'
 import { ErrorState, Loading } from './AsyncState'
+import { ChangeReview, TechnicalExecution } from './ChangeReview'
 import { EnvironmentBadge } from './EnvironmentBadge'
 import { ModelAccessRecovery } from './ModelAccessRecovery'
 import { PolicyFacetItem } from './PolicyFacets'
@@ -350,6 +352,7 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
   const [runId, setRunId] = useState('')
   const [refreshError, setRefreshError] = useState<Error | null>(null)
   const [invalidPlan, setInvalidPlan] = useState(false)
+  const [editContext, setEditContext] = useEditContext(initialReview?.publication.id)
   const [configurationChanged, setConfigurationChanged] = useState(false)
   const appliedGatewayRef = useRef(false)
   const notifiedRunRef = useRef('')
@@ -436,6 +439,7 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
       return { created: draft, createdPlan }
     },
     onSuccess: ({ created, createdPlan }) => {
+      setEditContext(creationContext(createdPlan))
       setPublication(created)
       setPlan(createdPlan)
       setReviewMessage('')
@@ -564,7 +568,7 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
           <Content>
             <div className={styles.intro}>
               <Text>Plan the API Management resources first, then explicitly apply the plan.</Text>
-              <Text>Preview the changes MOSAIC would apply. Nothing changes until you select Apply plan.</Text>
+              <Text>Preview the changes MOSAIC would apply. Nothing changes until you apply all pending changes.</Text>
               <Text ref={stepRef} tabIndex={-1} size={200}>Step {['choose', 'configure', 'review', 'apply'].indexOf(step) + 1} of 4</Text>
             </div>
 
@@ -723,20 +727,22 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
                 )}
                 {nothingToApply && (
                   <MessageBar intent="info">
-                    <MessageBarBody>API Management already matches this MCP publication. Nothing to apply.</MessageBarBody>
+                    <MessageBarBody>This plan lists no resource operations. Shared MCP discovery may still be checked and repaired during apply; gateway behavior is not live-verified.</MessageBarBody>
                   </MessageBar>
                 )}
+                <ChangeReview plan={plan} context={editContext} />
                 {plan.warnings.map((warning) => (
-                  <MessageBar key={warning} intent="warning">
+                  <MessageBar key={warning} intent="warning" layout="multiline">
                     <MessageBarBody><MessageBarTitle>Plan warning</MessageBarTitle>{warning}</MessageBarBody>
                   </MessageBar>
                 ))}
-                <McpAccessReview plan={plan} />
                 {missingAccessReview && (
                   <MessageBar intent="error">
                     <MessageBarBody>The MCP access snapshot is missing. Close and request a fresh plan; access changes cannot be applied without reviewing all target grants.</MessageBarBody>
                   </MessageBar>
                 )}
+                <TechnicalExecution plan={plan}>
+                <McpAccessReview plan={plan} />
                 <Title3 as="h3">Plan steps</Title3>
                 <div className={styles.tableScroll}>
                   <Table size="small" aria-label="MCP publish plan steps">
@@ -771,6 +777,7 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
                     </ul>
                   </>
                 )}
+                </TechnicalExecution>
                 {applyError && (
                   <div ref={outcomeRef} tabIndex={-1}>
                     {applyEnvironmentBlocked ? (
@@ -822,7 +829,7 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
             {step === 'review' && (
               <Button appearance="primary" disabled={invalidPlan || missingAccessReview || nothingToApply}
                 disabledFocusable={apply.isPending} onClick={() => apply.mutate()}>
-                {apply.isPending ? 'Applying…' : 'Apply plan'}
+                {apply.isPending ? 'Applying…' : 'Apply all pending changes'}
               </Button>
             )}
           </Actions>

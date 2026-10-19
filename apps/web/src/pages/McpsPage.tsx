@@ -22,6 +22,7 @@ import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useMosaicApi } from '../api'
+import { mcpCallerReviewValues, rememberEdit } from '../change-review'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { CloudBadge } from '../components/CloudBadge'
@@ -528,8 +529,9 @@ function ModelCallerForm({ publication, principals, pending, error, onClose, onS
   pending: boolean
   error: unknown
   onClose: () => void
-  onSave: (principalId: string) => void
+  onSave: (principalId: string, before: McpPublication) => void
 }) {
+  const editBase = useRef(publication)
   const eligible = principals.filter(canCallModelsAs).sort((left, right) =>
     principalName(left).localeCompare(principalName(right), undefined, { sensitivity: 'base' }))
   const [principalId, setPrincipalId] = useState(publication.modelCallerId ?? eligible[0]?.id ?? '')
@@ -541,11 +543,11 @@ function ModelCallerForm({ publication, principals, pending, error, onClose, onS
       primaryAction={{
         label: 'Save',
         disabled: Boolean(principalId) && !eligible.some((principal) => principal.id === principalId),
-        onClick: () => onSave(principalId),
+        onClick: () => onSave(principalId, editBase.current),
       }}>
       <div className={styles.editorForm}>
         <Text>Its own model grants decide access and pay for the calls. MOSAIC records the person each MCP call served, for usage only.</Text>
-        <Text>Saving changes the configured identity. Nothing changes at the gateway until you review changes and select Apply plan.</Text>
+        <Text>Saving changes the configured identity. Nothing changes at the gateway until you review and apply all pending changes.</Text>
         <Field label="Application principal">
           <Select value={principalId} onChange={(event) => setPrincipalId(event.target.value)}>
             <option value="">None</option>
@@ -637,6 +639,8 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
     mutationFn: ({ publication, principalId }: { publication: McpPublication; principalId: string }) =>
       api.setMcpModelCaller(publication.id, principalId),
     onSuccess: async (updated, { publication, principalId }) => {
+      rememberEdit(updated.id, mcpCallerReviewValues(publication, principals.data ?? []),
+        mcpCallerReviewValues(updated, principals.data ?? []))
       await queryClient.invalidateQueries({ queryKey: ['mcp-publications'] })
       completeWorkspaceNavigation(() => workbench.close())
       onBanner(`${publication.displayName}'s model-calling identity is now configured as ${modelCallerLabel(principalId, principals.data, updated)}. Review changes and apply the plan to start attributing its model calls.`)
@@ -646,7 +650,9 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
   const clearModelCaller = useMutation({
     mutationKey: MCP_PAGE_MUTATION_KEY,
     mutationFn: (publication: McpPublication) => api.clearMcpModelCaller(publication.id),
-    onSuccess: async (_updated, publication) => {
+    onSuccess: async (updated, publication) => {
+      rememberEdit(updated.id, mcpCallerReviewValues(publication, principals.data ?? []),
+        mcpCallerReviewValues(updated, principals.data ?? []))
       await queryClient.invalidateQueries({ queryKey: ['mcp-publications'] })
       completeWorkspaceNavigation(() => workbench.close())
       onBanner(`${publication.displayName}'s model-calling identity is cleared. Review changes and apply the plan to stop attributing model calls.`)
@@ -696,9 +702,9 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
       <ModelCallerForm key={selected.id} publication={selected} principals={principals.data ?? []}
         pending={setModelCaller.isPending || clearModelCaller.isPending}
         error={setModelCaller.error ?? clearModelCaller.error} onClose={() => workbench.close()}
-        onSave={(principalId) => principalId
-          ? setModelCaller.mutate({ publication: selected, principalId })
-          : clearModelCaller.mutate(selected)} />
+        onSave={(principalId, before) => principalId
+          ? setModelCaller.mutate({ publication: before, principalId })
+          : clearModelCaller.mutate(before)} />
     )
     if (review?.publication.id === selected.id) return (
       <PublishMcpServerDialog surface="workspace" open mutationKey={MCP_PAGE_MUTATION_KEY}

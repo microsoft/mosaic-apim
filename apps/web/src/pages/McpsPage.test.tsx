@@ -527,7 +527,7 @@ describe('McpsPage', () => {
     expect(await screen.findByRole('table', { name: 'MCP publish plan steps' })).toBeVisible()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(screen.queryByRole('list', { name: 'Published MCP servers' })).not.toBeInTheDocument()
-    expect(screen.getByText('Preview the changes MOSAIC would apply. Nothing changes until you select Apply plan.')).toBeVisible()
+    expect(screen.getByText('Preview the changes MOSAIC would apply. Nothing changes until you apply all pending changes.')).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Back' }))
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Review MCP access' })).not.toBeInTheDocument())
     const opener = screen.getByRole('button', { name: /Review changes|Review publish plan/ })

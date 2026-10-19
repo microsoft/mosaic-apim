@@ -97,7 +97,7 @@ describe('PoolPlanDialog', () => {
 
     const review = await within(dialog).findByRole('region', { name: 'Plan review' })
     await waitFor(() => expect(review).toHaveFocus())
-    expect(within(review).getByText('1 change across 2 resources, written in this order.')).toBeVisible()
+    expect(within(review).getByText('1 operation, executed in this order.')).toBeVisible()
     const [, first, second] = within(review).getAllByRole('row')
     expect(within(first).getByText('Backend pool')).toBeVisible()
     expect(within(first).getByText('mosaic-pool-anthropic-claude-opus')).toBeVisible()
@@ -106,7 +106,7 @@ describe('PoolPlanDialog', () => {
     expect(within(second).getByText('No change')).toBeVisible()
     expect(api.applyModelPool).not.toHaveBeenCalled()
     expect(api.unpublishModelPool).not.toHaveBeenCalled()
-    await user.click(within(dialog).getByRole('button', { name: 'Apply plan' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Apply all pending changes' }))
 
     expect(await within(dialog).findByText('Apply finished')).toBeVisible()
     expect(api.applyModelPool).toHaveBeenCalledWith(anthropicPool.id, poolPlan.id)
@@ -120,7 +120,7 @@ describe('PoolPlanDialog', () => {
     await waitFor(() => expect(onFinished).toHaveBeenCalledWith(poolRun))
     expect(onFinished).toHaveBeenCalledTimes(1)
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeEnabled()
-    expect(within(dialog).queryByRole('button', { name: 'Apply plan' })).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: 'Apply all pending changes' })).not.toBeInTheDocument()
   })
 
   it('asks before it unpublishes, and lists what it deletes', async () => {
@@ -159,7 +159,7 @@ describe('PoolPlanDialog', () => {
 
     expect(await within(dialog).findByText('Fix these before you publish Anthropic Claude')).toBeVisible()
     expect(within(dialog).getByText('Claude Opus 4.5: choose at least one deployment.')).toBeVisible()
-    expect(within(dialog).queryByRole('button', { name: 'Apply plan' })).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: 'Apply all pending changes' })).not.toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeEnabled()
   })
 
@@ -173,14 +173,14 @@ describe('PoolPlanDialog', () => {
     renderDialog()
     const dialog = await screen.findByRole('region', { name: 'Review Anthropic Claude' })
 
-    await user.click(await within(dialog).findByRole('button', { name: 'Apply plan' }))
+    await user.click(await within(dialog).findByRole('button', { name: 'Apply all pending changes' }))
 
     expect(await within(dialog).findByText('MOSAIC didn’t run the plan you reviewed')).toBeVisible()
     expect(within(dialog).getByText('The pool changed after this plan was made. Review a new plan.')).toBeVisible()
     expect(
       await within(dialog).findByText('MOSAIC has planned again. Review the fresh plan below before you continue.'),
     ).toBeVisible()
-    await user.click(within(dialog).getByRole('button', { name: 'Apply plan' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Apply all pending changes' }))
 
     await waitFor(() => expect(api.applyModelPool).toHaveBeenLastCalledWith(anthropicPool.id, fresh.id))
     expect(api.planModelPool).toHaveBeenCalledTimes(2)
@@ -192,10 +192,10 @@ describe('PoolPlanDialog', () => {
     const dialog = await screen.findByRole('region', { name: 'Review Anthropic Claude' })
 
     expect(
-      await within(dialog).findByText('API Management already matches Anthropic Claude. There’s nothing to apply.'),
+      await within(dialog).findByText('This plan lists no resource operations for Anthropic Claude. It is not a live verification of gateway behavior.'),
     ).toBeVisible()
-    expect(within(dialog).getByText('0 changes across 1 resource, written in this order.')).toBeVisible()
-    expect(within(dialog).getByRole('button', { name: 'Apply plan' })).toBeDisabled()
+    expect(within(dialog).getByText('0 operations, executed in this order.')).toBeVisible()
+    expect(within(dialog).getByRole('button', { name: 'Apply all pending changes' })).toBeDisabled()
   })
 
   it('offers recovery when a run is interrupted', async () => {
@@ -204,7 +204,7 @@ describe('PoolPlanDialog', () => {
     renderDialog()
     const dialog = await screen.findByRole('region', { name: 'Review Anthropic Claude' })
 
-    await user.click(await within(dialog).findByRole('button', { name: 'Apply plan' }))
+    await user.click(await within(dialog).findByRole('button', { name: 'Apply all pending changes' }))
 
     expect(await within(dialog).findByText('Apply interrupted. The gateway’s state is unknown.')).toBeVisible()
     expect(within(dialog).getByRole('button', { name: 'Check recovery status (diagnostic only)' })).toBeVisible()

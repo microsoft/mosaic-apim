@@ -1,8 +1,9 @@
 import { Badge, Button, Card, MessageBar, MessageBarBody, MessageBarTitle, Switch, Text, Title3 } from '@fluentui/react-components'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMosaicApi } from '../api'
+import { accessReviewValues, rememberEdit } from '../change-review'
 import { describeAccessMethods, describeLimits } from '../entitlement-limits'
 import { ENTITLEMENT_SUBJECT_KIND_LABELS, plural } from '../labels'
 import { poolAccessLabel, poolChangeLockReason } from '../pools'
@@ -39,6 +40,7 @@ export function PoolAccessCard({
 }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
+  const editBase = useRef(pool.governedAccess)
   const [settings, setSettings] = useState<ModelAccessSettings>(pool.governedAccess ??
     (pool.azureCloud === 'government' ? { keysEnabled: true, entraEnabled: false } : BOTH_METHODS))
   const governed = Boolean(pool.governedAccess)
@@ -52,7 +54,9 @@ export function PoolAccessCard({
 
   const save = useMutation({
     mutationFn: () => api.updateModelPool(pool.id, { governedAccess: settings }),
-    onSuccess: async () => {
+    onSuccess: async (saved) => {
+      rememberEdit(pool.id, accessReviewValues(editBase.current), accessReviewValues(saved.governedAccess))
+      editBase.current = saved.governedAccess
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['model-pools'] }),
         queryClient.invalidateQueries({ queryKey: ['entitlements'] }),

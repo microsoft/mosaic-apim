@@ -2423,6 +2423,7 @@ class ModelAccessGrant(MosaicModel):
     subscription_name: str | None = None
     enabled: bool
     enforcement: EntitlementEnforcement | None = None
+    limits_source: Literal["grant", "costCenter"] | None = Field(default=None, exclude_if=_unset)
     intent_digest: str
     # The cost center the grant charges, and its code as the cost-center header names it.
     cost_center_id: str = ""
@@ -2495,6 +2496,7 @@ class McpAccessGrant(MosaicModel):
     revoked: bool = False
     enabled: bool
     enforcement: EntitlementEnforcement | None = None
+    limits_source: Literal["grant", "costCenter"] | None = Field(default=None, exclude_if=_unset)
     intent_digest: str
     # As on ModelAccessGrant: the cost center the grant charges, which the cost-center header
     # selects, and whether it's the subject's default.
@@ -2568,6 +2570,7 @@ class PoolAccessGrant(MosaicModel):
     key_name: str | None = None
     enabled: bool
     enforcement: EntitlementEnforcement | None = None
+    limits_source: Literal["grant", "costCenter"] | None = Field(default=None, exclude_if=_unset)
     intent_digest: str
     cost_center_id: str = ""
     cost_center_code: str = ""
@@ -2635,6 +2638,36 @@ class PoolAccessSnapshot(MosaicModel):
         return keys
 
 
+class ReviewField(MosaicModel):
+    key: str
+    category: str
+    label: str
+    value: str
+
+
+class ReviewSnapshot(MosaicModel):
+    version: Literal[1] = 1
+    fields: list[ReviewField] = Field(default_factory=list)
+
+
+class ReviewChange(MosaicModel):
+    key: str
+    category: str
+    label: str
+    before: str | None = None
+    after: str | None = None
+    previous_known: bool = True
+
+
+class PlanReview(MosaicModel):
+    version: Literal[1] = 1
+    baseline: Literal["applied", "new", "partial", "unavailable"]
+    applied_at: datetime | None = None
+    changes: list[ReviewChange] = Field(default_factory=list)
+    target: ReviewSnapshot
+    impact: list[str] = Field(default_factory=list)
+
+
 class Publication(Entity):
     """An administrator's intent to expose one model deployment through one gateway.
 
@@ -2672,6 +2705,7 @@ class Publication(Entity):
     last_plan_digest: str | None = None
     last_run_id: str | None = None
     last_applied_at: datetime | None = None
+    applied_review: ReviewSnapshot | None = None
     # When an unpublish last removed everything MOSAIC created for this publication. The next
     # successful apply clears it. Publications unpublished before MOSAIC recorded this have none.
     unpublished_at: datetime | None = None
@@ -2757,6 +2791,7 @@ class McpPublication(Entity):
     last_plan_digest: str | None = None
     last_run_id: str | None = None
     last_applied_at: datetime | None = None
+    applied_review: ReviewSnapshot | None = None
     # When an unpublish last removed everything MOSAIC created for this publication. The next
     # successful apply clears it.
     unpublished_at: datetime | None = None
@@ -3608,6 +3643,7 @@ class PublishPlan(Entity):
     # A governed model pool's reviewed grants (ADR 0024).
     pool_access_snapshot: PoolAccessSnapshot | None = None
     previous_access_version: int | None = None
+    review: PlanReview | None = None
 
 
 class PublishStepResult(MosaicModel):

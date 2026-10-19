@@ -33,6 +33,7 @@ from mosaic_api.domain import (
     PublishedResource,
     PublishedResourceKind,
     QuotaPeriod,
+    ReviewSnapshot,
     apim_slug,
     deterministic_id,
 )
@@ -352,6 +353,7 @@ class ModelPool(Entity):
     last_plan_digest: str | None = None
     last_run_id: str | None = None
     last_applied_at: datetime | None = None
+    applied_review: ReviewSnapshot | None = None
     # What the gateway was asked to run when an apply last succeeded. The console compares it with
     # the saved intent to tell an administrator their changes aren't on the gateway yet.
     applied_intent_digest: str | None = None

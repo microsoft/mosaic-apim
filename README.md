@@ -264,10 +264,9 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-mcp-publish.png" alt="A full-workspace MCP publish review with access changes, model-calling identity, and gateway plan steps">
-      <p><b>MCP publish review.</b> A full-workspace review shows the server's access snapshot,
-      model-calling identity, and exact gateway resources that will change. Nothing is applied
-      until the administrator confirms the reviewed plan.</p>
+      <img src="docs/images/screenshots/console-mcp-publish.png" alt="An MCP review separating intended configuration changes from operational impact and collapsed technical execution">
+      <p><b>MCP publish review.</b> See pending changes and the batch's operational impact without
+      reading unchanged grants. Expand Technical execution for the full target and ordered gateway writes.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-analytics.png" alt="Analytics with request, token, cost, caller, error, and latency figures, a daily trend, and the top models, callers, and cost centers">
@@ -340,10 +339,10 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-unpublish-review.png" alt="The unpublish review listing the grants that lose access with their cost centers, and the resources MOSAIC deletes">
+      <img src="docs/images/screenshots/console-unpublish-review.png" alt="An unpublish review explaining gateway removal and operational impact, with a table of grants that lose access">
       <p><b>Unpublish review.</b> Before MOSAIC removes a model from API Management, the
       administrator sees which grants lose access, the cost center each charges, what stops working
-      for each, and every resource MOSAIC deletes. Only confirming this review unpublishes it.</p>
+      for each, with resource deletions available in Technical execution. Only confirming this review unpublishes it.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-budgets.png" alt="A cost center's budget past its limit and blocked, with the gateway refusing its calls and the emails sent at 80%, at 100%, and when it was blocked, beside the budget's amount, thresholds, recipients, and action">
@@ -446,6 +445,13 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
     </td>
   </tr>
 </table>
+
+<p>
+  <img src="docs/images/screenshots/console-model-change-review.png" width="720" alt="A model review separating the current authentication edit from a previously saved grant, with before and after values, impact, and collapsed execution">
+</p>
+<p><b>Model change review.</b> See the current edit separately from an earlier saved grant, with
+before-and-after values and the impact of applying the whole batch. Unchanged settings stay out
+of the main review; Technical execution retains the complete target and resource writes.</p>
 
 ### End-user portal
 
@@ -1607,9 +1613,29 @@ it produces a persisted, deterministic `PublishPlan`; applying runs against that
 rejects one whose digest no longer matches, so an administrator cannot approve one set of changes
 and have another applied. A `PublishRun` records the outcome of every step.
 
-The admin console applies a plan only from its review, which lists the plan's steps and policy
-facets, and for governed access every target grant. In the Published models table, **Re-plan** makes
-a fresh plan and opens that review; it is also how a failed or rolled-back publication is retried.
+The admin console applies a plan only from its review. Its default view compares the reviewed target
+with MOSAIC's recorded applied configuration, hiding unchanged intent. **Your changes** uses the
+current editing interaction; **Previously saved changes included** lists the other pending changes.
+Without reliable edit context, the review simply says **Pending changes**. Returning a field to its
+applied value cancels that pending change, so it is not listed as another gateway change.
+
+**Apply all pending changes** still applies the complete selected publication or pool, never just
+the highlighted edit. Operational impact stays visible: governed model and pool batches can
+temporarily deny unchanged callers and suspend keys, generated policies replace rather than merge
+manual edits, and removing pool members can delete their APIM backends. Intended-equal configuration
+can still be written again. **Technical execution**, collapsed for new plans, retains the complete
+target, ordered resource steps and policy facets; older plans without a comparison show it expanded.
+Counter expressions are represented only by fingerprints, never their contents.
+
+The applied baseline is a timestamped MOSAIC record, not a fresh live-Azure verification. Older
+records can compare recorded access but lack historical routing settings; failed or interrupted runs
+also limit what is known. Those previous values are explicitly unavailable, not silently unchanged.
+The ephemeral editing context expires and does not survive a reload; the server's complete pending
+comparison remains available. A grant's effective per-person limits say whether they come from a
+grant override or cost-center defaults; shared quotas and publication safeguards are additional.
+
+In the Published models detail, **Review changes** makes a fresh plan and opens that review; it is
+also how a failed or rolled-back publication is retried.
 If MOSAIC refuses the reviewed plan, for example because the publication changed after it was
 planned, the review says why and shows a fresh plan in its place.
 

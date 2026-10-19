@@ -31,14 +31,16 @@ phase.
    A pairing that involves an unclassified resource shows a warning.
 3. Review the generated publication names and API path, then create the publication. This records
    desired state only.
-4. Choose **Plan**. The plan checks live APIM state, builds a grant snapshot and shows every APIM
-   resource and policy facet MOSAIC will write. The access review names each grant's principal
-   and its kind, such as Person, Agent, Agent user, or Security group.
+4. Choose **Review plan**. The plan checks APIM resource state and compares the proposed target
+   with MOSAIC's recorded applied configuration. Only intended changes appear by default; previous
+   values missing from older records are explicitly unavailable. Expand **Technical execution**
+   for every target grant, policy facet, and ordered resource step.
 5. Review warnings. Common warnings include the diagnostics requirement, the need for VS Code or
    another interactive client to have consent for `api://<runtime-client-id>/Mcp.Invoke`, the
    gateway managed identity's required upstream access, and an environment pairing that involves
    an unclassified resource.
-6. Choose **Apply**. MOSAIC runs the reviewed plan asynchronously and records each step. Once the
+6. Choose **Apply all pending changes**. This includes every saved pending edit for the publication,
+   not just the edit that opened the review. MOSAIC runs the reviewed plan asynchronously and records each step. Once the
    MCP API is in API Management, the portal lists the server in its catalog.
 7. Create or update MCP entitlements for users, agent identities, agent users or Entra security
    groups.

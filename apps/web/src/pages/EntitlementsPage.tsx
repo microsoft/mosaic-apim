@@ -17,6 +17,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link as RouterLink, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { ApiError, useMosaicApi } from '../api'
+import { grantReviewValues, rememberEdit } from '../change-review'
 import {
   ApproveAccessRequestDialog,
   type ApprovalRequester,
@@ -326,6 +327,7 @@ export function EntitlementsPage() {
   const announce = useCallback((text: string) => setBanner({ text }), [])
   const [inspectedPrincipal, setInspectedPrincipal] = useState('')
   const [form, setForm] = useState<GrantForm>(emptyForm)
+  const editBase = useRef<Entitlement | undefined>(undefined)
   const { selectedId, mode } = workbench
   const selectedPublicationId = activeSection === 'settings' ? selectedId ?? '' : ''
   const environmentFilter = searchParams.get('environment') ?? 'all'
@@ -490,6 +492,7 @@ export function EntitlementsPage() {
       notes: string | null
     }) => api.createEntitlement(payload),
     onSuccess: async (saved, variables) => {
+      rememberGrantEdit(saved)
       await queryClient.invalidateQueries({ queryKey: ['entitlements'] })
       completeWorkspaceNavigation(() => updateLocation({ tab: 'grants', selected: saved.id, mode: null, model: null }))
       setForm(emptyForm)
@@ -507,9 +510,10 @@ export function EntitlementsPage() {
   })
 
   const editMutation = useMutation({
-    mutationFn: ({ id, enforcement, notes }: { id: string; enforcement: EntitlementEnforcement | null; notes: string | null }) =>
+    mutationFn: ({ id, enforcement, notes }: { id: string; enforcement: EntitlementEnforcement | null; notes: string | null; before: Entitlement }) =>
       api.updateEntitlement(id, { enforcement, notes }),
-    onSuccess: async (saved) => {
+    onSuccess: async (saved, variables) => {
+      rememberGrantEdit(saved, variables.before)
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['entitlements'] }),
         queryClient.invalidateQueries({ queryKey: ['publications'] }),
@@ -523,10 +527,13 @@ export function EntitlementsPage() {
   })
 
   const toggleMutation = useMutation({
-    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
-      api.updateEntitlement(id, { enabled }),
-    onSuccess: async (_, variables) => {
-      const grant = entitlements.data?.find((item) => item.id === variables.id)
+    mutationFn: async ({ id, enabled }: { id: string; enabled: boolean }) => {
+      const before = entitlements.data?.find((item) => item.id === id)
+      const saved = await api.updateEntitlement(id, { enabled })
+      return { saved, before }
+    },
+    onSuccess: async ({ saved, before: grant }, variables) => {
+      if (grant) rememberGrantEdit(saved, grant)
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['entitlements'] }),
         queryClient.invalidateQueries({ queryKey: ['publications'] }),
@@ -642,6 +649,12 @@ export function EntitlementsPage() {
     return modelPools.data?.find((pool) => pool.id === resource.scopeId)
   }
 
+  function rememberGrantEdit(saved: Entitlement, before?: Entitlement) {
+    const target = saved.resource.kind === 'poolModel' ? poolFor(saved.resource)
+      : saved.resource.kind === 'mcpServer' ? mcpPublicationFor(saved) : publicationFor(saved)
+    if (target) rememberEdit(target.id, before ? grantReviewValues(before) : {}, grantReviewValues(saved))
+  }
+
   function managedGrant(entitlement: Pick<Entitlement, 'resource' | 'subject' | 'runtime'>) {
     // A pool applies every direct grant on its models once it governs access. Until then they wait.
     if (entitlement.resource.kind === 'poolModel') return entitlement.subject.kind !== 'group'
@@ -740,7 +753,8 @@ export function EntitlementsPage() {
           },
         }
       }
-      editMutation.mutate({ id: grant.id, enforcement, notes: form.notes.trim() || null })
+      if (!editBase.current || editBase.current.id !== grant.id) return
+      editMutation.mutate({ id: grant.id, enforcement, notes: form.notes.trim() || null, before: editBase.current })
       return
     }
     const subject = subjectOptions.find((option) => option.id === form.subject)
@@ -767,6 +781,7 @@ export function EntitlementsPage() {
     if (!dialogOpen) return
     createMutation.reset()
     editMutation.reset()
+    editBase.current = editingGrant
     setForm(editingGrant ? formForGrant(editingGrant) : { ...emptyForm, resource: directModelId ?? '' })
     // Re-entering an editor starts a fresh draft, including browser Back/Forward.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -847,7 +862,7 @@ export function EntitlementsPage() {
         {pendingRequests.isError && <Text role="status">Pending count unavailable. Open requests to retry.</Text>}
       </div>
       {banner && (
-        <MessageBar intent="success">
+        <MessageBar intent="success" layout="multiline">
           <MessageBarBody>
             {banner.text}
             {banner.review && (
@@ -888,7 +903,7 @@ export function EntitlementsPage() {
       {gateways.isError && <ErrorState error={gateways.error} />}
       {modelEndpoints.isError && <ErrorState error={modelEndpoints.error} />}
       {runtimeConfig.authMode === 'local' && (
-        <MessageBar intent="warning">
+        <MessageBar intent="warning" layout="multiline">
           <MessageBarBody>Local development mode: service responses may be simulated and do not verify live APIM enforcement.</MessageBarBody>
         </MessageBar>
       )}

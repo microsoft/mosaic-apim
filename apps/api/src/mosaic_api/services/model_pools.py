@@ -149,6 +149,7 @@ from mosaic_api.services.automatic_keys import (
     verify_key_runtime,
 )
 from mosaic_api.services.budget_gate import BlockedListGate, ensure_blocked_list, is_blocked_list
+from mosaic_api.services.change_review import build_review, review_snapshot
 from mosaic_api.services.cost_centers import load_book
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.environments import load_environment_catalog
@@ -1543,6 +1544,7 @@ class ModelPoolService:
                         key_name=entitlement_key_name(pool, entitlement),
                         enabled=entitlement.enabled,
                         enforcement=enforcement,
+                        limits_source="grant" if entitlement.enforcement else "costCenter",
                         intent_digest=entitlement_intent_digest(entitlement, principal, intent),
                         cost_center_id=intent.cost_center_id,
                         cost_center_code=intent.code,
@@ -3195,6 +3197,7 @@ class ModelPoolService:
                     pool.applied_access.version if pool.applied_access else None
                 ),
             )
+            plan.review = build_review(pool, plan, snapshot)
             await self._repository.save_publish_plan(plan)
             await self._repository.record_model_pool_state(
                 pool.model_copy(
@@ -3342,13 +3345,18 @@ class ModelPoolService:
         }
         if access_snapshot is not None:
             update["applied_access"] = access_snapshot
+        if status in {PublicationStatus.FAILED, PublicationStatus.ROLLED_BACK}:
+            update["applied_review"] = None
         if access_state is not None:
             update["access_state"] = access_state
+            if access_state in {"failed", "unknown"}:
+                update["applied_review"] = None
         if applied_model_ids is not None:
             update["applied_model_ids"] = list(applied_model_ids)
         if policy_digests is not None:
             update["applied_policy_sha256"], update["applied_fragment_sha256"] = policy_digests
         if applied:
+            update["applied_review"] = review_snapshot(pool, access_snapshot)
             update.update(
                 {
                     "last_applied_at": now,
@@ -3357,6 +3365,7 @@ class ModelPoolService:
                 }
             )
         if unpublished:
+            update["applied_review"] = None
             update["key_policy_hashes"] = {}
             update["key_lifecycle"] = {
                 name: "deleted" if state == "deleted" else "pending"
@@ -4430,6 +4439,7 @@ class ModelPoolService:
                 actor_object_id=actor.object_id,
                 pool_access_snapshot=pool.applied_access if governed else None,
             )
+            plan.review = build_review(pool, plan, pool.applied_access)
             await self._repository.save_publish_plan(plan)
             return plan
 

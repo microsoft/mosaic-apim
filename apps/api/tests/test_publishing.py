@@ -307,6 +307,11 @@ async def test_replanning_after_apply_reports_updates_not_creates(harness: Harne
 
     assert all(step.action == PublishAction.UPDATE for step in plan.steps)
     assert all(step.existed for step in plan.steps)
+    assert plan.review is not None
+    assert plan.review.baseline == "applied"
+    assert plan.review.changes == []
+    applied = await harness.service.get_publication(ACTOR, publication_id)
+    assert applied.applied_review == plan.review.target
 
 
 async def test_long_running_write_is_polled_to_completion(harness: Harness) -> None:

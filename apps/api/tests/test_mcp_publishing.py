@@ -1048,6 +1048,8 @@ async def test_apply_writes_mcp_api_policy_and_records_publication(harness: Harn
     }
     assert all(resource.created_by_mosaic for resource in publication.resources)
     assert publication.applied_access == plan.mcp_access_snapshot
+    assert plan.review is not None
+    assert publication.applied_review == plan.review.target
     assert await harness.gateway_repository.get_publication_lock(TENANT_ID, publication_id) is None
 
 

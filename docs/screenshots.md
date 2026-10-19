@@ -206,8 +206,9 @@ survives to be read back.
 - `SENSITIVE_LITERALS` in `demo_api.py`: the demo tenant, client, and object IDs.
 - `RESOURCE_NAMES` in `capture.py`: the demo's gateway, resource group, account, vault, MCP, and
   local-group names, including their hyphenated aliases wherever they appear in an API path.
-- The shared MCP metadata API, readable MOSAIC-owned APIM resource names, product names, and
-  fictional person/workload/gateway names and directory aliases are redacted too.
+- The shared MCP metadata API, readable MOSAIC-owned APIM resource names and account-derived
+  API paths, product names, and fictional person/workload/gateway names and directory aliases are
+  redacted too.
 - Exact offering names in `.resource-offering` text are blurred, independently of literal matches.
 - `REDACTION_PATTERNS` in `capture.py`: GUIDs, email addresses, URLs and URIs, Azure resource IDs,
   Azure, Communication Services, and Contoso hostnames, IPv4 addresses, MOSAIC record IDs and the
@@ -305,8 +306,9 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-cost-centers` | Console | `/cost-centers`, selected detail beside the compact list | Light | Cost centers |
 | `console-new-cost-center` | Console | `/cost-centers`, **New cost center** workspace, never saved | Dark | New cost center |
 | `console-cost-center-detail` | Console | Customer Insights detail, **Members** section | Dark | Cost center members |
-| `console-mcp-publish` | Console | `/mcps`, full-workspace **Review changes** for the published Docs MCP server, including the shared metadata API, operation, and operation policy, never applied | Light | MCP publish review |
-| `console-unpublish-review` | Console | `/models`, GPT-4o selected, detail **More actions > Unpublish** destructive-confirmation review, never confirmed | Light | Unpublish review |
+| `console-mcp-publish` | Console | `/mcps`, full-workspace **Review changes** for the published Docs MCP server, intended changes and impact with collapsed execution, never applied | Light | MCP publish review |
+| `console-model-change-review` | Console | `/entitlements?tab=settings`, GPT-4o key setting saved but never applied, current edit separated from an earlier pending grant | Light | Model change review |
+| `console-unpublish-review` | Console | `/models`, GPT-4o selected, detail **More actions > Unpublish**, recorded removals, impact and callers losing access, never confirmed | Light | Unpublish review |
 | `console-budgets` | Console | Customer Support detail, **Budget** section | Dark | Budgets |
 | `console-analytics` | Console | `/analytics`, **Overview** section | Dark | Analytics |
 | `console-analytics-filters` | Console | `/analytics`, grouped draft **Filters** open, never applied | Light | Analytics filters |

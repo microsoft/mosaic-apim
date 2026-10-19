@@ -334,7 +334,7 @@ describe('PublishModelDialog', () => {
     renderDialog()
 
     await advanceToReview(user)
-    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply all pending changes' }))
 
     expect(await screen.findByText(/undid what it created/i)).toBeVisible()
     // The banner title and the step's own status both read "Rolled back".
@@ -353,7 +353,7 @@ describe('PublishModelDialog', () => {
     renderDialog()
 
     await advanceToReview(user)
-    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply all pending changes' }))
 
     expect(await screen.findByText(/left in place/i)).toBeVisible()
   })
@@ -369,7 +369,7 @@ describe('PublishModelDialog', () => {
     renderDialog()
 
     await advanceToReview(user)
-    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply all pending changes' }))
 
     expect(await screen.findByText(/Resources left behind in API Management/)).toBeVisible()
     expect(screen.getByText(/orphan-api/)).toBeVisible()
@@ -418,7 +418,7 @@ describe('PublishModelDialog', () => {
     expect(within(reviewTable).getAllByRole('row')).toHaveLength(3)
     expect(within(reviewTable).getByText('Stage: prepare')).toBeVisible()
     expect(within(reviewTable).getByText('Stage: activate')).toBeVisible()
-    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+    await user.click(screen.getByRole('button', { name: 'Apply all pending changes' }))
     const resultTable = await screen.findByRole('table', { name: 'Publish run steps' })
     expect(within(resultTable).getAllByRole('row')).toHaveLength(3)
     expect(within(resultTable).getByText('Stage: prepare')).toBeVisible()
@@ -432,7 +432,7 @@ describe('PublishModelDialog', () => {
     api.getPublishRun.mockResolvedValue(interrupted)
     const onPublished = vi.fn()
     renderDialog({ publication: modelPublication, plan: accessPlan }, onPublished)
-    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply all pending changes' }))
     expect(await screen.findByText('Apply interrupted — runtime state unknown')).toBeVisible()
     expect(screen.getByText('Worker stopped after policy install.')).toBeVisible()
     await waitFor(() => expect(api.getPublishRun).toHaveBeenCalledTimes(1))
@@ -445,7 +445,7 @@ describe('PublishModelDialog', () => {
     const user = userEvent.setup()
     const onPublished = vi.fn()
     renderDialog({ publication: modelPublication, plan: accessPlan }, onPublished)
-    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply all pending changes' }))
     expect(await screen.findByText('Local development service reported completion; live APIM apply is not verified.')).toBeVisible()
     await waitFor(() => expect(onPublished).toHaveBeenCalledWith('Local development service reported completion. Live APIM apply is not verified.'))
   })
@@ -453,7 +453,7 @@ describe('PublishModelDialog', () => {
   it('refuses a governed apply when the service omits the access snapshot', async () => {
     renderDialog({ publication: modelPublication, plan: { ...accessPlan, accessSnapshot: null } })
     expect(await screen.findByText(/The governed-access snapshot is missing/)).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Apply plan' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Apply all pending changes' })).toBeDisabled()
     expect(api.applyPublishPlan).not.toHaveBeenCalled()
   })
 
@@ -465,13 +465,13 @@ describe('PublishModelDialog', () => {
     renderDialog({ publication, plan: unchanged })
 
     expect(
-      await screen.findByText('API Management already matches this publication. Nothing to apply.'),
+      await screen.findByText('This plan lists no resource operations. It is not a live verification of gateway behavior.'),
     ).toBeVisible()
     expect(within(screen.getByRole('table', { name: 'Publish plan steps' })).getByText('No change')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Apply plan' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Apply all pending changes' })).toBeDisabled()
   })
 
-  it('offers Apply plan when any step would change API Management', async () => {
+  it('offers Apply all pending changes when any step would change API Management', async () => {
     const mixed: PublishPlan = {
       ...plan,
       steps: [
@@ -481,7 +481,7 @@ describe('PublishModelDialog', () => {
     }
     renderDialog({ publication, plan: mixed })
 
-    expect(await screen.findByRole('button', { name: 'Apply plan' })).toBeEnabled()
+    expect(await screen.findByRole('button', { name: 'Apply all pending changes' })).toBeEnabled()
     expect(screen.queryByText(/Nothing to apply/)).not.toBeInTheDocument()
   })
 
@@ -494,7 +494,7 @@ describe('PublishModelDialog', () => {
     api.createPublishPlan.mockResolvedValueOnce({ ...plan, id: 'plan_2' })
     renderDialog({ publication, plan })
 
-    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply all pending changes' }))
 
     expect(
       await screen.findByText('MOSAIC has already re-planned. Review the fresh plan below before you apply it.'),
@@ -504,7 +504,7 @@ describe('PublishModelDialog', () => {
     expect(screen.queryByText(/earlier plan was rejected/)).not.toBeInTheDocument()
     expect(api.createPublishPlan).toHaveBeenCalledWith('pub_1')
 
-    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+    await user.click(screen.getByRole('button', { name: 'Apply all pending changes' }))
 
     await waitFor(() => expect(api.applyPublishPlan).toHaveBeenLastCalledWith('pub_1', 'plan_2'))
   })
@@ -611,10 +611,10 @@ describe('PublishModelDialog', () => {
     api.applyPublishPlan.mockRejectedValue(Object.assign(new Error('Plan is stale.'), { status: 409 }))
     api.createPublishPlan.mockRejectedValue(new Error('Cannot refresh the model plan.'))
     renderDialog({ publication: modelPublication, plan: accessPlan })
-    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply all pending changes' }))
     expect(await screen.findByText('Cannot refresh the model plan.')).toBeVisible()
     expect(screen.queryByText(/already re-planned/)).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Apply plan' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Apply all pending changes' })).toBeDisabled()
   })
 
   it('opens a review on its review step, without first rendering the gateway and model chooser', async () => {
@@ -693,7 +693,7 @@ describe('PublishModelDialog', () => {
     const frames = renderDialogParent([{ publication: modelPublication, plan: accessPlan }])
 
     await user.click(screen.getByRole('button', { name: 'Open review 1' }))
-    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+    await user.click(screen.getByRole('button', { name: 'Apply all pending changes' }))
     expect(await screen.findByText('API Management refused the change.')).toBeVisible()
     frames.length = 0
     await user.click(screen.getByRole('button', { name: 'Close' }))
@@ -733,7 +733,7 @@ describe('PublishModelDialog', () => {
     const frames = renderDialogParent([{ publication: modelPublication, plan: accessPlan }], onPublished)
 
     await user.click(screen.getByRole('button', { name: 'Open review 1' }))
-    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+    await user.click(screen.getByRole('button', { name: 'Apply all pending changes' }))
     expect(await screen.findByRole('button', { name: 'Applying…' })).toHaveAttribute('aria-disabled', 'true')
     expect(screen.getByRole('button', { name: 'Close' })).toBeDisabled()
     await user.click(screen.getByRole('button', { name: 'Back' }))
@@ -778,7 +778,7 @@ describe('PublishModelDialog', () => {
     await waitFor(() => expect(focused()).toBe(screen.getByText('Step 2 of 4')))
   })
 
-  it('keeps focus on Review plan and Apply plan while they work, without letting them be pressed again', async () => {
+  it('keeps focus on Review plan and Apply all pending changes while they work, without letting them be pressed again', async () => {
     const user = userEvent.setup()
     let finishPlan: (value: PublishPlan) => void = () => {}
     api.createPublishPlan.mockReturnValue(new Promise<PublishPlan>((resolve) => { finishPlan = resolve }))
@@ -800,7 +800,7 @@ describe('PublishModelDialog', () => {
       finishPlan(plan)
       await new Promise((resolve) => setTimeout(resolve, 50))
     })
-    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply all pending changes' }))
 
     const applying = await screen.findByRole('button', { name: 'Applying…' })
     expect(applying).toHaveFocus()
@@ -821,7 +821,7 @@ describe('PublishModelDialog', () => {
     renderDialogParent([{ publication: modelPublication, plan: accessPlan }])
 
     await user.click(screen.getByRole('button', { name: 'Open review 1' }))
-    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+    await user.click(screen.getByRole('button', { name: 'Apply all pending changes' }))
 
     expect(await screen.findByText('Step 4 of 4')).toBeVisible()
     await waitFor(() => expect(focused()).toContainElement(screen.getByRole('table', { name: 'Publish run steps' })))
@@ -841,7 +841,7 @@ describe('PublishModelDialog', () => {
     api.getPublishRun.mockResolvedValueOnce(running).mockResolvedValue(run())
     renderDialog({ publication, plan })
 
-    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply all pending changes' }))
 
     await waitFor(() => expect(focused()).toBe(screen.getByText('Step 4 of 4')))
     // The dialog asks the service for the run every second until it finishes.
@@ -864,7 +864,7 @@ describe('PublishModelDialog', () => {
     api.getPublishRun.mockResolvedValue(finished)
     renderDialog({ publication, plan })
 
-    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply all pending changes' }))
 
     await waitFor(() => expect(focused()).toHaveTextContent(message))
     expect(focused()).toHaveTextContent('The backend could not be created.')
@@ -880,7 +880,7 @@ describe('PublishModelDialog', () => {
     renderDialogParent([{ publication, plan }])
 
     await user.click(screen.getByRole('button', { name: 'Open review 1' }))
-    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+    await user.click(screen.getByRole('button', { name: 'Apply all pending changes' }))
 
     await waitFor(() =>
       expect(focused()).toHaveTextContent('MOSAIC has already re-planned. Review the fresh plan below before you apply it.'),
@@ -888,7 +888,7 @@ describe('PublishModelDialog', () => {
     expect(focused()).toHaveTextContent("MOSAIC didn't apply the plan you reviewed")
     expect(focused()).toHaveTextContent(refusal)
     expect(focused()).not.toContainElement(screen.getByRole('table', { name: 'Publish plan steps' }))
-    expect(screen.getByRole('button', { name: 'Apply plan' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Apply all pending changes' })).toBeEnabled()
 
     await user.click(screen.getByRole('button', { name: 'Close' }))
 
@@ -902,12 +902,12 @@ describe('PublishModelDialog', () => {
     api.createPublishPlan.mockRejectedValue(new Error('Cannot refresh the model plan.'))
     renderDialog({ publication: modelPublication, plan: accessPlan })
 
-    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply all pending changes' }))
 
     expect(await screen.findByText('Cannot refresh the model plan.')).toBeVisible()
     await waitFor(() => expect(focused()).toHaveTextContent("MOSAIC didn't apply the plan you reviewed"))
     expect(focused()).toHaveTextContent('Plan is stale.')
-    expect(screen.getByRole('button', { name: 'Apply plan' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Apply all pending changes' })).toBeDisabled()
   })
 
   it('moves focus to the reason an apply failed', async () => {
@@ -915,14 +915,14 @@ describe('PublishModelDialog', () => {
     api.applyPublishPlan.mockRejectedValue(new Error('API Management refused the change.'))
     renderDialog({ publication, plan })
 
-    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply all pending changes' }))
 
     await waitFor(() => expect(focused()).toHaveTextContent('API Management refused the change.'))
     expect(focused()).not.toContainElement(screen.getByRole('table', { name: 'Publish plan steps' }))
     expect(screen.getByText('Step 3 of 4')).toBeVisible()
   })
 
-  it('keeps focus on Apply plan while it tries again after failing, then moves it to the result', async () => {
+  it('keeps focus on Apply all pending changes while it tries again after failing, then moves it to the result', async () => {
     const user = userEvent.setup()
     let finishApply: (value: PublishRun) => void = () => {}
     api.applyPublishPlan
@@ -930,9 +930,9 @@ describe('PublishModelDialog', () => {
       .mockReturnValueOnce(new Promise<PublishRun>((resolve) => { finishApply = resolve }))
     renderDialog({ publication, plan })
 
-    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply all pending changes' }))
     await waitFor(() => expect(focused()).toHaveTextContent('API Management refused the change.'))
-    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+    await user.click(screen.getByRole('button', { name: 'Apply all pending changes' }))
 
     const applying = await screen.findByRole('button', { name: 'Applying…' })
     await act(async () => {
