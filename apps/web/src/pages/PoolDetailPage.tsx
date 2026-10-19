@@ -16,6 +16,7 @@ import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'reac
 import { PublishNotificationRun } from '../components/NotificationOperationRun'
 import { HistoryRegular, HeartPulseRegular, InfoRegular, LayerRegular, ShieldKeyholeRegular } from '@fluentui/react-icons'
 import { useMosaicApi } from '../api'
+import { poolReviewValues, rememberEdit } from '../change-review'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { CopyButton } from '../components/CopyButton'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
@@ -482,6 +483,9 @@ function PoolDetail({ poolId, embedded = false }: { poolId: string; embedded?: b
       }),
     onMutate: () => setNotice(''),
     onSuccess: async (saved, change) => {
+      const keyedEndpointIds = new Set(detail.data?.models.flatMap((model) =>
+        model.members.filter((member) => member.apiKey).map((member) => member.modelEndpointId)))
+      rememberEdit(saved.id, poolReviewValues(change.pool, keyedEndpointIds), poolReviewValues(saved, keyedEndpointIds))
       setNotice(drainNotice(change, saved.resources.some((resource) => resource.createdByMosaic)))
       await queryClient.invalidateQueries({ queryKey: ['model-pools'] })
     },

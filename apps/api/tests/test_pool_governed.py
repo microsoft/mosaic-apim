@@ -376,6 +376,8 @@ async def test_a_first_governed_apply_installs_its_policy_behind_a_deny_and_bind
     assert applied.status == PublicationStatus.PUBLISHED
     assert applied.access_state == "applied"
     assert applied.applied_access == plan.pool_access_snapshot
+    assert plan.review is not None
+    assert applied.applied_review == plan.review.target
     fake = governed.apim
     paths = [call["path"] for call in fake.http_calls if call["method"] == "PUT"]
     policies = [item["value"] for item in governed.puts(_api_policy(pool))]

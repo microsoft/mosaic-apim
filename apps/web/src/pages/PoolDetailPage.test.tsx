@@ -136,7 +136,7 @@ describe('PoolDetailPage', () => {
         status: accessState === 'unknown' ? 'failed' : 'applying', accessState } })
     renderPage(`/pools/${anthropicPool.id}?mode=review&planAction=${mode}`)
 
-    await user.click(await screen.findByRole('button', { name: mode === 'publish' ? 'Apply plan' : 'Unpublish pool' }))
+    await user.click(await screen.findByRole('button', { name: mode === 'publish' ? 'Apply all pending changes' : 'Unpublish pool' }))
 
     await waitFor(() => expect(api.getModelPoolDetail).toHaveBeenCalledTimes(2))
     expect(await screen.findByText(mode === 'publish' ? 'Applying the plan for Anthropic Claude' : 'Unpublishing Anthropic Claude')).toBeVisible()

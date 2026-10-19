@@ -1327,6 +1327,7 @@ export interface ModelAccessGrant {
   costCenterCode?: string | null
   enabled: boolean
   enforcement?: EntitlementEnforcement | null
+  limitsSource?: 'grant' | 'costCenter' | null
   intentDigest: string
   /** False when the grant's cost center turned keys off, so its key is suspended. */
   keysAllowed?: boolean
@@ -1350,6 +1351,7 @@ export interface McpAccessGrant {
   costCenterCode?: string | null
   enabled: boolean
   enforcement?: EntitlementEnforcement | null
+  limitsSource?: 'grant' | 'costCenter' | null
   intentDigest: string
 }
 
@@ -1471,6 +1473,36 @@ export interface PublishPlanStep {
   stage?: PublishStage | null
 }
 
+export interface ReviewField {
+  key: string
+  category: string
+  label: string
+  value: string
+}
+
+export interface ReviewSnapshot {
+  version: 1
+  fields: ReviewField[]
+}
+
+export interface ReviewChange {
+  key: string
+  category: string
+  label: string
+  before: string | null
+  after: string | null
+  previousKnown: boolean
+}
+
+export interface PlanReview {
+  version: 1
+  baseline: 'applied' | 'new' | 'partial' | 'unavailable'
+  appliedAt: string | null
+  changes: ReviewChange[]
+  target: ReviewSnapshot
+  impact: string[]
+}
+
 export interface PublishPlan {
   id: string
   tenantId: string
@@ -1489,6 +1521,7 @@ export interface PublishPlan {
   mcpAccessSnapshot?: McpAccessSnapshot | null
   poolAccessSnapshot?: PoolAccessSnapshot | null
   previousAccessVersion?: number | null
+  review?: PlanReview | null
   createdAt: string
   updatedAt: string
 }
@@ -1543,6 +1576,7 @@ export interface PoolAccessGrant {
   keyName?: string | null
   enabled: boolean
   enforcement?: EntitlementEnforcement | null
+  limitsSource?: 'grant' | 'costCenter' | null
   intentDigest: string
   costCenterId?: string
   costCenterCode?: string

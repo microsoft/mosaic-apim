@@ -1,7 +1,8 @@
 import { Badge, Button, MessageBar, MessageBarBody, Switch, Text, Title3 } from '@fluentui/react-components'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useMosaicApi } from '../api'
+import { accessReviewValues, rememberEdit } from '../change-review'
 import { describeAccessMethods, describePublicationLimits } from '../entitlement-limits'
 import type { Publication } from '../types'
 import { ErrorState } from './AsyncState'
@@ -23,6 +24,7 @@ export function ModelAccessSettingsPanel({
 }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
+  const editBase = useRef(publication.governedAccess)
   const [settings, setSettings] = useState(
     publication.governedAccess ?? { keysEnabled: true, entraEnabled: publication.azureCloud !== 'government' },
   )
@@ -49,7 +51,10 @@ export function ModelAccessSettingsPanel({
   })
   const save = useMutation({
     mutationFn: () => api.updatePublication(publication.id, { governedAccess: settings }),
-    onSuccess: async () => {
+    onSuccess: async (saved) => {
+      rememberEdit(publication.id, accessReviewValues(editBase.current),
+        accessReviewValues(saved.governedAccess))
+      editBase.current = saved.governedAccess
       await invalidate()
       onMessage('Saved governed-access intent only. Review and apply this model’s plan to change API Management.')
     },

@@ -17,6 +17,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useId, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import { useMosaicApi } from '../api'
+import { useEditContext } from '../change-review'
+import type { EditContext } from '../change-review'
 import { describeAccessMethods, describeLimits } from '../entitlement-limits'
 import { ENTITLEMENT_SUBJECT_KIND_LABELS, plural } from '../labels'
 import { POOL_RESOURCE_KIND_LABELS, planProblems, poolChangeLockReason } from '../pools'
@@ -31,6 +33,7 @@ import type {
   PublishStepStatus,
 } from '../types'
 import { ErrorState, Loading } from './AsyncState'
+import { ChangeReview, TechnicalExecution } from './ChangeReview'
 import { ModelAccessRecovery } from './ModelAccessRecovery'
 import { PolicyFacetItem } from './PolicyFacets'
 import styles from './PoolDialogs.module.css'
@@ -95,6 +98,7 @@ export function PoolPlanDialog({ pool, mode, onClose, onFinished, locked = false
   const lockReason = poolChangeLockReason(pool)
   const changesLocked = locked || Boolean(lockReason)
   const [freshPlan, setFreshPlan] = useState<PublishPlan | null>(null)
+  const [editContext] = useEditContext(pool.id)
   const [runId, setRunId] = useState('')
   const [refusal, setRefusal] = useState('')
   const [invalidPlan, setInvalidPlan] = useState(false)
@@ -215,7 +219,7 @@ export function PoolPlanDialog({ pool, mode, onClose, onFinished, locked = false
   return (
     <WorkspaceEditorFrame
       title={publishing ? `Review ${pool.displayName}` : `Unpublish ${pool.displayName}?`}
-      description="Preview the changes MOSAIC would apply. Nothing changes until you select Apply plan."
+      description="Preview the changes MOSAIC would apply. Nothing changes until you apply all pending changes."
       onBack={onClose}
       onCancel={onClose}
       backLabel="Back to pool"
@@ -224,7 +228,7 @@ export function PoolPlanDialog({ pool, mode, onClose, onFinished, locked = false
       actions={phase === 'review' && plan && (
         <Button appearance="primary" className={publishing ? undefined : styles.destructive}
           disabled={invalidPlan || nothingToApply} disabledFocusable={busy} onClick={() => apply.mutate()}>
-          {publishing ? (busy ? 'Applying…' : 'Apply plan') : busy ? 'Unpublishing…' : 'Unpublish pool'}
+          {publishing ? (busy ? 'Applying…' : 'Apply all pending changes') : busy ? 'Unpublishing…' : 'Unpublish pool'}
         </Button>
       )}
     >
@@ -279,6 +283,7 @@ export function PoolPlanDialog({ pool, mode, onClose, onFinished, locked = false
             )}
             {phase === 'review' && plan && (
               <PlanReview
+                context={editContext}
                 plan={plan}
                 mode={mode}
                 name={pool.displayName}
@@ -348,6 +353,7 @@ export function PoolPlanDialog({ pool, mode, onClose, onFinished, locked = false
 }
 
 function PlanReview({
+  context,
   plan,
   mode,
   name,
@@ -355,6 +361,7 @@ function PlanReview({
   nothingToApply,
   reviewRef,
 }: {
+  context?: EditContext
   plan: PublishPlan
   mode: PoolPlanMode
   name: string
@@ -368,18 +375,20 @@ function PlanReview({
     <section ref={reviewRef} tabIndex={-1} aria-label="Plan review" className={styles.section}>
       {nothingToApply && (
         <MessageBar intent="info">
-          <MessageBarBody>API Management already matches {name}. There’s nothing to apply.</MessageBarBody>
+          <MessageBarBody>This plan lists no resource operations for {name}. It is not a live verification of gateway behavior.</MessageBarBody>
         </MessageBar>
       )}
+      <ChangeReview plan={plan} context={context} />
       {plan.warnings.map((warning) => (
-        <MessageBar key={warning} intent="warning">
+        <MessageBar key={warning} intent="warning" layout="multiline">
           <MessageBarBody>{warning}</MessageBarBody>
         </MessageBar>
       ))}
+      <TechnicalExecution plan={plan}>
       <Title3 as="h3">{publishing ? 'What MOSAIC writes' : 'What MOSAIC deletes'}</Title3>
       <Text>
         {publishing
-          ? `${plural(changes, 'change')} across ${plural(plan.steps.length, 'resource')}, written in this order.`
+          ? `${plural(changes, 'operation')}, executed in this order.`
           : `${plural(plan.steps.length, 'resource')} MOSAIC created, deleted in this order. MOSAIC leaves everything else in API Management alone.`}
       </Text>
       <div className={`table-scroll ${styles.tableScroll}`}>
@@ -430,6 +439,7 @@ function PlanReview({
           models={models}
         />
       )}
+      </TechnicalExecution>
     </section>
   )
 }

@@ -18,6 +18,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { useMosaicApi } from '../api'
+import { poolReviewValues, rememberEdit } from '../change-review'
 import { QUOTA_PERIODS } from '../entitlement-limits'
 import { useEnvironmentCatalog } from '../environments'
 import { plural } from '../labels'
@@ -136,6 +137,7 @@ export interface PoolEditorDialogProps {
 /** Create a model pool, or change one. Saving records intent only; publishing is a reviewed plan. */
 export function PoolEditorDialog({ pool, initialGatewayId, prefill, onClose, onSaved }: PoolEditorDialogProps) {
   const api = useMosaicApi()
+  const editBase = useRef(pool)
   const queryClient = useQueryClient()
   const catalog = useEnvironmentCatalog()
   const [step, setStep] = useState<EditorStep>('basics')
@@ -255,6 +257,10 @@ export function PoolEditorDialog({ pool, initialGatewayId, prefill, onClose, onS
     },
     onSuccess: ({ saved, review }) => {
       void queryClient.invalidateQueries({ queryKey: ['model-pools'] })
+      const keyedEndpointIds = new Set(candidates.data?.models.flatMap((model) =>
+        model.deployments.filter((member) => member.apiKey).map((member) => member.modelEndpointId)))
+      rememberEdit(saved.id, editBase.current ? poolReviewValues(editBase.current, keyedEndpointIds) : {},
+        poolReviewValues(saved, keyedEndpointIds))
       completeWorkspaceNavigation(() => onSaved(saved, review))
     },
   })

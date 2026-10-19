@@ -34,6 +34,7 @@ import type {
   PublishStepStatus,
 } from '../types'
 import { ErrorState, Loading } from './AsyncState'
+import { ChangeReview, TechnicalExecution } from './ChangeReview'
 import { ModelAccessRecovery } from './ModelAccessRecovery'
 import styles from './UnpublishDialog.module.css'
 
@@ -446,6 +447,7 @@ function UnpublishReview({
 
   return (
     <section ref={reviewRef} tabIndex={-1} aria-label="Unpublish review" className={styles.content}>
+      <ChangeReview plan={plan} />
       <div className={styles.section}>
         <Title3 as="h3">Who loses access</Title3>
         {!model && !mcp && target === 'model' ? (
@@ -491,17 +493,18 @@ function UnpublishReview({
         </Text>
       </div>
 
+      {plan.warnings.map((warning) => (
+        <MessageBar key={warning} intent="warning" layout="multiline">
+          <MessageBarBody>{warning}</MessageBarBody>
+        </MessageBar>
+      ))}
+      <TechnicalExecution plan={plan}>
       <div className={styles.section}>
         <Title3 as="h3">What MOSAIC deletes</Title3>
         <Text>
           {plural(plan.steps.length, 'resource')} MOSAIC created, deleted in this order. MOSAIC
           leaves everything else in API Management alone.
         </Text>
-        {plan.warnings.map((warning) => (
-          <MessageBar key={warning} intent="warning">
-            <MessageBarBody>{warning}</MessageBarBody>
-          </MessageBar>
-        ))}
         <div className={styles.tableScroll}>
           <Table size="small" aria-label="Unpublish plan steps">
             <TableHeader>
@@ -531,6 +534,7 @@ function UnpublishReview({
           </Table>
         </div>
       </div>
+      </TechnicalExecution>
     </section>
   )
 }

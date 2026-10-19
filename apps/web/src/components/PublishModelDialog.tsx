@@ -26,6 +26,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMosaicApi } from '../api'
+import { creationContext, useEditContext } from '../change-review'
 import { environmentBlockedVerdict, useEnvironmentCatalog } from '../environments'
 import { CANNOT_INVOKE, NOT_CONFIRMED, runtimeVerdict } from '../runtime-access'
 import { runtimeConfig } from '../runtime-config'
@@ -43,6 +44,7 @@ import type {
   TokenEnforcement,
 } from '../types'
 import { ErrorState, Loading } from './AsyncState'
+import { ChangeReview, TechnicalExecution } from './ChangeReview'
 import { EnvironmentBadge } from './EnvironmentBadge'
 import { PolicyFacetItem } from './PolicyFacets'
 import { ModelAccessReview } from './ModelAccessReview'
@@ -335,6 +337,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
   const [runId, setRunId] = useState('')
   const [refreshError, setRefreshError] = useState<Error | null>(null)
   const [invalidPlan, setInvalidPlan] = useState(false)
+  const [editContext, setEditContext] = useEditContext(initialReview?.publication.id)
   const [showEnvironmentBlocked, setShowEnvironmentBlocked] = useState(false)
   const appliedGatewayRef = useRef(false)
   const notifiedRunRef = useRef('')
@@ -400,6 +403,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
       return { created, createdPlan }
     },
     onSuccess: ({ created, createdPlan }) => {
+      setEditContext(creationContext(createdPlan))
       setPublication(created)
       setPlan(createdPlan)
       setReviewMessage('')
@@ -516,13 +520,13 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
     {step === 'configure' && <Button appearance="primary" disabled={!canReview} disabledFocusable={createAndPlan.isPending}
       onClick={() => createAndPlan.mutate()}>{createAndPlan.isPending ? 'Creating plan…' : 'Review plan'}</Button>}
     {step === 'review' && <Button appearance="primary" disabled={invalidPlan || missingAccessReview || nothingToApply} disabledFocusable={apply.isPending}
-      onClick={() => apply.mutate()}>{apply.isPending ? 'Applying…' : 'Apply plan'}</Button>}
+      onClick={() => apply.mutate()}>{apply.isPending ? 'Applying…' : 'Apply all pending changes'}</Button>}
   </WorkspaceDialogActions>
   const content = (requestClose: () => void) => (
         <>
           <WorkspaceDialogContent>
             <div className={styles.intro}>
-              <Text>Preview the changes MOSAIC would apply. Nothing changes until you select Apply plan.</Text>
+              <Text>Preview the changes MOSAIC would apply. Nothing changes until you apply all pending changes.</Text>
               {runtimeConfig.authMode === 'local' && (
                 <Text>Local development mode: responses may be simulated and do not prove a live APIM change.</Text>
               )}
@@ -737,20 +741,22 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                 )}
                 {nothingToApply && (
                   <MessageBar intent="info">
-                    <MessageBarBody>API Management already matches this publication. Nothing to apply.</MessageBarBody>
+                    <MessageBarBody>This plan lists no resource operations. It is not a live verification of gateway behavior.</MessageBarBody>
                   </MessageBar>
                 )}
+                <ChangeReview plan={plan} context={editContext} />
                 {plan.warnings.map((warning) => (
-                  <MessageBar key={warning} intent="warning">
+                  <MessageBar key={warning} intent="warning" layout="multiline">
                     <MessageBarBody><MessageBarTitle>Plan warning</MessageBarTitle>{warning}</MessageBarBody>
                   </MessageBar>
                 ))}
-                <ModelAccessReview plan={plan} />
                 {missingAccessReview && (
                   <MessageBar intent="error">
                     <MessageBarBody>The governed-access snapshot is missing. Close and request a fresh model plan; access changes cannot be applied without reviewing all target grants.</MessageBarBody>
                   </MessageBar>
                 )}
+                <TechnicalExecution plan={plan}>
+                <ModelAccessReview plan={plan} />
                 <Title3 as="h3">Plan steps</Title3>
                 <div className={styles.tableScroll}>
                   <Table size="small" aria-label="Publish plan steps">
@@ -787,6 +793,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                     </ul>
                   </>
                 )}
+                </TechnicalExecution>
                 {applyEnvironmentBlocked && (
                   <MessageBar intent="error">
                     <MessageBarBody>

@@ -126,7 +126,7 @@ REDACTION_PATTERNS = [
     # MOSAIC record IDs and the APIM names derived from them, such as modelApi_<32 hex>,
     # gateway_<32 hex>, and mosaic-grant-<32 hex>.
     r"\b[a-z][\w-]*?[_-][0-9a-f]{24,}\b",
-    r"\bmosaic-(?:contoso|mcp|pool)-[a-z0-9-]+\b",
+    r"\bmosaic[-/](?:contoso|mcp|pool)-[a-z0-9-]+\b",
     r"\b[0-9a-f]{24,}\b",
     # The demo's placeholder keys and tokens.
     r"\bdemo[0-9a-z-]*(?:key|secret|token)[0-9a-z-]*\b",
@@ -465,6 +465,14 @@ def wait_for_text(text: str) -> Action:
         _visible_text(page, text).wait_for(timeout=30_000)
 
     return act
+
+
+def review_demo_changes(page: Page) -> None:
+    select_option("Published model", "GPT-4o")(page)
+    page.get_by_role("switch", name="Dedicated subscription keys", exact=True).uncheck()
+    click_button("Save access settings")(page)
+    page.get_by_role("button", name="Review model changes", exact=True).click()
+    _visible_text(page, "Your changes").wait_for(state="visible")
 
 
 def review_demo_requests(page: Page) -> None:
@@ -886,9 +894,18 @@ SHOTS: list[Shot] = [
         actions=(
             click_button("Contoso Docs Search"),
             click_button("Review changes"),
-            wait_for_text("MCP access changes"),
+            wait_for_text("Impact of applying"),
         ),
-        height=3000,
+        height=1400,
+    ),
+    Shot(
+        "console-model-change-review",
+        "console",
+        "/entitlements?tab=settings",
+        "light",
+        "Published model",
+        actions=(review_demo_changes,),
+        height=2600,
     ),
     Shot(
         "console-unpublish-review",
@@ -901,9 +918,9 @@ SHOTS: list[Shot] = [
         actions=(
             select_first_resource("Published models"),
             click_detail_menu_action("Unpublish"),
-            wait_for_text("What MOSAIC deletes"),
+            wait_for_text("Who loses access"),
         ),
-        height=1200,
+        height=1400,
     ),
     Shot(
         "console-budgets",

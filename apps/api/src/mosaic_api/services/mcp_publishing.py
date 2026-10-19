@@ -98,6 +98,7 @@ from mosaic_api.services.automatic_keys import (
     verify_key_runtime,
 )
 from mosaic_api.services.budget_gate import BlockedListGate, ensure_blocked_list, is_blocked_list
+from mosaic_api.services.change_review import build_review, review_snapshot
 from mosaic_api.services.cost_centers import load_book
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.environments import load_environment_catalog
@@ -747,6 +748,7 @@ class McpPublishingService:
                 publication.applied_access.version if publication.applied_access else None
             ),
         )
+        plan.review = build_review(publication, plan, snapshot)
         await self._repository.save_publish_plan(plan)
         await self._repository.record_mcp_publication_state(
             publication.model_copy(
@@ -904,6 +906,7 @@ class McpPublishingService:
                 actor_object_id=actor.object_id,
                 mcp_access_snapshot=publication.applied_access,
             )
+            plan.review = build_review(publication, plan, publication.applied_access)
             await self._repository.save_publish_plan(plan)
             return plan
 
@@ -1541,6 +1544,7 @@ class McpPublishingService:
                     revoked=entitlement.revocation is not None,
                     enabled=entitlement.enabled,
                     enforcement=effective_enforcement(entitlement, intent),
+                    limits_source="grant" if entitlement.enforcement else "costCenter",
                     intent_digest=entitlement_intent_digest(entitlement, principal, intent),
                     cost_center_id=intent.cost_center_id,
                     cost_center_code=intent.code,
@@ -2761,10 +2765,14 @@ class McpPublishingService:
         }
         if run_id is not None:
             updates["last_run_id"] = run_id
+        if status in {PublicationStatus.FAILED, PublicationStatus.ROLLED_BACK}:
+            updates["applied_review"] = None
         if applied:
             updates["last_applied_at"] = utc_now()
             updates["unpublished_at"] = None
+            updates["applied_review"] = review_snapshot(publication, access_snapshot)
         if unpublished:
+            updates["applied_review"] = None
             updates["unpublished_at"] = utc_now()
             updates["key_policy_hashes"] = {}
             updates["key_lifecycle"] = {
@@ -2775,6 +2783,8 @@ class McpPublishingService:
             updates["applied_access"] = access_snapshot
         if access_state is not None:
             updates["access_state"] = access_state
+            if access_state in {"failed", "unknown"}:
+                updates["applied_review"] = None
         await self._repository.record_mcp_publication_state(current.model_copy(update=updates))
 
     async def _remove(
