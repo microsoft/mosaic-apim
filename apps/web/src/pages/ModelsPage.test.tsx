@@ -497,7 +497,7 @@ describe('ModelsPage', () => {
     expect(dialog).toContainElement(steps)
     expect(within(steps).getByText('Create the API for this deployment.')).toBeVisible()
     expect(within(dialog).getByText('Review runtime access before applying.')).toBeVisible()
-    expect(within(dialog).getByRole('button', { name: 'Apply plan' })).toBeEnabled()
+    expect(within(dialog).getByRole('button', { name: 'Apply all pending changes' })).toBeEnabled()
     expect(within(dialog).queryByText(/Nothing to apply/)).not.toBeInTheDocument()
     expect(api.applyPublishPlan).not.toHaveBeenCalled()
   })
@@ -514,7 +514,7 @@ describe('ModelsPage', () => {
     expect(within(table).queryByRole('button', { name: 'Apply' })).not.toBeInTheDocument()
     await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
 
-    const applyPlan = await screen.findByRole('button', { name: 'Apply plan' })
+    const applyPlan = await screen.findByRole('button', { name: 'Apply all pending changes' })
     expect(screen.getByRole('table', { name: 'Publish plan steps' })).toBeVisible()
     expect(api.applyPublishPlan).not.toHaveBeenCalled()
 
@@ -572,7 +572,7 @@ describe('ModelsPage', () => {
     renderPage()
     const table = await screen.findByRole('region', { name: 'Published model details' })
     await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
-    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply all pending changes' }))
 
     expect(
       await screen.findByText('Local development service reported completion; live APIM apply is not verified.'),
@@ -602,7 +602,7 @@ describe('ModelsPage', () => {
     renderPage()
     const table = await screen.findByRole('region', { name: 'Published model details' })
     await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
-    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply all pending changes' }))
 
     expect(
       await screen.findByText('MOSAIC has already re-planned. Review the fresh plan below before you apply it.'),
@@ -627,7 +627,7 @@ describe('ModelsPage', () => {
     renderPage()
     const table = await screen.findByRole('region', { name: 'Published model details' })
     await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
-    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply all pending changes' }))
     expect(await screen.findByText('Apply interrupted — runtime state unknown')).toBeVisible()
     expect(screen.getByText('Worker stopped after policy install.')).toBeVisible()
     expect(screen.queryByText(/Run started/)).not.toBeInTheDocument()
@@ -651,7 +651,7 @@ describe('ModelsPage', () => {
 
     const table = await screen.findByRole('region', { name: 'Published model details' })
     await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
-    await user.click(await screen.findByRole('button', { name: 'Apply plan' }))
+    await user.click(await screen.findByRole('button', { name: 'Apply all pending changes' }))
 
     expect(
       await screen.findByText('MOSAIC has already re-planned. Review the fresh plan below before you apply it.'),
@@ -662,12 +662,12 @@ describe('ModelsPage', () => {
     expect(screen.getByText('Replace the API that fronts this model.')).toBeVisible()
     expect(api.applyPublishPlan).toHaveBeenCalledWith('pub_1', 'plan_2')
 
-    await user.click(screen.getByRole('button', { name: 'Apply plan' }))
+    await user.click(screen.getByRole('button', { name: 'Apply all pending changes' }))
 
     await waitFor(() => expect(api.applyPublishPlan).toHaveBeenLastCalledWith('pub_1', 'plan_3'))
   })
 
-  it('says when API Management already matches a publication and offers nothing to apply', async () => {
+  it('reports no resource operations without claiming live gateway verification and blocks apply', async () => {
     const user = userEvent.setup()
     const unchanged: PublishPlan = {
       ...publishPlan,
@@ -684,10 +684,13 @@ describe('ModelsPage', () => {
     await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
 
     expect(
-      await screen.findByText('API Management already matches this publication. Nothing to apply.'),
+      await screen.findByText('This plan lists no resource operations. It is not a live verification of gateway behavior.'),
     ).toBeVisible()
+    expect(screen.queryByText('API Management already matches this publication. Nothing to apply.')).not.toBeInTheDocument()
     expect(within(screen.getByRole('table', { name: 'Publish plan steps' })).getByText('No change')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Apply plan' })).toBeDisabled()
+    const applyPlan = screen.getByRole('button', { name: 'Apply all pending changes' })
+    expect(applyPlan).toBeDisabled()
+    await user.click(applyPlan)
     expect(api.applyPublishPlan).not.toHaveBeenCalled()
   })
 
@@ -702,7 +705,7 @@ describe('ModelsPage', () => {
 
       const table = await screen.findByRole('region', { name: 'Published model details' })
       await user.click(within(table).getByRole('button', { name: /Review changes|Review publish plan/ }))
-      const applyPlan = await screen.findByRole('button', { name: 'Apply plan' })
+      const applyPlan = await screen.findByRole('button', { name: 'Apply all pending changes' })
       expect(api.applyPublishPlan).not.toHaveBeenCalled()
       await user.click(applyPlan)
 
@@ -854,7 +857,7 @@ describe('ModelsPage', () => {
     await user.click(within(details).getByRole('button', { name: /Review changes|Review publish plan/ }))
 
     await waitFor(() => expect(api.createPublishPlan).toHaveBeenCalledWith('pub_1'))
-    expect(await screen.findByRole('button', { name: 'Apply plan' })).toBeEnabled()
+    expect(await screen.findByRole('button', { name: 'Apply all pending changes' })).toBeEnabled()
   })
 
   it('says an imported model API is hidden from the portal while its publication is unpublished', async () => {
