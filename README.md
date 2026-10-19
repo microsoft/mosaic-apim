@@ -1618,6 +1618,8 @@ with MOSAIC's recorded applied configuration, hiding unchanged intent. **Your ch
 current editing interaction; **Previously saved changes included** lists the other pending changes.
 Without reliable edit context, the review simply says **Pending changes**. Returning a field to its
 applied value cancels that pending change, so it is not listed as another gateway change.
+Compiled or inherited grant values that cannot be attributed to the current edit also remain under
+**Pending changes**, rather than being mislabeled as earlier saves.
 
 **Apply all pending changes** still applies the complete selected publication or pool, never just
 the highlighted edit. Operational impact stays visible: governed model and pool batches can

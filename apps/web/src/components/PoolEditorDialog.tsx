@@ -257,7 +257,10 @@ export function PoolEditorDialog({ pool, initialGatewayId, prefill, onClose, onS
     },
     onSuccess: ({ saved, review }) => {
       void queryClient.invalidateQueries({ queryKey: ['model-pools'] })
-      rememberEdit(saved.id, editBase.current ? poolReviewValues(editBase.current) : {}, poolReviewValues(saved))
+      const keyedEndpointIds = new Set(candidates.data?.models.flatMap((model) =>
+        model.deployments.filter((member) => member.apiKey).map((member) => member.modelEndpointId)))
+      rememberEdit(saved.id, editBase.current ? poolReviewValues(editBase.current, keyedEndpointIds) : {},
+        poolReviewValues(saved, keyedEndpointIds))
       completeWorkspaceNavigation(() => onSaved(saved, review))
     },
   })

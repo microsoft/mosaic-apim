@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { classifyChanges, creationContext, grantReviewValues, rememberEdit, takeEditContext } from './change-review'
+import { classifyChanges, creationContext, grantReviewValues, poolReviewValues, rememberEdit, takeEditContext } from './change-review'
 import type { ReviewChange } from './types'
 import { accessPlan, directGrant } from './test/model-access'
+import { anthropicPool } from './test/pool-fixtures'
 
 const change: ReviewChange = {
   key: 'grants/alex/tokensPerMinute', category: 'Limits', label: 'Alex - tokens/minute',
@@ -66,5 +67,87 @@ describe('review edit context', () => {
     expect(JSON.stringify(values)).not.toContain('secret')
     expect(values[`grants/${directGrant.id}/tokensPerMinute`]).toBe('1000')
     expect(values[`grants/${directGrant.id}/limitsSource`]).toBe('Grant override')
+  })
+
+  it('does not label compiled values of a newly created grant as earlier saves', () => {
+    const prefix = `grants/${directGrant.id}/`
+    const fields = {
+      ...grantReviewValues(directGrant),
+      [`${prefix}subject`]: 'caller-object',
+      [`${prefix}costCenter`]: 'Research',
+      [`${prefix}keysAllowed`]: 'Enabled',
+      [`${prefix}defaultCostCenter`]: 'Enabled',
+      [`${prefix}tokensPerMinute`]: '1000',
+      'quotas/research//monthlyTokens': '100000',
+    }
+    const changes = Object.entries(fields).map(([key, after]) => ({
+      ...change, key, before: null, after,
+    }))
+    rememberEdit('new-grant', {}, grantReviewValues(directGrant), [prefix, 'quotas/'])
+    const result = classifyChanges(changes, takeEditContext('new-grant'))
+    expect(result.yours.map((row) => row.key)).toEqual([`${prefix}enabled`, `${prefix}limitsSource`])
+    expect(result.pending).toEqual([])
+    expect(result.unattributed.map((row) => row.key)).toEqual(
+      Object.keys(fields).filter((key) => !Object.hasOwn(grantReviewValues(directGrant), key)),
+    )
+    expect(result.yours.length + result.unattributed.length).toBe(changes.length)
+  })
+
+  it('keeps inherited values neutral when an override is cleared instead of claiming an earlier save', () => {
+    const prefix = `grants/${directGrant.id}/`
+    const before = {
+      ...directGrant,
+      enforcement: { tokens: { counterKeyExpression: 'secret', tokensPerMinute: 2000, estimatePromptTokens: true } },
+    }
+    rememberEdit('inherit-grant', grantReviewValues(before), grantReviewValues(directGrant), [prefix, 'quotas/'])
+    const inherited = { ...change, key: `${prefix}tokensPerMinute`, before: '2000', after: '1000' }
+    const source = { ...change, key: `${prefix}limitsSource`, before: 'Grant override', after: 'Cost-center defaults' }
+    const earlier = { ...change, key: 'grants/earlier/tokensPerMinute' }
+    const result = classifyChanges([inherited, source, earlier], takeEditContext('inherit-grant'))
+    expect(result.yours).toEqual([source])
+    expect(result.unattributed).toEqual([inherited])
+    expect(result.pending).toEqual([earlier])
+  })
+})
+
+describe('pool review values', () => {
+  it.each(['Updated purpose', null])('records an edited or cleared API description: %s', (description) => {
+    const after = { ...anthropicPool, description }
+    const beforeValues = poolReviewValues(anthropicPool)
+    const afterValues = poolReviewValues(after)
+    const key = 'pool/description'
+    expect(afterValues[key]).toBe(description || `The models in the ${anthropicPool.displayName} pool, served by MOSAIC.`)
+    rememberEdit('description', beforeValues, afterValues)
+    expect(classifyChanges([{
+      ...change, key, before: beforeValues[key], after: afterValues[key],
+    }], takeEditContext('description')).yours).toHaveLength(1)
+  })
+
+  it.each(['breaker', 'preferential', 'linear'] as const)('records effective active attempt order for %s pools', (poolType) => {
+    const original = anthropicPool.models[0]
+    const base = original.members[0]
+    const member = (id: string) => ({ ...base, backendName: id, modelEndpointId: id, drained: false })
+    const pool = {
+      ...anthropicPool, poolType,
+      models: [{
+        ...original, id: 'chat',
+        members: [member('east'), { ...member('drained'), drained: true }, member('identity'), member('west')],
+      }],
+    }
+    const keyed = new Set(['east', 'west', 'drained'])
+    const before = poolReviewValues(pool, keyed)
+    expect(before['models/chat/members/east/order']).toBe('1')
+    expect(before['models/chat/members/west/order']).toBe(poolType === 'linear' ? '3' : '2')
+    expect(before['models/chat/members/drained/order']).toBeUndefined()
+    if (poolType !== 'linear') expect(before['models/chat/members/identity/order']).toBeUndefined()
+    const after = poolReviewValues({
+      ...pool, models: [{ ...pool.models[0], members: [...pool.models[0].members].reverse() }],
+    }, keyed)
+    rememberEdit('routing', before, after)
+    const changes = ['east', 'west'].map((id) => {
+      const key = `models/chat/members/${id}/order`
+      return { ...change, key, before: before[key], after: after[key] }
+    })
+    expect(classifyChanges(changes, takeEditContext('routing')).yours).toEqual(changes)
   })
 })

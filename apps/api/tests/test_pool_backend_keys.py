@@ -270,6 +270,34 @@ async def test_a_key_member_is_tried_after_the_backend_pool_with_its_own_key(
     assert recorded.created_by_mosaic
 
 
+@pytest.mark.parametrize("pool_type", ["breaker", "preferential"])
+async def test_review_records_applied_key_fallback_order_and_detects_reordering(
+    keyed: Estate, pool_type: str
+) -> None:
+    await _second_key(keyed)
+    pool = await keyed.create(
+        "OpenAI", _gpt4o("aoai-key", "aoai-east", "aoai-key-2"), pool_type=pool_type
+    )
+    initial = await keyed.service.plan(ACTOR, pool.id)
+    run = await keyed.apply(pool.id, initial)
+    assert run.status == PublishRunStatus.SUCCEEDED, run.errors
+    applied = await keyed.pool(pool.id)
+    assert initial.review and applied.applied_review == initial.review.target
+    unchanged = await keyed.service.plan(ACTOR, pool.id)
+    assert unchanged.review and unchanged.review.changes == []
+
+    await keyed.update(pool.id, models=[_gpt4o("aoai-key-2", "aoai-east", "aoai-key")])
+    reordered = await keyed.service.plan(ACTOR, pool.id)
+    assert reordered.review
+    first, _, second = pool.models[0].members
+    prefix = f"models/{pool.models[0].id}/members"
+    changes = {change.key: (change.before, change.after) for change in reordered.review.changes}
+    assert changes == {
+        f"{prefix}/{first.backend_name}/order": ("1", "2"),
+        f"{prefix}/{second.backend_name}/order": ("2", "1"),
+    }
+
+
 async def test_a_pool_of_key_members_tries_each_in_turn_without_a_backend_pool(
     keyed: Estate,
 ) -> None:

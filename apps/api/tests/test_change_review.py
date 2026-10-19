@@ -252,6 +252,51 @@ def test_pool_collection_order_only_changes_linear_routing() -> None:
     assert len(build_review(target, plan(target="pool"), None).changes) == 2
 
 
+@pytest.mark.parametrize("description", ["Updated pool purpose", None])
+def test_pool_description_changes_and_clearing_show_the_applied_api_value(
+    description: str | None,
+) -> None:
+    target = pool()
+    target.description = "Original pool purpose"
+    target.last_applied_at = NOW
+    target.applied_review = review_snapshot(target, None)
+    target.description = description
+    expected = description or "The models in the Pool pool, served by MOSAIC."
+    review = build_review(target, plan(target="pool"), None)
+    assert [(change.key, change.before, change.after) for change in review.changes] == [
+        ("pool/description", "Original pool purpose", expected),
+    ]
+    assert next(
+        field.value for field in review.target.fields if field.key == "pool/description"
+    ) == (expected)
+
+
+@pytest.mark.parametrize("pool_type", ["breaker", "preferential", "linear"])
+def test_pool_attempt_order_ignores_drained_members_and_tracks_key_fallbacks(
+    pool_type: str,
+) -> None:
+    target = pool().model_copy(update={"pool_type": pool_type})
+    target.last_applied_at = NOW
+    east, west = target.models[0].members
+    identity = east.model_copy(update={"backend_name": "identity"})
+    drained = east.model_copy(update={"backend_name": "drained", "drained": True})
+    target.models[0].members = [east, drained, identity, west]
+    keyed = frozenset({"east", "west", "drained"})
+    target.applied_review = review_snapshot(target, None, keyed_backends=keyed)
+    fields = {field.key: field.value for field in target.applied_review.fields}
+    assert "models/chat/members/drained/order" not in fields
+    assert fields["models/chat/members/east/order"] == "1"
+    assert fields["models/chat/members/west/order"] == ("3" if pool_type == "linear" else "2")
+    if pool_type != "linear":
+        assert "models/chat/members/identity/order" not in fields
+    target.models[0].members.reverse()
+    changes = build_review(target, plan(target="pool"), None, keyed_backends=keyed).changes
+    assert [change.key for change in changes] == [
+        "models/chat/members/east/order",
+        "models/chat/members/west/order",
+    ]
+
+
 def test_pool_removal_and_weight_changes_are_keyed_by_member() -> None:
     target = pool()
     target.last_applied_at = NOW

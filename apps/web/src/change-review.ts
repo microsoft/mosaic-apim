@@ -5,12 +5,13 @@ type Values = Record<string, string>
 export interface EditContext {
   targetId: string
   fields: { key: string; before: string | null; after: string | null }[]
+  unattributedPrefixes?: string[]
 }
 
 // Ephemeral workflow context only. Reloading falls back to the complete, unattributed pending diff.
 const edits = new Map<string, { context: EditContext; savedAt: number }>()
 
-export function rememberEdit(targetId: string, before: Values, after: Values) {
+export function rememberEdit(targetId: string, before: Values, after: Values, unattributedPrefixes?: string[]) {
   const savedAt = Date.now()
   for (const [id, edit] of edits) {
     if (savedAt - edit.savedAt > 15 * 60_000) edits.delete(id)
@@ -19,6 +20,7 @@ export function rememberEdit(targetId: string, before: Values, after: Values) {
     savedAt,
     context: {
       targetId,
+      unattributedPrefixes,
       fields: [...new Set([...Object.keys(before), ...Object.keys(after)])]
         .filter((key) => before[key] !== after[key])
         .map((key) => ({ key, before: before[key] ?? null, after: after[key] ?? null })),
@@ -87,13 +89,14 @@ export function mcpCallerReviewValues(publication: McpPublication, principals: P
   } : {}
 }
 
-export function poolReviewValues(pool: ModelPool): Values {
+export function poolReviewValues(pool: ModelPool, keyedEndpointIds: ReadonlySet<string> = new Set()): Values {
   const result: Values = {
     'publication/displayName': pool.displayName,
     'publication/apiPath': pool.apiPath,
     'pool/poolType': pool.poolType,
     'pool/breakerPreset': pool.breakerPreset,
     'pool/maxRetries': String(pool.maxRetries),
+    'pool/description': pool.description || `The models in the ${pool.displayName} pool, served by MOSAIC.`,
   }
   for (const key of ['tokensPerMinute', 'tokenQuota', 'tokenQuotaPeriod'] as const) {
     value(result, `pool/safeguard/${key}`, pool.safeguard?.[key])
@@ -103,13 +106,16 @@ export function poolReviewValues(pool: ModelPool): Values {
     value(result, `${prefix}/publicName`, model.publicName)
     value(result, `${prefix}/expectedVersion`, model.expectedVersion)
     value(result, `${prefix}/allowMixedVersions`, model.allowMixedVersions)
-    model.members.forEach((member, index) => {
+    let order = 0
+    model.members.forEach((member) => {
       const key = `${prefix}/members/${member.backendName}`
       value(result, `${key}/endpoint`, member.modelEndpointId)
       value(result, `${key}/deployment`, member.deploymentName)
       value(result, `${key}/weight`, member.weight)
       value(result, `${key}/drained`, member.drained)
-      if (pool.poolType === 'linear') value(result, `${key}/order`, index + 1)
+      if (!member.drained && (pool.poolType === 'linear' || keyedEndpointIds.has(member.modelEndpointId))) {
+        value(result, `${key}/order`, ++order)
+      }
     })
   }
   return result
@@ -118,6 +124,7 @@ export function poolReviewValues(pool: ModelPool): Values {
 export function classifyChanges(changes: ReviewChange[], context?: EditContext) {
   const yours: ReviewChange[] = []
   const pending: ReviewChange[] = []
+  const unattributed: ReviewChange[] = []
   const replaced = new Map<string, string>()
   for (const change of changes) {
     const edit = context?.fields.find((field) => field.key === change.key && field.after === change.after)
@@ -126,7 +133,9 @@ export function classifyChanges(changes: ReviewChange[], context?: EditContext) 
       if (edit && change.previousKnown && edit.before !== change.before && edit.before !== null) {
         replaced.set(change.key, edit.before)
       }
+    } else if (context?.unattributedPrefixes?.some((prefix) => change.key.startsWith(prefix))) {
+      unattributed.push(change)
     } else pending.push(change)
   }
-  return { yours, pending, replaced }
+  return { yours, pending, unattributed, replaced }
 }

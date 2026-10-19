@@ -483,7 +483,9 @@ function PoolDetail({ poolId, embedded = false }: { poolId: string; embedded?: b
       }),
     onMutate: () => setNotice(''),
     onSuccess: async (saved, change) => {
-      rememberEdit(saved.id, poolReviewValues(change.pool), poolReviewValues(saved))
+      const keyedEndpointIds = new Set(detail.data?.models.flatMap((model) =>
+        model.members.filter((member) => member.apiKey).map((member) => member.modelEndpointId)))
+      rememberEdit(saved.id, poolReviewValues(change.pool, keyedEndpointIds), poolReviewValues(saved, keyedEndpointIds))
       setNotice(drainNotice(change, saved.resources.some((resource) => resource.createdByMosaic)))
       await queryClient.invalidateQueries({ queryKey: ['model-pools'] })
     },

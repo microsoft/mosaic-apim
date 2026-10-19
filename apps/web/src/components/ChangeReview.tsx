@@ -44,7 +44,7 @@ export function ChangeReview({ plan, context }: { plan: PublishPlan; context?: E
     below. Request a fresh plan for a change summary; previous values may still be unavailable.
   </MessageBarBody></MessageBar>
   const trustedContext = context?.targetId === plan.publicationId ? context : undefined
-  const { yours, pending, replaced } = classifyChanges(review.changes, trustedContext)
+  const { yours, pending, unattributed, replaced } = classifyChanges(review.changes, trustedContext)
   const unpublish = plan.operation === 'unpublish'
   return <div className={styles.section}>
     <Text block>{unpublish
@@ -64,7 +64,10 @@ export function ChangeReview({ plan, context }: { plan: PublishPlan; context?: E
     {unpublish ? <Text block>The gateway route and its recorded configuration are removed.
       Saved grants stay in MOSAIC. The full recorded removal comparison is in Technical execution.</Text> : <>
       <ChangeList title="Your changes" changes={yours} replaced={replaced} />
-      <ChangeList title={yours.length ? 'Previously saved changes included' : 'Pending changes'} changes={pending} replaced={replaced} />
+      <ChangeList title="Previously saved changes included" changes={yours.length ? pending : []} replaced={replaced} />
+      {unattributed.length > 0 && <Text block size={200}>Edit attribution is unavailable for some compiled or
+        inherited grant values. They are included below without assuming when they were saved.</Text>}
+      <ChangeList title="Pending changes" changes={yours.length ? unattributed : [...pending, ...unattributed]} replaced={replaced} />
     </>}
     {!unpublish && !review.changes.length && <Text block>No intended configuration changes. The execution batch may
       still write configuration again or interrupt calls; review its impact below.</Text>}

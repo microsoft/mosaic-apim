@@ -21,7 +21,9 @@ Target = Publication | McpPublication | ModelPool
 Access = ModelAccessSnapshot | McpAccessSnapshot | PoolAccessSnapshot
 
 
-def review_snapshot(target: Target, access: Access | None) -> ReviewSnapshot:
+def review_snapshot(
+    target: Target, access: Access | None, *, keyed_backends: frozenset[str] = frozenset()
+) -> ReviewSnapshot:
     fields: list[ReviewField] = []
 
     def add(key: str, category: str, label: str, value: str | int | bool | None) -> None:
@@ -87,6 +89,13 @@ def review_snapshot(target: Target, access: Access | None) -> ReviewSnapshot:
                 target.subscription_required,
             )
     if isinstance(target, ModelPool):
+        add(
+            "pool/description",
+            "Configuration",
+            "Pool API description",
+            target.description
+            or f"The models in the {target.display_name} pool, served by MOSAIC.",
+        )
         add("pool/poolType", "Routing", "Pool routing", target.pool_type)
         add("pool/breakerPreset", "Routing", "Circuit breaker preset", target.breaker_preset)
         add("pool/maxRetries", "Routing", "Maximum retries", target.max_retries)
@@ -111,7 +120,8 @@ def review_snapshot(target: Target, access: Access | None) -> ReviewSnapshot:
                 f"{model.display_name} - accept mixed versions",
                 model.allow_mixed_versions,
             )
-            for index, member in enumerate(model.members):
+            order = 0
+            for member in model.members:
                 key = f"{prefix}/members/{member.backend_name}"
                 label = (
                     f"{model.display_name} / {member.deployment_name} ({member.model_endpoint_id})"
@@ -125,8 +135,11 @@ def review_snapshot(target: Target, access: Access | None) -> ReviewSnapshot:
                 add(f"{key}/deployment", "Routing", f"{label} - deployment", member.deployment_name)
                 add(f"{key}/weight", "Routing", f"{label} - weight", member.weight)
                 add(f"{key}/drained", "Routing", f"{label} - drained", member.drained)
-                if target.pool_type == "linear":
-                    add(f"{key}/order", "Routing", f"{label} - attempt order", index + 1)
+                if not member.drained and (
+                    target.pool_type == "linear" or member.backend_name in keyed_backends
+                ):
+                    order += 1
+                    add(f"{key}/order", "Routing", f"{label} - attempt order", order)
     if access is not None:
         add("authentication/audience", "Authentication", "Entra token audience", access.audience)
         add(
@@ -215,8 +228,14 @@ def review_snapshot(target: Target, access: Access | None) -> ReviewSnapshot:
     return ReviewSnapshot(fields=sorted(fields, key=lambda field: field.key))
 
 
-def build_review(target: Target, plan: PublishPlan, access: Access | None) -> PlanReview:
-    proposed = review_snapshot(target, access)
+def build_review(
+    target: Target,
+    plan: PublishPlan,
+    access: Access | None,
+    *,
+    keyed_backends: frozenset[str] = frozenset(),
+) -> PlanReview:
+    proposed = review_snapshot(target, access, keyed_backends=keyed_backends)
     previous = target.applied_review
     new = (
         (target.last_applied_at is None or target.unpublished_at is not None)

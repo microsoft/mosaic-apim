@@ -53,6 +53,25 @@ describe('ChangeReview', () => {
     expect(screen.queryByRole('region', { name: 'Your changes' })).not.toBeInTheDocument()
   })
 
+  it('keeps uncertain inherited values separate from proven earlier saves', () => {
+    const inherited = review.changes[0]
+    const source = { ...inherited, key: 'grants/alex/limitsSource', label: 'Limit source', before: 'Grant override', after: 'Cost-center defaults' }
+    render(<ChangeReview plan={{ ...plan, review: { ...review, changes: [inherited, source, review.changes[1]] } }} context={{
+      targetId: plan.publicationId,
+      fields: [
+        { key: inherited.key, before: '1000', after: null },
+        { key: source.key, before: source.before, after: source.after },
+      ],
+      unattributedPrefixes: ['grants/alex/'],
+    }} />)
+    expect(within(screen.getByRole('region', { name: 'Your changes' })).getByText('Limit source')).toBeVisible()
+    expect(within(screen.getByRole('region', { name: 'Pending changes' })).getByText(inherited.label)).toBeVisible()
+    const earlier = screen.getByRole('region', { name: 'Previously saved changes included' })
+    expect(within(earlier).getByText('Research app - access')).toBeVisible()
+    expect(within(earlier).queryByText(inherited.label)).not.toBeInTheDocument()
+    expect(screen.getByText(/Edit attribution is unavailable/)).toBeVisible()
+  })
+
   it('labels missing baselines unknown and does not silently drop a new category', () => {
     render(<ChangeReview plan={{
       ...plan, review: { ...review, baseline: 'partial', changes: [{

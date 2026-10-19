@@ -652,7 +652,8 @@ export function EntitlementsPage() {
   function rememberGrantEdit(saved: Entitlement, before?: Entitlement) {
     const target = saved.resource.kind === 'poolModel' ? poolFor(saved.resource)
       : saved.resource.kind === 'mcpServer' ? mcpPublicationFor(saved) : publicationFor(saved)
-    if (target) rememberEdit(target.id, before ? grantReviewValues(before) : {}, grantReviewValues(saved))
+    if (target) rememberEdit(target.id, before ? grantReviewValues(before) : {}, grantReviewValues(saved),
+      [`grants/${saved.id}/`, 'quotas/'])
   }
 
   function managedGrant(entitlement: Pick<Entitlement, 'resource' | 'subject' | 'runtime'>) {
