@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-query'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { createMemoryRouter, RouterProvider, useLocation, useNavigate } from 'react-router-dom'
+import { createMemoryRouter, type LoaderFunction, RouterProvider, useLocation, useNavigate } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ModelsPage } from './ModelsPage'
 import { accessPlan, modelPublication } from '../test/model-access'
@@ -274,16 +274,19 @@ function UnrelatedPendingMutation() {
   return <button onClick={() => mutation.mutate()}>Start unrelated operation</button>
 }
 
-function renderModelsPage(entry = '/models', includeUnrelatedMutation = false) {
+function renderModelsPage(entry = '/models', includeUnrelatedMutation = false, loader?: LoaderFunction) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
-  const router = createMemoryRouter([{ path: '*', element: <>
+  const router = createMemoryRouter([{ path: '*', loader, hydrateFallbackElement: <span>Loading models</span>, element: <>
         <ModelsPage />
         {includeUnrelatedMutation && <UnrelatedPendingMutation />}
         <LocationProbe />
       </> }], { initialEntries: [entry] })
-  return render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>)
+  return {
+    ...render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>),
+    queryClient, router,
+  }
 }
 
 const renderPage = renderModelsPage
@@ -1422,7 +1425,10 @@ describe('ModelsPage model endpoints', () => {
       suggestions: [scannedAzureSuggestion()], subscriptionsScanned: 1, scanStatus: 'scanned',
     }))
     api.registerModelEndpoint.mockResolvedValue(registered)
-    renderPage()
+    let completeNavigation!: () => void
+    const navigation = new Promise<void>((resolve) => { completeNavigation = resolve })
+    const { queryClient, router } = renderModelsPage('/models?tab=endpoints', false, ({ request }) =>
+      new URL(request.url).searchParams.has('selected') ? navigation : null)
 
     await user.click(await screen.findByRole('button', { name: 'Register and deploy' }))
     const registration = await screen.findByRole('region', { name: 'Register model endpoint' })
@@ -1431,6 +1437,14 @@ describe('ModelsPage model endpoints', () => {
     expect(api.applyModelDeployment).not.toHaveBeenCalled()
     await user.click(within(registration).getByRole('button', { name: 'Register and continue' }))
 
+    try {
+      await waitFor(() => expect(router.state.navigation.state).toBe('loading'))
+      await waitFor(() => expect(queryClient.isMutating()).toBe(0))
+      expect(registration).toBeVisible()
+      expect(screen.queryByRole('region', { name: 'Deploy a model' })).not.toBeInTheDocument()
+    } finally {
+      completeNavigation()
+    }
     const deployment = await screen.findByRole('region', { name: 'Deploy a model' })
     await within(deployment).findByText('Deployment permissions verified.')
     expect(api.registerModelEndpoint.mock.calls[0][0]).toMatchObject({

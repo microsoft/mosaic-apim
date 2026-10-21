@@ -1664,7 +1664,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
           </form>
         )}
       </WorkspaceDialog>
-      {deploying && <DeployModelWorkspace key={deploying.id} endpoint={deploying} onClose={() => setDeploying(null)} />}
+      {deploying && !dialogOpen && <DeployModelWorkspace key={deploying.id} endpoint={deploying} onClose={() => setDeploying(null)} />}
       {workspace.mode === 'edit' && selected && new URLSearchParams(location.search).get('endpointEditor') !== 'environment' && <ModelEndpointEditor endpoint={selected}
         mutationKey={MODELS_PAGE_MUTATION_KEY} onClose={() => workspace.close()}
         onSaved={async (endpoint) => {
