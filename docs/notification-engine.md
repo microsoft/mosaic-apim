@@ -40,10 +40,10 @@ existing default retention if TTL is already enabled.
 
 ```python
 from mosaic_api.services.budget_notification_bridge import BudgetNotificationBridge
-from mosaic_api.services.notification_email import AcsNotificationDispatcher
+from mosaic_api.services.notification_email import GraphNotificationDispatcher
 from mosaic_api.services.notifications import NotificationService
 
-acs = AcsNotificationDispatcher(
+graph = GraphNotificationDispatcher(
     email_sender,
     budget_repository,
     mailbox_resolver=preferences.mailbox_resolver,
@@ -55,7 +55,7 @@ budget_bridge = BudgetNotificationBridge(
     repository,
     cost_center_repository=cost_center_repository,
     sender=email_sender,
-    fallback=acs,
+    fallback=graph,
     tenant_id=tenant_id,
     enabled=settings.budgets_enabled,
 )
@@ -94,6 +94,14 @@ correlation IDs, and the three-attempt budget, including already consumed attemp
 the legacy budget-email switch and audience immediately before sending. A legacy uncertain
 in-flight claim transfers atomically and retries while attempts remain; durable acceptance
 receipts can repair either projection after a crash.
+
+Each delivery durably retains `hasUnresolvedOutcome` across retries, expired leases, and manual
+requeues until provider acceptance resolves it. Retryable work uses `retrying`; a tracked
+`unknownOutcome` is terminal, including when a later permanent refusal or opt-out stops retries
+before the attempt limit. Untracked legacy ambiguity is adopted into the bounded retry path.
+Claims and backlog queries must distinguish those terminal outcomes from recoverable legacy
+records; the attempt log still records each individual response rather than rewriting refusals
+as uncertain responses.
 
 When installing `NotificationDigestCoordinator`, use it as `audience_resolver`, retain preferences
 as `delivery_authorizer`, and wrap the bridge with

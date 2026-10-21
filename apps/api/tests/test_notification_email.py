@@ -86,6 +86,10 @@ async def mailbox(_delivery: NotificationDelivery) -> str:
         (EmailSendResult(False, "operation", 400, error="sensitive recipient"), "permanentFailure"),
         (EmailSendResult(False, "operation", 403), "permanentFailure"),
         (EmailSendResult(False, "operation", outcome_unknown=True), "unknownOutcome"),
+        (
+            EmailSendResult(False, "operation", 503, outcome_unknown=True, retry_after_seconds=120),
+            "unknownOutcome",
+        ),
     ],
 )
 async def test_adapter_classifies_acceptance_failure_and_ambiguity_without_leaking_errors(
@@ -129,19 +133,21 @@ async def test_general_delivery_does_not_depend_on_the_budget_email_switch() -> 
 
 
 @pytest.mark.parametrize("header", ["120", "future-http-date", "invalid", "-1"])
-async def test_graph_exposes_retry_after(header: str) -> None:
+@pytest.mark.parametrize("status", [429, 503])
+async def test_graph_exposes_retry_after(header: str, status: int) -> None:
     if header == "future-http-date":
         header = format_datetime(datetime.now(UTC) + timedelta(hours=1))
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(
-            lambda _request: httpx.Response(429, headers={"Retry-After": header})
+            lambda _request: httpx.Response(status, headers={"Retry-After": header})
         )
     )
     sender = GraphEmailClient(
         cast(AsyncTokenCredential, Credential()), tenant_id=TENANT, client=client
     )
     response = await sender.send(MAILBOX, MESSAGE, operation_id="operation")
-    assert not response.accepted and response.status_code == 429
+    assert not response.accepted and response.status_code == status
+    assert response.outcome_unknown == (status == 503)
     if header == "120":
         assert response.retry_after_seconds == 120
     elif header == "invalid":

@@ -395,6 +395,9 @@ def provider_result(
     if status >= 500 or status == 408:
         return NotificationDispatchResult(
             "unknownOutcome",
+            retry_after_seconds=_retry_after(response.headers["Retry-After"])
+            if response.headers.get("Retry-After")
+            else None,
             error_code="teamsUnknownOutcome",
             safe_error=("Teams acceptance is uncertain. Queued notifications retry automatically."),
         )

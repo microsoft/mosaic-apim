@@ -525,7 +525,7 @@ async def test_shared_provider_acceptance_and_redacted_failures(
     assert not harness.provider.requests[0].headers.get("Authorization")
     if status < 300:
         assert "unconfirmed" in result.message
-    if status == 429:
+    if status in {429, 503}:
         dispatch = await harness.service.send_shared(TENANT, destination.id, [])
         assert dispatch.retry_after_seconds == 12
 
@@ -995,6 +995,27 @@ async def test_oauth_failure_is_real_and_redacted(harness: Harness, status: int)
         assert WEBHOOK not in str(raised.value)
         assert "fictional-client-secret" not in str(raised.value)
         assert len(requests) == 1
+
+
+@pytest.mark.parametrize("personal", [False, True])
+@pytest.mark.parametrize("status", [408, 500, 503])
+def test_uncertain_teams_responses_preserve_retry_after(personal: bool, status: int) -> None:
+    result = provider_result(
+        httpx.Response(status, headers={"Retry-After": "120"}), personal=personal
+    )
+    assert result.outcome == "unknownOutcome" and result.retry_after_seconds == 120
+    assert provider_result(httpx.Response(status), personal=personal).retry_after_seconds is None
+    future = format_datetime(datetime.now(UTC) + timedelta(seconds=120), usegmt=True)
+    seconds = provider_result(
+        httpx.Response(status, headers={"Retry-After": future}), personal=personal
+    ).retry_after_seconds
+    assert seconds is not None and 115 <= seconds <= 120
+    assert (
+        provider_result(
+            httpx.Response(status, headers={"Retry-After": "invalid"}), personal=personal
+        ).retry_after_seconds
+        == 60
+    )
 
 
 def test_retry_after_and_connector_message_identity() -> None:

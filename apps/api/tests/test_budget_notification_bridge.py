@@ -469,6 +469,39 @@ async def test_unknown_provider_outcomes_retry_with_the_budget_attempt_limit(
     assert len(m.email.sent) == 3
 
 
+@pytest.mark.parametrize(("status", "attempts"), [(429, 3), (403, 2), (202, 2)])
+async def test_budget_receipts_preserve_prior_uncertainty_until_acceptance(
+    migration: Migration,
+    status: int,
+    attempts: int,
+) -> None:
+    m = migration
+    m.email.status, m.email.unknown = 504, True
+    await m.service.run_check()
+    await m.engine.run_once("tenant")
+    [first] = await m.notifications.list_deliveries("tenant")
+    assert first.state == "retrying" and first.has_unresolved_outcome
+    m.email.status, m.email.unknown = status, False
+    for _ in range(attempts - 1):
+        m.clock.now += timedelta(hours=2)
+        await m.engine.run_once("tenant")
+    [delivery] = await m.notifications.list_deliveries("tenant")
+    accepted = status == 202
+    assert delivery.state == ("providerAccepted" if accepted else "unknownOutcome")
+    assert delivery.has_unresolved_outcome is not accepted
+    assert delivery.attempts == attempts and len(m.email.sent) == attempts
+    [source] = await m.budgets.list_notification_outboxes("tenant")
+    assert source.delivery_state == delivery.state
+    assert source.notice.attempts == attempts
+    if not accepted:
+        assert source.notice.error and "earlier budget email attempt" in source.notice.error
+    await m.bridge.reconcile()
+    m.clock.now += timedelta(hours=2)
+    await m.service.run_check()
+    await m.engine.run_once("tenant")
+    assert len(m.email.sent) == attempts
+
+
 async def test_legacy_switch_is_rechecked_before_provider_and_receipted_as_skipped(
     migration: Migration,
 ) -> None:

@@ -24,8 +24,8 @@ export function PersonalTeamsReadiness() {
   return <section className="notification-section" aria-labelledby="personal-teams-heading">
     <div className="notification-section-heading">
       <h2 id="personal-teams-heading">Private Teams app</h2>
-      <Button disabled={!status.data || status.isFetching || test.isPending || access.isPending} onClick={() => { access.mutate(revision); void status.refetch() }}>
-        {access.isPending ? 'Checking access...' : 'Check my Teams access'}
+      <Button disabled={status.isFetching || test.isPending || access.isPending} onClick={() => { if (status.data) access.mutate(revision); void status.refetch() }}>
+        {access.isPending ? 'Checking access...' : !status.data && status.isError ? 'Retry Teams status' : 'Check my Teams access'}
       </Button>
     </div>
     <p>Only your authenticated personal installation can receive this test. No conversation ID or destination is accepted.

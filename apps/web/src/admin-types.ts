@@ -131,4 +131,5 @@ export interface NotificationDelivery {
   state: 'queued' | 'sending' | 'providerAccepted' | 'confirmedDelivered' | 'suppressed' | 'retrying' | 'permanentlyFailed' | 'unknownOutcome'
   nextAttemptAt?: string | null; lastError?: string | null; suppressionReason?: string | null
   providerAcceptedAt?: string | null; confirmedDeliveredAt?: string | null
+  hasUnresolvedOutcome?: boolean
 }

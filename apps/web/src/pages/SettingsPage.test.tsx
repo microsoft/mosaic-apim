@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../api'
+import type { CapabilityCheck } from '../admin-types'
 import { MosaicThemeProvider } from '../theme'
 import { emailSettingsFixture } from '../test/budget-fixtures'
 import type { EmailSettings, EnvironmentCatalogView } from '../types'
@@ -82,13 +83,14 @@ const catalog: EnvironmentCatalogView = {
 
 function renderSettings(section = 'environments') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <MosaicThemeProvider>
         <MemoryRouter initialEntries={[`/settings?tab=${section}`]}><SettingsPage /></MemoryRouter>
       </MosaicThemeProvider>
     </QueryClientProvider>,
   )
+  return { ...view, queryClient }
 }
 
 describe('SettingsPage', () => {
@@ -437,18 +439,176 @@ describe('SettingsPage', () => {
   it('keeps read-only access checks separate from sends and explains failures', async () => {
     const user = userEvent.setup()
     api.checkEmailAccess.mockResolvedValue([{
+      feature: 'emailConfiguration', scope: 'tenant', required: true, state: 'notConfigured',
+      configurationRevision: null, checkedAt: '2026-09-01T12:00:00Z', evidence: [],
+      reason: 'No Graph sender mailbox has been saved.',
+    }, {
       feature: 'emailIdentity', scope: 'tenant', required: true, state: 'failed',
       reason: 'The API managed identity could not acquire a token.', evidence: [],
       checkedAt: '2026-09-01T12:00:00Z',
       remediation: { action: 'Attach the correct managed identity to the API host.', owner: 'azureAdmin' },
+    }, {
+      feature: 'emailSendAuthorization', scope: 'tenant', required: true, state: 'unknown',
+      configurationRevision: null, checkedAt: null, evidence: [],
+      reason: 'Mailbox send authorization has not been checked.',
     }])
     renderSettings('email')
     await user.click(await screen.findByRole('button', { name: 'Check email access' }))
     expect(await screen.findByText('The API managed identity could not acquire a token.')).toBeVisible()
     expect(screen.getByText('Attach the correct managed identity to the API host.')).toBeVisible()
+    const configuration = screen.getByRole('region', { name: 'Saved sender mailbox readiness' })
+    expect(within(configuration).getByText('notConfigured')).toBeVisible()
+    expect(within(configuration).getByText('No Graph sender mailbox has been saved.')).toBeVisible()
+    const authorization = screen.getByRole('region', { name: 'Mailbox send authorization readiness' })
+    expect(within(authorization).getByText('unknown')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Refresh sender settings' })).not.toBeInTheDocument()
     expect(api.sendTestEmail).not.toHaveBeenCalled()
     expect(api.saveEmailSettings).not.toHaveBeenCalled()
     await user.click(screen.getByRole('button', { name: 'Configure sender' }))
     expect(screen.queryByRole('button', { name: 'Send test email' })).not.toBeInTheDocument()
+  })
+
+  it('shows matching sender evidence when identity and mailbox checks omit revisions', async () => {
+    const user = userEvent.setup()
+    const saved: EmailSettings = {
+      ...emailSettingsFixture, configured: true,
+      senderMailboxId: '33333333-3333-4333-8333-333333333333',
+    }
+    api.getEmailSettings.mockResolvedValue(saved)
+    api.checkEmailAccess.mockResolvedValue([{
+      feature: 'emailConfiguration', scope: 'tenant', required: true, state: 'verified',
+      configurationRevision: String(saved.revision), checkedAt: '2026-09-01T12:00:00Z',
+      evidence: ['The saved sender mailbox is configured.'],
+    }, {
+      feature: 'emailIdentity', scope: 'tenant', required: true, state: 'verified',
+      checkedAt: '2026-09-01T12:00:00Z', evidence: ['The runtime identity acquired a Graph token.'],
+    }, {
+      feature: 'emailMailbox', scope: 'tenant', required: false, state: 'verified',
+      checkedAt: '2026-09-01T12:00:00Z', evidence: ['The sender mailbox was found in the directory.'],
+    }, {
+      feature: 'emailSendAuthorization', scope: 'tenant', required: true, state: 'unknown',
+      configurationRevision: null, checkedAt: null, evidence: [],
+      reason: 'A read-only check does not prove mailbox send authorization.',
+    }])
+    renderSettings('email')
+    await user.click(await screen.findByRole('button', { name: 'Check email access' }))
+    expect(await screen.findByText('The saved sender mailbox is configured.')).toBeVisible()
+    expect(screen.getByText('The runtime identity acquired a Graph token.')).toBeVisible()
+    expect(screen.getByText('The sender mailbox was found in the directory.')).toBeVisible()
+    expect(screen.getByText('A read-only check does not prove mailbox send authorization.')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Refresh sender settings' })).not.toBeInTheDocument()
+    expect(api.sendTestEmail).not.toHaveBeenCalled()
+  })
+
+  it('hides email evidence checked for another sender revision and refreshes before checking again', async () => {
+    const user = userEvent.setup()
+    const original: EmailSettings = {
+      ...emailSettingsFixture, configured: true,
+      senderMailboxId: '33333333-3333-4333-8333-333333333333',
+    }
+    const updated: EmailSettings = {
+      ...original, revision: original.revision + 1,
+      senderMailboxId: '44444444-4444-4444-8444-444444444444',
+    }
+    api.getEmailSettings.mockResolvedValueOnce(original).mockResolvedValue(updated)
+    api.checkEmailAccess.mockResolvedValue([{
+      feature: 'emailConfiguration', scope: 'tenant', required: true, state: 'verified',
+      configurationRevision: String(updated.revision), checkedAt: '2026-09-01T12:00:00Z', evidence: [],
+    }, {
+      feature: 'emailSendAuthorization', scope: 'tenant', required: true, state: 'verified',
+      configurationRevision: String(updated.revision), checkedAt: '2026-09-01T12:00:00Z', evidence: [],
+      reason: 'Access was checked for the updated sender.',
+    }])
+    renderSettings('email')
+    await user.click(await screen.findByRole('button', { name: 'Check email access' }))
+    expect(await screen.findByText(/The sender configuration changed/)).toBeVisible()
+    expect(screen.getByText(original.senderMailboxId!)).toBeVisible()
+    expect(screen.queryByText('Access was checked for the updated sender.')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Refresh sender settings' }))
+    expect(await screen.findByText(updated.senderMailboxId!)).toBeVisible()
+    expect(screen.queryByText(original.senderMailboxId!)).not.toBeInTheDocument()
+    expect(screen.queryByText('Access was checked for the updated sender.')).not.toBeInTheDocument()
+    expect(api.checkEmailAccess).toHaveBeenCalledOnce()
+    await user.click(screen.getByRole('button', { name: 'Check email access' }))
+    expect(await screen.findByText('Access was checked for the updated sender.')).toBeVisible()
+    expect(api.checkEmailAccess).toHaveBeenCalledTimes(2)
+    expect(api.sendTestEmail).not.toHaveBeenCalled()
+  })
+
+  it('hides all email evidence when any returned check has a conflicting revision', async () => {
+    const user = userEvent.setup()
+    const saved: EmailSettings = {
+      ...emailSettingsFixture, configured: true,
+      senderMailboxId: '33333333-3333-4333-8333-333333333333',
+    }
+    api.getEmailSettings.mockResolvedValue(saved)
+    api.checkEmailAccess.mockResolvedValue([{
+      feature: 'emailConfiguration', scope: 'tenant', required: true, state: 'verified',
+      configurationRevision: String(saved.revision), checkedAt: '2026-09-01T12:00:00Z', evidence: [],
+    }, {
+      feature: 'emailSendAuthorization', scope: 'tenant', required: true, state: 'unknown',
+      configurationRevision: String(saved.revision + 1), checkedAt: null, evidence: [],
+      reason: 'Authorization evidence belongs to a different sender.',
+    }])
+    renderSettings('email')
+    await user.click(await screen.findByRole('button', { name: 'Check email access' }))
+    expect(await screen.findByText(/The sender configuration changed/)).toBeVisible()
+    expect(screen.queryByRole('region', { name: 'Saved sender mailbox readiness' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Authorization evidence belongs to a different sender.')).not.toBeInTheDocument()
+    expect(api.sendTestEmail).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { name: 'configured', configured: true, migrationRequired: false },
+    { name: 'migration-required', configured: false, migrationRequired: true },
+  ])('hides unversioned not-configured evidence for a $name sender', async ({ configured, migrationRequired }) => {
+    const user = userEvent.setup()
+    api.getEmailSettings.mockResolvedValue({
+      ...emailSettingsFixture, configured, migrationRequired,
+      senderMailboxId: configured ? '33333333-3333-4333-8333-333333333333' : null,
+    })
+    api.checkEmailAccess.mockResolvedValue([{
+      feature: 'emailConfiguration', scope: 'tenant', required: true, state: 'notConfigured',
+      configurationRevision: null, checkedAt: '2026-09-01T12:00:00Z', evidence: [],
+      reason: 'No sender configuration was checked.',
+    }])
+    renderSettings('email')
+    await user.click(await screen.findByRole('button', { name: 'Check email access' }))
+    expect(await screen.findByText(/The sender configuration changed/)).toBeVisible()
+    expect(screen.queryByText('No sender configuration was checked.')).not.toBeInTheDocument()
+    expect(api.sendTestEmail).not.toHaveBeenCalled()
+  })
+
+  it('hides email evidence when the displayed revision changes while a check is pending', async () => {
+    const user = userEvent.setup()
+    const original: EmailSettings = {
+      ...emailSettingsFixture, configured: true,
+      senderMailboxId: '33333333-3333-4333-8333-333333333333',
+    }
+    const updated: EmailSettings = {
+      ...original, revision: original.revision + 1,
+      senderMailboxId: '44444444-4444-4444-8444-444444444444',
+    }
+    let resolveChecks!: (value: CapabilityCheck[]) => void
+    api.getEmailSettings.mockResolvedValue(original)
+    api.checkEmailAccess.mockReturnValueOnce(new Promise<CapabilityCheck[]>(resolve => { resolveChecks = resolve }))
+    const { queryClient } = renderSettings('email')
+    await user.click(await screen.findByRole('button', { name: 'Check email access' }))
+    expect(screen.getByRole('button', { name: 'Checking access...' })).toBeDisabled()
+    await act(async () => {
+      queryClient.setQueryData(['email-settings'], updated)
+      resolveChecks([{
+        feature: 'emailConfiguration', scope: 'tenant', required: true, state: 'verified',
+        configurationRevision: String(updated.revision), checkedAt: '2026-09-01T12:00:00Z', evidence: [],
+      }, {
+        feature: 'emailSendAuthorization', scope: 'tenant', required: true, state: 'unknown',
+        configurationRevision: String(updated.revision), checkedAt: null, evidence: [],
+        reason: 'This evidence did not start with the displayed sender revision.',
+      }])
+    })
+    expect(await screen.findByText(updated.senderMailboxId!)).toBeVisible()
+    expect(await screen.findByText(/The sender configuration changed/)).toBeVisible()
+    expect(screen.queryByText('This evidence did not start with the displayed sender revision.')).not.toBeInTheDocument()
+    expect(api.sendTestEmail).not.toHaveBeenCalled()
   })
 })

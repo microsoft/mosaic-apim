@@ -11,7 +11,7 @@ import { NotificationPreferencesPage } from './NotificationPreferencesPage'
 const mocks = vi.hoisted(() => ({ api: {} as PortalApi }))
 vi.mock('../api', () => ({ ApiError: class ApiError extends Error { status = 500 }, usePortalApi: () => mocks.api }))
 
-function renderPage(api: Partial<PortalApi> = {}) {
+function renderPage(api: Partial<PortalApi> = {}, client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })) {
   mocks.api = {
     getNotificationPreferences: async () => notificationPreferences(),
     getNotificationHealth: async () => [notificationCheck()],
@@ -20,7 +20,6 @@ function renderPage(api: Partial<PortalApi> = {}) {
     saveNotificationPreferences: async (input: NotificationPreferencesInput) => notificationPreferences(input),
     ...api,
   } as PortalApi
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   const router = createMemoryRouter([
     { path: '/notification-preferences', element: <><NotificationPreferencesPage /><Link to="/usage">Usage page</Link></> },
     { path: '/usage', element: <h1>Usage destination</h1> },
@@ -171,6 +170,54 @@ describe('NotificationPreferencesPage', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('Teams accepted the test request; delivery is not confirmed.')
     expect(testPersonalTeams).toHaveBeenCalledOnce()
     expect(screen.queryByText('Delivery was confirmed.')).not.toBeInTheDocument()
+  })
+
+  it('retries exhausted private Teams status requests without checking access or sending', async () => {
+    const user = userEvent.setup()
+    const getPersonalTeamsStatus = vi.fn<PortalApi['getPersonalTeamsStatus']>()
+      .mockRejectedValueOnce(new Error('Teams status unavailable'))
+      .mockRejectedValueOnce(new Error('Teams status unavailable'))
+      .mockResolvedValue({ enabled: false, state: 'notInstalled', checks: [] })
+    const checkPersonalTeamsAccess = vi.fn<PortalApi['checkPersonalTeamsAccess']>().mockResolvedValue([])
+    const testPersonalTeams = vi.fn<PortalApi['testPersonalTeams']>()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: 1, retryDelay: 0 }, mutations: { retry: false } } })
+    renderPage({ getPersonalTeamsStatus, checkPersonalTeamsAccess, testPersonalTeams }, client)
+    expect(await screen.findByText('Teams status unavailable')).toBeVisible()
+    expect(getPersonalTeamsStatus).toHaveBeenCalledTimes(2)
+    const retry = screen.getByRole('button', { name: 'Retry Teams status' })
+    expect(retry).toBeEnabled()
+    await user.click(retry)
+    expect(await screen.findByText('Not installed')).toBeVisible()
+    expect(getPersonalTeamsStatus).toHaveBeenCalledTimes(3)
+    expect(checkPersonalTeamsAccess).not.toHaveBeenCalled()
+    expect(testPersonalTeams).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Check my Teams access' }))
+    await waitFor(() => expect(checkPersonalTeamsAccess).toHaveBeenCalledOnce())
+    expect(testPersonalTeams).not.toHaveBeenCalled()
+  })
+
+  it('keeps normal access checks available when a status refresh fails with cached data', async () => {
+    const user = userEvent.setup()
+    const status = { enabled: true, state: 'installed' as const, checks: [] }
+    const getPersonalTeamsStatus = vi.fn<PortalApi['getPersonalTeamsStatus']>()
+      .mockResolvedValueOnce(status)
+      .mockRejectedValueOnce(new Error('Teams status refresh unavailable'))
+      .mockResolvedValue(status)
+    const checkPersonalTeamsAccess = vi.fn<PortalApi['checkPersonalTeamsAccess']>().mockResolvedValue([])
+    const testPersonalTeams = vi.fn<PortalApi['testPersonalTeams']>()
+    renderPage({ getPersonalTeamsStatus, checkPersonalTeamsAccess, testPersonalTeams })
+    expect(await screen.findByText('Installed')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Check my Teams access' }))
+    expect(await screen.findByText('Teams status refresh unavailable')).toBeVisible()
+    expect(checkPersonalTeamsAccess).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('button', { name: 'Retry Teams status' })).not.toBeInTheDocument()
+    const checkAccess = screen.getByRole('button', { name: 'Check my Teams access' })
+    expect(checkAccess).toBeEnabled()
+    await user.click(checkAccess)
+    expect(await screen.findByText('Installed')).toBeVisible()
+    expect(getPersonalTeamsStatus).toHaveBeenCalledTimes(3)
+    expect(checkPersonalTeamsAccess).toHaveBeenCalledTimes(2)
+    expect(testPersonalTeams).not.toHaveBeenCalled()
   })
 
   it('shows saved effective cadence and next schedule without using a shared Teams fallback', async () => {

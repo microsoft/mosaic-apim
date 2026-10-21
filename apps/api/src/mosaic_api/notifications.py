@@ -329,6 +329,7 @@ class NotificationDelivery(Entity):
     provider_message_id: str | None = None
     provider_accepted_at: UtcInstant | None = None
     confirmed_delivered_at: UtcInstant | None = None
+    has_unresolved_outcome: bool = False
     last_error_code: str | None = Field(default=None, max_length=100)
     last_error: str | None = Field(default=None, max_length=1000)
     suppression_reason: str | None = Field(default=None, max_length=1000)

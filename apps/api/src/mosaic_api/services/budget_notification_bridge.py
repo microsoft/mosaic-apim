@@ -237,6 +237,13 @@ class BudgetNotificationBridge:
             ),
             severity="warning" if source.notice.kind != "unblocked" else "information",
         )
+        state = source.delivery_state
+        if (
+            state == "unknownOutcome"
+            and source.notice.delivery_owner == "notificationPipeline"
+            and source.notice.attempts < NOTIFICATION_ATTEMPTS
+        ):
+            state = "retrying"
         delivery = NotificationDelivery(
             id=notification_record_id(
                 "budgetNotificationDelivery", source.tenant_id, source.notice.id
@@ -246,11 +253,13 @@ class BudgetNotificationBridge:
             channel="email",
             recipient_reference=source.id,
             legacy_budget_notice_id=source.notice.id,
-            state=source.delivery_state,
+            state=state,
             attempts=source.notice.attempts,
             max_attempts=NOTIFICATION_ATTEMPTS,
             provider_operation_id=budget_notice_operation_id(source.notice.id),
             provider_accepted_at=source.provider_accepted_at,
+            has_unresolved_outcome=source.delivery_state == "unknownOutcome"
+            or (source.notice.status == "sending" and source.notice.attempts > 0),
             suppression_reason=(source.notice.error or "The legacy budget notice was skipped.")[
                 :1000
             ]
@@ -263,7 +272,7 @@ class BudgetNotificationBridge:
                 and source.notice.delivery_owner == "legacy"
                 else None
             ),
-            next_attempt_at=self._clock() if source.delivery_state == "retrying" else None,
+            next_attempt_at=self._clock() if state == "retrying" else None,
             created_at=source.notice.created_at,
             updated_at=self._clock(),
         )
@@ -442,26 +451,35 @@ class BudgetNotificationBridge:
         result: NotificationDispatchResult,
         recipient_count: int,
     ) -> None:
+        outcome = (
+            "unknownOutcome"
+            if delivery.has_unresolved_outcome
+            and result.outcome in {"retryableFailure", "permanentFailure", "suppressed"}
+            else result.outcome
+        )
+        safe_error = (
+            "An earlier budget email attempt may have been accepted. "
+            f"Latest attempt: {result.safe_error or result.outcome}."
+            if outcome != result.outcome
+            else result.safe_error
+        )
         for _ in range(3):
             current = await self._budgets.get_notification_outbox(source.tenant_id, source.id)
             if current is None:
                 raise ConflictError("The durable budget outbox disappeared")
-            if (
-                current.delivery_state == "providerAccepted"
-                and result.outcome != "providerAccepted"
-            ):
+            if current.delivery_state == "providerAccepted" and outcome != "providerAccepted":
                 return
             accepted_at = delivery.provider_accepted_at or self._clock()
             notice = current.notice.model_copy(
                 update={
                     "status": "sent"
-                    if result.outcome == "providerAccepted"
-                    else ("skipped" if result.outcome == "suppressed" else "failed"),
+                    if outcome == "providerAccepted"
+                    else ("skipped" if outcome == "suppressed" else "failed"),
                     "attempts": delivery.attempts,
                     "first_attempt_at": current.notice.first_attempt_at or self._clock(),
-                    "sent_at": accepted_at if result.outcome == "providerAccepted" else None,
+                    "sent_at": accepted_at if outcome == "providerAccepted" else None,
                     "recipients": recipient_count,
-                    "error": result.safe_error,
+                    "error": safe_error,
                 }
             )
             states: dict[str, NotificationDeliveryState] = {
@@ -471,8 +489,8 @@ class BudgetNotificationBridge:
                 "permanentFailure": "permanentlyFailed",
                 "suppressed": "suppressed",
             }
-            state = states[result.outcome]
-            if result.outcome == "retryableFailure" and delivery.attempts >= NOTIFICATION_ATTEMPTS:
+            state = states[outcome]
+            if outcome == "retryableFailure" and delivery.attempts >= NOTIFICATION_ATTEMPTS:
                 state = "permanentlyFailed"
             try:
                 await self._budgets.save_notification_outbox(
@@ -481,7 +499,7 @@ class BudgetNotificationBridge:
                             "notice": notice,
                             "delivery_state": state,
                             "provider_accepted_at": accepted_at
-                            if result.outcome == "providerAccepted"
+                            if outcome == "providerAccepted"
                             else None,
                         }
                     )

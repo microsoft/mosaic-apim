@@ -80,6 +80,7 @@ class CosmosNotificationRepository(NotificationStore, CosmosRepositoryBase):
             query += (
                 " AND (c.state IN ('queued', 'retrying', 'sending') OR"
                 " (c.state = 'unknownOutcome' AND"
+                " (NOT IS_DEFINED(c.hasUnresolvedOutcome) OR c.hasUnresolvedOutcome = false) AND"
                 " (NOT IS_DEFINED(c.maxAttempts) OR IS_NULL(c.maxAttempts)"
                 " OR c.attempts < c.maxAttempts)))"
             )
@@ -164,6 +165,7 @@ class CosmosNotificationRepository(NotificationStore, CosmosRepositoryBase):
             " OR (c.entityType = 'notificationDelivery'"
             " AND (c.state IN ('queued', 'retrying', 'sending')"
             " OR (c.state = 'unknownOutcome' AND"
+            " (NOT IS_DEFINED(c.hasUnresolvedOutcome) OR c.hasUnresolvedOutcome = false) AND"
             " ((NOT IS_DEFINED(c.maxAttempts) OR IS_NULL(c.maxAttempts))"
             " OR c.attempts < c.maxAttempts)))))"
         )

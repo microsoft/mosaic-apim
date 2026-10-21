@@ -170,7 +170,11 @@ list remains **unverified**; it must not be reported as empty or successfully co
 Delivery is preferred over duplicate avoidance. Transient failures, uncertain provider outcomes,
 and expired sending leases retry automatically with bounded backoff/Retry-After. Ordinary
 deliveries default to five attempts; compatibility budget email retains three, including
-already-consumed attempts. Once exhausted, uncertainty remains visible as **unknownOutcome**.
+already-consumed attempts. An ambiguous attempt remains recorded across subsequent refusals,
+worker restarts, and manual retries until a provider accepts an attempt. If retries stop without
+acceptance, the overall outcome remains **unknownOutcome**, even if the last attempt was a
+conclusive refusal. Permanent refusals and opt-outs stop automatic retries without erasing that
+uncertainty; they do not trigger extra sends just to exhaust the attempt budget.
 An audited manual retry can start another normal attempt budget, with no duplicate-risk hold or
 special acknowledgement. Correlation/request IDs are diagnostic, not provider deduplication.
 

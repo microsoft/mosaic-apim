@@ -384,14 +384,20 @@ class NotificationService:
             "last_error_code": result.error_code[:100] if result.error_code else None,
             "last_error": result.safe_error[:1000] if result.safe_error else None,
             "next_attempt_at": None,
+            "has_unresolved_outcome": delivery.has_unresolved_outcome
+            or result.outcome == "unknownOutcome",
         }
         if result.outcome in {"providerAccepted", "confirmedDelivered"}:
-            updates.update(state=result.outcome, provider_accepted_at=self._clock())
+            updates.update(
+                state=result.outcome,
+                provider_accepted_at=self._clock(),
+                has_unresolved_outcome=False,
+            )
             if result.outcome == "confirmedDelivered":
                 updates["confirmed_delivered_at"] = self._clock()
         elif result.outcome == "suppressed":
             updates.update(
-                state="suppressed",
+                state="unknownOutcome" if delivery.has_unresolved_outcome else "suppressed",
                 suppression_reason=(result.safe_error or "Delivery is no longer eligible.")[:1000],
             )
         elif result.outcome == "deferred":
@@ -411,10 +417,15 @@ class NotificationService:
                     delivery.id, delivery.attempts, result.retry_after_seconds
                 ),
             )
-        elif result.outcome == "unknownOutcome":
+        elif updates["has_unresolved_outcome"]:
             updates["state"] = "unknownOutcome"
         else:
             updates["state"] = "permanentlyFailed"
+        if updates["state"] == "unknownOutcome" and result.outcome != "unknownOutcome":
+            updates["last_error"] = (
+                "An earlier attempt may have been accepted; its outcome remains unknown. "
+                f"Latest attempt: {result.safe_error or result.outcome}."
+            )[:1000]
         saved = await self.repository.save_delivery(
             delivery.model_copy(update=updates),
             NotificationDeliveryAttempt(
@@ -439,7 +450,7 @@ class NotificationService:
                 safe_error=result.safe_error[:1000] if result.safe_error else None,
             ),
         )
-        if result.outcome not in {"deferred", "suppressed"}:
+        if result.outcome not in {"deferred", "suppressed"} or saved.state == "unknownOutcome":
             await self._record_health(saved)
 
     async def _record_health(self, delivery: NotificationDelivery) -> None:

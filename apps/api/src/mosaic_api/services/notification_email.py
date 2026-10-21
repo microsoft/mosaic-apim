@@ -181,6 +181,7 @@ class GraphNotificationDispatcher:
             return NotificationDispatchResult(
                 "unknownOutcome",
                 provider_operation_id=result.operation_id,
+                retry_after_seconds=result.retry_after_seconds,
                 error_code="graphOutcomeUnknown",
                 safe_error=(
                     "Graph acceptance is uncertain. MOSAIC retries; duplicates are possible."

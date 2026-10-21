@@ -67,7 +67,8 @@ class InMemoryNotificationRepository(NotificationStore):
                         item.state in {"queued", "retrying", "sending"}
                         or (
                             item.state == "unknownOutcome"
-                            and item.attempts < (item.max_attempts or 5)
+                            and not item.has_unresolved_outcome
+                            and (item.max_attempts is None or item.attempts < item.max_attempts)
                         )
                     )
                     and (item.next_attempt_at is None or item.next_attempt_at <= self._clock())

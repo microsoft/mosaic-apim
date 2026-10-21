@@ -39,6 +39,14 @@ export function EmailSettings() {
     },
   })
   const data = settings.data
+  const configurationCheck = checks.data?.find(check => check.feature === 'emailConfiguration')
+  const checkedRevisionMatches = configurationCheck?.configurationRevision === String(data?.revision)
+    || (configurationCheck?.configurationRevision == null && configurationCheck?.state === 'notConfigured'
+      && !data?.configured && !data?.migrationRequired)
+  const currentChecks = checks.variables === data?.revision && checkedRevisionMatches
+    && !checks.data?.some(check => check.configurationRevision != null && check.configurationRevision !== String(data?.revision))
+    ? checks.data : undefined
+  const mismatchedChecks = Boolean(checks.data && !currentChecks)
   if (draft) {
     const invalid = Boolean(draft.senderMailboxId && !mailboxPattern.test(draft.senderMailboxId))
       || (draft.enabled && !draft.senderMailboxId)
@@ -108,15 +116,19 @@ export function EmailSettings() {
     <div className={styles.setupColumns}>
     <section className={styles.section} aria-label="Email access checks">
       <div className={styles.toolbar}><Title3 as="h2">Check access</Title3>
-        <Button disabled={!data || checks.isPending || test.isPending} onClick={() => data && checks.mutate(data.revision)}>
+        <Button disabled={!data || settings.isFetching || checks.isPending || test.isPending} onClick={() => data && checks.mutate(data.revision)}>
           {checks.isPending ? 'Checking access...' : 'Check email access'}
         </Button>
       </div>
       <Text>Read-only: no message is sent and no permissions are changed. Send-only Graph access has no harmless sendMail dry run.</Text>
       {checks.isPending && <Loading label="Checking saved email access" />}
       {checks.isError && <ErrorState error={checks.error} />}
+      {mismatchedChecks && <MessageBar intent="warning"><MessageBarBody>
+        <Text>The sender configuration changed. Refresh the sender settings, then run Check email access again.</Text>
+        <Button disabled={settings.isFetching || checks.isPending} onClick={() => { checks.reset(); void settings.refetch() }}>Refresh sender settings</Button>
+      </MessageBarBody></MessageBar>}
       <div role="status" aria-live="polite">
-        {checks.variables === data?.revision && checks.data?.map(check => <CapabilityEvidence key={check.feature} check={check} />)}
+        {currentChecks?.map(check => <CapabilityEvidence key={check.feature} check={check} />)}
       </div>
     </section>
     <section className={styles.section} aria-label="Test email">
