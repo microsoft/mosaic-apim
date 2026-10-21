@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-query'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { createMemoryRouter, RouterProvider, useLocation, useNavigate } from 'react-router-dom'
+import { createMemoryRouter, type LoaderFunction, RouterProvider, useLocation, useNavigate } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ModelsPage } from './ModelsPage'
 import { accessPlan, modelPublication } from '../test/model-access'
@@ -225,6 +225,10 @@ const api = {
   preflightModelEndpoint: vi.fn(),
   deleteModelEndpoint: vi.fn(),
   listModelDeployments: vi.fn(),
+  getDeployableModels: vi.fn(),
+  listModelDeploymentRuns: vi.fn(),
+  planModelDeployment: vi.fn(),
+  applyModelDeployment: vi.fn(),
   declareModelDeployment: vi.fn(),
   removeDeclaredModelDeployment: vi.fn(),
   listEndpointPools: vi.fn(),
@@ -270,16 +274,19 @@ function UnrelatedPendingMutation() {
   return <button onClick={() => mutation.mutate()}>Start unrelated operation</button>
 }
 
-function renderModelsPage(entry = '/models', includeUnrelatedMutation = false) {
+function renderModelsPage(entry = '/models', includeUnrelatedMutation = false, loader?: LoaderFunction) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
-  const router = createMemoryRouter([{ path: '*', element: <>
+  const router = createMemoryRouter([{ path: '*', loader, hydrateFallbackElement: <span>Loading models</span>, element: <>
         <ModelsPage />
         {includeUnrelatedMutation && <UnrelatedPendingMutation />}
         <LocationProbe />
       </> }], { initialEntries: [entry] })
-  return render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>)
+  return {
+    ...render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>),
+    queryClient, router,
+  }
 }
 
 const renderPage = renderModelsPage
@@ -1108,6 +1115,25 @@ function gatewaySuggestion(): ModelEndpointSuggestion {
   }
 }
 
+function scannedAzureSuggestion(): ModelEndpointSuggestion {
+  return {
+    source: 'subscriptionScan',
+    endpoint: 'https://contoso-aoai.openai.azure.com/',
+    azureResourceId: AI_RESOURCE_ID,
+    accountName: 'contoso-aoai',
+    resourceGroup: 'rg-contoso-ai',
+    subscriptionId: '00000000-0000-0000-0000-000000000000',
+    kind: 'OpenAI',
+    location: 'eastus2',
+    provider: 'azureOpenAi',
+    alreadyRegistered: false,
+    modelEndpointId: null,
+    reason: 'Found in an accessible subscription.',
+    azureEnvironmentTag: 'dev',
+    suggestedEnvironment: 'development',
+  }
+}
+
 function readerAtSubscription(subscriptionId: string): AccessRemediation {
   const scope = `/subscriptions/${subscriptionId}`
   return {
@@ -1221,15 +1247,25 @@ describe('ModelsPage model endpoints', () => {
     api.listModelEndpoints.mockResolvedValue([])
     api.listSuggestedModelEndpoints.mockResolvedValue(suggestionView())
     api.listModelDeployments.mockResolvedValue([])
+    api.listModelDeploymentRuns.mockResolvedValue([])
+    api.getDeployableModels.mockResolvedValue({
+      endpointId: 'endpoint_1', target: null, models: [], raiPolicies: [],
+      checkedAt: '2026-09-01T12:00:00Z',
+      access: {
+        canDeploy: true, evaluation: 'allowed', requiredActions: [], missingActions: [],
+        checkedAt: '2026-09-01T12:00:00Z', message: 'Deployment permissions verified.',
+      },
+    })
     api.listEndpointPools.mockResolvedValue([])
   })
 
-  it('states that MOSAIC reads endpoints without changing or calling them', async () => {
+  it('distinguishes opt-in Azure deployment from publishing and inference', async () => {
     renderPage()
 
     expect(
-      await screen.findByText(/never changes the provider or calls a model/i),
+      await screen.findByText(/deploy new models to opted-in Azure accounts/i),
     ).toBeVisible()
+    expect(screen.getByText(/publishing through API Management remains a separate action/i)).toBeVisible()
   })
 
   it('invites registration when nothing is onboarded', async () => {
@@ -1362,22 +1398,7 @@ describe('ModelsPage model endpoints', () => {
     api.listSuggestedModelEndpoints.mockResolvedValue(
       suggestionView({
         suggestions: [
-          {
-            source: 'subscriptionScan',
-            endpoint: 'https://contoso-aoai.openai.azure.com/',
-            azureResourceId: AI_RESOURCE_ID,
-            accountName: 'contoso-aoai',
-            resourceGroup: 'rg-contoso-ai',
-            subscriptionId: '00000000-0000-0000-0000-000000000000',
-            kind: 'OpenAI',
-            location: 'eastus2',
-            provider: 'azureOpenAi',
-            alreadyRegistered: false,
-            modelEndpointId: null,
-            reason: 'Found in subscription 00000000-0000-0000-0000-000000000000.',
-            azureEnvironmentTag: 'dev',
-            suggestedEnvironment: 'development',
-          },
+          scannedAzureSuggestion(),
         ],
         subscriptionsScanned: 1,
         scanStatus: 'scanned',
@@ -1393,6 +1414,66 @@ describe('ModelsPage model endpoints', () => {
     const dialog = await screen.findByRole('region', { name: 'Register model endpoint' })
     expect(within(dialog).getByDisplayValue(AI_RESOURCE_ID)).toBeVisible()
     expect(within(dialog).getByText(/Suggested: Development/)).toBeVisible()
+    expect(api.registerModelEndpoint).not.toHaveBeenCalled()
+  })
+
+  it('registers a discovered resource before deployment and keeps it when deployment is cancelled', async () => {
+    const user = userEvent.setup()
+    const registered = modelEndpoint({ managementMode: 'observe' })
+    api.listModelEndpoints.mockResolvedValueOnce([]).mockResolvedValue([registered])
+    api.listSuggestedModelEndpoints.mockResolvedValue(suggestionView({
+      suggestions: [scannedAzureSuggestion()], subscriptionsScanned: 1, scanStatus: 'scanned',
+    }))
+    api.registerModelEndpoint.mockResolvedValue(registered)
+    let completeNavigation!: () => void
+    const navigation = new Promise<void>((resolve) => { completeNavigation = resolve })
+    const { queryClient, router } = renderModelsPage('/models?tab=endpoints', false, ({ request }) =>
+      new URL(request.url).searchParams.has('selected') ? navigation : null)
+
+    await user.click(await screen.findByRole('button', { name: 'Register and deploy' }))
+    const registration = await screen.findByRole('region', { name: 'Register model endpoint' })
+    expect(within(registration).getByDisplayValue(AI_RESOURCE_ID)).toBeVisible()
+    expect(api.registerModelEndpoint).not.toHaveBeenCalled()
+    expect(api.applyModelDeployment).not.toHaveBeenCalled()
+    await user.click(within(registration).getByRole('button', { name: 'Register and continue' }))
+
+    try {
+      await waitFor(() => expect(router.state.navigation.state).toBe('loading'))
+      await waitFor(() => expect(queryClient.isMutating()).toBe(0))
+      expect(registration).toBeVisible()
+      expect(screen.queryByRole('region', { name: 'Deploy a model' })).not.toBeInTheDocument()
+    } finally {
+      completeNavigation()
+    }
+    const deployment = await screen.findByRole('region', { name: 'Deploy a model' })
+    await within(deployment).findByText('Deployment permissions verified.')
+    expect(api.registerModelEndpoint.mock.calls[0][0]).toMatchObject({
+      azureResourceId: AI_RESOURCE_ID, environment: 'development',
+    })
+    expect(api.updateModelEndpoint).not.toHaveBeenCalled()
+    expect(api.applyModelDeployment).not.toHaveBeenCalled()
+    await user.click(within(deployment).getByRole('button', { name: 'Cancel' }))
+
+    const details = await screen.findByRole('region', { name: 'Model endpoint details' })
+    expect(within(details).getByText('Contoso models')).toBeVisible()
+    expect(within(details).getByRole('button', { name: 'Deploy model' })).toBeEnabled()
+    expect(api.deleteModelEndpoint).not.toHaveBeenCalled()
+    expect(api.registerModelEndpoint).toHaveBeenCalledTimes(1)
+    expect(api.planModelDeployment).not.toHaveBeenCalled()
+    expect(api.applyModelDeployment).not.toHaveBeenCalled()
+  })
+
+  it('clears deployment continuation when switching to an unsupported registration kind', async () => {
+    const user = userEvent.setup()
+    api.listSuggestedModelEndpoints.mockResolvedValue(suggestionView({
+      suggestions: [scannedAzureSuggestion()], subscriptionsScanned: 1, scanStatus: 'scanned',
+    }))
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: 'Register and deploy' }))
+    const registration = await screen.findByRole('region', { name: 'Register model endpoint' })
+    await user.click(within(registration).getByRole('tab', { name: 'OpenAI compatible' }))
+    expect(within(registration).queryByRole('button', { name: 'Register and continue' })).not.toBeInTheDocument()
+    expect(within(registration).getByRole('button', { name: 'Register' })).toBeVisible()
     expect(api.registerModelEndpoint).not.toHaveBeenCalled()
   })
 

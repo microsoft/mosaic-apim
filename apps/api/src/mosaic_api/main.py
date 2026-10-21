@@ -39,6 +39,7 @@ from mosaic_api.integrations.aoai import CognitiveServicesClient
 from mosaic_api.integrations.aoai.backend_key_access import KeyVaultLocator
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.aoai.key_check import EndpointKeyProbe
+from mosaic_api.integrations.aoai.writer import ModelDeploymentWriter
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient, ApimKeyManager
 from mosaic_api.integrations.azure_connections import AzureClientRegistry
@@ -57,6 +58,7 @@ from mosaic_api.integrations.teams import (
     WorkflowEndpointPolicy,
 )
 from mosaic_api.mcp_publishing_api import mcp_publishing_router
+from mosaic_api.model_deployments_api import model_deployments_router
 from mosaic_api.model_pools_api import model_pools_router
 from mosaic_api.notification_delivery_api import notification_delivery_router
 from mosaic_api.notification_inbox_api import notifications_router, portal_notifications_router
@@ -138,6 +140,7 @@ from mosaic_api.services.feature_readiness import (
 )
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 from mosaic_api.services.mcp_publishing import McpPublishingService
+from mosaic_api.services.model_deployments import ModelDeploymentService
 from mosaic_api.services.model_pools import ModelPoolService
 from mosaic_api.services.notification_digests import (
     DigestNotificationDispatcher,
@@ -469,6 +472,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ),
             key_store=key_vault_writer,
         )
+        model_deployment_service = ModelDeploymentService(
+            endpoint_repository,
+            gateway_repository=gateway_repository,
+            endpoint_service=model_endpoint_service,
+            client_factory=lambda resource: CognitiveServicesClient(
+                azure_clients.arm_for(resource), resource
+            ),
+            writer_factory=lambda resource: ModelDeploymentWriter(
+                azure_clients.arm_for(resource), resource
+            ),
+            connection_validator=connection_service.validate_resource,
+        )
         publishing_service = PublishingService(
             gateway_repository,
             endpoint_repository=endpoint_repository,
@@ -556,6 +571,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         app.state.gateway_service = gateway_service
         app.state.model_endpoint_service = model_endpoint_service
+        app.state.model_deployment_service = model_deployment_service
         app.state.publishing_service = publishing_service
         app.state.mcp_publishing_service = mcp_publishing_service
         app.state.model_pool_service = model_pool_service
@@ -1127,6 +1143,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if rollup_service is not None:
                 await rollup_service.aclose()
             await gateway_service.aclose()
+            await model_deployment_service.aclose()
             await model_endpoint_service.aclose()
             await publishing_service.aclose()
             await mcp_publishing_service.aclose()
@@ -1271,6 +1288,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(azure_connections_router)
     app.include_router(mcp_publishing_router)
     app.include_router(model_pools_router)
+    app.include_router(model_deployments_router)
     app.include_router(directory_router)
     app.include_router(analytics_router)
     app.include_router(pricing_router)

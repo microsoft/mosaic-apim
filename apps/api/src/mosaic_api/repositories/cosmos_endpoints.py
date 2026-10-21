@@ -1,4 +1,6 @@
 import structlog
+from azure.core import MatchConditions
+from azure.cosmos import exceptions
 
 from mosaic_api.domain import (
     AuditEvent,
@@ -6,6 +8,8 @@ from mosaic_api.domain import (
     ModelEndpoint,
     ModelEndpointSyncRun,
 )
+from mosaic_api.errors import ConflictError
+from mosaic_api.model_deployments import ModelDeploymentPlan, ModelDeploymentRun
 from mosaic_api.repositories.cosmos_endpoint_state import CosmosEndpointStateBase
 from mosaic_api.repositories.observation_writes import MODEL_ENDPOINT_AUTHORED_FIELDS
 
@@ -23,6 +27,15 @@ class CosmosModelEndpointRepository(CosmosEndpointStateBase):
     :class:`~mosaic_api.repositories.cosmos_endpoint_state.CosmosEndpointStateBase`, which MCP
     endpoints share.
     """
+
+    async def ready(self) -> bool:
+        if not await super().ready():
+            return False
+        try:
+            await self._flush_audit_outbox(source=self._sync)
+        except exceptions.CosmosHttpResponseError:
+            return False
+        return True
 
     async def list_endpoints(self, tenant_id: str) -> list[ModelEndpoint]:
         items = await self._query(ModelEndpoint, tenant_id, "modelEndpoint")
@@ -134,3 +147,61 @@ class CosmosModelEndpointRepository(CosmosEndpointStateBase):
         self, tenant_id: str
     ) -> list[ModelEndpointSyncRun]:
         return await self._unfinished_runs(ModelEndpointSyncRun, SYNC_RUN_ENTITY_TYPE, tenant_id)
+
+    async def save_model_deployment_plan(self, plan: ModelDeploymentPlan) -> None:
+        await self._sync.create_item(self._document(plan))
+
+    async def get_model_deployment_plan(
+        self, tenant_id: str, plan_id: str
+    ) -> ModelDeploymentPlan | None:
+        return await self._read_run(ModelDeploymentPlan, tenant_id, plan_id)
+
+    async def create_model_deployment_run(
+        self, run: ModelDeploymentRun, audit_event: AuditEvent
+    ) -> ModelDeploymentRun:
+        await self._audit.create_item(self._document(audit_event))
+        try:
+            item = await self._sync.create_item(self._document(run))
+        except exceptions.CosmosResourceExistsError:
+            raise ConflictError("This deployment plan already has a run") from None
+        return self._model(ModelDeploymentRun, item)
+
+    async def save_model_deployment_run(
+        self, run: ModelDeploymentRun, audit_event: AuditEvent | None = None
+    ) -> ModelDeploymentRun:
+        if run.etag is None:
+            raise ConflictError("Reload the deployment run before continuing")
+        if audit_event is not None:
+            responses = await self._execute_batch(
+                [
+                    self._replace_operation(run),
+                    ("create", (self._document(audit_event),)),
+                ],
+                audit_event,
+                "The deployment run changed; reload it before continuing",
+                source=self._sync,
+            )
+            return self._model(ModelDeploymentRun, responses[0]["resourceBody"])
+        try:
+            item = await self._sync.replace_item(
+                item=run.id, body=self._document(run),
+                etag=run.etag, match_condition=MatchConditions.IfNotModified,
+            )
+        except (
+            exceptions.CosmosAccessConditionFailedError,
+            exceptions.CosmosResourceNotFoundError,
+        ):
+            raise ConflictError("The deployment run changed; reload it before continuing") from None
+        return self._model(ModelDeploymentRun, item)
+
+    async def get_model_deployment_run(
+        self, tenant_id: str, run_id: str
+    ) -> ModelDeploymentRun | None:
+        return await self._read_run(ModelDeploymentRun, tenant_id, run_id)
+
+    async def list_model_deployment_runs(
+        self, tenant_id: str, endpoint_id: str, *, limit: int = 20
+    ) -> list[ModelDeploymentRun]:
+        return await self._runs_for_endpoint(
+            ModelDeploymentRun, "modelDeploymentRun", tenant_id, endpoint_id, limit
+        )

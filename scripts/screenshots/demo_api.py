@@ -94,6 +94,7 @@ from mosaic_api.integrations.aoai import CognitiveServicesClient
 from mosaic_api.integrations.aoai.backend_key_access import KeyVaultLocator
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.aoai.key_check import KeyCheckOutcome, KeyCheckResult
+from mosaic_api.integrations.aoai.writer import ModelDeploymentWriter
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient, ApimKeyManager
 from mosaic_api.integrations.email import EmailMessage, EmailSendResult
@@ -144,6 +145,7 @@ from mosaic_api.services.directory import Actor
 from mosaic_api.services.feature_readiness import gateway_usage_probe
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 from mosaic_api.services.mcp_publishing import McpPublishingService
+from mosaic_api.services.model_deployments import ModelDeploymentService
 from mosaic_api.services.model_pools import ModelPoolService
 from mosaic_api.services.notification_events import build_notification_event
 from mosaic_api.services.notification_visibility import NotificationVisibility
@@ -816,6 +818,19 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
     state.entitlement_service._directory_lookup = lookup
     state.gateway_service = gateways
     state.model_endpoint_service = endpoints
+    state.model_deployment_service = ModelDeploymentService(
+        state.model_endpoint_repository,
+        gateway_repository=state.gateway_repository,
+        endpoint_service=endpoints,
+        client_factory=lambda resource: CognitiveServicesClient(
+            gov_ai_arm if resource.azure_cloud == "government" else ai_arm, resource
+        ),
+        writer_factory=lambda resource: ModelDeploymentWriter(
+            gov_ai_arm if resource.azure_cloud == "government" else ai_arm, resource
+        ),
+        connection_validator=connections.validate_resource,
+        sleep=_no_sleep,
+    )
     state.publishing_service = publishing
     state.mcp_publishing_service = mcp_publishing
     state.mcp_endpoint_service = mcp_endpoints

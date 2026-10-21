@@ -2,7 +2,14 @@
 
 **Status:** Accepted, partially superseded by
 [ADR 0013](0013-runtime-readiness-by-data-actions.md), and amended by
-[ADR 0018](0018-key-authenticated-backends.md)
+[ADR 0018](0018-key-authenticated-backends.md) and
+[ADR 0028](0028-reviewed-azure-model-deployment.md)
+
+**Update:** ADR 0028 adds a third, optional control-plane relationship: reviewed creation of new
+Azure model deployments. Onboarding remains read-only with Reader, while deployment management
+requires separate permissions, a per-endpoint opt-in, verified quota, and explicit apply.
+Neither path grants the gateway inference access. Historical read-only statements below describe
+the onboarding boundary, not this separately gated writer.
 
 **Update:** ADR 0018 adds a second way to register an Azure OpenAI or Foundry resource: by URL,
 with an API key held in Key Vault, for a resource MOSAIC's managed identity can't reach, such as one
@@ -22,8 +29,8 @@ and everything below still holds for it.
 - The network path now forms part of the verdict.
 
 The runtime-role table and the "matched by GUID" and "filtered by ancestry" decisions below
-describe the initial release. The two-relationship model, `Reader` for MOSAIC, and "not evaluated
-is never a denial" stand.
+describe the initial release. `Reader` for onboarding and "not evaluated is never a denial" stand;
+ADR 0028 separately gates the additional deployment-management relationship.
 
 ## Context
 
@@ -175,4 +182,3 @@ contract would be strictly worse than one.
   read. That is a deliberate, reversible trade.
 - Discovery for OpenAI-compatible endpoints is modelled but not implemented; those endpoints
   register and hold their credential reference without yet listing models.
-
