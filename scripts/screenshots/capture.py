@@ -84,6 +84,7 @@ RESOURCE_NAMES = [
     "rg-contoso-partners",
     "rg-contoso-ai",
     "contoso-aoai",
+    "contoso-gpt-41-eval",
     # Longer names first, so a suffix of a regional account's name is never left showing.
     "contoso-foundry-ncus",
     "contoso-foundry-west",
@@ -276,6 +277,11 @@ FIND_SENSITIVE_TEXT = """
     const range = document.createRange()
     range.selectNodeContents(element)
     for (const rect of range.getClientRects()) keep(rect, element)
+  }
+  for (const element of document.querySelectorAll(
+    '[data-deployment-account], [data-deployment-identifier]'
+  )) {
+    if (!collapsed(element)) keep(element.getBoundingClientRect(), element)
   }
   // Runtime values may be placeholders rather than GUIDs or names from the seeded directory.
   const privateRuntimeLabels = ['Administrator context', 'Tenant ID', 'API base URL']
@@ -519,6 +525,26 @@ DASHBOARD_LOADED = (
 )
 TELEMETRY_READY = "This gateway is ready for usage analytics."
 
+
+def configure_model_deployment(page: Page) -> None:
+    """Reach deployment configuration using only the locally seeded fictional Azure account."""
+    if page.viewport_size and page.viewport_size["width"] <= 640:
+        page.get_by_role("button", name="Back to list", exact=True).click()
+    page.get_by_role("button", name="Contoso Azure OpenAI").first.click()
+    page.get_by_role("button", name="Deploy model", exact=True).click()
+    page.get_by_text("Model configuration", exact=True).wait_for()
+    opt_in = page.get_by_role("checkbox", name=re.compile(r"^Allow MOSAIC"))
+    if opt_in.count():
+        opt_in.check()
+        page.get_by_role("button", name="Enable Manage deployments", exact=True).click()
+        page.get_by_role("button", name="Return to read-only", exact=True).wait_for()
+    page.get_by_label("Search available models", exact=True).fill("gpt-4.1")
+    select_option("Model and exact version", "gpt-4.1")(page)
+    select_option("Deployment type", "GlobalStandard")(page)
+    page.get_by_label("New deployment name", exact=False).fill("contoso-gpt-41-eval")
+    page.get_by_text(re.compile(r"Subscription quota: 2000 available")).wait_for()
+
+
 SHOTS: list[Shot] = [
     # The same view in both themes, shown side by side.
     Shot(
@@ -608,6 +634,28 @@ SHOTS: list[Shot] = [
         ),
         # Include the key check, gateway verdicts, and declared deployments.
         height=1650,
+    ),
+    Shot(
+        "console-deploy-model",
+        "console",
+        "/models?tab=endpoints",
+        "light",
+        "Model endpoints",
+        actions=(configure_model_deployment,),
+        height=1700,
+    ),
+    Shot(
+        "console-deploy-model-review",
+        "console",
+        "/models?tab=endpoints",
+        "dark",
+        "Model endpoints",
+        actions=(
+            configure_model_deployment,
+            click_button("Review deployment"),
+            wait_for_text("Create one billable Azure deployment"),
+        ),
+        height=1450,
     ),
     Shot(
         "console-pools",

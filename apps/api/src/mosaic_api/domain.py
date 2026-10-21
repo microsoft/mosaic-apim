@@ -1238,6 +1238,7 @@ class ModelEndpoint(Entity):
     environment: str | None = None
     azure_environment_tag: str | None = None
     auth_mode: EndpointAuthMode = EndpointAuthMode.MANAGED_IDENTITY
+    management_mode: ManagementMode = ManagementMode.OBSERVE
     credential_reference_id: str | None = None
     # Set when MOSAIC wrote the key into its own Key Vault because an administrator gave it the key
     # (ADR 0021). MOSAIC then replaces the key on request and deletes the secret with the endpoint.
@@ -3237,6 +3238,7 @@ class ModelEndpointUpdate(MosaicModel):
     model_config = ConfigDict(hide_input_in_errors=True)
 
     name: str | None = Field(default=None, min_length=1, max_length=120)
+    management_mode: ManagementMode | None = None
     environment_label: str | None = Field(
         default=None,
         max_length=60,
@@ -3260,6 +3262,13 @@ class ModelEndpointUpdate(MosaicModel):
         # against the required field on the entity and surface as a 500 rather than a 4xx.
         if value is None:
             raise ValueError("name cannot be null")
+        return value
+
+    @field_validator("management_mode")
+    @classmethod
+    def management_mode_cannot_be_null(cls, value: ManagementMode | None) -> ManagementMode:
+        if value is None:
+            raise ValueError("managementMode cannot be null")
         return value
 
     @field_validator("api_key")

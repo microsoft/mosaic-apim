@@ -48,6 +48,7 @@ from mosaic_api.domain import (
     GatewayRuntimeAccess,
     GatewaySyncStatus,
     KeyVaultSecretId,
+    ManagementMode,
     ModelEndpoint,
     ModelEndpointCapabilities,
     ModelEndpointCreate,
@@ -91,6 +92,7 @@ from mosaic_api.integrations.aoai.backend_key_access import (
     secret_reader_remediation,
     verify_gateway_key_access,
 )
+from mosaic_api.integrations.aoai.deployment_access import deployment_access
 from mosaic_api.integrations.aoai.key_check import KeyCheckOutcome, KeyCheckResult
 from mosaic_api.integrations.apim import classify_url
 from mosaic_api.integrations.key_vault import (
@@ -101,6 +103,7 @@ from mosaic_api.integrations.key_vault import (
     stored_key_name,
 )
 from mosaic_api.integrations.rbac import permits
+from mosaic_api.model_deployments import deployment_lock_scope
 from mosaic_api.model_pools import ModelPool
 from mosaic_api.observed import (
     AiBackendKind,
@@ -846,7 +849,34 @@ class ModelEndpointService:
                 await self._replace_stored_key(endpoint, request.api_key)
                 return await self._record_stored_key_replacement(actor, endpoint)
         endpoint = await self.get_endpoint(actor, endpoint_id)
-        return await self._update(actor, endpoint, request)
+        if request.management_mode == ManagementMode.MANAGE:
+            if (
+                not endpoint.azure_resource_id
+                or endpoint.auth_mode != EndpointAuthMode.MANAGED_IDENTITY
+            ):
+                raise ValidationError(
+                    "Only an Azure endpoint registered by resource ID supports "
+                    "deployment management."
+                )
+            access = await deployment_access(self._client_factory(endpoint.arm_resource()))
+            if not access.can_deploy:
+                raise ConflictError(
+                    access.message, details={"deploymentAccess": access.model_dump(mode="json")}
+                )
+        if not endpoint.azure_resource_id:
+            return await self._update(actor, endpoint, request)
+        async with scope_lease(
+            self._gateways, actor.tenant_id, deployment_lock_scope(endpoint)
+        ):
+            if await self._gateways.get_publication_lock(
+                actor.tenant_id, deployment_lock_scope(endpoint)
+            ):
+                raise ConflictError(
+                    "An Azure model deployment is active or unconfirmed. Finish or reconcile it "
+                    "in deployment history before changing this endpoint."
+                )
+            endpoint = await self.get_endpoint(actor, endpoint_id)
+            return await self._update(actor, endpoint, request)
 
     async def _update(
         self,
@@ -855,6 +885,15 @@ class ModelEndpointService:
         request: ModelEndpointUpdate,
     ) -> ModelEndpoint:
         changes = request.model_dump(exclude_unset=True, by_alias=False)
+        if request.management_mode is not None:
+            if (
+                not endpoint.azure_resource_id
+                or endpoint.auth_mode != EndpointAuthMode.MANAGED_IDENTITY
+            ):
+                raise ValidationError(
+                    "Only an Azure endpoint registered by resource ID supports "
+                    "deployment management."
+                )
         secret_uri = changes.pop("credential_secret_uri", None)
         if "name" in changes and changes["name"] is not None:
             changes["name"] = str(changes["name"]).strip()
@@ -1019,6 +1058,17 @@ class ModelEndpointService:
                 scope_lease(self._gateways, actor.tenant_id, endpoint_mutation_scope(endpoint_id))
             )
             endpoint = await self.get_endpoint(actor, endpoint_id)
+            if endpoint.azure_resource_id:
+                await stack.enter_async_context(
+                    scope_lease(self._gateways, actor.tenant_id, deployment_lock_scope(endpoint))
+                )
+                if await self._gateways.get_publication_lock(
+                    actor.tenant_id, deployment_lock_scope(endpoint)
+                ):
+                    raise ConflictError(
+                        "An Azure model deployment is active or unconfirmed. Finish or reconcile "
+                        "it in deployment history before removing this endpoint."
+                    )
             publications = [
                 publication
                 for publication in await self._gateways.list_publications(actor.tenant_id)
@@ -1757,7 +1807,7 @@ class ModelEndpointService:
         return run
 
     async def sync_now(self, actor: Actor, endpoint_id: str) -> ModelEndpointSyncRun:
-        """Run a sync to completion. Used by tests, not by request handlers."""
+        """Run a sync to completion, for dependent control-plane workflows and tests."""
 
         run = await self.start_sync(actor, endpoint_id)
         await asyncio.gather(*tuple(self._tasks), return_exceptions=True)

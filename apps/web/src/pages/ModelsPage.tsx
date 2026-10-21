@@ -55,6 +55,7 @@ import { ResourceWorkbench } from '../components/ResourceWorkbench'
 import { useWorkbenchLocation } from '../components/useWorkbenchLocation'
 import { WorkspaceDialog } from '../components/WorkspaceDialog'
 import { ModelEndpointEditor, ModelEndpointEnvironmentEditor } from '../components/ModelEndpointEditor'
+import { DeployModelWorkspace } from '../components/DeployModelWorkspace'
 import { completeWorkspaceNavigation } from '../components/WorkspaceLeaveGuard'
 import { UnpublishDialog } from '../components/UnpublishDialog'
 import { AI_KIND_LABELS, CAPACITY_TYPE_LABELS, PROCESSING_SCOPE_LABELS } from '../labels'
@@ -111,6 +112,11 @@ const providerLabels: Record<ModelProvider, string> = {
 
 function providerLabel(provider: string): string {
   return Object.hasOwn(providerLabels, provider) ? providerLabels[provider as ModelProvider] : provider
+}
+
+function supportsModelDeployment(endpoint: ModelEndpoint): boolean {
+  return Boolean(endpoint.azureResourceId && endpoint.authMode === 'managedIdentity'
+    && ['azureOpenAi', 'azureAiFoundry'].includes(endpoint.provider))
 }
 
 // A scan with nothing to read is explained. One that was never configured has nothing to say.
@@ -892,6 +898,8 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
   // Where the last registration came from, so a refusal is shown next to the button that asked.
   const [registerOrigin, setRegisterOrigin] = useState<'dialog' | 'suggestion'>('dialog')
   const [removing, setRemoving] = useState<ModelEndpoint | null>(null)
+  const [deploying, setDeploying] = useState<ModelEndpoint | null>(null)
+  const [deployAfterRegistration, setDeployAfterRegistration] = useState(false)
   const [mode, setMode] = useState<RegistrationMode>('azure')
   const [connection, setConnection] = useState<ConnectionSelection>({ azureCloud: 'commercial', azureConnectionId: null })
   const [resourceId, setResourceId] = useState('')
@@ -975,6 +983,8 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
       setEnvironmentTouched(false)
       setSuggestionEnvironment(undefined)
       completeWorkspaceNavigation(() => workspace.close(endpoint.id))
+      if (deployAfterRegistration && supportsModelDeployment(endpoint)) setDeploying(endpoint)
+      setDeployAfterRegistration(false)
       await refresh()
     },
     onError: async () => {
@@ -1027,11 +1037,13 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
 
   function openDialog() {
     register.reset()
+    setDeployAfterRegistration(false)
     setSuggestionEnvironment(undefined)
     workspace.open('new')
   }
 
-  function registerSuggestion(item: ModelEndpointSuggestion) {
+  function registerSuggestion(item: ModelEndpointSuggestion, thenDeploy = false) {
+    setDeployAfterRegistration(thenDeploy)
     setRegisterOrigin('suggestion')
     register.reset()
     setMode('azure')
@@ -1202,7 +1214,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
         {sync.isError && <ErrorState error={sync.error} />}
         {recheck.isError && <ErrorState error={recheck.error} />}
         {!endpoints.isPending && (!filteredEndpoints.length || workspace.selectedId || initializedSelection.current) && <ResourceWorkbench title="Model endpoints"
-          description="Register provider endpoints and discover their models. MOSAIC never changes the provider or calls a model."
+          description="Discover provider models and deploy new models to opted-in Azure accounts. Publishing through API Management remains a separate action; MOSAIC never calls a model."
           actions={<Button appearance="primary" icon={<AddRegular />} onClick={openDialog} {...restoreFocus}>Register endpoint</Button>}
           toolbar={
               <Field label="Environment filter">
@@ -1247,11 +1259,15 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
               <div><dt>Status</dt><dd><EndpointStatusBadge status={endpoint.status} /></dd></div>
               <div><dt>Models</dt><dd>{usesBackendKey(endpoint) ? `${endpoint.declaredDeployments?.length ?? 0} declared` : endpoint.inventory.deployments}</dd></div>
               <div><dt>Management authentication</dt><dd>{usesBackendKey(endpoint) ? 'API key from Key Vault' : endpoint.azureConnectionId ? 'Selected Azure connection' : 'Host managed identity'}</dd></div>
+              {supportsModelDeployment(endpoint) && <div><dt>Deployment management</dt><dd>{endpoint.managementMode === 'manage' ? 'Manage deployments' : 'Read-only'}</dd></div>}
               <div><dt>Last synced</dt><dd>{usesBackendKey(endpoint) ? 'Not applicable — declared models' : formatTimestamp(endpoint.lastSyncedAt)}</dd></div>
               {endpoint.environmentLabel && <div><dt>Legacy label</dt><dd>{endpoint.environmentLabel}</dd></div>}
             </dl>
             <RowActions label={`More actions for ${endpoint.name}`}
-              primary={<Button onClick={() => recheck.mutate(endpoint.id)} disabled={recheck.isPending}>Check access</Button>}
+              primary={<>
+                {supportsModelDeployment(endpoint) && <Button appearance="primary" onClick={() => setDeploying(endpoint)}>Deploy model</Button>}
+                <Button onClick={() => recheck.mutate(endpoint.id)} disabled={recheck.isPending}>Check access</Button>
+              </>}
               actions={[
                 { label: 'Edit endpoint', onClick: () => openEndpointEditor(endpoint) },
                 ...(!usesBackendKey(endpoint) ? [{ label: 'Sync models', disabled: sync.isPending || !endpoint.access.canRead, onClick: () => sync.mutate(endpoint.id) }] : []),
@@ -1333,6 +1349,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                 </Text>
               </div>
               {item.azureResourceId ? (
+                <div className={styles.resourceBadges}>
                 <Button
                   appearance="primary"
                   onClick={() => registerSuggestion(item)}
@@ -1340,6 +1357,10 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                 >
                   Register
                 </Button>
+                <Button onClick={() => registerSuggestion(item, true)} disabled={register.isPending}>
+                  Register and deploy
+                </Button>
+                </div>
               ) : (
                 <Text size={200} className={styles.muted}>
                   Needs a resource ID
@@ -1402,7 +1423,9 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
       )}
 
       <WorkspaceDialog open={dialogOpen} title="Register model endpoint"
-        description="Registration records and discovers the endpoint. It does not publish a model or change API Management."
+        description={deployAfterRegistration
+          ? 'First register the endpoint, then configure and review an Azure model deployment. Registration stays in MOSAIC if you cancel deployment. Nothing is deployed by this registration step.'
+          : 'Registration records and discovers the endpoint. It does not publish a model or change API Management.'}
         pending={register.isPending}
         onOpenChange={(_, data) => !data.open && closeDialog()}>
         {(requestClose) => (
@@ -1412,6 +1435,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                   selectedValue={mode}
                   onTabSelect={(_, data) => {
                     setMode(data.value as RegistrationMode)
+                    if (data.value !== 'azure') setDeployAfterRegistration(false)
                     // A key pasted for one kind of endpoint is never sent as another's.
                     setApiKey('')
                     setApiKeyTouched(false)
@@ -1633,13 +1657,14 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
               </div>
               <div className={styles.formActions}>
                 <Button appearance="primary" type="submit" disabledFocusable={register.isPending}>
-                  {register.isPending ? 'Registering…' : 'Register'}
+                  {register.isPending ? 'Registering…' : deployAfterRegistration ? 'Register and continue' : 'Register'}
                 </Button>
                 <Button appearance="secondary" disabled={register.isPending} onClick={requestClose}>Cancel registration</Button>
               </div>
           </form>
         )}
       </WorkspaceDialog>
+      {deploying && <DeployModelWorkspace key={deploying.id} endpoint={deploying} onClose={() => setDeploying(null)} />}
       {workspace.mode === 'edit' && selected && new URLSearchParams(location.search).get('endpointEditor') !== 'environment' && <ModelEndpointEditor endpoint={selected}
         mutationKey={MODELS_PAGE_MUTATION_KEY} onClose={() => workspace.close()}
         onSaved={async (endpoint) => {

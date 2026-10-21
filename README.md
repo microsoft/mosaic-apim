@@ -150,6 +150,20 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   </tr>
   <tr>
     <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-deploy-model.png" alt="The Azure model deployment workspace with explicit management opt-in, a live model version, deployment type, native capacity, quota, and content-filter selection">
+      <p><b>Deploy an Azure model.</b> Query an existing account's live model catalogue and configure
+      a new deployment, with explicit management opt-in, native Azure capacity, and verified quota.
+      Registration and deployment are connected without automatically publishing a model.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-deploy-model-review.png" alt="Azure model deployment review showing the target account, exact model version, configuration, quota, billing warnings, and explicit Deploy to Azure action">
+      <p><b>Review before Azure creation.</b> Inspect the exact account, model version, deployment
+      type, capacity, and billing implications before deploying. Successful provisioning refreshes
+      inventory; uncertain operations and failed refreshes have separate recovery actions.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-pools.png" alt="A compact model-pool list beside the selected published pool's overview, readiness, and routing settings">
       <p><b>Model pools.</b> A compact list opens a pool's overview, showing its gateway, routing,
       publication state, and readiness. Suggestions are a separate destination for models deployed
@@ -567,7 +581,7 @@ flowchart LR
     API -->|Managed identity| Cosmos[(Cosmos DB desired and observed state)]
     API -. read-only Graph .-> Graph[Microsoft Graph directory]
     API -->|Secret URI only| KV[Key Vault]
-    API -. read-only ARM .-> Foundry[Registered Azure AI model endpoints]
+    API -->|read ARM, create deployments only after opt-in and review| Foundry[Registered Azure AI model endpoints]
     API -->|read ARM, and write on explicit apply| APIM[Registered API Management gateways]
     APIM -->|Runtime model traffic, gateway managed identity or API key| Foundry
     APIM -. API keys through named values .-> KV
@@ -592,7 +606,7 @@ first asks `GET /api/v1/console/me` which MOSAIC role the caller holds, and rend
 | Identity objects and authentication | Microsoft Entra ID | Store object IDs only; validate tokens and app roles; read directory metadata through Graph for lookup and verification |
 | Backend credential references | Key Vault | Store secret URIs only, never secret values |
 | APIM subscription keys | APIM | Retrieve only for an explicitly authorized reveal; never persist or cache a copy |
-| Foundry deployments | Existing Azure AI/Foundry resources | Enumerate deployed models read-only; report, never grant, the gateway's runtime access |
+| Foundry deployments | Existing Azure AI/Foundry resources | Read inventory by default; create a new deployment only after endpoint opt-in and explicit review; report, never grant, gateway runtime access |
 | Traffic/token telemetry | Azure Monitor stack | Read API Management's resource logs from Log Analytics and roll them up into Cosmos; set API diagnostics only on APIs MOSAIC published on managed gateways |
 
 MOSAIC never silently substitutes in-memory data or local authentication in Azure. Both are
@@ -633,6 +647,11 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   gateway has a network path to it. A resource MOSAIC can't reach, such as one in another tenant,
   can be registered by URL with an API key held in Key Vault, with its deployments declared and
   published through a Key Vault-backed named value
+- Azure model deployment: query an account's live model/version/SKU catalogue, verify deployment
+  permissions and subscription quota, configure native Azure capacity and existing content filters,
+  and explicitly review and create a new deployment. Endpoints default to read-only. Provisioned
+  and batch SKUs include capacity/billing warnings; successful creation refreshes inventory without
+  a manual sync. APIM publishing, grants, and pool membership remain separate.
 - MCP server registration: register a Model Context Protocol server by URL, connect to it as a
   read-only client, and record the tools it declares — including the input schemas, output schemas,
   and behaviour annotations that API Management's management plane does not expose
@@ -1176,10 +1195,12 @@ measured scale, not speculation.
   revoke the consent under the client's enterprise application permissions (after setting
   `MOSAIC_ENTRA_MODEL_CLIENT=false`, so provisioning doesn't grant it again), and target the
   client with Conditional Access.
-- On model endpoints MOSAIC asks only for `Reader`. It deliberately holds no data-plane inference
-  right and no `listKeys` permission on any Azure AI resource, so it cannot call a model or read an
-  account key even where it can enumerate deployments. The exception is one an administrator opts
-  into: for an endpoint registered with an API key, MOSAIC can read that key from Key Vault. It
+- On model endpoints MOSAIC asks for `Reader` by default. Optional deployment management needs
+  separately granted account-scoped deployment-write permissions and subscription quota reads.
+  Its write path does not call inference or `listKeys`, assign roles, accept Marketplace agreements,
+  or purchase reservations. Prefer narrow control-plane grants rather than built-in roles that
+  also grant inference or account-key access. For an endpoint explicitly registered with an API
+  key, MOSAIC can read that key from Key Vault. It
   reads it only to check it, with a request that runs no model, and keeps nothing. When the
   administrator gives MOSAIC the key itself, MOSAIC also writes it into its own Key Vault.
 - MOSAIC never reads named value secret values, and never persists or renders policy XML. Policy
@@ -1343,24 +1364,27 @@ ownership boundary already exists.
 
 A model endpoint is an Azure OpenAI or Azure AI Foundry resource that a gateway fronts.
 Administrators register one by resource ID, or accept a suggestion. MOSAIC then reads the
-deployments on it. It never calls a model, and it never changes the resource. A resource MOSAIC's
+deployments on it and defaults to read-only. It never calls a model. An administrator can separately
+opt into reviewed creation of new Azure model deployments, as described below. A resource MOSAIC's
 managed identity can't reach, such as one in another Microsoft Entra tenant, can instead be
 registered by URL with an API key held in Key Vault; see
 [Endpoints reached with an API key](#endpoints-reached-with-an-api-key). A
 [model pool](#model-pools) for Claude can also use Claude on
 [AWS Bedrock endpoints](#aws-bedrock-endpoints).
 
-Every endpoint has **two** access relationships, held by two different identities:
+Azure endpoints registered by resource ID have three separately checked access relationships:
 
 | Relationship | Identity | Plane | What it enables |
 | --- | --- | --- | --- |
 | Onboarding | MOSAIC's managed identity | Control plane | Listing the deployed models |
+| Optional deployment management | MOSAIC's managed identity or selected management connection | Control plane | Creating a new deployment after endpoint opt-in and review |
 | Runtime | **The gateway's** managed identity | Data plane | Actually calling those models |
 
 They are reported separately, because an endpoint MOSAIC reads perfectly well can still be
 uncallable through a gateway.
 
-MOSAIC asks only for `Reader`. For the gateway it recommends a built-in role, but it accepts **any**
+Onboarding asks only for `Reader`; enabling deployment management is a separate decision. For the
+gateway MOSAIC recommends a built-in role, but it accepts **any**
 role whose data actions cover the operations the published API calls:
 
 | Purpose | Recommended role | Role definition ID |
@@ -1401,6 +1425,54 @@ How the gateway's access is judged:
   known yet, MOSAIC says so, and granting it `Reader` first lets it recommend the exact role.
 
 [ADR 0013](docs/adr/0013-runtime-readiness-by-data-actions.md) records these rules.
+
+### Deploy a new Azure model
+
+In **Models > Model endpoints**, select an Azure resource and choose **Deploy model**. For a
+discovered but unregistered resource, **Register and deploy** first records the endpoint, then
+opens the same workflow. Cancelling deployment does not undo registration.
+
+Endpoints stay **Read-only** until an administrator explicitly enables **Manage deployments**.
+The workflow reads the live account catalogue, not the last inventory sync. Choose an exact model
+version, an Azure-advertised deployment type, capacity in that SKU's native units, an optional
+existing content-filter policy, and version-upgrade behavior. Review the parent account, cloud,
+region, model, capacity, quota, processing scope, and billing warnings before **Deploy to Azure**.
+Foundry projects always deploy onto their parent account.
+
+The management identity needs these actions at the account or an ancestor scope:
+`Microsoft.CognitiveServices/accounts/read`, `accounts/models/read`, `accounts/deployments/read`,
+and `accounts/deployments/write` (the last three also have the `Microsoft.CognitiveServices/`
+prefix). It must be able to read its effective permissions, the subscription's regional usages,
+and, for provisioned deployments, the selected model's regional physical capacity. Account-only
+Reader does not authorize subscription-level quota reads. Missing, unknown, blocked, unmapped, or
+insufficient quota blocks creation; so do unverifiable write permissions. MOSAIC assigns no roles.
+
+Pay-as-you-go, provisioned throughput, batch, and other account-advertised SKUs use Azure's own
+capacity limits and quota `usageName` mapping, not a universal tokens-per-minute conversion.
+Provisioned capacity can be billable while idle. Quota checks reserve nothing and are not a price
+quote. Partner-model Marketplace agreements and other prerequisites must already be satisfied in
+Azure; MOSAIC reports Azure's refusal instead of accepting terms or buying capacity.
+
+Creation records a durable operation before contacting Azure and verifies terminal provisioning,
+including responses initially marked **Accepted**. A successful create automatically refreshes
+inventory. If only refresh fails, use **Retry inventory refresh**; do not create again. After a
+timeout or API restart, open **Deployment history** and **Check outcome in Azure**. Uncertain
+operations keep the account locked. Before **Confirm worker-stopped recovery**, verify the original
+deployment worker has stopped; a terminal Azure resource alone cannot fence a worker paused before
+its write. For an absent deployment, also verify that no Azure operation is pending.
+
+MOSAIC refuses existing deployment names, does not resize, replace, or delete deployments, and
+serializes its own deployment writes and endpoint-management changes. Azure's deployment PUT is
+an upsert without documented conditional-create support: another external writer can still claim
+the name between MOSAIC's last read and PUT. Avoid concurrent external deployment changes on that
+account. Provisioning does not publish to APIM, create a grant, or add a pool member; batch
+deployments remain ineligible for synchronous publication and pools.
+
+API-key-only Azure registrations, AWS Bedrock, and OpenAI-compatible endpoints do not support this
+management workflow. Commercial and Government resources use their stored cloud and management
+connection throughout. See [ADR 0028](docs/adr/0028-reviewed-azure-model-deployment.md).
+
+### Endpoint and gateway access
 
 On the Models page, select an endpoint to open its **Access** card.
 

@@ -8,6 +8,8 @@ The transport is the shared :class:`~mosaic_api.integrations.apim.client.ArmClie
 acquisition, retry, paging, and error mapping behave identically to gateway onboarding.
 """
 
+from urllib.parse import quote
+
 from mosaic_api.domain import (
     AUTHORIZATION_API_VERSION,
     COGNITIVE_SERVICES_API_VERSION,
@@ -15,7 +17,12 @@ from mosaic_api.domain import (
     SUBSCRIPTIONS_API_VERSION,
     CognitiveServicesResourceId,
 )
-from mosaic_api.errors import DomainError, UpstreamAuthorizationError, UpstreamError
+from mosaic_api.errors import (
+    DomainError,
+    UpstreamAuthorizationError,
+    UpstreamError,
+    UpstreamNotFoundError,
+)
 from mosaic_api.integrations.apim.client import ArmClient, JsonObject
 
 
@@ -46,9 +53,42 @@ class CognitiveServicesClient:
             f"{self._account}/deployments", params=self._params, allow_not_found=True
         )
 
-    async def list_models(self) -> list[JsonObject]:
+    async def list_models(self, *, strict: bool = False) -> list[JsonObject]:
         return await self._arm.list(
-            f"{self._account}/models", params=self._params, allow_not_found=True
+            f"{self._account}/models", params=self._params, allow_not_found=not strict,
+            require_complete=strict,
+        )
+
+    async def get_deployment(self, name: str) -> JsonObject | None:
+        return await self._arm.get(
+            f"{self._account}/deployments/{quote(name, safe='')}",
+            params=self._params, allow_not_found=True,
+        )
+
+    async def list_rai_policies(self) -> list[JsonObject]:
+        return await self._arm.list(
+            f"{self._account}/raiPolicies", params=self._params, require_complete=True
+        )
+
+    async def list_usages(self, location: str) -> list[JsonObject]:
+        return await self._arm.list(
+            f"/subscriptions/{self._resource.subscription_id}/providers/"
+            f"Microsoft.CognitiveServices/locations/{quote(location, safe='')}/usages",
+            params=self._params,
+            require_complete=True,
+        )
+
+    async def list_model_capacities(
+        self, model_format: str, name: str, version: str
+    ) -> list[JsonObject]:
+        return await self._arm.list(
+            f"/subscriptions/{self._resource.subscription_id}/providers/"
+            "Microsoft.CognitiveServices/modelCapacities",
+            params={
+                **self._params, "modelFormat": model_format,
+                "modelName": name, "modelVersion": version,
+            },
+            require_complete=True,
         )
 
     async def list_projects(self) -> list[JsonObject]:
@@ -56,15 +96,18 @@ class CognitiveServicesClient:
             f"{self._account}/projects", params=self._params, allow_not_found=True
         )
 
-    async def effective_permissions(self) -> list[JsonObject] | None:
+    async def effective_permissions(self, *, at_account: bool = False) -> list[JsonObject] | None:
         """What MOSAIC's own identity may do here, or ``None`` if that cannot be evaluated."""
 
-        url = f"{self._resource.canonical}/providers/Microsoft.Authorization/permissions"
+        scope = self._account if at_account else self._resource.canonical
+        url = f"{scope}/providers/Microsoft.Authorization/permissions"
         try:
             return await self._arm.list(
-                url, params={"api-version": AUTHORIZATION_API_VERSION}, allow_not_found=True
+                url, params={"api-version": AUTHORIZATION_API_VERSION},
+                allow_not_found=not at_account,
+                require_complete=at_account,
             )
-        except (UpstreamAuthorizationError, UpstreamError):
+        except (UpstreamAuthorizationError, UpstreamError, UpstreamNotFoundError):
             return None
 
     async def role_assignments_for_principal(self, principal_id: str) -> list[JsonObject] | None:
