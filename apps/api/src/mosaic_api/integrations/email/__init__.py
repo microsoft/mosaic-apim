@@ -1,24 +1,17 @@
-"""Email through Azure Communication Services, over REST, as MOSAIC's managed identity.
+"""Email through Microsoft Graph using mailbox-scoped application authorization."""
 
-MOSAIC keeps no secret for this: it signs in to Communication Services as itself, so the resource
-grants its identity a role, and Settings holds only the endpoint and the sender address. See
-ADR 0023.
-"""
-
-from .acs import (
-    EMAIL_API_VERSION,
-    AcsEmailClient,
+from .contracts import (
+    EmailAccessResult,
     EmailMessage,
     EmailSender,
     EmailSendResult,
-    email_scope,
 )
+from .graph import GraphEmailClient
 
 __all__ = [
-    "EMAIL_API_VERSION",
-    "AcsEmailClient",
+    "EmailAccessResult",
     "EmailMessage",
     "EmailSendResult",
     "EmailSender",
-    "email_scope",
+    "GraphEmailClient",
 ]

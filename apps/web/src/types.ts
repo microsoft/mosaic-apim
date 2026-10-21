@@ -247,31 +247,43 @@ export interface BudgetOverview {
   notes: string[]
 }
 
-/** How MOSAIC sends email, through Azure Communication Services as its managed identity. */
+/** Saved Graph sender and revision-bound test evidence. */
 export interface EmailSettings {
   enabled: boolean
-  endpoint: string | null
+  provider: 'graph' | 'acs'
+  senderMailboxId: string | null
   sender: string | null
+  configured: boolean
+  migrationRequired: boolean
+  revision: number
   ready: boolean
   updatedAt: string | null
   updatedBy: string | null
   lastTestAt: string | null
   lastTestError: string | null
-  suggestedEndpoint: string | null
-  suggestedSender: string | null
+  lastTestRevision: number | null
+  lastTestOutcome: string | null
+  lastTestRequestId: string | null
 }
 
 export interface EmailSettingsUpdate {
   enabled: boolean
-  endpoint: string | null
+  senderMailboxId: string | null
   sender: string | null
+  expectedRevision?: number
 }
 
 export interface EmailTestResult {
   sent: boolean
+  evidenceRecorded?: boolean
   to: string
   operationId: string | null
   error: string | null
+  outcome: 'providerAccepted' | 'retryableFailure' | 'permanentFailure' | 'unknownOutcome'
+  testedAt: string
+  configurationRevision: number
+  requestId: string | null
+  errorCode: string | null
 }
 
 export interface GrantKey {
@@ -1223,6 +1235,8 @@ export interface ModelEndpoint {
   /** @deprecated Use environment. Legacy display-only data. */
   environmentLabel?: string | null
   authMode: EndpointAuthMode
+  /** Legacy records are read-only until an administrator explicitly opts in. */
+  managementMode?: ManagementMode
   credentialReferenceId?: string | null
   /**
    * True when MOSAIC keeps this endpoint's API key in its own Key Vault, because an administrator
@@ -1240,6 +1254,117 @@ export interface ModelEndpoint {
   lastSyncError?: string | null
   createdAt: string
   updatedAt: string
+}
+
+export interface DeploymentModelRef {
+  modelFormat: string
+  modelName: string
+  modelVersion: string
+  modelPublisher?: string | null
+  source?: string | null
+  sourceAccount?: string | null
+}
+
+export interface DeploymentAccess {
+  canDeploy: boolean
+  evaluation: 'allowed' | 'denied' | 'unknown' | 'unsupported'
+  scope?: string | null
+  checkedAt: string
+  requiredActions: string[]
+  missingActions: string[]
+  message: string
+}
+
+export interface DeploymentQuota {
+  usageName: string
+  currentValue: number
+  limit: number
+  available: number
+  unit?: string | null
+  blocked: boolean
+}
+
+export interface DeploymentSku {
+  name: string
+  capacity: {
+    minimum?: number | null
+    maximum?: number | null
+    step?: number | null
+    default?: number | null
+    allowedValues: number[]
+  }
+  quota?: DeploymentQuota | null
+  deprecationDate?: string | null
+}
+
+export interface DeployableModel extends DeploymentModelRef {
+  isDefaultVersion: boolean
+  lifecycleStatus?: string | null
+  deprecationInference?: string | null
+  capabilities: Record<string, string>
+  skus: DeploymentSku[]
+}
+
+export interface DeploymentTarget {
+  endpointId: string
+  endpointName: string
+  accountScope: string
+  azureCloud: AzureCloud
+  azureConnectionId?: string | null
+  subscriptionId: string
+  resourceGroup: string
+  accountName: string
+  location: string
+}
+
+export interface DeploymentCatalogue {
+  endpointId: string
+  blockingRunId?: string | null
+  target?: DeploymentTarget | null
+  access: DeploymentAccess
+  checkedAt: string
+  models: DeployableModel[]
+  raiPolicies: string[]
+  quotaError?: string | null
+  policyError?: string | null
+}
+
+export interface ModelDeploymentCreate {
+  deploymentName: string
+  model: DeploymentModelRef
+  skuName: string
+  capacity: number
+  raiPolicyName?: string | null
+  versionUpgradeOption?: 'OnceNewDefaultVersionAvailable' | 'OnceCurrentVersionExpired' | 'NoAutoUpgrade' | null
+}
+
+export interface ModelDeploymentPlan {
+  id: string
+  endpointId: string
+  target: DeploymentTarget
+  configuration: ModelDeploymentCreate
+  checks: { quota: DeploymentQuota; availableCapacity?: number | null; warnings: string[] }
+}
+
+export interface ModelDeploymentRun {
+  id: string
+  endpointId: string
+  planId: string
+  target: DeploymentTarget
+  configuration: ModelDeploymentCreate
+  status: 'running' | 'succeeded' | 'failed' | 'interrupted'
+  startedAt: string
+  completedAt?: string | null
+  writeAttempted: boolean
+  provisioningState?: string | null
+  error?: string | null
+  refreshStatus: 'notStarted' | 'running' | 'succeeded' | 'failed'
+  refreshError?: string | null
+}
+
+export interface DeploymentRecoveryRequest {
+  confirmWorkerStopped: boolean
+  confirmNoPendingOperation: boolean
 }
 
 

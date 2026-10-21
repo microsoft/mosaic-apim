@@ -1,6 +1,14 @@
 # ADR 0023: Budgets and notifications
 
-**Status:** Accepted
+**Status:** Accepted; email transport and uncertain-send policy superseded
+
+**Update:** [Notification setup](../notification-setup.md) supersedes the ACS provisioning,
+endpoint configuration, Operation-Id deduplication and abandon-on-uncertainty decisions below.
+Current email uses Microsoft Graph with the API managed identity and one mailbox-scoped Exchange
+**Application Mail.Send** assignment. Transient and uncertain sends retry automatically within
+finite attempt limits; duplicates are acceptable. Existing sent/skipped history is retained, and
+pending legacy work moves to the notification pipeline without changing notice identity.
+The original rationale remains below as historical context, not current setup instructions.
 
 **Builds on:** [ADR 0019](0019-usage-telemetry.md), which rolls gateway logs up into Cosmos,
 [ADR 0020](0020-price-list.md), which prices them, and [ADR 0022](0022-cost-centers.md), which

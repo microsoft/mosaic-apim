@@ -69,14 +69,19 @@ def test_saved_email_and_prior_acceptance_are_not_delivery_proof() -> None:
         id="email",
         tenant_id=ACTOR.tenant_id,
         enabled=True,
-        endpoint="https://email.communication.azure.com",
+        provider="graph",
+        sender_mailbox_id="33333333-3333-4333-8333-333333333333",
         sender="mosaic@example.com",
         last_test_at=NOW,
+        last_test_revision=1,
+        last_test_outcome="providerAccepted",
     )
     check = email_capability(email, channels(email_enabled=True), now=NOW)
     assert check.state == "unknown"
     assert check.last_test_at == NOW
-    assert check.remediation and check.remediation.path == "/settings?tab=email"
+    assert check.remediation and check.remediation.path == (
+        "/settings?tab=notifications&notificationView=email"
+    )
     assert email_capability(email, channels(), now=NOW).state == "disabled"
 
 
@@ -85,9 +90,11 @@ def test_email_setup_error_never_echoes_upstream_credentials() -> None:
         id="email",
         tenant_id=ACTOR.tenant_id,
         enabled=True,
-        endpoint="https://email.communication.azure.com",
+        provider="graph",
+        sender_mailbox_id="33333333-3333-4333-8333-333333333333",
         sender="mosaic@example.com",
         last_test_error="secret-containing-provider-detail",
+        last_test_revision=1,
     )
     check = email_capability(email, channels(email_enabled=True), now=NOW)
     assert check.state == "failed"

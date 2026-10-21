@@ -78,12 +78,6 @@ param webContainerPort int = 8080
 @description('The portal container port.')
 param portalContainerPort int = 8080
 
-@description('Whether to deploy Azure Communication Services Email for MOSAIC notifications. Off by default; email also stays off in MOSAIC until an administrator turns it on in Settings.')
-param deployEmail bool = false
-
-@description('Where Communication Services keeps its data at rest, when deployEmail is on.')
-param emailDataLocation string = 'United States'
-
 @description('JSON array of exact approved Teams Workflows hostnames. Empty disables shared destinations.')
 param teamsWorkflowAllowedHosts string = '[]'
 
@@ -126,8 +120,6 @@ var managementKeyVaultName = toLower(take('kvmgmt${envToken}${suffix}', 24))
 var logAnalyticsName = take('log-mosaic-${envLabel}-${suffix}', 63)
 var appInsightsName = take('appi-mosaic-${envLabel}-${suffix}', 260)
 var apimName = take('apim-mosaic-${envLabel}-${suffix}', 50)
-var communicationName = take('acs-mosaic-${envLabel}-${suffix}', 63)
-var emailServiceName = take('ecs-mosaic-${envLabel}-${suffix}', 63)
 var apimSkuParts = split(apimSkuName, '_')
 var apimSkuTier = apimSkuParts[0]
 var apimSkuCapacity = int(apimSkuParts[1])
@@ -146,21 +138,7 @@ var apiCorsAllowedOrigins = concat(localhostOrigins, [
   webUrl
   portalUrl
 ])
-// What Settings offers for budget email when this deployment has its own Communication Services.
-// Email still stays off until an administrator saves it there. See ADR 0023.
-var emailAppSettings = deployEmail
-  ? [
-      {
-        name: 'MOSAIC_EMAIL_SUGGESTED_ENDPOINT'
-        value: communication!.outputs.endpoint
-      }
-      {
-        name: 'MOSAIC_EMAIL_SUGGESTED_SENDER'
-        value: communication!.outputs.sender
-      }
-    ]
-  : []
-var apiAppSettings = concat([
+var apiAppSettings = [
   {
     name: 'MOSAIC_TEAMS_WORKFLOW_ALLOWED_HOSTS'
     value: teamsWorkflowAllowedHosts
@@ -293,7 +271,7 @@ var apiAppSettings = concat([
     name: 'MOSAIC_LOG_ANALYTICS_ENDPOINT'
     value: logAnalyticsQueryEndpoint
   }
-], emailAppSettings)
+]
 var webAppSettings = [
   {
     name: 'MOSAIC_API_BASE_URL'
@@ -461,16 +439,6 @@ module apim './modules/apim.bicep' = {
   }
 }
 
-module communication './modules/communication.bicep' = if (deployEmail) {
-  name: 'communication'
-  params: {
-    dataLocation: emailDataLocation
-    emailServiceName: emailServiceName
-    name: communicationName
-    tags: sharedTags
-  }
-}
-
 resource acrResource 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
   name: acrName
 }
@@ -505,10 +473,6 @@ resource appInsightsResource 'Microsoft.Insights/components@2020-02-02' existing
 
 resource apimResource 'Microsoft.ApiManagement/service@2022-08-01' existing = {
   name: apimName
-}
-
-resource communicationResource 'Microsoft.Communication/communicationServices@2025-05-01' existing = if (deployEmail) {
-  name: communicationName
 }
 
 resource apiAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
@@ -691,23 +655,6 @@ resource apiApimMonitoringReader 'Microsoft.Authorization/roleAssignments@2022-0
   }
   dependsOn: [
     apim
-  ]
-}
-
-// MOSAIC sends budget email as its own managed identity, so the resource needs no access key. The
-// built-in role is broader than sending: a custom role with CommunicationServices Read and Write and
-// EmailServices Write is the least-privilege alternative. See ADR 0023.
-resource apiCommunicationEmailOwner 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployEmail) {
-  name: guid(communicationName, apiWebAppName, 'CommunicationAndEmailServiceOwner')
-  scope: communicationResource
-  properties: {
-    principalId: apiApp.outputs.principalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '09976791-48a7-449e-bb21-39d1a415f350')
-  }
-  dependsOn: [
-    #disable-next-line no-unnecessary-dependson
-    communication
   ]
 }
 
@@ -949,6 +896,3 @@ output MOSAIC_API_SCOPE string = apiScope
 output MOSAIC_SPA_CLIENT_ID string = spaAppClientId
 output MOSAIC_PORTAL_CLIENT_ID string = portalAppClientId
 output MOSAIC_API_SERVICE_PRINCIPAL_OBJECT_ID string = apiServicePrincipalObjectId
-output COMMUNICATION_SERVICES_NAME string = deployEmail ? communication!.outputs.name : ''
-output MOSAIC_EMAIL_SUGGESTED_ENDPOINT string = deployEmail ? communication!.outputs.endpoint : ''
-output MOSAIC_EMAIL_SUGGESTED_SENDER string = deployEmail ? communication!.outputs.sender : ''

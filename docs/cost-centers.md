@@ -102,7 +102,7 @@ be revoked yet, the cost center shows **Recheck pending**:
 ## Experimental managed groups
 
 `MOSAIC_MANAGED_COST_CENTER_GROUPS` is **false by default**. Opting in enables the
-[managed-group foundation](adr/0028-managed-cost-center-groups.md), not automatic model access.
+[managed-group foundation](adr/0029-managed-cost-center-groups.md), not automatic model access.
 It makes no APIM configuration changes, creates no subscription keys or Entra groups, and adds
 no model-call dependency.
 

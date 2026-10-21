@@ -5,6 +5,7 @@ this transport, so paging, error mapping, RBAC evaluation, and the runtime acces
 exercised end to end rather than mocked away.
 """
 
+import json
 import re
 from typing import Any
 
@@ -319,6 +320,7 @@ class FakeCognitiveServices:
             return _collection([])
         return httpx.Response(404, json={"error": {"message": f"no route for {suffix}"}})
 
+
     def _account(self) -> dict[str, Any]:
         properties: dict[str, Any] = {
             "provisioningState": "Succeeded",
@@ -341,6 +343,106 @@ class FakeCognitiveServices:
             account["tags"] = self.tags
         return account
 
+
+class FakeDeploymentServices(FakeCognitiveServices):
+    """Deployment tests opt into write rights; the ordinary estate stays Reader-only."""
+
+    def __init__(self) -> None:
+        super().__init__(permissions=[{
+            "actions": ["*/read", "Microsoft.CognitiveServices/accounts/deployments/write"],
+            "notActions": [],
+        }])
+        self.models = [{
+            "format": "OpenAI", "name": "gpt-4o", "version": "2024-11-20",
+            "isDefaultVersion": True, "lifecycleStatus": "GenerallyAvailable",
+            "capabilities": {"chatCompletion": "true"},
+            "skus": [{
+                "name": name, "usageName": f"quota-{name}",
+                "capacity": {"minimum": 1, "maximum": 100, "step": 1, "default": 10},
+            } for name in ("GlobalStandard", "ProvisionedManaged", "GlobalBatch")],
+        }]
+        self.usages = [{
+            "name": {"value": f"quota-{name}", "localizedValue": name},
+            "currentValue": 0, "limit": 100, "unit": "Count",
+        } for name in ("GlobalStandard", "ProvisionedManaged", "GlobalBatch")]
+        self.rai_policies = [{"name": "Microsoft.DefaultV2"}]
+        self.capacities = [{
+            "location": "eastus2", "properties": {
+                "model": {"format": "OpenAI", "name": "gpt-4o", "version": "2024-11-20"},
+                "skuName": "ProvisionedManaged", "availableCapacity": 100,
+            },
+        }]
+        self.writes: list[dict[str, Any]] = []
+        self.write_status = 201
+        self.terminal_state = "Succeeded"
+        self.accepted_reads = 1
+        self.timeout_after_write = False
+        self.deployment_read_status = 200
+        self.operation_poll_status: int | None = None
+        self._created_names: set[str] = set()
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/operations/model-deployment":
+            self.requests.append(path)
+            return httpx.Response(self.operation_poll_status or 200, json={
+                "error": {"message": "The accepted operation could not be read."},
+            })
+        if path.endswith("/usages") or path.endswith("/modelCapacities"):
+            self.requests.append(path)
+            if status := self.persistent_failures.get(path.rsplit("/", 1)[-1]):
+                return httpx.Response(status, json={"error": {"message": "quota unavailable"}})
+            return _collection(self.usages if path.endswith("/usages") else self.capacities)
+        if path == f"{AI_RESOURCE_ID}/raiPolicies":
+            self.requests.append(path)
+            if status := self.persistent_failures.get("raiPolicies"):
+                return httpx.Response(status, json={"error": {"message": "policies unavailable"}})
+            return _collection(self.rai_policies)
+        if path.startswith(f"{AI_RESOURCE_ID}/deployments/"):
+            self.requests.append(path)
+            name = path.rsplit("/", 1)[-1]
+            if request.method == "PUT":
+                payload = json.loads(request.content)
+                self.writes.append({"name": name, "payload": payload})
+                if self.write_status >= 400:
+                    return httpx.Response(self.write_status, json={
+                        "error": {"code": "MarketplacePurchaseEligibilityFailed",
+                                  "message": "Accept the Marketplace agreement in Azure first."},
+                    })
+                self.deployments.append({
+                    "id": path, "name": name,
+                    "type": "Microsoft.CognitiveServices/accounts/deployments",
+                    **payload,
+                })
+                self._created_names.add(name)
+                if self.timeout_after_write:
+                    raise httpx.ReadTimeout("Injected lost PUT response", request=request)
+                headers = {
+                    "Azure-AsyncOperation": "/operations/model-deployment",
+                } if self.operation_poll_status is not None else {}
+                return httpx.Response(201, headers=headers, json={
+                    **self.deployments[-1],
+                    "properties": {**payload["properties"], "provisioningState": "Accepted"},
+                })
+            deployment = next(
+                (item for item in self.deployments if item["name"].casefold() == name.casefold()),
+                None,
+            )
+            if deployment is None:
+                return httpx.Response(404, json={"error": {"message": "not found"}})
+            if name in self._created_names:
+                if self.deployment_read_status != 200:
+                    return httpx.Response(self.deployment_read_status, json={
+                        "error": {"message": "The accepted deployment could not be read."},
+                    })
+                state = "Accepted" if self.accepted_reads else self.terminal_state
+                self.accepted_reads = max(0, self.accepted_reads - 1)
+                return httpx.Response(200, json={
+                    **deployment,
+                    "properties": {**deployment["properties"], "provisioningState": state},
+                })
+            return httpx.Response(200, json=deployment)
+        return super().handler(request)
 
 def _collection(values: list[dict[str, Any]]) -> httpx.Response:
     return httpx.Response(200, json={"value": values})

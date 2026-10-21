@@ -416,6 +416,7 @@ class ArmClient:
         allow_not_found: bool = False,
         sensitive: bool = False,
         return_client_errors: bool = False,
+        retry: bool = True,
     ) -> httpx.Response | None:
         """Send one ARM request with the shared retry policy and typed error mapping.
 
@@ -432,7 +433,8 @@ class ArmClient:
         target = self._absolute(url)
         last_error: str = "unknown error"
         last_response: httpx.Response | None = None
-        for attempt in range(MAX_ATTEMPTS):
+        attempts = MAX_ATTEMPTS if retry else 1
+        for attempt in range(attempts):
             headers = {
                 "Authorization": await self._authorization_header(),
                 "Accept": "application/json",
@@ -446,10 +448,10 @@ class ArmClient:
                 )
             except httpx.HTTPError as error:
                 last_error = "Credential request transport failure" if sensitive else str(error)
-                if attempt == MAX_ATTEMPTS - 1:
+                if attempt == attempts - 1:
                     failure = UpstreamError(
                         "MOSAIC could not reach Azure Resource Manager",
-                        details={"url": target, "reason": last_error},
+                        details={"url": target, "method": method, "reason": last_error},
                     )
                     if sensitive:
                         raise failure from None
@@ -464,6 +466,8 @@ class ArmClient:
                     "MOSAIC's identity is not authorized for this Azure resource",
                     details={
                         "url": target,
+                        "method": method,
+                        "statusCode": response.status_code,
                         "reason": "Access denied" if sensitive else self._upstream_detail(response),
                     },
                 )
@@ -474,6 +478,8 @@ class ArmClient:
                     "The Azure resource was not found",
                     details={
                         "url": target,
+                        "method": method,
+                        "statusCode": response.status_code,
                         "reason": (
                             "Resource not found" if sensitive else self._upstream_detail(response)
                         ),
@@ -484,6 +490,8 @@ class ArmClient:
                     "The Azure resource changed since MOSAIC last read it",
                     details={
                         "url": target,
+                        "method": method,
+                        "statusCode": response.status_code,
                         "reason": (
                             "Resource changed" if sensitive else self._upstream_detail(response)
                         ),
@@ -495,7 +503,7 @@ class ArmClient:
                     f"Credential request returned HTTP {response.status_code}"
                     if sensitive else self._upstream_detail(response)
                 )
-                if attempt == MAX_ATTEMPTS - 1:
+                if attempt == attempts - 1:
                     break
                 delay = self._retry_delay(response, attempt)
                 logger.warning(
@@ -514,6 +522,7 @@ class ArmClient:
                     _request_failure_message(_REQUEST_REJECTED, response, sensitive=sensitive),
                     details={
                         "url": target,
+                        "method": method,
                         "statusCode": response.status_code,
                         "code": None if sensitive else self._upstream_code(response),
                         "reason": (
@@ -527,7 +536,10 @@ class ArmClient:
 
         raise UpstreamError(
             _request_failure_message(_NO_USABLE_RESPONSE, last_response, sensitive=sensitive),
-            details={"url": target, "reason": last_error},
+            details={
+                "url": target, "method": method, "reason": last_error,
+                "statusCode": last_response.status_code if last_response is not None else None,
+            },
             summary=_NO_USABLE_RESPONSE,
         )
 
@@ -581,6 +593,7 @@ class ArmClient:
         params: dict[str, str] | None = None,
         allow_not_found: bool = False,
         max_pages: int = 50,
+        require_complete: bool = False,
     ) -> list[JsonObject]:
         items: list[JsonObject] = []
         next_url: str | None = url
@@ -591,16 +604,26 @@ class ArmClient:
                 next_url, params=next_params, allow_not_found=allow_not_found
             )
             if payload is None:
+                if require_complete:
+                    raise UpstreamError("Azure returned an incomplete collection; retry the read")
                 return items
             values = payload.get("value")
+            if require_complete and (
+                not isinstance(values, list) or any(not isinstance(item, dict) for item in values)
+            ):
+                raise UpstreamError("Azure returned an invalid collection; retry the read")
             if isinstance(values, list):
                 items.extend(item for item in values if isinstance(item, dict))
             link = payload.get("nextLink")
+            if require_complete and link is not None and not isinstance(link, str):
+                raise UpstreamError("Azure returned an invalid collection continuation")
             next_url = link if isinstance(link, str) and link else None
             next_params = None
             pages += 1
         if next_url:
             logger.warning("arm_paging_truncated", url=url, pages=pages)
+            if require_complete:
+                raise UpstreamError("Azure returned an incomplete collection; retry the read")
         return items
 
     async def _await_operation(
@@ -697,18 +720,21 @@ class ArmClient:
         params: dict[str, str] | None = None,
         if_match: str | None = None,
         redact: tuple[str, ...] = (),
+        retry: bool = True,
     ) -> JsonObject | None:
         """Create or replace a resource. Idempotent, so the shared retry policy is safe.
 
         A write Azure answers with a poll header is waited for, whatever its 2xx status. A 200
-        without one finished synchronously and costs no further request. ``redact`` names literals,
+        without one finished synchronously and costs no further request. Creation-only callers
+        without conditional-create support set ``retry=False`` to avoid replaying an uncertain
+        upsert. Poll reads still use the shared retry policy. ``redact`` names literals,
         such as a Key Vault secret identifier the payload carries, that must not reach an error
         message or a log line even when Azure repeats them in its reason for refusing the write.
         """
 
         try:
             response = await self._send(
-                "PUT", url, params=params, json=payload, if_match=if_match
+                "PUT", url, params=params, json=payload, if_match=if_match, retry=retry
             )
             if response is None:
                 return None

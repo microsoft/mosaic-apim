@@ -94,13 +94,16 @@ class CosmosRepositoryBase:
         )
         return [self._model(model_type, item) async for item in items]
 
-    async def _project_audit_event(self, event: AuditEvent) -> None:
+    async def _project_audit_event(
+        self, event: AuditEvent, *, source: ContainerProxy | None = None
+    ) -> None:
+        container = source if source is not None else self._desired
         try:
             await self._audit.create_item(self._document(event))
         except exceptions.CosmosResourceExistsError:
             pass
         try:
-            await self._desired.delete_item(item=event.id, partition_key=event.tenant_id)
+            await container.delete_item(item=event.id, partition_key=event.tenant_id)
         except exceptions.CosmosResourceNotFoundError:
             pass
 
@@ -117,8 +120,9 @@ class CosmosRepositoryBase:
                 tenant_id=event.tenant_id,
             )
 
-    async def _flush_audit_outbox(self) -> None:
-        items = self._desired.query_items(
+    async def _flush_audit_outbox(self, *, source: ContainerProxy | None = None) -> None:
+        container = source if source is not None else self._desired
+        items = container.query_items(
             query=(
                 "SELECT * FROM c WHERE c.entityType = @entityType AND STARTSWITH(c.id, @prefix)"
             ),
@@ -128,7 +132,7 @@ class CosmosRepositoryBase:
             ],
         )
         async for item in items:
-            await self._project_audit_event(self._model(AuditEvent, item))
+            await self._project_audit_event(self._model(AuditEvent, item), source=source)
 
     def _replace_operation(self, model: BaseModel) -> BatchOperation:
         model_id = getattr(model, "id", None)
@@ -153,12 +157,15 @@ class CosmosRepositoryBase:
         batch_operations: list[BatchOperation],
         audit_event: AuditEvent | Sequence[AuditEvent],
         conflict_message: str | None,
-    ) -> None:
+        *,
+        source: ContainerProxy | None = None,
+    ) -> list[dict[str, Any]]:
+        container = source if source is not None else self._desired
         audit_events = [audit_event] if isinstance(audit_event, AuditEvent) else list(audit_event)
         if not audit_events:
             raise ValueError("A transactional batch must carry at least one audit event")
         try:
-            await self._desired.execute_item_batch(
+            responses = await container.execute_item_batch(
                 batch_operations=batch_operations,
                 partition_key=audit_events[0].tenant_id,
             )
@@ -170,13 +177,14 @@ class CosmosRepositoryBase:
 
         for event in audit_events:
             try:
-                await self._project_audit_event(event)
+                await self._project_audit_event(event, source=source)
             except exceptions.CosmosHttpResponseError:
                 logger.exception(
                     "audit_projection_deferred",
                     audit_event_id=event.id,
                     tenant_id=event.tenant_id,
                 )
+        return responses
 
     async def _mutate(
         self,

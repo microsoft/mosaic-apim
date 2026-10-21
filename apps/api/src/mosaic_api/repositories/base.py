@@ -28,6 +28,7 @@ from mosaic_api.domain import (
     PublishRun,
 )
 from mosaic_api.environments import EnvironmentCatalog, EnvironmentUsage
+from mosaic_api.model_deployments import ModelDeploymentPlan, ModelDeploymentRun
 from mosaic_api.model_pools import ModelPool
 from mosaic_api.observed import ObservedEndpointEntity, ObservedEntity
 from mosaic_api.pricing import EndpointPricing, PriceVersion
@@ -402,6 +403,28 @@ class ModelEndpointRepository(EndpointStateRepository, Protocol):
     async def list_unfinished_endpoint_sync_runs(
         self, tenant_id: str
     ) -> list[ModelEndpointSyncRun]: ...
+
+    async def save_model_deployment_plan(self, plan: ModelDeploymentPlan) -> None: ...
+
+    async def get_model_deployment_plan(
+        self, tenant_id: str, plan_id: str
+    ) -> ModelDeploymentPlan | None: ...
+
+    async def create_model_deployment_run(
+        self, run: ModelDeploymentRun, audit_event: AuditEvent
+    ) -> ModelDeploymentRun: ...
+
+    async def save_model_deployment_run(
+        self, run: ModelDeploymentRun, audit_event: AuditEvent | None = None
+    ) -> ModelDeploymentRun: ...
+
+    async def get_model_deployment_run(
+        self, tenant_id: str, run_id: str
+    ) -> ModelDeploymentRun | None: ...
+
+    async def list_model_deployment_runs(
+        self, tenant_id: str, endpoint_id: str, *, limit: int = 20
+    ) -> list[ModelDeploymentRun]: ...
 
 
 class McpEndpointRepository(EndpointStateRepository, Protocol):

@@ -1,5 +1,6 @@
 from mosaic_api.domain import AuditEvent, ModelEndpoint, ModelEndpointSyncRun
 from mosaic_api.errors import ConflictError
+from mosaic_api.model_deployments import ModelDeploymentPlan, ModelDeploymentRun
 from mosaic_api.repositories.memory_endpoint_state import InMemoryEndpointStateBase
 from mosaic_api.repositories.observation_writes import (
     MODEL_ENDPOINT_AUTHORED_FIELDS,
@@ -16,6 +17,8 @@ class InMemoryModelEndpointRepository(InMemoryEndpointStateBase):
         super().__init__()
         self.endpoints: dict[str, ModelEndpoint] = {}
         self._endpoint_versions: dict[str, int] = {}
+        self.deployment_plans: dict[str, ModelDeploymentPlan] = {}
+        self.deployment_runs: dict[str, ModelDeploymentRun] = {}
 
     async def list_endpoints(self, tenant_id: str) -> list[ModelEndpoint]:
         return sorted(
@@ -118,3 +121,49 @@ class InMemoryModelEndpointRepository(InMemoryEndpointStateBase):
         self, tenant_id: str
     ) -> list[ModelEndpointSyncRun]:
         return self._unfinished_runs(tenant_id)
+
+    async def save_model_deployment_plan(self, plan: ModelDeploymentPlan) -> None:
+        self.deployment_plans[plan.id] = plan.model_copy(deep=True)
+
+    async def get_model_deployment_plan(
+        self, tenant_id: str, plan_id: str
+    ) -> ModelDeploymentPlan | None:
+        plan = self.deployment_plans.get(plan_id)
+        return plan.model_copy(deep=True) if plan and plan.tenant_id == tenant_id else None
+
+    async def create_model_deployment_run(
+        self, run: ModelDeploymentRun, audit_event: AuditEvent
+    ) -> ModelDeploymentRun:
+        if run.id in self.deployment_runs:
+            raise ConflictError("This deployment plan already has a run")
+        saved = run.model_copy(update={"etag": "1"}, deep=True)
+        self.deployment_runs[run.id] = saved
+        self.audit_events[audit_event.id] = audit_event
+        return saved.model_copy(deep=True)
+
+    async def save_model_deployment_run(
+        self, run: ModelDeploymentRun, audit_event: AuditEvent | None = None
+    ) -> ModelDeploymentRun:
+        current = self.deployment_runs.get(run.id)
+        if current is None or current.tenant_id != run.tenant_id or current.etag != run.etag:
+            raise ConflictError("The deployment run changed; reload it before continuing")
+        saved = run.model_copy(update={"etag": str(int(current.etag or "0") + 1)}, deep=True)
+        self.deployment_runs[run.id] = saved
+        if audit_event is not None:
+            self.audit_events[audit_event.id] = audit_event
+        return saved.model_copy(deep=True)
+
+    async def get_model_deployment_run(
+        self, tenant_id: str, run_id: str
+    ) -> ModelDeploymentRun | None:
+        run = self.deployment_runs.get(run_id)
+        return run.model_copy(deep=True) if run and run.tenant_id == tenant_id else None
+
+    async def list_model_deployment_runs(
+        self, tenant_id: str, endpoint_id: str, *, limit: int = 20
+    ) -> list[ModelDeploymentRun]:
+        runs = [
+            run.model_copy(deep=True) for run in self.deployment_runs.values()
+            if run.tenant_id == tenant_id and run.endpoint_id == endpoint_id
+        ]
+        return sorted(runs, key=lambda run: run.started_at, reverse=True)[:limit]

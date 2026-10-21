@@ -108,30 +108,37 @@ test('R12 rejects invented, unrelated, wrong-grant and non-first block/raise obs
 
 function government(): IndependentModelEvidence {
   return { scopeSha256: 'offline-only', government: {
-    cloud: 'government', resourceDeployed: true, domainDeployed: true, managedIdentity: true,
-    tokenScope: 'https://communication.azure.us/.default', apiVersion: '2023-03-31',
+    cloud: 'government', provider: 'graph', mailboxScopeVerified: true,
+    unscopedSendGrantPresent: false, managedIdentity: true,
+    tokenScope: 'https://graph.microsoft.us/.default', apiVersion: 'v1.0',
     attempts: [{ operationId: 'offline-operation', status: 202, at: '2026-10-01T12:00:00Z' }, { operationId: 'offline-operation', status: 202, at: '2026-10-01T12:01:00Z' }],
     receipts: [{ operationId: 'offline-operation', messageId: 'offline-message', receivedAt: '2026-10-01T12:02:00Z' }],
     mailboxObservation: { startedAt: '2026-10-01T12:01:01Z', completedAt: '2026-10-01T12:05:00Z' },
   } }
 }
-test('R13 rejects Commercial/source-only, ACS acceptance without delivery, different Operation-Id and duplicate mailbox receipts', () => {
+test('R13 requires Government Graph, scoped Exchange access and actual receipt; duplicate delivery is acceptable', () => {
   governmentEmailEvidence(government()) // Validates fixture semantics, never a claim that mail was sent.
   const commercial = government()
   commercial.government!.cloud = 'commercial'
-  assert.throws(() => governmentEmailEvidence(commercial), /actual Azure Government/)
+  assert.throws(() => governmentEmailEvidence(commercial), /actual Government Graph/)
   const wrongScope = government()
-  wrongScope.government!.tokenScope = 'https://communication.azure.com/.default'
+  wrongScope.government!.tokenScope = 'https://graph.microsoft.com/.default'
   assert.throws(() => governmentEmailEvidence(wrongScope))
   const noDelivery = government()
   noDelivery.government!.receipts = []
   assert.throws(() => governmentEmailEvidence(noDelivery), /not delivery/)
+  const unscoped = government()
+  unscoped.government!.unscopedSendGrantPresent = true
+  assert.throws(() => governmentEmailEvidence(unscoped), /mailbox-scoped/)
+  const missingScope = government()
+  missingScope.government!.mailboxScopeVerified = false
+  assert.throws(() => governmentEmailEvidence(missingScope), /mailbox-scoped/)
   const duplicate = government()
   duplicate.government!.receipts.push({ ...duplicate.government!.receipts[0], messageId: 'duplicate-message' })
-  assert.throws(() => governmentEmailEvidence(duplicate))
+  governmentEmailEvidence(duplicate)
   const different = government()
   different.government!.attempts[1].operationId = 'different-operation'
-  assert.throws(() => governmentEmailEvidence(different), /same Operation-Id/)
+  assert.throws(() => governmentEmailEvidence(different), /one correlation ID/)
 })
 
 test('R13 requires a nonempty mailbox observation after retry, even for a receipt delivered before retry', () => {
@@ -149,7 +156,7 @@ test('R13 requires a nonempty mailbox observation after retry, even for a receip
   }
   const future = government()
   future.government!.receipts[0].receivedAt = '2026-10-01T12:06:00Z'
-  assert.throws(() => governmentEmailEvidence(future), /actual mailbox receipt/)
+  assert.throws(() => governmentEmailEvidence(future), /mailbox receipts/)
 })
 
 test('R13 rejects missing/reversed post-retry windows, stale receipts and reversed attempts', () => {
@@ -162,7 +169,7 @@ test('R13 rejects missing/reversed post-retry windows, stale receipts and revers
   ]) {
     const e = government()
     change(e)
-    assert.throws(() => governmentEmailEvidence(e), /timestamp|observation window|actual mailbox receipt|same Operation-Id/)
+    assert.throws(() => governmentEmailEvidence(e), /timestamp|observation window|mailbox receipts|one correlation ID/)
   }
 })
 
@@ -191,7 +198,7 @@ function notificationScope(oneCent: boolean) {
   scope.budget!.raisedAmount = oneCent ? 0.1 : 2
   return scope
 }
-test('R14 accepts staged 80/100 delivery or one-cent highest-only, rejects fabricated 80%, skipped sends, duplicate receipts and repeat notifications', () => {
+test('R14 accepts staged delivery, highest-only thresholds and duplicates; rejects fabricated notices and skipped sends', () => {
   notificationDeliveryEvidence(notificationScope(false), notices(false))
   notificationDeliveryEvidence(notificationScope(true), notices(true))
   const false80 = notices(true)
@@ -202,10 +209,10 @@ test('R14 accepts staged 80/100 delivery or one-cent highest-only, rejects fabri
   assert.throws(() => notificationDeliveryEvidence(notificationScope(false), skipped), /skipped is not delivery/)
   const duplicate = notices(false)
   duplicate.receipts.push({ ...duplicate.receipts[0], messageId: 'duplicate' })
-  assert.throws(() => notificationDeliveryEvidence(notificationScope(false), duplicate), /exactly one/)
+  notificationDeliveryEvidence(notificationScope(false), duplicate)
   const recheck = notices(false)
   recheck.noticesAfterRecheck.push('duplicate-notice')
-  assert.throws(() => notificationDeliveryEvidence(notificationScope(false), recheck), /dedupe/)
+  assert.throws(() => notificationDeliveryEvidence(notificationScope(false), recheck), /notification identity/)
 })
 
 test('R14 rejects receipts predating sends, sends predating checks and incomplete post-recheck mailbox observations', () => {
@@ -225,6 +232,17 @@ test('R14 rejects receipts predating sends, sends predating checks and incomplet
     change(e)
     assert.throws(() => notificationDeliveryEvidence(scope, e), /receipt|predates|follow|observation|ordered/)
   }
+})
+
+test('R14 accepts a receipt from an uncertain first attempt before final retry acceptance', () => {
+  const e = notices(false)
+  const notice = e.noticesBeforeRecheck[0]
+  notice.firstAttemptAt = notice.sentAt
+  notice.sentAt = '2026-10-01T12:01:50Z'
+  e.receipts[0].receivedAt = '2026-10-01T12:01:30Z'
+  notificationDeliveryEvidence(notificationScope(false), e)
+  notice.firstAttemptAt = '2026-10-01T12:01:55Z'
+  assert.throws(() => notificationDeliveryEvidence(notificationScope(false), e), /First attempt/)
 })
 
 test('R14 refuses another cost center or unapproved budget amount despite matching scope-file hashes', () => {

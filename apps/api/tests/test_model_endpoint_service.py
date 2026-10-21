@@ -1,5 +1,7 @@
 """Model endpoint onboarding: access verification, discovery, and runtime readiness."""
 
+import asyncio
+
 import pytest
 from aoai_double import (
     AI_ENDPOINT,
@@ -536,6 +538,39 @@ class TestDiscovery:
 
         with pytest.raises(ConflictError):
             await service.start_sync(ACTOR, endpoint.id)
+
+    @pytest.mark.asyncio
+    async def test_sync_now_does_not_wait_for_another_tenants_sync(
+        self, endpoint_service, endpoint_repository, monkeypatch
+    ) -> None:
+        endpoint = await endpoint_service.register(ACTOR, _create())
+        other_actor = Actor(object_id="other-admin", tenant_id="other-tenant")
+        other = await endpoint_service.register(other_actor, _create())
+        started, release = asyncio.Event(), asyncio.Event()
+        original_sync = endpoint_service._run_sync
+
+        async def blocked_sync(target, run):
+            if run.tenant_id == other_actor.tenant_id:
+                started.set()
+                await release.wait()
+            await original_sync(target, run)
+
+        monkeypatch.setattr(endpoint_service, "_run_sync", blocked_sync)
+        other_run = await endpoint_service.start_sync(other_actor, other.id)
+        try:
+            await asyncio.wait_for(started.wait(), timeout=5)
+            completed = await asyncio.wait_for(
+                endpoint_service.sync_now(ACTOR, endpoint.id), timeout=5
+            )
+            assert completed.status == GatewaySyncStatus.SUCCEEDED
+            assert (
+                await endpoint_repository.get_endpoint_sync_run(
+                    other_actor.tenant_id, other_run.id
+                )
+            ).status == GatewaySyncStatus.RUNNING
+        finally:
+            release.set()
+            await asyncio.gather(*tuple(endpoint_service._tasks))
 
     @pytest.mark.asyncio
     async def test_endpoint_removed_mid_sync_discards_snapshot(

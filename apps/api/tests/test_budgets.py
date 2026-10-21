@@ -21,7 +21,7 @@ from mosaic_api.budgets import (
 )
 from mosaic_api.domain import ManagementMode
 from mosaic_api.errors import UpstreamError
-from mosaic_api.integrations.email import EmailMessage, EmailSendResult
+from mosaic_api.integrations.email import EmailAccessResult, EmailMessage, EmailSendResult
 from mosaic_api.services.budget_gate import BlockedListGate
 from mosaic_api.services.budgets import (
     CHECKS_OFF,
@@ -48,22 +48,22 @@ from test_cost_center_analytics import GENERAL, RESEARCH, _charge_research
 
 __all__ = ["harness", "settings"]
 
-ENDPOINT = "https://contoso-mosaic.communication.azure.com"
+MAILBOX = "33333333-3333-4333-8333-333333333333"
 SENDER = "DoNotReply@contoso.com"
 OWNERS = ["research-lead@contoso.com"]
 
 
 class FakeEmail:
-    """Communication Services, as far as MOSAIC can tell: it accepts or refuses each send."""
+    """Graph, as far as MOSAIC can tell: it accepts or refuses each send."""
 
     def __init__(self) -> None:
-        self.sent: list[tuple[str, str, EmailMessage, str]] = []
+        self.sent: list[tuple[str, EmailMessage, str]] = []
         self.refusals = 0
 
     async def send(
-        self, endpoint: str, sender: str, message: EmailMessage, *, operation_id: str
+        self, sender_mailbox_id: str, message: EmailMessage, *, operation_id: str
     ) -> EmailSendResult:
-        self.sent.append((endpoint, sender, message, operation_id))
+        self.sent.append((sender_mailbox_id, message, operation_id))
         if self.refusals:
             self.refusals -= 1
             return EmailSendResult(False, operation_id, 503, "ServiceUnavailable Try later.")
@@ -72,8 +72,11 @@ class FakeEmail:
     async def close(self) -> None:
         return None
 
+    async def check_access(self) -> EmailAccessResult:
+        return EmailAccessResult(True)
+
     def subjects(self) -> list[str]:
-        return [message.subject for _, _, message, _ in self.sent]
+        return [message.subject for _, message, _ in self.sent]
 
 
 class NamedValues:
@@ -152,7 +155,7 @@ class Budgets:
     def email_on(self) -> None:
         self.put(
             "/api/v1/settings/email",
-            {"enabled": True, "endpoint": ENDPOINT, "sender": SENDER},
+            {"enabled": True, "senderMailboxId": MAILBOX, "sender": SENDER},
         )
 
     async def check(self) -> None:
@@ -220,7 +223,7 @@ async def test_the_organizations_budget_counts_every_call_and_only_warns(
     assert view["status"]["monthToDate"] > MARCH_SO_FAR
     assert view["status"]["level"] == "exceeded"
     assert view["status"]["blocked"] is False
-    [(_, _, message, _)] = budgets.email.sent
+    [(_, message, _)] = budgets.email.sent
     assert message.to == ["cfo@contoso.com"]
     assert "Your organization" in message.subject
     response = budgets.harness.client.put(
@@ -251,8 +254,8 @@ async def test_each_threshold_emails_its_recipients_once_a_month(budgets: Budget
     await budgets.check()
     await budgets.check()
 
-    [(endpoint, sender, message, operation_id)] = budgets.email.sent
-    assert (endpoint, sender) == (ENDPOINT, SENDER)
+    [(mailbox, message, operation_id)] = budgets.email.sent
+    assert mailbox == MAILBOX
     # The cost center's owners and anyone the budget names, who needn't use MOSAIC.
     assert message.to == [*OWNERS, "finance@fabrikam.com"]
     assert message.subject == (
@@ -280,7 +283,7 @@ async def test_a_refused_email_is_tried_again_at_the_next_check(budgets: Budgets
     [sent] = view["status"]["notifications"]
     assert (sent["status"], sent["attempts"]) == ("sent", 2)
     # Both tries were the same Communication Services operation.
-    assert len({operation for _, _, _, operation in budgets.email.sent}) == 1
+    assert len({operation for _, _, operation in budgets.email.sent}) == 1
 
 
 async def test_a_budget_with_no_one_to_email_says_so(budgets: Budgets) -> None:
@@ -315,7 +318,7 @@ async def test_a_budget_used_up_blocks_its_cost_center_at_every_managed_gateway(
         "MOSAIC budget: Research (RES) has reached 100% of its March 2026 budget",
         "MOSAIC budget: calls charged to Research (RES) are now blocked",
     ]
-    assert "Every gateway MOSAIC manages refuses them now." in budgets.email.sent[-1][2].plain_text
+    assert "Every gateway MOSAIC manages refuses them now." in budgets.email.sent[-1][1].plain_text
     # Nothing new at the next check: the list already says so, and the emails went.
     writes = len(budgets.gateway.writes)
     await budgets.check()
@@ -419,7 +422,7 @@ async def test_removing_a_blocked_budget_lifts_its_block_even_if_its_state_chang
     assert response.status_code == 204, response.text
     # The state stays for the next full check to remove, but the block lifts at once.
     assert budgets.gateway.blocked == NONE_BLOCKED
-    [(_, _, message, _)] = budgets.email.sent
+    [(_, message, _)] = budgets.email.sent
     assert message.subject.endswith("are allowed again")
     assert "Every gateway MOSAIC manages allows them again." in message.plain_text
 
@@ -476,7 +479,7 @@ async def test_the_block_lifts_when_the_utc_month_ends(budgets: Budgets) -> None
     assert view["status"]["month"] == "2026-04"
     assert budgets.gateway.blocked == NONE_BLOCKED
     assert budgets.email.subjects()[-1].endswith("are allowed again")
-    assert "A new month has started" in budgets.email.sent[-1][2].plain_text
+    assert "A new month has started" in budgets.email.sent[-1][1].plain_text
 
 
 async def test_a_check_that_ran_across_the_months_end_judges_the_new_month_at_once(
@@ -547,7 +550,7 @@ async def test_a_gateway_that_cant_be_written_keeps_its_list_and_is_tried_again(
     assert gateway["enforcing"] is False
     assert "didn't answer" in gateway["error"]
     # The block email says the gateway doesn't refuse the calls yet, rather than that it does.
-    block = budgets.email.sent[-1][2]
+    block = budgets.email.sent[-1][1]
     assert block.subject.endswith("are now blocked")
     assert "0 of 1 gateways MOSAIC manages refuse them so far" in block.plain_text
     budgets.gateway.failing = False
@@ -635,12 +638,14 @@ async def test_email_is_off_until_settings_turn_it_on(budgets: Budgets) -> None:
     assert (settings["enabled"], settings["ready"]) == (False, False)
     saved = budgets.put(
         "/api/v1/settings/email",
-        {"enabled": False, "endpoint": ENDPOINT, "sender": SENDER},
+        {"enabled": False, "senderMailboxId": MAILBOX, "sender": SENDER},
     )
-    assert (saved["enabled"], saved["ready"], saved["endpoint"]) == (False, False, ENDPOINT)
+    assert (saved["enabled"], saved["ready"], saved["senderMailboxId"]) == (False, False, MAILBOX)
+    assert saved["provider"] == "graph" and saved["configured"]
+    assert "endpoint" not in saved
     response = budgets.harness.client.put(
         "/api/v1/settings/email",
-        json={"enabled": True, "endpoint": "https://mail.example.com", "sender": SENDER},
+        json={"enabled": True, "senderMailboxId": "not-a-guid", "sender": SENDER},
     )
     assert response.status_code == 422
     audits = [
@@ -659,19 +664,94 @@ async def test_a_test_email_goes_through_the_saved_settings(budgets: Budgets) ->
     assert response.json()["details"]["reason"] == "notConfigured"
 
     budgets.put(
-        "/api/v1/settings/email", {"enabled": False, "endpoint": ENDPOINT, "sender": SENDER}
+        "/api/v1/settings/email", {"enabled": False, "senderMailboxId": MAILBOX, "sender": SENDER}
     )
     sent = budgets.harness.client.post("/api/v1/settings/email/test", json={"to": "me@contoso.com"})
 
     assert sent.status_code == 200, sent.text
     assert sent.json()["sent"] is True
-    [(_, _, message, _)] = budgets.email.sent
+    [(_, message, _)] = budgets.email.sent
     assert (message.subject, message.to) == ("MOSAIC test email", ["me@contoso.com"])
     assert budgets.harness.get("/api/v1/settings/email")["lastTestAt"] is not None
     again = budgets.harness.client.post(
         "/api/v1/settings/email/test", json={"to": "me@contoso.com"}
     )
     assert again.status_code == 429
+
+
+async def test_email_access_checks_never_send_or_record_a_test(budgets: Budgets) -> None:
+    budgets.email_on()
+    before = list(budgets.repository.audit_events)
+    response = budgets.harness.get("/api/v1/settings/email/checks")
+    by_feature = {check["feature"]: check for check in response}
+    assert by_feature["emailIdentity"]["state"] == "verified"
+    assert by_feature["emailSendAuthorization"]["state"] != "verified"
+    assert not budgets.email.sent
+    assert budgets.harness.get("/api/v1/settings/email")["lastTestAt"] is None
+    assert list(budgets.repository.audit_events) == before
+
+
+async def test_accepted_email_test_is_short_lived_revision_bound_access_evidence(
+    budgets: Budgets,
+) -> None:
+    budgets.email_on()
+    response = budgets.harness.client.post(
+        "/api/v1/settings/email/test", json={"to": "me@contoso.com"}
+    )
+    assert response.status_code == 200 and response.json()["sent"]
+
+    def authorization() -> dict[str, Any]:
+        checks = budgets.harness.get("/api/v1/settings/email/checks")
+        return next(check for check in checks if check["feature"] == "emailSendAuthorization")
+
+    check = authorization()
+    assert check["state"] == "verified" and check["freshUntil"] and check["evidence"]
+    budgets.harness.now += timedelta(minutes=5)
+    assert authorization()["state"] == "needsAction"
+    budgets.harness.now -= timedelta(minutes=5)
+    current = await budgets.repository.get_email_settings(TENANT)
+    assert current is not None
+    await budgets.repository.save_email_settings(
+        current.model_copy(update={"revision": current.revision + 1}),
+        _audit("emailSettings"),
+    )
+    assert authorization()["state"] == "needsAction"
+    assert len(budgets.email.sent) == 1
+
+
+async def test_concurrent_sender_edit_keeps_new_settings_and_reports_unsaved_test_evidence(
+    budgets: Budgets,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    budgets.email_on()
+    original_send = budgets.email.send
+    replacement = "66666666-6666-4666-8666-666666666666"
+
+    async def change_while_sending(
+        mailbox: str, message: EmailMessage, *, operation_id: str
+    ) -> EmailSendResult:
+        current = await budgets.repository.get_email_settings(TENANT)
+        assert current is not None
+        await budgets.repository.save_email_settings(
+            current.model_copy(
+                update={
+                    "sender_mailbox_id": replacement,
+                    "revision": current.revision + 1,
+                }
+            ),
+            _audit("emailSettings"),
+        )
+        return await original_send(mailbox, message, operation_id=operation_id)
+
+    monkeypatch.setattr(budgets.email, "send", change_while_sending)
+    response = budgets.harness.client.post(
+        "/api/v1/settings/email/test", json={"to": "me@contoso.com"}
+    )
+    assert response.status_code == 200
+    assert response.json()["sent"] is True and response.json()["evidenceRecorded"] is False
+    current = budgets.harness.get("/api/v1/settings/email")
+    assert current["senderMailboxId"] == replacement and current["revision"] == 2
+    assert current["lastTestAt"] is None and len(budgets.email.sent) == 1
 
 
 # -- who may do what -------------------------------------------------------------------------
@@ -689,6 +769,7 @@ async def test_a_test_email_goes_through_the_saved_settings(budgets: Budgets) ->
         ("PUT", f"/api/v1/cost-centers/{RESEARCH}/budget", {"amount": 10}),
         ("DELETE", f"/api/v1/cost-centers/{RESEARCH}/budget", None),
         ("GET", "/api/v1/settings/email", None),
+        ("GET", "/api/v1/settings/email/checks", None),
         ("PUT", "/api/v1/settings/email", {"enabled": False}),
         ("POST", "/api/v1/settings/email/test", {"to": "me@contoso.com"}),
     ],

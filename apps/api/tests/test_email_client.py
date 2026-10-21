@@ -1,42 +1,47 @@
-"""The Communication Services email client, against a fake transport. See ADR 0023."""
-
-from __future__ import annotations
+"""App-only Graph sendMail, exercised without a live mailbox."""
 
 import json
 from typing import Any, cast
 
 import httpx
+import jwt
 import pytest
 from azure.core.credentials import AccessToken
 from azure.core.credentials_async import AsyncTokenCredential
 from azure.core.exceptions import ClientAuthenticationError
-from mosaic_api.integrations.email import (
-    EMAIL_API_VERSION,
-    AcsEmailClient,
-    EmailMessage,
-    email_scope,
-)
+from mosaic_api.integrations.email import EmailMessage, GraphEmailClient
 
-ENDPOINT = "https://contoso-mosaic.communication.azure.com"
-SENDER = "DoNotReply@contoso.com"
+ENDPOINT = "https://graph.microsoft.com"
+TENANT = "11111111-1111-4111-8111-111111111111"
+PRINCIPAL = "22222222-2222-4222-8222-222222222222"
+MAILBOX = "33333333-3333-4333-8333-333333333333"
+SENDER = "notifications@example.test"
 MESSAGE = EmailMessage(
     subject="Budget reached",
     plain_text="Research reached 80% of its budget.",
     html="<p>Research reached 80% of its budget.</p>",
-    to=["owner@contoso.com", "finance@fabrikam.com"],
+    to=["owner@example.test", "finance@example.test"],
 )
 
 
 class Credential:
-    def __init__(self, *, fail: bool = False) -> None:
+    def __init__(self, *, fail: bool = False, **claims: Any) -> None:
         self.scopes: list[str] = []
         self.fail = fail
+        self.claims = {
+            "aud": "00000003-0000-0000-c000-000000000000",
+            "tid": TENANT,
+            "oid": PRINCIPAL,
+            "idtyp": "app",
+            **claims,
+        }
 
     async def get_token(self, *scopes: str, **_kwargs: Any) -> AccessToken:
         self.scopes.extend(scopes)
         if self.fail:
-            raise ClientAuthenticationError("no identity")
-        return AccessToken("communication-token", 4_102_444_800)
+            raise ClientAuthenticationError("private credential failure")
+        token = jwt.encode(self.claims, "fictional-test-key-at-least-32-bytes", algorithm="HS256")
+        return AccessToken(token, 4_102_444_800)
 
     async def close(self) -> None:
         return None
@@ -56,119 +61,171 @@ class Transport:
 
 def _client(
     response: httpx.Response | Exception, credential: Credential | None = None
-) -> tuple[AcsEmailClient, Transport, Credential]:
+) -> tuple[GraphEmailClient, Transport, Credential]:
     transport = Transport(response)
     identity = credential or Credential()
-    client = AcsEmailClient(
+    client = GraphEmailClient(
         cast(AsyncTokenCredential, identity),
+        tenant_id=TENANT,
+        principal_id=PRINCIPAL,
         client=httpx.AsyncClient(transport=httpx.MockTransport(transport.handler)),
     )
     return client, transport, identity
 
 
-async def test_a_send_is_one_post_with_the_identitys_token_and_the_operation_id() -> None:
-    client, transport, credential = _client(
-        httpx.Response(202, json={"id": "op-1", "status": "Running"})
-    )
-
-    result = await client.send(ENDPOINT, SENDER, MESSAGE, operation_id="op-1")
-
-    assert result.accepted
-    assert result.operation_id == "op-1"
+async def test_a_send_is_one_post_and_empty_202_is_acceptance_not_delivery() -> None:
+    client, transport, credential = _client(httpx.Response(202))
+    result = await client.send(MAILBOX, MESSAGE, operation_id="correlation")
+    assert result.accepted and result.operation_id == "correlation"
     [request] = transport.requests
     assert request.method == "POST"
-    assert str(request.url).startswith(f"{ENDPOINT}/emails:send?")
-    assert request.url.params["api-version"] == EMAIL_API_VERSION
-    assert request.headers["Authorization"] == "Bearer communication-token"
-    assert request.headers["Operation-Id"] == "op-1"
-    assert credential.scopes == ["https://communication.azure.com/.default"]
-    body = json.loads(request.content)
-    assert body == {
-        "senderAddress": SENDER,
-        "recipients": {
-            "to": [{"address": "owner@contoso.com"}, {"address": "finance@fabrikam.com"}]
+    assert str(request.url) == f"{ENDPOINT}/v1.0/users/{MAILBOX}/sendMail"
+    assert request.headers["Authorization"].startswith("Bearer ")
+    assert request.headers["client-request-id"] == "correlation"
+    assert "Operation-Id" not in request.headers
+    assert credential.scopes == [ENDPOINT + "/.default"]
+    assert json.loads(request.content) == {
+        "message": {
+            "subject": MESSAGE.subject,
+            "body": {"contentType": "HTML", "content": MESSAGE.html},
+            "toRecipients": [{"emailAddress": {"address": address}} for address in MESSAGE.to],
         },
-        "content": {
-            "subject": "Budget reached",
-            "plainText": "Research reached 80% of its budget.",
-            "html": "<p>Research reached 80% of its budget.</p>",
-        },
-        "userEngagementTrackingDisabled": True,
+        "saveToSentItems": True,
     }
 
 
-async def test_an_operation_communication_services_already_has_isnt_sent_again() -> None:
-    client, _, _ = _client(httpx.Response(409, json={"error": {"code": "Conflict"}}))
-
-    result = await client.send(ENDPOINT, SENDER, MESSAGE, operation_id="op-1")
-
-    assert result.accepted
-    assert result.status_code == 409
+async def test_roleless_exchange_rbac_identity_can_check_without_sending() -> None:
+    client, transport, _ = _client(httpx.Response(202))
+    result = await client.check_access()
+    assert result.authenticated and result.identity_object_id == PRINCIPAL
+    assert transport.requests == []
 
 
-async def test_a_refusal_is_returned_with_azures_reason() -> None:
-    client, _, _ = _client(
-        httpx.Response(
-            400,
-            json={"error": {"code": "InvalidSenderUserName", "message": "The sender is unknown."}},
-        )
-    )
-
-    result = await client.send(ENDPOINT, SENDER, MESSAGE, operation_id="op-1")
-
-    assert not result.accepted
-    assert result.status_code == 400
-    assert result.error == "InvalidSenderUserName The sender is unknown."
-
-
-async def test_no_answer_is_a_refusal_not_an_exception() -> None:
-    client, _, _ = _client(httpx.ConnectError("unreachable"))
-
-    result = await client.send(ENDPOINT, SENDER, MESSAGE, operation_id="op-1")
-
-    assert not result.accepted
-    assert result.error is not None and "ConnectError" in result.error
-
-
-async def test_no_token_is_a_refusal_and_sends_nothing() -> None:
-    client, transport, _ = _client(httpx.Response(202), Credential(fail=True))
-
-    result = await client.send(ENDPOINT, SENDER, MESSAGE, operation_id="op-1")
-
-    assert not result.accepted
+@pytest.mark.parametrize(
+    "claims",
+    [
+        {"tid": "other-tenant"},
+        {"scp": "Mail.Send"},
+        {"idtyp": "user"},
+        {"oid": "other-identity"},
+        {"aud": "https://management.azure.com"},
+    ],
+)
+async def test_wrong_tenant_identity_audience_and_delegated_tokens_never_send(
+    claims: dict[str, str],
+) -> None:
+    client, transport, _ = _client(httpx.Response(202), Credential(**claims))
+    result = await client.send(MAILBOX, MESSAGE, operation_id="test")
+    assert not result.accepted and result.error_code == "graphWrongIdentity"
     assert transport.requests == []
 
 
 @pytest.mark.parametrize(
     "endpoint",
-    ["https://attacker.example.com", "http://contoso.communication.azure.com"],
+    [
+        "https://attacker.example.test",
+        "http://graph.microsoft.com",
+        "https://graph.microsoft.com/other",
+        "https://graph.microsoft.com?secret=1",
+        "https://user@graph.microsoft.com",
+        "https://graph.microsoft.com:8443",
+    ],
 )
-async def test_the_token_never_goes_anywhere_but_communication_services(endpoint: str) -> None:
-    client, transport, credential = _client(httpx.Response(202))
-
-    result = await client.send(endpoint, SENDER, MESSAGE, operation_id="op-1")
-
-    assert not result.accepted
-    assert transport.requests == []
-    assert credential.scopes == []
+def test_untrusted_origins_are_rejected_before_credential_use(endpoint: str) -> None:
+    with pytest.raises(ValueError):
+        GraphEmailClient(
+            cast(AsyncTokenCredential, Credential()), tenant_id=TENANT, endpoint=endpoint
+        )
 
 
-def test_azure_government_endpoints_get_their_own_scope() -> None:
-    assert email_scope("https://contoso.communication.azure.us") == (
-        "https://communication.azure.us/.default"
-    )
-    assert email_scope(ENDPOINT) == "https://communication.azure.com/.default"
-
-
-async def test_an_email_without_recipients_isnt_sent() -> None:
-    client, transport, _ = _client(httpx.Response(202))
-
-    result = await client.send(
+@pytest.mark.parametrize(
+    "endpoint",
+    [
         ENDPOINT,
-        SENDER,
-        EmailMessage(subject="s", plain_text="t", html="h", to=[]),
-        operation_id="op-1",
+        "https://graph.microsoft.us",
+        "https://dod-graph.microsoft.us",
+        "https://microsoftgraph.chinacloudapi.cn",
+    ],
+)
+async def test_supported_clouds_request_their_own_graph_scope(endpoint: str) -> None:
+    credential = Credential(aud=endpoint)
+    http = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(202)))
+    client = GraphEmailClient(
+        cast(AsyncTokenCredential, credential), tenant_id=TENANT, endpoint=endpoint, client=http
     )
+    assert (await client.send(MAILBOX, MESSAGE, operation_id="test")).accepted
+    assert credential.scopes == [endpoint + "/.default"]
+    await http.aclose()
 
-    assert not result.accepted
+
+@pytest.mark.parametrize(
+    ("status", "retryable", "unknown"),
+    [
+        (400, False, False),
+        (401, False, False),
+        (403, False, False),
+        (404, False, False),
+        (409, False, False),
+        (429, True, False),
+        (408, True, True),
+        (503, True, True),
+    ],
+)
+async def test_refusals_are_sanitized_and_classified(
+    status: int,
+    retryable: bool,
+    unknown: bool,
+) -> None:
+    client, transport, _ = _client(
+        httpx.Response(
+            status,
+            json={"error": {"code": "ErrorAccessDenied", "message": "sensitive upstream data"}},
+            headers={"Retry-After": "120", "request-id": PRINCIPAL},
+        )
+    )
+    result = await client.send(MAILBOX, MESSAGE, operation_id="test")
+    assert not result.accepted and result.retryable is retryable
+    assert result.outcome_unknown is unknown
+    assert result.request_id == PRINCIPAL and result.retry_after_seconds == 120
+    assert "sensitive upstream data" not in (result.error or "")
+    assert len(transport.requests) == 1
+
+
+async def test_redirects_never_forward_a_token_or_count_as_acceptance() -> None:
+    client, transport, _ = _client(
+        httpx.Response(302, headers={"location": "https://attacker.example.test"})
+    )
+    assert not (await client.send(MAILBOX, MESSAGE, operation_id="test")).accepted
+    assert len(transport.requests) == 1
+
+
+@pytest.mark.parametrize(
+    ("error", "unknown"),
+    [(httpx.ConnectError("sensitive host"), False), (httpx.ReadTimeout("private"), True)],
+)
+async def test_transport_failures_remain_retryable_without_exposing_details(
+    error: Exception,
+    unknown: bool,
+) -> None:
+    client, _, _ = _client(error)
+    result = await client.send(MAILBOX, MESSAGE, operation_id="test")
+    assert not result.accepted and result.retryable
+    assert result.outcome_unknown is unknown
+    assert "sensitive" not in (result.error or "") and "private" not in (result.error or "")
+
+
+async def test_no_token_is_a_visible_failure_without_a_provider_request() -> None:
+    client, transport, _ = _client(httpx.Response(202), Credential(fail=True))
+    result = await client.send(MAILBOX, MESSAGE, operation_id="test")
+    assert result.error_code == "graphIdentityUnavailable"
+    assert result.retryable
     assert transport.requests == []
+
+
+async def test_missing_recipients_or_invalid_mailbox_never_send() -> None:
+    client, transport, credential = _client(httpx.Response(202))
+    assert not (await client.send("address@example.test", MESSAGE, operation_id="test")).accepted
+    assert not (
+        await client.send(MAILBOX, EmailMessage("s", "text", "", []), operation_id="test")
+    ).accepted
+    assert transport.requests == [] and credential.scopes == []

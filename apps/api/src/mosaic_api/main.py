@@ -39,10 +39,11 @@ from mosaic_api.integrations.aoai import CognitiveServicesClient
 from mosaic_api.integrations.aoai.backend_key_access import KeyVaultLocator
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.aoai.key_check import EndpointKeyProbe
+from mosaic_api.integrations.aoai.writer import ModelDeploymentWriter
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient, ApimKeyManager
 from mosaic_api.integrations.azure_connections import AzureClientRegistry
-from mosaic_api.integrations.email import AcsEmailClient
+from mosaic_api.integrations.email import GraphEmailClient
 from mosaic_api.integrations.graph import DirectoryLookup, GraphDirectoryLookup
 from mosaic_api.integrations.graph.notifications import GraphNotificationDirectory
 from mosaic_api.integrations.key_vault import KeyVaultSecretWriter
@@ -57,6 +58,7 @@ from mosaic_api.integrations.teams import (
     WorkflowEndpointPolicy,
 )
 from mosaic_api.mcp_publishing_api import mcp_publishing_router
+from mosaic_api.model_deployments_api import model_deployments_router
 from mosaic_api.model_pools_api import model_pools_router
 from mosaic_api.notification_delivery_api import notification_delivery_router
 from mosaic_api.notification_inbox_api import notifications_router, portal_notifications_router
@@ -138,12 +140,13 @@ from mosaic_api.services.feature_readiness import (
 )
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 from mosaic_api.services.mcp_publishing import McpPublishingService
+from mosaic_api.services.model_deployments import ModelDeploymentService
 from mosaic_api.services.model_pools import ModelPoolService
 from mosaic_api.services.notification_digests import (
     DigestNotificationDispatcher,
     NotificationDigestCoordinator,
 )
-from mosaic_api.services.notification_email import AcsNotificationDispatcher
+from mosaic_api.services.notification_email import GraphNotificationDispatcher
 from mosaic_api.services.notification_preferences import NotificationPreferenceService
 from mosaic_api.services.notification_sources import (
     CosmosNotificationRunSource,
@@ -472,6 +475,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ),
             key_store=key_vault_writer,
         )
+        model_deployment_service = ModelDeploymentService(
+            endpoint_repository,
+            gateway_repository=gateway_repository,
+            endpoint_service=model_endpoint_service,
+            client_factory=lambda resource: CognitiveServicesClient(
+                azure_clients.arm_for(resource), resource
+            ),
+            writer_factory=lambda resource: ModelDeploymentWriter(
+                azure_clients.arm_for(resource), resource
+            ),
+            connection_validator=connection_service.validate_resource,
+        )
         publishing_service = PublishingService(
             gateway_repository,
             endpoint_repository=endpoint_repository,
@@ -568,6 +583,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         app.state.gateway_service = gateway_service
         app.state.model_endpoint_service = model_endpoint_service
+        app.state.model_deployment_service = model_deployment_service
         app.state.publishing_service = publishing_service
         app.state.mcp_publishing_service = mcp_publishing_service
         app.state.model_pool_service = model_pool_service
@@ -637,9 +653,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             interval_seconds=app_settings.usage_rollup_interval_seconds,
             principal_id=app_settings.managed_identity_principal_id,
             identity_resolver=arm_client.caller_object_id,
-            gateway_identity_resolver=lambda gateway: (
-                azure_clients.arm_for(gateway).caller_object_id()
-            ),
+            gateway_identity_resolver=lambda gateway: azure_clients.arm_for(
+                gateway
+            ).caller_object_id(),
         )
         pool_health_service = PoolHealthService(
             model_pool_service,
@@ -649,9 +665,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             logs_factory=azure_clients.logs_for if uses_rollups else None,
             principal_id=app_settings.managed_identity_principal_id,
             identity_resolver=arm_client.caller_object_id,
-            gateway_identity_resolver=lambda gateway: (
-                azure_clients.arm_for(gateway).caller_object_id()
-            ),
+            gateway_identity_resolver=lambda gateway: azure_clients.arm_for(
+                gateway
+            ).caller_object_id(),
         )
         rollup_service = (
             UsageRollupService(
@@ -717,7 +733,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             retention_days=app_settings.usage_rollup_retention_days,
             cost_center_repository=cost_center_repository,
         )
-        email_client = AcsEmailClient(credential)
+        email_credential = ManagedIdentityCredential()
+        email_client = GraphEmailClient(
+            email_credential,
+            tenant_id=app_settings.tenant_id,
+            endpoint=str(app_settings.graph_endpoint),
+            principal_id=app_settings.managed_identity_principal_id,
+        )
         console_origin = (
             str(app_settings.frontend_url).rstrip("/")
             if app_settings.frontend_url and app_settings.frontend_url.scheme == "https"
@@ -813,7 +835,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             console_origin=console_origin,
             portal_origin=portal_origin,
         )
-        email_dispatcher = AcsNotificationDispatcher(
+        email_dispatcher = GraphNotificationDispatcher(
             email_client,
             budget_repository,
             mailbox_resolver=preferences.mailbox_resolver,
@@ -868,8 +890,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             priced=uses_rollups,
             interval_seconds=app_settings.budget_interval_seconds,
             fast_interval_seconds=app_settings.budget_fast_interval_seconds,
-            suggested_endpoint=app_settings.email_suggested_endpoint,
-            suggested_sender=app_settings.email_suggested_sender,
+            email_directory=notification_directory,
             enabled=app_settings.budgets_enabled,
             notification_bridge=budget_bridge,
         )
@@ -905,9 +926,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return await teams_service.capability_checks(actor.tenant_id)
 
         async def personal_team_readiness(actor: Actor) -> list[CapabilityCheck]:
-            return await teams_service.capability_checks(
+            return await teams_service.personal_checks(
                 actor.tenant_id,
-                user_object_id=actor.object_id,
+                actor.object_id,
+                "portal",
+            )
+
+        async def admin_personal_team_readiness(actor: Actor) -> list[CapabilityCheck]:
+            return await teams_service.personal_checks(
+                actor.tenant_id,
+                actor.object_id,
+                "admin",
             )
 
         async def directory_readiness(actor: Actor) -> list[CapabilityCheck]:
@@ -960,7 +989,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 digest_readiness,
                 gateway_usage_probe(gateway_repository, telemetry_service, configured=uses_rollups),
             ),
-            admin_self_probes=(admin_usage_readiness,),
+            admin_self_probes=(admin_usage_readiness, admin_personal_team_readiness),
             personal_probes=(
                 personal_team_readiness,
                 personal_directory_readiness,
@@ -1133,6 +1162,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if rollup_service is not None:
                 await rollup_service.aclose()
             await gateway_service.aclose()
+            await model_deployment_service.aclose()
             await model_endpoint_service.aclose()
             await publishing_service.aclose()
             await mcp_publishing_service.aclose()
@@ -1151,6 +1181,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await key_vault_writer.close()
             await endpoint_key_probe.close()
             await email_client.close()
+            await email_credential.close()
             await mcp_http_client.aclose()
             if log_client is not None:
                 await log_client.close()
@@ -1277,6 +1308,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(azure_connections_router)
     app.include_router(mcp_publishing_router)
     app.include_router(model_pools_router)
+    app.include_router(model_deployments_router)
     app.include_router(directory_router)
     app.include_router(analytics_router)
     app.include_router(pricing_router)

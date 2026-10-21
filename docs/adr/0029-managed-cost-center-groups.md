@@ -1,4 +1,4 @@
-# ADR 0028: Managed cost-center group foundation
+# ADR 0029: Managed cost-center group foundation
 
 **Status:** Experimental, disabled by default
 

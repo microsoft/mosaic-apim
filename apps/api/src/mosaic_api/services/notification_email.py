@@ -1,11 +1,13 @@
-"""ACS notification adapter; the budget bridge preserves legacy content and operation IDs."""
+"""Graph notification adapter; the budget bridge retains the existing budget audience."""
 
 from collections.abc import Awaitable, Callable, Sequence
+from datetime import timedelta
 from html import escape
 from urllib.parse import quote, urlsplit
 from uuid import NAMESPACE_URL, uuid5
 
 from mosaic_api.budgets import email_address
+from mosaic_api.domain import utc_now
 from mosaic_api.errors import DirectoryError, DirectoryForbiddenError
 from mosaic_api.integrations.email import EmailMessage, EmailSender
 from mosaic_api.notifications import NotificationDelivery, NotificationEvent
@@ -43,7 +45,8 @@ def _notification_path(delivery: NotificationDelivery, event: NotificationEvent)
     if subject.endpoint_id and subject.endpoint_kind:
         endpoint = quote(subject.endpoint_id, safe="")
         path = (
-            f"/models?tab=endpoints&selected={endpoint}" if subject.endpoint_kind == "model"
+            f"/models?tab=endpoints&selected={endpoint}"
+            if subject.endpoint_kind == "model"
             else f"/mcps?tab=registered&selected={endpoint}"
         )
         return path + (f"&syncRun={run}" if run else "")
@@ -55,8 +58,8 @@ def _notification_path(delivery: NotificationDelivery, event: NotificationEvent)
     return "/notifications"
 
 
-class AcsNotificationDispatcher:
-    supports_idempotency = True
+class GraphNotificationDispatcher:
+    supports_idempotency = False
 
     def __init__(
         self,
@@ -90,11 +93,17 @@ class AcsNotificationDispatcher:
     ) -> NotificationDispatchResult:
         operation_id = str(uuid5(NAMESPACE_URL, f"mosaic-notification:{delivery.id}"))
         settings = await self._settings.get_email_settings(delivery.tenant_id)
-        if settings is None or not settings.ready or not settings.endpoint or not settings.sender:
+        if settings and settings.migration_required:
+            return NotificationDispatchResult(
+                "deferred",
+                next_attempt_at=utc_now() + timedelta(minutes=5),
+                safe_error="Select a Microsoft 365 sending mailbox in Notifications > Email.",
+            )
+        if settings is None or not settings.configured or not settings.sender_mailbox_id:
             return NotificationDispatchResult(
                 "suppressed",
                 provider_operation_id=operation_id,
-                safe_error="ACS email is not enabled and configured in Settings.",
+                safe_error="Graph email is not configured in Notifications > Email.",
             )
         try:
             mailbox = await self._mailbox(delivery)
@@ -162,7 +171,7 @@ class AcsNotificationDispatcher:
             to=[mailbox],
         )
         result = await self._sender.send(
-            settings.endpoint, settings.sender, message, operation_id=operation_id
+            settings.sender_mailbox_id, message, operation_id=operation_id
         )
         if result.accepted:
             return NotificationDispatchResult(
@@ -172,18 +181,24 @@ class AcsNotificationDispatcher:
             return NotificationDispatchResult(
                 "unknownOutcome",
                 provider_operation_id=result.operation_id,
-                error_code="acsOutcomeUnknown",
-                safe_error="ACS did not return a conclusive acceptance response.",
+                retry_after_seconds=result.retry_after_seconds,
+                error_code="graphOutcomeUnknown",
+                safe_error=(
+                    "Graph acceptance is uncertain. MOSAIC retries; duplicates are possible."
+                ),
             )
-        retryable = result.status_code in {408, 429, 500, 502, 503, 504}
+        retryable = result.retryable
         return NotificationDispatchResult(
             "retryableFailure" if retryable else "permanentFailure",
             provider_operation_id=result.operation_id,
             retry_after_seconds=result.retry_after_seconds,
-            error_code=f"acsHttp{result.status_code}" if result.status_code else "acsConfiguration",
+            error_code=result.error_code
+            or (f"graphHttp{result.status_code}" if result.status_code else "graphConfiguration"),
             safe_error=(
-                f"ACS refused the notification (HTTP {result.status_code})."
+                f"Graph refused the notification (HTTP {result.status_code}). "
+                "Open Notifications > Email and run Check access."
                 if result.status_code
-                else "ACS authentication or configuration is unavailable."
+                else "Graph authentication or configuration is unavailable. "
+                "Open Notifications > Email and run Check access."
             ),
         )

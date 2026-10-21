@@ -179,7 +179,7 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
   served it. The partner's Claude, Mistral Large, Cohere, and realtime deployments and the adopted
   APIs stay unpriced, so the **Unpriced deployments** tab has something to show. Every page
   therefore renders what the product would show for that estate. Budget email is turned on against
-  a Communication Services double that accepts every message and delivers none, and the seed sets
+  a Graph email double that accepts every message and delivers none, and the seed sets
   budgets from this month's spend so far: Customer Insights near its limit, Customer Support past
   its own and blocked at the gateways, Finance on track, and an organization budget that only
   warns. Sizing them from the month's spend keeps those levels whatever the date, so in a capture's
@@ -189,7 +189,11 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
   and directory doubles, which accept fictional messages but deliver none. A disabled development
   office-hours policy exercises environment scope, local-time windows, waiting periods, and bounded
   limits without approving requests. The administrator and portal user have independent example
-  preferences, including daily, weekly, and monthly email summaries; private Teams remains off.
+  preferences, including daily, weekly, and monthly email summaries and immediate private Teams.
+  Shared and private Teams use the production services over local token, vault and HTTP doubles.
+  A locally signed Connector lifecycle binds each fictional person's personal installation;
+  explicit synthetic tests persist accepted results without reaching Microsoft. One shared
+  Workflow deliberately has denied vault access, so the gallery shows actionable diagnostics.
   The AI adapter is a deterministic local double, never a paid model call, and readiness honestly
   reports local memory, disabled workers, and missing deployment prerequisites.
   The traffic and timestamps follow the clock, though, so they shift a little from one run to the
@@ -220,8 +224,10 @@ survives to be read back.
   API paths, product names, and fictional person/workload/gateway names and directory aliases are
   redacted too.
 - Exact offering names in `.resource-offering` text are blurred, independently of literal matches.
+- Deployment account names and identifiers marked by `data-deployment-account` and
+  `data-deployment-identifier` are blurred as complete regions, including reviewed model sources.
 - `REDACTION_PATTERNS` in `capture.py`: GUIDs, email addresses, URLs and URIs, Azure resource IDs,
-  Azure, Communication Services, and Contoso hostnames, IPv4 addresses, MOSAIC record IDs and the
+  Azure, Graph, Workflows, Bot Connector and Contoso hostnames, IPv4 addresses, MOSAIC record IDs and the
   APIM names derived from them, and the demo's placeholder keys.
 
 Fictional people, workload identities, directory results, and gateway/account display names are
@@ -297,6 +303,8 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-models` | Console | `/models`, compact list with selected publication detail | Dark | Models |
 | `console-register-key-endpoint` | Console | `/models?register=1`, **Azure AI with an API key** tab with a pasted, masked key, filled in and never submitted | Light | Register with an API key |
 | `console-key-endpoint` | Console | `/models?tab=endpoints`, Fabrikam partner Foundry selected, scrolled to its **Access** card with **Replace API key** | Dark | Endpoint reached with an API key |
+| `console-deploy-model` | Console | `/models?tab=endpoints`, **Deploy model** on the fictional Azure OpenAI account; explicit deployment-management opt-in, fresh version/SKU/quota configuration, no Azure create | Light | Deploy an Azure model |
+| `console-deploy-model-review` | Console | The same workflow's **Review deployment** step with exact target, native capacity, quota, billing/residency warnings, and unsubmitted **Deploy to Azure** action | Dark | Review before Azure creation |
 | `console-pools` | Console | `/pools`, compact list with Anthropic Claude selected, **Overview** detail and separate Suggestions navigation | Light | Model pools |
 | `console-pool-detail` | Console | Anthropic Claude detail, **Models and deployments** section with both navigation rails compact | Dark | A model pool |
 | `console-pool-access` | Console | Anthropic Claude detail, **Access and connection** section with both navigation rails compact | Light | Who can call a pool |
@@ -341,7 +349,9 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-azure-connections` | Console | `/settings?tab=connections`, commercial host identity and fictional Government service principal | Dark | Azure connections |
 | `console-environment-findings` | Console | `/settings?tab=findings` | Dark | Environment findings |
 | `console-runtime-configuration` | Console | `/settings?tab=runtime`, read-only deployment details, directory availability, granted/missing Graph consent, and separate complete-group-read status; local demo authentication with a fictional directory double | Light | Runtime configuration |
-| `console-email-settings` | Console | `/settings?tab=email` | Light | Budget email |
+| `console-email-settings` | Console | `/settings?tab=notifications&notificationView=email`, saved Graph mailbox, read-only access checks and last explicit test | Light | Email setup |
+| `console-teams-shared` | Console | `/settings?tab=notifications&notificationView=teams`, selected fictional Workflow with denied vault access, correction guidance and saved test | Light | Shared Teams access |
+| `console-teams-private` | Console | `/settings?tab=notifications&notificationView=personalTeams`, saved bot registration, caller-scoped runtime access check, installation, opt-in and test | Dark | Private Teams access |
 | `portal-request-access` | Portal | `/catalog`, GPT-4o mini's exact Commercial offering selected in the access drawer, never submitted | Light | Request access |
 | `portal-access` | Portal | `/access`, grouped model rows and an exact grant's **Connection details** open in a drawer | Light | My access |
 | `portal-connection-cost-center` | Portal | `/access`, the GPT-4o grant under General with **Connection details** open, scrolled to **Cost center header** | Light | Choosing a cost center |

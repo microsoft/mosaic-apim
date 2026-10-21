@@ -200,18 +200,25 @@ def email_capability(
     enabled = bool(channels and channels.email_enabled)
     remediation = CapabilityRemediation(
         action=(
-            "Configure the ACS endpoint and sender, grant MOSAIC's managed identity email-send "
-            "permission, enable email, and explicitly send a test message."
+            "Select a Microsoft Graph sender mailbox. Ask an Exchange administrator to scope "
+            "Application Mail.Send to that mailbox for the API managed identity, run Check "
+            "access, then explicitly send a test."
         ),
-        path="/settings?tab=email",
+        path="/settings?tab=notifications&notificationView=email",
         owner="azureAdmin",
     )
     if not enabled:
         state = "disabled"
         reason = "General notification email is off. Existing budget-email settings are separate."
-    elif email is None or not email.ready:
+    elif email and email.migration_required:
+        state = "needsAction"
+        reason = "Legacy ACS settings must be replaced with a Graph sender mailbox."
+    elif email is None or not email.configured:
         state = "notConfigured"
-        reason = "Enable and configure Azure Communication Services email."
+        reason = "Configure the sending mailbox's Entra object ID for Microsoft Graph."
+    elif email.last_test_revision != email.revision:
+        state = "needsAction"
+        reason = "The saved Graph configuration has not been tested, or previous evidence is stale."
     elif email.last_test_error:
         state = "failed"
         reason = "The last email test failed. Review the email test result and permission guidance."
