@@ -1,26 +1,31 @@
-import { Badge, Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, Input, Select, Tab, TabList, Text, Title3 } from '@fluentui/react-components'
+import { Badge, Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, Input, Select, Tab, TabList, Text, Title3, useRestoreFocusTarget } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link as RouterLink, useSearchParams } from 'react-router-dom'
 import { useMosaicApi } from '../api'
-import { NOTIFICATION_CATEGORIES, type CapabilityCheck, type NotificationChannelSettingsInput, type NotificationRoute, type NotificationRouteInput, type PersonalTeamsSettingsInput, type TeamsDestination, type TeamsDestinationInput } from '../admin-types'
+import { NOTIFICATION_CATEGORIES, type NotificationChannelSettingsInput, type NotificationRoute, type NotificationRouteInput, type PersonalTeamsSettingsInput, type TeamsDestination, type TeamsDestinationInput } from '../admin-types'
 import { ErrorState, Loading } from './AsyncState'
 import { CadenceFields, DigestFields, TimeZoneField } from './GovernanceFields'
 import { schedulesFor, validTimeZone } from '../admin-governance'
 import { WorkspaceEditorFrame } from './WorkspaceEditorFrame'
 import { ResourceWorkbench } from './ResourceWorkbench'
+import { EmailSettings } from './EmailSettings'
+import { CapabilityEvidence } from './NotificationChecks'
+import { PersonalTeamsAccess } from './PersonalTeamsAccess'
+export { CapabilityEvidence } from './NotificationChecks'
 import styles from './AdminGovernance.module.css'
 
-const tabs = ['channels', 'routes', 'teams', 'personalTeams', 'deliveries', 'health'] as const
+const tabs = ['channels', 'email', 'routes', 'teams', 'personalTeams', 'deliveries', 'health'] as const
 export function NotificationSettings() {
   const [params, setParams] = useSearchParams()
   const requested = params.get('notificationView')
   const active = tabs.find(t => t === requested) ?? 'channels'
   return <div className={styles.stack}>
     <TabList className={styles.tabs} selectedValue={active} onTabSelect={(_, d) => setParams(current => { const next = new URLSearchParams(current); next.set('notificationView', String(d.value)); return next })}>
-      <Tab value="channels">Channels</Tab><Tab value="routes">Routing</Tab><Tab value="teams">Shared Teams</Tab><Tab value="personalTeams">Personal Teams app</Tab><Tab value="deliveries">Delivery history</Tab><Tab value="health">Readiness</Tab>
+      <Tab value="channels">Channels</Tab><Tab value="email">Email</Tab><Tab value="routes">Routing</Tab><Tab value="teams">Shared Teams</Tab><Tab value="personalTeams">Private Teams</Tab><Tab value="deliveries">Delivery history</Tab><Tab value="health">Readiness</Tab>
     </TabList>
     {active === 'channels' && <ChannelSettings />}
+    {active === 'email' && <EmailSettings />}
     {active === 'routes' && <NotificationRoutes />}
     {active === 'teams' && <TeamsDestinations />}
     {active === 'personalTeams' && <PersonalTeamsRegistration />}
@@ -49,7 +54,7 @@ function ChannelSettings() {
     </div>
   </WorkspaceEditorFrame>
   return <section className={styles.section}><Title3 as="h2">Notification channels</Title3>
-    <Text>In-app defaults on; email, Teams, and recurring summaries are opt-in. Existing budget email configuration is retained separately.</Text>
+    <Text>In-app defaults on; email, Teams, and recurring summaries are opt-in. Configure a sender or destination, check access, then explicitly test a send.</Text>
     {settings.isPending && <Loading label="Loading shared channel settings" />}
     {settings.isError && <><ErrorState error={settings.error} /><Button onClick={() => void settings.refetch()}>Retry channel settings</Button></>}
     {settings.data && <><dl className={styles.facts}>
@@ -59,20 +64,7 @@ function ChannelSettings() {
       <div><dt>Personal Teams</dt><dd>{settings.data.teamsPersonalEnabled ? 'Enabled' : 'Disabled'}</dd></div>
       <div><dt>Retention</dt><dd>{settings.data.retentionDays} days</dd></div>
     </dl><Button appearance="primary" onClick={() => { const s = settings.data!; setDraftRevision(s.revision); setDraft({ inAppEnabled: s.inAppEnabled, emailEnabled: s.emailEnabled, teamsChannelEnabled: s.teamsChannelEnabled, teamsPersonalEnabled: s.teamsPersonalEnabled, retentionDays: s.retentionDays }); save.reset() }}>Edit channel settings</Button></>}
-    <div className={styles.toolbar}><RouterLink to="/settings?tab=email">Configure ACS budget email</RouterLink><RouterLink to="/profile">My administrator preferences</RouterLink></div>
-  </section>
-}
-export function CapabilityEvidence({ check }: { check: CapabilityCheck }) {
-  const expired = Boolean(check.freshUntil && new Date(check.freshUntil).getTime() <= Date.now())
-  const verified = check.state === 'verified' && Boolean(check.checkedAt) && check.evidence.length > 0 && !expired
-  return <section className={styles.evidenceSection} aria-label={`${check.feature} readiness`}>
-    <div className={styles.toolbar}><Title3 as="h3">{check.feature}</Title3><Badge color={verified ? 'success' : check.state === 'failed' ? 'danger' : 'warning'}>{expired ? 'Stale evidence' : check.state === 'verified' && !verified ? 'Unverified' : check.state}</Badge></div>
-    <Text>{check.reason ?? 'No reason was supplied.'}</Text>
-    <Text>Scope: {check.scope} · {check.required ? 'Required' : 'Optional'} · Checked: {check.checkedAt ? new Date(check.checkedAt).toLocaleString() : 'Not checked'}</Text>
-    {check.evidence.length > 0 && <ul>{check.evidence.map((e, i) => <li key={i} className={styles.evidence}>{e}</li>)}</ul>}
-    {check.remediation && <div className={styles.stack}><Text>{check.remediation.action} · Owner: {check.remediation.owner}</Text>
-      {check.remediation.path?.startsWith('/') && !check.remediation.path.startsWith('//') && <RouterLink to={check.remediation.path}>Open remediation</RouterLink>}
-      {check.remediation.command && <code className={styles.evidence}>{check.remediation.command}</code>}</div>}
+    <div className={styles.toolbar}><RouterLink to="/settings?tab=notifications&notificationView=email">Configure Graph email</RouterLink><RouterLink to="/settings?tab=notifications&notificationView=teams">Set up shared Teams</RouterLink><RouterLink to="/settings?tab=notifications&notificationView=personalTeams">Set up private Teams</RouterLink><RouterLink to="/profile">My administrator preferences</RouterLink></div>
   </section>
 }
 function NotificationReadiness() {
@@ -93,7 +85,7 @@ function NotificationDeliveries() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const retry = useMutation({ mutationFn: (id: string) => api.retryNotificationDelivery(id), onSuccess: () => void deliveries.refetch() })
   return <div className={styles.stack}>
-    <Text>Provider acceptance is not proof of user delivery or reading. Unknown outcomes may have already reached the provider and are not retried here.</Text>
+    <Text>Provider acceptance is not proof of delivery or reading. Transient failures and uncertain sends retry automatically within the normal attempt limit; duplicates are acceptable. Exhausted deliveries can be retried here.</Text>
     {deliveries.isError && <><ErrorState error={deliveries.error} /><Button onClick={() => void deliveries.refetch()}>Retry delivery history</Button></>}
     {retry.isError && <ErrorState error={retry.error} />}
     <ResourceWorkbench title="Delivery history" items={(deliveries.data ?? []).filter(d => !state || d.state === state)} getId={d => d.id} selectedId={selectedId} onSelect={setSelectedId}
@@ -107,7 +99,7 @@ function NotificationDeliveries() {
         <div><dt>Confirmed delivery</dt><dd>{d.confirmedDeliveredAt ?? 'No delivery evidence'}</dd></div>
         <div><dt>Next attempt</dt><dd>{d.nextAttemptAt ?? 'Not scheduled'}</dd></div><div><dt>Suppression</dt><dd>{d.suppressionReason ?? 'None reported'}</dd></div>
         <div><dt>Last error</dt><dd>{d.lastError ?? 'None reported'}</dd></div></dl>
-        {(d.state === 'permanentlyFailed' || d.state === 'retrying') && <Button disabled={retry.isPending} onClick={() => retry.mutate(d.id)}>Retry this delivery</Button>}
+        {(d.state === 'permanentlyFailed' || d.state === 'unknownOutcome' || d.state === 'suppressed') && <Button disabled={retry.isPending} onClick={() => retry.mutate(d.id)}>Retry this delivery</Button>}
       </div>} />
   </div>
 }
@@ -183,37 +175,68 @@ function RouteEditor({ initial, onBack, onSave, pending, error }: { initial: Not
 }
 function TeamsDestinations() {
   const api = useMosaicApi()
+  const client = useQueryClient()
+  const restoreFocus = useRestoreFocusTarget()
   const destinations = useQuery({ queryKey: ['teams-destinations'], queryFn: () => api.listTeamsDestinations(), retry: false })
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [editing, setEditing] = useState<{ id: string | null; body: TeamsDestinationInput } | null>(null)
   const [deleting, setDeleting] = useState<TeamsDestination | null>(null)
   const [testing, setTesting] = useState<TeamsDestination | null>(null)
-  const test = useMutation({ mutationFn: (id: string) => api.testTeamsDestination(id) })
+  const test = useMutation({ mutationFn: (id: string) => api.testTeamsDestination(id), onSuccess: (_, id) => {
+    void client.invalidateQueries({ queryKey: ['teams-destination-checks', id] })
+    void client.invalidateQueries({ queryKey: ['notification-health'] })
+  } })
   const save = useMutation({ mutationFn: (value: { id: string | null; body: TeamsDestinationInput }) => api.saveTeamsDestination(value.id, value.body), onSuccess: value => { setEditing(null); setSelectedId(value.id); void destinations.refetch() } })
   const remove = useMutation({ mutationFn: (id: string) => api.deleteTeamsDestination(id), onSuccess: () => { setDeleting(null); setSelectedId(null); void destinations.refetch() } })
   if (editing) return <TeamsDestinationEditor initial={editing.body} existing={Boolean(editing.id)} onBack={() => setEditing(null)} onSave={body => save.mutate({ id: editing.id, body })} pending={save.isPending} error={save.error} />
   return <div className={styles.stack}>
-    <Text>Use Teams Workflows HTTPS webhook destinations for explicitly configured shared-channel notifications. Webhook credentials are write-only and stored through Key Vault.</Text>
+    <details className={styles.section}><summary className={styles.setupSummary}>Shared Teams setup instructions</summary>
+      <ol className={styles.setupSteps}>
+        <li><strong>Create the Workflow in Teams.</strong> Use “When a Teams webhook request is received” followed by a post-card action targeting the intended team and channel. This adapter requires secret-URL (“Anyone”) mode; if policy forbids it, ask the administrator rather than weakening policy.</li>
+        <li><strong>Keep it owned and connected.</strong> Assign an owner and co-owner, enable the flow, and verify its Teams connection. A channel existing does not mean the Workflow can post there.</li>
+        <li><strong>Authorize this deployment.</strong> Add the URL's exact hostname to the JSON array in <code>MOSAIC_TEAMS_WORKFLOW_ALLOWED_HOSTS</code>. Configure <code>MOSAIC_FRONTEND_URL</code> as the HTTPS console origin and <code>MOSAIC_KEY_VAULT_URI</code> as the runtime vault; the API identity needs secret-read and write/delete access. Save the secret URL in a destination; it is never returned.</li>
+        <li><strong>Check, test, then route.</strong> Check access without posting. Send a synthetic test, inspect Workflow run history and Teams receipt, then enable the shared channel and a category-compatible route.</li>
+      </ol>
+      <a href="https://learn.microsoft.com/en-us/power-automate/teams/send-a-message-in-teams" target="_blank" rel="noreferrer">Teams Workflow configuration reference</a>
+    </details>
     {destinations.isError && <><ErrorState error={destinations.error} /><Button onClick={() => void destinations.refetch()}>Retry Teams destinations</Button></>}
     <ResourceWorkbench title="Shared Teams destinations" items={destinations.data ?? []} getId={d => d.id} selectedId={selectedId} onSelect={setSelectedId} listLabel="Teams destinations" detailLabel="Selected Teams destination"
       actions={<Button appearance="primary" onClick={() => { save.reset(); setEditing({ id: null, body: { name: '', enabled: false, allowedCategories: ['operationalIssues'] } }) }}>New Teams destination</Button>}
       emptyList={destinations.isPending ? <Loading label="Loading Teams destinations" /> : 'No shared Teams destinations.'}
       renderListItem={d => <div className={styles.stack}><strong>{d.name}</strong><Badge appearance="outline">{d.enabled ? 'Enabled' : 'Disabled'}</Badge></div>}
       renderDetail={d => <div className={styles.stack}><Title3 as="h3">{d.name}</Title3><Text>{d.allowedCategories.map(c => NOTIFICATION_CATEGORIES.find(n => n.value === c)?.label).join(', ')}</Text><Text>Credential is not returned. Saved configuration is not verified delivery.</Text>
-        <div className={styles.toolbar}><Button appearance="primary" onClick={() => { save.reset(); setEditing({ id: d.id, body: { name: d.name, enabled: d.enabled, allowedCategories: [...d.allowedCategories] } }) }}>Edit destination</Button><Button onClick={() => { test.reset(); setTesting(d) }}>Test destination</Button><Button onClick={() => setDeleting(d)}>Delete destination</Button></div></div>} />
+        <div className={styles.toolbar}><Button appearance="primary" onClick={() => { save.reset(); setEditing({ id: d.id, body: { name: d.name, enabled: d.enabled, allowedCategories: [...d.allowedCategories] } }) }}>Edit destination</Button><Button {...restoreFocus} onClick={() => { test.reset(); setTesting(d) }}>Test destination</Button><Button onClick={() => setDeleting(d)}>Delete destination</Button></div>
+        <TeamsDestinationChecks key={`${d.id}-${d.revision}`} destination={d} /></div>} />
     <Dialog open={Boolean(testing)} onOpenChange={(_, d) => { if (!d.open && !test.isPending) setTesting(null) }}><DialogSurface><DialogBody><DialogTitle>Send a shared Teams test?</DialogTitle><DialogContent>
       This sends a synthetic MOSAIC message to {testing?.name}. Provider acceptance is not confirmed user delivery.
       {test.isError && <ErrorState error={test.error} />}
       {test.data && <Text block>{test.data.outcome}: {test.data.message} · {new Date(test.data.testedAt).toLocaleString()}. {test.data.confirmedDelivered ? 'Confirmed delivery evidence reported.' : 'No confirmed delivery evidence.'}</Text>}
+      {test.data?.errorCode && <Text block>Diagnostic: {test.data.errorCode}</Text>}
     </DialogContent><DialogActions><Button disabled={test.isPending} onClick={() => setTesting(null)}>Close</Button><Button appearance="primary" disabled={test.isPending || test.isSuccess} onClick={() => testing && test.mutate(testing.id)}>Send synthetic Teams test</Button></DialogActions></DialogBody></DialogSurface></Dialog>
     <Dialog open={Boolean(deleting)} onOpenChange={(_, d) => { if (!d.open) setDeleting(null) }}><DialogSurface><DialogBody><DialogTitle>Delete Teams destination?</DialogTitle><DialogContent>Routes using {deleting?.name} will no longer be able to deliver there. Existing provider sends cannot be recalled.{remove.isError && <ErrorState error={remove.error} />}</DialogContent><DialogActions><Button disabled={remove.isPending} onClick={() => setDeleting(null)}>Cancel</Button><Button appearance="primary" disabled={remove.isPending} onClick={() => deleting && remove.mutate(deleting.id)}>Delete destination</Button></DialogActions></DialogBody></DialogSurface></Dialog>
   </div>
 }
+function TeamsDestinationChecks({ destination }: { destination: TeamsDestination }) {
+  const api = useMosaicApi()
+  const checks = useQuery({ queryKey: ['teams-destination-checks', destination.id, destination.revision], queryFn: () => api.checkTeamsDestination(destination.id), retry: false })
+  return <div className={styles.stack}>
+    <div className={styles.toolbar}><Title3 as="h3">Access and last test</Title3><Button disabled={checks.isFetching} onClick={() => void checks.refetch()}>{checks.isFetching ? 'Checking access...' : 'Check shared Teams access'}</Button></div>
+    <Text>Reads the saved secret and validates deployment prerequisites. This never calls the webhook or sends a message.</Text>
+    {checks.isPending && <Loading label="Checking shared Teams access" />}
+    {checks.isError && <ErrorState error={checks.error} />}
+    <div role="status" aria-live="polite">{checks.data?.map(check => <CapabilityEvidence key={check.feature} check={check} />)}</div>
+  </div>
+}
 function PersonalTeamsRegistration() {
   const api = useMosaicApi()
+  const client = useQueryClient()
   const settings = useQuery({ queryKey: ['personal-teams-settings'], queryFn: () => api.getPersonalTeamsSettings(), retry: false })
   const [draft, setDraft] = useState<PersonalTeamsSettingsInput | null>(null)
-  const save = useMutation({ mutationFn: (body: PersonalTeamsSettingsInput) => api.savePersonalTeamsSettings(body), onSuccess: () => { setDraft(null); void settings.refetch() } })
+  const save = useMutation({ mutationFn: (body: PersonalTeamsSettingsInput) => api.savePersonalTeamsSettings(body), onSuccess: () => {
+    setDraft(null); void settings.refetch()
+    void client.invalidateQueries({ queryKey: ['admin-personal-teams'] })
+    void client.invalidateQueries({ queryKey: ['notification-health'] })
+  } })
   if (draft) return <WorkspaceEditorFrame title="Configure the personal Teams app" description="These are application registration IDs, not a place to paste tokens or client secrets. Publishing/installing the Teams app and consent remain explicit external administrator tasks."
     onBack={() => setDraft(null)} onCancel={() => setDraft(null)} dirty pending={save.isPending} error={save.isError ? <ErrorState error={save.error} /> : undefined}
     primaryAction={{ label: 'Save personal Teams configuration', onClick: () => save.mutate(draft), disabled: draft.cloud !== 'public' || (draft.enabled && (!draft.appId?.trim() || !draft.botAppId?.trim())) }}>
@@ -224,13 +247,20 @@ function PersonalTeamsRegistration() {
       <Checkbox label="Enable the optional personal Teams integration" checked={draft.enabled} onChange={(_, d) => setDraft({ ...draft, enabled: Boolean(d.checked) })} />
     </div>
   </WorkspaceEditorFrame>
-  return <section className={styles.section}><Title3 as="h2">Personal Teams app</Title3><Text>Private notifications use an authenticated personal-scope MOSAIC bot conversation, never a shared-channel destination. A user must install the app before a personal binding exists.</Text>
+  return <div className={styles.stack}><section className={styles.section}><Title3 as="h2">Private Teams app</Title3><Text>Private notifications use an authenticated personal-scope MOSAIC bot conversation, never a shared-channel destination. A user must install the app before a personal binding exists.</Text>
+    <details><summary className={styles.setupSummary}>Private Teams setup instructions</summary><ol className={styles.setupSteps}>
+      <li><strong>Register a dedicated single-tenant Azure Bot.</strong> Prefer a user-assigned managed identity attached to the API host. Use its client ID for the bot; do not use the Graph email identity or sign-in app by accident.</li>
+      <li><strong>Configure the deployment.</strong> Set <code>MOSAIC_TEAMS_BOT_AUTH_MODE=managedIdentity</code>, the identity's client ID in <code>MOSAIC_TEAMS_BOT_APP_ID</code>, and its Azure resource ID in <code>MOSAIC_TEAMS_BOT_MANAGED_IDENTITY_RESOURCE_ID</code> before provisioning the API. Set HTTPS <code>MOSAIC_FRONTEND_URL</code> and <code>MOSAIC_PORTAL_URL</code>. Enable the bot's Microsoft Teams channel and set its messaging endpoint to the API's <code>/api/v1/teams/messages</code>.</li>
+      <li><strong>Publish the personal app.</strong> Build the MOSAIC Teams package with the bot client ID, correct website/privacy/terms URLs and personal scope. A Teams administrator must approve it under the organization's app policies.</li>
+      <li><strong>Install, check, and opt in.</strong> Install the approved app for yourself, run the access check below and send a private test. Enable the tenant channel and your category preferences separately.</li>
+    </ol>
+    <a href="https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/conversations/send-proactive-messages" target="_blank" rel="noreferrer">Personal app and proactive messaging reference</a></details>
     {settings.isPending && <Loading label="Loading personal Teams app configuration" />}
     {settings.isError && <><ErrorState error={settings.error} /><Button onClick={() => void settings.refetch()}>Retry personal Teams configuration</Button></>}
     {settings.data && <><dl className={styles.facts}><div><dt>Saved state</dt><dd>{settings.data.enabled ? 'Enabled' : 'Disabled'}</dd></div><div><dt>Teams app</dt><dd>{settings.data.appId ?? 'Not configured'}</dd></div><div><dt>Bot application</dt><dd>{settings.data.botAppId ?? 'Not configured'}</dd></div><div><dt>Cloud</dt><dd>{settings.data.cloud}</dd></div></dl>
       <Button appearance="primary" onClick={() => { const s = settings.data!; setDraft({ enabled: s.enabled, appId: s.appId, botAppId: s.botAppId, cloud: s.cloud }); save.reset() }}>Edit personal Teams app</Button></>}
     <RouterLink to="/profile">Review my personal channel readiness</RouterLink>
-  </section>
+  </section><PersonalTeamsAccess /></div>
 }
 function TeamsDestinationEditor({ initial, existing, onBack, onSave, pending, error }: { initial: TeamsDestinationInput; existing: boolean; onBack: () => void; onSave: (body: TeamsDestinationInput) => void; pending: boolean; error: unknown }) {
   const [draft, setDraft] = useState(() => structuredClone(initial))

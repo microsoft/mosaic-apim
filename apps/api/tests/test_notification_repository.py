@@ -115,11 +115,13 @@ class NotificationContainer:
                 assert document is not None and document["tenantId"] == partition_key
                 self.version += 1
                 staged[key] = {**document, "_etag": str(self.version)}
-                responses.append({
-                    "statusCode": 201 if verb == "create" else 200,
-                    "eTag": staged[key]["_etag"],
-                    "resourceBody": copy.deepcopy(staged[key]),
-                })
+                responses.append(
+                    {
+                        "statusCode": 201 if verb == "create" else 200,
+                        "eTag": staged[key]["_etag"],
+                        "resourceBody": copy.deepcopy(staged[key]),
+                    }
+                )
         self.items = staged
         return responses
 
@@ -390,7 +392,7 @@ async def test_keyset_pagination_is_filter_and_persona_bound(
             await repository.list_inbox("tenant", "user", "portal", continuation_token=token)
 
 
-async def test_delivery_claim_and_crash_never_automatically_resend_unknown(
+async def test_expired_delivery_claim_recovers_for_a_bounded_automatic_retry(
     store: tuple[NotificationPersistence, Clock],
 ) -> None:
     repository, clock = store
@@ -407,16 +409,21 @@ async def test_delivery_claim_and_crash_never_automatically_resend_unknown(
         "tenant", "other", now=clock.now, lease_seconds=60, limit=1
     )
     stored = await repository.get_delivery("tenant", delivery.id)
-    assert stored and stored.state == "unknownOutcome"
+    assert stored and stored.state == "retrying" and stored.max_attempts == 5
     with pytest.raises(ConflictError, match="lease"):
         await repository.save_delivery(
             claimed.model_copy(
                 update={"state": "providerAccepted", "provider_accepted_at": clock.now}
             )
         )
-    assert not await repository.claim_deliveries(
+    [reclaimed] = await repository.claim_deliveries(
         "tenant", "restart", now=clock.now, lease_seconds=60, limit=1
     )
+    assert (
+        reclaimed.attempts == 2 and reclaimed.provider_operation_id == claimed.provider_operation_id
+    )
+    attempts = await repository.list_delivery_attempts("tenant", delivery.id)
+    assert any(attempt.outcome == "unknownOutcome" and attempt.finished_at for attempt in attempts)
 
 
 async def test_source_checkpoint_and_event_commit_or_conflict_together(

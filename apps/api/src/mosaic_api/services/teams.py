@@ -1,16 +1,24 @@
 """Settings, authenticated personal binding, and injected one-way Teams dispatchers."""
 
 import hashlib
+import json
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
+from azure.core.exceptions import AzureError
 from pydantic import Field
 
 from mosaic_api.domain import AuditEvent, KeyVaultSecretId, MosaicModel, utc_now
-from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
+from mosaic_api.errors import (
+    ConflictError,
+    NotFoundError,
+    UpstreamAuthorizationError,
+    UpstreamError,
+    ValidationError,
+)
 from mosaic_api.integrations.key_vault import KeyStore
 from mosaic_api.integrations.teams import (
     BotTokenSource,
@@ -25,16 +33,18 @@ from mosaic_api.integrations.teams import (
 from mosaic_api.notifications import (
     CapabilityCheck,
     CapabilityRemediation,
+    NotificationChannelHealth,
     NotificationDelivery,
     NotificationEvent,
     NotificationPersona,
+    NotificationTestEvidence,
     PersonalTeamsBinding,
     PersonalTeamsSettings,
     PersonalTeamsSettingsInput,
     TeamsDestination,
     TeamsDestinationInput,
 )
-from mosaic_api.repositories.notifications import NotificationRepository
+from mosaic_api.repositories.notifications import NotificationPersistence
 from mosaic_api.services.notifications import (
     NotificationDispatchResult,
     notification_summary,
@@ -42,24 +52,22 @@ from mosaic_api.services.notifications import (
 )
 
 
-class TeamsTestResult(MosaicModel):
-    outcome: Literal[
-        "providerAccepted",
-        "confirmedDelivered",
-        "retryableFailure",
-        "permanentFailure",
-        "unknownOutcome",
-        "suppressed",
-    ]
-    message: str
-    tested_at: datetime
-    confirmed_delivered: bool = False
+class TeamsTestResult(NotificationTestEvidence):
+    pass
 
 
 class PersonalTeamsStatus(MosaicModel):
     enabled: bool = False
     state: Literal["notInstalled", "installed", "uninstalled", "blocked"] = "notInstalled"
     checks: list[CapabilityCheck] = Field(default_factory=list)
+    last_test: NotificationTestEvidence | None = None
+
+
+class TeamsSetupError(Exception):
+    def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
 
 
 def _record_id(kind: str, tenant: str, subject: str = "") -> str:
@@ -135,7 +143,7 @@ def _subject_path(event: NotificationEvent, persona: NotificationPersona) -> str
 class TeamsService:
     def __init__(
         self,
-        repository: NotificationRepository,
+        repository: NotificationPersistence,
         *,
         tenant_id: str,
         secret_reader: SecretReader | None,
@@ -177,6 +185,390 @@ class TeamsService:
     @property
     def endpoint_policy(self) -> WorkflowEndpointPolicy:
         return self.transport.policy
+
+    async def _workflow_url(self, item: TeamsDestination) -> str:
+        if self._reader is None:
+            raise TeamsSetupError(
+                "teamsSecretReaderMissing",
+                "Configure the API's Key Vault connection before testing this destination.",
+            )
+        try:
+            url = await self._reader.read(item.credential_reference_id)
+        except UpstreamAuthorizationError:
+            raise TeamsSetupError(
+                "teamsSecretAccessDenied",
+                "The API cannot read the Workflow secret. Grant its managed identity secret-read "
+                "access on the configured vault and check vault network restrictions.",
+            ) from None
+        except (ValidationError, NotFoundError):
+            raise TeamsSetupError(
+                "teamsSecretUnavailable",
+                "The saved Workflow secret is missing, empty, or invalid. Edit the destination "
+                "and save the current Workflow webhook URL again.",
+            ) from None
+        except (UpstreamError, AzureError):
+            raise TeamsSetupError(
+                "teamsVaultUnavailable",
+                "Key Vault could not be reached. Check the vault endpoint and network access.",
+                retryable=True,
+            ) from None
+        try:
+            return self.endpoint_policy.validate(url)
+        except ValidationError:
+            raise TeamsSetupError(
+                "teamsEndpointNotAllowed",
+                "The stored URL is not an approved Teams Workflow endpoint. Use the webhook "
+                "trigger's secret-URL mode and add its exact hostname to "
+                "MOSAIC_TEAMS_WORKFLOW_ALLOWED_HOSTS; legacy connectors are not supported.",
+            ) from None
+
+    def _test_scope(self, tenant: str, target: str, persona: str = "") -> str:
+        return _record_id("teamsTest", tenant, f"{target}:{persona}")
+
+    def _revision(
+        self,
+        revision: int,
+        *,
+        binding: PersonalTeamsBinding | None = None,
+        secret_fingerprint: str | None = None,
+    ) -> str:
+        values = [
+            revision,
+            self._console,
+            self._portal,
+            sorted(self.endpoint_policy.allowed_hosts),
+            self._tokens.bot_app_id if self._tokens else None,
+            self._tokens.configuration_id if self._tokens else None,
+            secret_fingerprint,
+            binding.bot_app_id if binding else None,
+            binding.authenticated_at.isoformat() if binding else None,
+            binding.state if binding else None,
+        ]
+        return hashlib.sha256(json.dumps(values).encode()).hexdigest()[:24]
+
+    async def _last_test(self, tenant: str, scope: str) -> NotificationTestEvidence | None:
+        item = await self.repository.get_channel_health(tenant, scope)
+        return item.last_test if item else None
+
+    async def _record_test(
+        self,
+        tenant: str,
+        scope: str,
+        channel: Literal["teamsChannel", "teamsPersonal"],
+        result: TeamsTestResult,
+    ) -> TeamsTestResult:
+        for _ in range(3):
+            current = await self.repository.get_channel_health(tenant, scope)
+            if current and current.last_test and current.last_test.tested_at > result.tested_at:
+                return result.model_copy(
+                    update={
+                        "message": result.message
+                        + " A newer test result is already saved and has been preserved."
+                    }
+                )
+            item = current or NotificationChannelHealth(
+                id=scope, tenant_id=tenant, channel=channel, destination_id=scope
+            )
+            try:
+                await self.repository.save_channel_health(
+                    item.model_copy(update={"last_test": result, "updated_at": self._clock()})
+                )
+                return result
+            except ConflictError:
+                continue
+        raise ConflictError(
+            "The test ran, but its result could not be saved. Refresh readiness and check Teams."
+        )
+
+    async def _test_check(
+        self, tenant: str, scope: str, revision: str, *, path: str
+    ) -> CapabilityCheck:
+        test = await self._last_test(tenant, scope)
+        current = bool(test and test.configuration_revision == revision)
+        fresh = bool(test and timedelta(0) <= self._clock() - test.tested_at < timedelta(minutes=5))
+        accepted = bool(test and test.outcome == "providerAccepted")
+        return CapabilityCheck(
+            feature="teamsTest",
+            scope=scope,
+            checked_at=self._clock(),
+            state="verified" if current and fresh and accepted else "needsAction",
+            configuration_revision=revision,
+            last_test_at=test.tested_at if test else None,
+            fresh_until=test.tested_at + timedelta(minutes=5)
+            if test and current and fresh and accepted
+            else None,
+            reason=(
+                test.message
+                if test and current and fresh
+                else "Previous test evidence is stale or belongs to different configuration."
+                if test
+                else "No explicit test has been recorded for this setup."
+            ),
+            evidence=[f"Explicit test outcome: {test.outcome}."] if test and current else [],
+            remediation=CapabilityRemediation(
+                action="Run Check access, then send a synthetic test. Provider acceptance is "
+                "not confirmed receipt; check Teams and, for shared sends, Workflow run history.",
+                path=path,
+            ),
+        )
+
+    async def destination_checks(self, tenant: str, identifier: str) -> list[CapabilityCheck]:
+        item = await self.destination(tenant, identifier)
+        now = self._clock()
+        path = "/settings?tab=notifications&notificationView=teams"
+        checks: list[CapabilityCheck] = []
+        try:
+            _origin(self._console)
+        except ValidationError:
+            origin = False
+        else:
+            origin = True
+        checks.append(
+            CapabilityCheck(
+                feature="teamsWorkflowConfiguration",
+                scope=identifier,
+                checked_at=now,
+                state="verified" if origin and item.enabled else "needsAction",
+                reason="Destination enabled and HTTPS console origin configured."
+                if origin and item.enabled
+                else "Enable this destination and configure "
+                "MOSAIC_FRONTEND_URL as an HTTPS origin.",
+                evidence=["Saved destination and console origin checks passed."]
+                if origin and item.enabled
+                else [],
+                remediation=CapabilityRemediation(
+                    action="Enable the destination in MOSAIC and set the deployed HTTPS console "
+                    "origin. Saving does not test Workflow execution.",
+                    path=path,
+                    owner="azureAdmin",
+                ),
+            )
+        )
+        fingerprint = None
+        try:
+            url = await self._workflow_url(item)
+        except TeamsSetupError as error:
+            checks.append(
+                CapabilityCheck(
+                    feature="teamsWorkflowAccess",
+                    scope=identifier,
+                    checked_at=now,
+                    state="failed",
+                    reason=str(error),
+                    evidence=[f"Diagnostic: {error.code}."],
+                    remediation=CapabilityRemediation(
+                        action=str(error),
+                        path=path,
+                        owner="azureAdmin",
+                    ),
+                )
+            )
+        else:
+            fingerprint = hashlib.sha256(url.encode()).hexdigest()
+            checks.append(
+                CapabilityCheck(
+                    feature="teamsWorkflowAccess",
+                    scope=identifier,
+                    checked_at=now,
+                    state="verified",
+                    fresh_until=now + timedelta(minutes=5),
+                    reason=(
+                        "The API read the secret and validated its supported URL and exact host."
+                    ),
+                    evidence=[
+                        "Key Vault secret read and endpoint policy checks passed. "
+                        "No webhook was called and no secret was written."
+                    ],
+                )
+            )
+        channels = await self.repository.get_channel_settings(tenant)
+        routes = await self.repository.list_routes(tenant)
+        routed = bool(
+            channels
+            and channels.teams_channel_enabled
+            and any(
+                route.enabled
+                and route.teams_destination_id == identifier
+                and route.channel == "teamsChannel"
+                and set(route.categories) & set(item.allowed_categories)
+                for route in routes
+            )
+        )
+        checks.append(
+            CapabilityCheck(
+                feature="teamsWorkflowRouting",
+                scope=identifier,
+                checked_at=now,
+                state="verified" if routed else "needsAction",
+                reason="Shared channel and an enabled, category-compatible route are configured."
+                if routed
+                else "Normal notifications need the shared channel enabled and a matching "
+                "administrator route. An explicit test does not prove routing.",
+                evidence=["An enabled shared route matches this destination."] if routed else [],
+                remediation=CapabilityRemediation(
+                    action="Enable Shared Teams in Channels and create an administrator route "
+                    "whose destination and categories match.",
+                    path="/settings?tab=notifications&notificationView=routes",
+                ),
+            )
+        )
+        checks.append(
+            CapabilityCheck(
+                feature="teamsWorkflowExecution",
+                scope=identifier,
+                checked_at=now,
+                state="unknown",
+                reason="Workflow owner, Teams connection, DLP policy, "
+                "and downstream actions require "
+                "administrator verification. Trigger acceptance alone cannot verify them.",
+                remediation=CapabilityRemediation(
+                    action="Open the Workflow's run history; "
+                    "check its owner/co-owner, enabled state, "
+                    "Teams connection and post-card action. Then confirm receipt in the channel.",
+                    path=path,
+                    owner="teamsAdmin",
+                ),
+            )
+        )
+        checks.append(
+            await self._test_check(
+                tenant,
+                self._test_scope(tenant, identifier),
+                self._revision(item.revision, secret_fingerprint=fingerprint),
+                path=path,
+            )
+        )
+        return checks
+
+    async def personal_checks(
+        self, tenant: str, user: str, persona: NotificationPersona, *, verify_access: bool = False
+    ) -> list[CapabilityCheck]:
+        settings = await self.personal_settings(tenant)
+        binding = await self.repository.get_personal_teams_binding(tenant, user)
+        now = self._clock()
+        path = "/profile" if persona == "admin" else "/notification-preferences"
+        matching = bool(
+            settings.enabled
+            and settings.cloud == "public"
+            and self._tokens
+            and self._tokens.bot_app_id == settings.bot_app_id
+            and self._private_configuration_ready()
+        )
+        checks = [
+            CapabilityCheck(
+                feature="teamsBotConfiguration",
+                scope="self",
+                checked_at=now,
+                state="verified" if matching else "needsAction",
+                reason="The configured single-tenant bot matches the outbound OAuth identity."
+                if matching
+                else "The bot registration, outbound identity, or HTTPS callback origins "
+                "are missing or mismatched.",
+                evidence=["Saved bot ID matches the configured OAuth source; HTTPS origins exist."]
+                if matching
+                else [],
+                remediation=CapabilityRemediation(
+                    action="Ask the administrator to check the Teams catalog app ID, "
+                    "bot client ID, MOSAIC_TEAMS_BOT_AUTH_MODE and the identity "
+                    "attached to the API host. Configure "
+                    "the Azure Bot messaging endpoint to /api/v1/teams/messages.",
+                    path=path,
+                    owner="teamsAdmin",
+                ),
+            )
+        ]
+        if verify_access:
+            failure = None
+            if matching and self._tokens:
+                try:
+                    await self._tokens.token()
+                except TeamsAuthenticationError as error:
+                    failure = str(error)
+                except AzureError:
+                    failure = "Bot OAuth could not acquire a token. Check the exact bot identity, "
+                    failure += "host attachment, tenant, or Key Vault credential expiry."
+            else:
+                failure = "Complete the bot identity configuration before checking OAuth."
+            checks.append(
+                CapabilityCheck(
+                    feature="teamsBotOAuth",
+                    scope="self",
+                    checked_at=now,
+                    state="failed" if failure else "verified",
+                    reason=failure or "The runtime acquired a Bot Connector token without sending.",
+                    evidence=[]
+                    if failure
+                    else ["The configured bot OAuth source returned a token."],
+                    fresh_until=None if failure else now + timedelta(minutes=5),
+                    remediation=CapabilityRemediation(
+                        action="Correct the bot's user-assigned identity attachment or rotate its "
+                        "Key Vault-referenced app credential, then check access again.",
+                        path=path,
+                        owner="azureAdmin",
+                    ),
+                )
+            )
+        installed = bool(
+            binding and binding.state == "installed" and binding.bot_app_id == settings.bot_app_id
+        )
+        checks.append(
+            CapabilityCheck(
+                feature="teamsPersonalInstallation",
+                scope="self",
+                checked_at=now,
+                state="verified" if installed else "needsAction",
+                reason="An authenticated personal installation is bound to this account."
+                if installed
+                else "Your personal installation is "
+                f"{binding.state if binding else 'not installed'} or belongs to a different bot.",
+                evidence=["An authenticated Teams lifecycle event established this binding."]
+                if installed
+                else [],
+                remediation=CapabilityRemediation(
+                    action="Install or unblock the approved MOSAIC app in personal scope. If the "
+                    "bot registration changed, reinstall it. Ask the Teams administrator if app "
+                    "policy prevents installation; never paste a conversation ID.",
+                    path=path,
+                    owner="user",
+                ),
+            )
+        )
+        channels = await self.repository.get_channel_settings(tenant)
+        preferences = await self.repository.get_preferences(tenant, user, persona)
+        opted_in = bool(
+            preferences and any(category.teams.mode != "off" for category in preferences.categories)
+        )
+        enabled = bool(channels and channels.teams_personal_enabled)
+        checks.append(
+            CapabilityCheck(
+                feature="teamsPersonalPreferences",
+                scope="self",
+                checked_at=now,
+                state="verified" if enabled and opted_in else "needsAction",
+                reason="The tenant channel and your private Teams preferences are enabled."
+                if enabled and opted_in
+                else "Normal delivery needs the tenant's private Teams "
+                "channel and your category preferences enabled. The self-test is separate.",
+                evidence=["Tenant enablement and this persona's opt-in are present."]
+                if enabled and opted_in
+                else [],
+                remediation=CapabilityRemediation(
+                    action="Ask the administrator to enable the private Teams channel, then choose "
+                    "the categories you want in your own notification preferences.",
+                    path=path,
+                    owner="user",
+                ),
+            )
+        )
+        checks.append(
+            await self._test_check(
+                tenant,
+                self._test_scope(tenant, user, persona),
+                self._revision(settings.revision, binding=binding),
+                path=path,
+            )
+        )
+        return checks
 
     async def list_destinations(self, tenant: str) -> list[TeamsDestination]:
         self._tenant(tenant)
@@ -508,23 +900,14 @@ class TeamsService:
             return NotificationDispatchResult(
                 "suppressed", safe_error="The Teams destination scope excludes this event."
             )
-        if self._reader is None:
-            return NotificationDispatchResult(
-                "permanentFailure",
-                error_code="teamsSecretReaderMissing",
-                safe_error="Configure Key Vault secret access.",
-            )
         try:
-            url = await self._reader.read(item.credential_reference_id)
+            url = await self._workflow_url(item)
             return await self.transport.workflow(url, self.card(events, test=test))
-        except Exception:
+        except TeamsSetupError as error:
             return NotificationDispatchResult(
-                "permanentFailure",
-                error_code="teamsSecretOrEndpointInvalid",
-                safe_error=(
-                    "Teams secret access or endpoint validation failed. "
-                    "Check Key Vault and the allowlist."
-                ),
+                "retryableFailure" if error.retryable else "permanentFailure",
+                error_code=error.code,
+                safe_error=str(error),
             )
 
     async def send_personal(
@@ -561,11 +944,18 @@ class TeamsService:
             )
         try:
             token = await self._tokens.token()
-        except Exception:
+        except TeamsAuthenticationError as error:
             return NotificationDispatchResult(
-                "permanentFailure",
-                error_code="teamsBotOAuthFailed",
-                safe_error="Teams bot OAuth failed. Check the identity or secret reference.",
+                "retryableFailure" if error.retryable else "permanentFailure",
+                error_code=error.code,
+                safe_error=str(error),
+                retry_after_seconds=error.retry_after_seconds,
+            )
+        except AzureError:
+            return NotificationDispatchResult(
+                "retryableFailure",
+                error_code="teamsBotOAuthUnavailable",
+                safe_error="Bot OAuth is unavailable. Check its identity and network access.",
             )
         try:
             result = await self.transport.personal(
@@ -597,20 +987,69 @@ class TeamsService:
         return result
 
     async def test_shared(self, tenant: str, identifier: str) -> TeamsTestResult:
-        return self._test_result(await self.send_shared(tenant, identifier, [], test=True))
+        started_at = self._clock()
+        item = await self.destination(tenant, identifier)
+        url = None
+        observed: NotificationDispatchResult | None = None
+        if item.enabled:
+            try:
+                url = await self._workflow_url(item)
+            except TeamsSetupError as error:
+                observed = NotificationDispatchResult(
+                    "retryableFailure" if error.retryable else "permanentFailure",
+                    error_code=error.code,
+                    safe_error=str(error),
+                )
+        if observed is None:
+            observed = await self.send_shared(tenant, identifier, [], test=True)
+        result = self._test_result(
+            observed,
+            started_at=started_at,
+            shared=True,
+            revision=self._revision(
+                item.revision,
+                secret_fingerprint=hashlib.sha256(url.encode()).hexdigest() if url else None,
+            ),
+        )
+        return await self._record_test(
+            tenant, self._test_scope(tenant, identifier), "teamsChannel", result
+        )
 
     async def test_personal(
         self, tenant: str, user: str, persona: NotificationPersona
     ) -> TeamsTestResult:
-        return self._test_result(await self.send_personal(tenant, user, persona, [], test=True))
+        started_at = self._clock()
+        settings = await self.personal_settings(tenant)
+        binding = await self.repository.get_personal_teams_binding(tenant, user)
+        result = self._test_result(
+            await self.send_personal(tenant, user, persona, [], test=True),
+            started_at=started_at,
+            revision=self._revision(settings.revision, binding=binding),
+        )
+        return await self._record_test(
+            tenant, self._test_scope(tenant, user, persona), "teamsPersonal", result
+        )
 
-    def _test_result(self, result: NotificationDispatchResult) -> TeamsTestResult:
+    def _test_result(
+        self,
+        result: NotificationDispatchResult,
+        *,
+        started_at: datetime,
+        revision: str,
+        shared: bool = False,
+    ) -> TeamsTestResult:
         return TeamsTestResult(
             outcome=result.outcome,
-            tested_at=self._clock(),
+            tested_at=started_at,
+            configuration_revision=revision,
+            error_code=result.error_code,
             message=(
                 "Teams accepted the test request. Delivery is unconfirmed; "
-                "check Teams and Workflow run history."
+                + (
+                    "check Teams and Workflow run history."
+                    if shared
+                    else "check your private Teams chat."
+                )
                 if result.outcome == "providerAccepted"
                 else result.safe_error or "The Teams test was not accepted."
             ),
@@ -691,13 +1130,16 @@ class TeamsService:
         )
         return checks
 
-    async def personal_status(self, tenant: str, user: str) -> PersonalTeamsStatus:
+    async def personal_status(
+        self, tenant: str, user: str, persona: NotificationPersona = "portal"
+    ) -> PersonalTeamsStatus:
         settings = await self.personal_settings(tenant)
         binding = await self.repository.get_personal_teams_binding(tenant, user)
         return PersonalTeamsStatus(
             enabled=settings.enabled,
             state=binding.state if binding else "notInstalled",
-            checks=await self.capability_checks(tenant, user_object_id=user),
+            checks=await self.personal_checks(tenant, user, persona),
+            last_test=await self._last_test(tenant, self._test_scope(tenant, user, persona)),
         )
 
 

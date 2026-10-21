@@ -1,4 +1,4 @@
-import { Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, Input, Text, Title3 } from '@fluentui/react-components'
+import { Button, Checkbox, Field, Input, Text, Title3 } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useMosaicApi } from '../api'
@@ -8,6 +8,7 @@ import { WorkspaceEditorFrame } from './WorkspaceEditorFrame'
 import { CadenceFields, DigestFields, TimeWindowFields, TimeZoneField } from './GovernanceFields'
 import { notificationPreferencesInput, schedulesFor, validTimeZone } from '../admin-governance'
 import { CapabilityEvidence } from './NotificationSettings'
+import { PersonalTeamsAccess } from './PersonalTeamsAccess'
 import styles from './AdminGovernance.module.css'
 
 export function NotificationPreferences({ onEditingChange }: { onEditingChange?: (editing: boolean) => void }) {
@@ -19,9 +20,7 @@ export function NotificationPreferences({ onEditingChange }: { onEditingChange?:
   const [draftRevision, setDraftRevision] = useState<number | undefined>()
   const [thresholdText, setThresholdText] = useState('')
   const [showPreview, setShowPreview] = useState(false)
-  const [testTeamsOpen, setTestTeamsOpen] = useState(false)
   const effective = useQuery({ queryKey: ['admin-notification-preferences-preview'], queryFn: () => api.previewNotificationPreferences(), enabled: showPreview, retry: false })
-  const testTeams = useMutation({ mutationFn: () => api.testMyTeamsConnection() })
   function closeEditor() { setEditing(false); onEditingChange?.(false) }
   const save = useMutation({
     mutationFn: (body: NotificationPreferencesInput) => api.saveNotificationPreferences(body, draftRevision),
@@ -87,12 +86,8 @@ export function NotificationPreferences({ onEditingChange }: { onEditingChange?:
         <div className={styles.scroll}><table className={styles.table}><thead><tr><th>Category</th><th>Channel</th><th>Cadence</th><th>Availability</th><th>Next delivery</th></tr></thead>
           <tbody>{effective.data.channels.map(c => <tr key={`${c.category}-${c.channel}`}><th scope="row">{NOTIFICATION_CATEGORIES.find(n => n.value === c.category)?.label}</th><td>{c.channel}</td><td>{c.mode} {c.digestPeriods.join(', ')}</td><td>{c.available ? 'Available' : 'Unavailable'}{c.reasons.map((reason, i) => <div key={i}>{reason}</div>)}</td><td>{c.nextDeliveryAt ? new Date(c.nextDeliveryAt).toLocaleString() : 'Not scheduled'}</td></tr>)}</tbody></table></div>
         {effective.data.checks.map((check, i) => <CapabilityEvidence key={i} check={check} />)}
-        <Button onClick={() => { testTeams.reset(); setTestTeamsOpen(true) }}>Test my personal Teams connection</Button></>}
+        </>}
     </div>}
-    <Dialog open={testTeamsOpen} onOpenChange={(_, d) => { if (!testTeams.isPending) setTestTeamsOpen(d.open) }}><DialogSurface><DialogBody><DialogTitle>Send a private Teams test?</DialogTitle><DialogContent>
-      This sends a synthetic message only to your authenticated personal Teams conversation. An unavailable private channel is never redirected to a shared administrator destination.
-      {testTeams.isError && <ErrorState error={testTeams.error} />}
-      {testTeams.data && <Text block>{testTeams.data.outcome}: {testTeams.data.message}. Provider acceptance is not proof of user delivery.</Text>}
-    </DialogContent><DialogActions><Button disabled={testTeams.isPending} onClick={() => setTestTeamsOpen(false)}>Close</Button><Button appearance="primary" disabled={testTeams.isPending || testTeams.isSuccess} onClick={() => testTeams.mutate()}>Send private synthetic test</Button></DialogActions></DialogBody></DialogSurface></Dialog>
+    <PersonalTeamsAccess />
   </section>
 }

@@ -91,6 +91,10 @@ RESOURCE_NAMES = [
     "contoso-safety",
     "kv-contoso-ai",
     "kv-contoso-management",
+    "MOSAIC notification sender",
+    "contoso-notifications",
+    "Platform operations",
+    "Workflow requiring attention",
     "apim-contoso-gov",
     "contoso-gov-aoai",
     "rg-contoso-gov",
@@ -120,7 +124,10 @@ REDACTION_PATTERNS = [
     r"cognitiveservices\.azure\.com|services\.ai\.azure\.com|vault\.azure\.net|contoso\.com|"
     r"azure-api\.us|openai\.azure\.us|cognitiveservices\.azure\.us|"
     r"vault\.usgovcloudapi\.net|"
-    r"communication\.azure\.com|azurecomm\.net)\b",
+    r"logic\.azure\.com|api\.powerplatform\.com|graph\.microsoft\.com|"
+    r"graph\.microsoft\.us|trafficmanager\.net)\b",
+    r"\b(?:graph\.microsoft\.(?:com|us)|dod-graph\.microsoft\.us|"
+    r"microsoftgraph\.chinacloudapi\.cn)\b",
     # IPv4 addresses, such as gateway egress addresses.
     r"\b\d{1,3}(?:\.\d{1,3}){3}\b",
     # MOSAIC record IDs and the APIM names derived from them, such as modelApi_<32 hex>,
@@ -449,9 +456,7 @@ def select_access_offering(cloud: str) -> Action:
             "combobox", name="Access option", exact=True
         )
         choices = [
-            text.strip()
-            for text in select.locator("option").all_inner_texts()
-            if cloud in text
+            text.strip() for text in select.locator("option").all_inner_texts() if cloud in text
         ]
         if len(choices) != 1:
             raise CaptureError(f"Expected one {cloud} access offering")
@@ -542,10 +547,20 @@ SHOTS: list[Shot] = [
     Shot("portal-catalog-light", "portal", "/catalog", "light", "Docs search MCP", height=1040),
     Shot("portal-catalog-dark", "portal", "/catalog", "dark", "Docs search MCP", height=1040),
     # Capability galleries: light shots sit in the README's left column and dark in its right.
-    Shot("console-gateways", "console", "/gateways", "light", "Partner Gateway",
-         actions=OPEN_GATEWAY, height=1600),
     Shot(
-        "console-government-gateway", "console", "/gateways", "light",
+        "console-gateways",
+        "console",
+        "/gateways",
+        "light",
+        "Partner Gateway",
+        actions=OPEN_GATEWAY,
+        height=1600,
+    ),
+    Shot(
+        "console-government-gateway",
+        "console",
+        "/gateways",
+        "light",
         "Contoso Government Gateway",
         actions=(click_button("Contoso Government Gateway"), wait_for_text("Read-only")),
         height=1600,
@@ -566,13 +581,20 @@ SHOTS: list[Shot] = [
         "light",
         "Contoso AI Gateway",
         actions=(
-            *OPEN_GATEWAY, click_tab("APIs and endpoints"),
+            *OPEN_GATEWAY,
+            click_tab("APIs and endpoints"),
             scroll_to_text("Read-only · Synced from APIM.", margin=110),
         ),
         height=1300,
     ),
-    Shot("console-models", "console", "/models", "dark", "GPT-4o mini",
-         actions=(click_button("GPT-4o mini"),)),
+    Shot(
+        "console-models",
+        "console",
+        "/models",
+        "dark",
+        "GPT-4o mini",
+        actions=(click_button("GPT-4o mini"),),
+    ),
     Shot(
         "console-register-key-endpoint",
         "console",
@@ -626,7 +648,8 @@ SHOTS: list[Shot] = [
         "Anthropic Claude",
         actions=(
             click_button("Anthropic Claude"),
-            click_button("Collapse Pools sections"), click_button("Collapse navigation"),
+            click_button("Collapse Pools sections"),
+            click_button("Collapse navigation"),
             click_tab("Models and deployments"),
             scroll_to_text("served by 5 active deployments", margin=160),
         ),
@@ -643,7 +666,8 @@ SHOTS: list[Shot] = [
         # enforces on each model, and the cost center's pooled quota.
         actions=(
             click_button("Anthropic Claude"),
-            click_button("Collapse Pools sections"), click_button("Collapse navigation"),
+            click_button("Collapse Pools sections"),
+            click_button("Collapse navigation"),
             click_tab("Access and connection"),
             wait_for_text("Grants in force"),
             scroll_to_text("Who can call it", margin=110),
@@ -662,7 +686,8 @@ SHOTS: list[Shot] = [
         # breaker while the other regions take the retries.
         actions=(
             click_button("Anthropic Claude"),
-            click_button("Collapse Pools sections"), click_button("Collapse navigation"),
+            click_button("Collapse Pools sections"),
+            click_button("Collapse navigation"),
             click_tab("Health"),
             wait_for_text("Breaker tripped"),
             scroll_to_text("calls to each model ended", margin=168),
@@ -1049,8 +1074,12 @@ SHOTS: list[Shot] = [
         "console-environments", "console", "/settings", "light", "needs classification", height=1178
     ),
     Shot(
-        "console-azure-connections", "console", "/settings?tab=connections", "dark",
-        "Government management", height=1100,
+        "console-azure-connections",
+        "console",
+        "/settings?tab=connections",
+        "dark",
+        "Government management",
+        height=1100,
     ),
     Shot(
         "console-environment-findings",
@@ -1072,15 +1101,38 @@ SHOTS: list[Shot] = [
     Shot(
         "console-email-settings",
         "console",
-        "/settings?tab=email",
+        "/settings?tab=notifications&notificationView=email",
         "light",
-        "Send test email",
-        # Budget email through Communication Services, turned on, with its last test email.
+        "Microsoft Graph email",
         actions=(
-            wait_for_text("Send test email"),
-            scroll_to_text("Budget warnings and blocks are emailed", margin=150),
+            click_button("Check email access"),
+            wait_for_text("Mailbox send authorization"),
         ),
-        height=548,
+        height=1740,
+    ),
+    Shot(
+        "console-teams-shared",
+        "console",
+        "/settings?tab=notifications&notificationView=teams",
+        "light",
+        "Shared Teams destinations",
+        actions=(
+            click_button("Workflow requiring attention"),
+            wait_for_text("Who can fix it: Azure administrator"),
+        ),
+        height=1930,
+    ),
+    Shot(
+        "console-teams-private",
+        "console",
+        "/settings?tab=notifications&notificationView=personalTeams",
+        "dark",
+        "My private Teams access",
+        actions=(
+            click_button("Check my Teams access"),
+            wait_for_text("The runtime acquired a Bot Connector token without sending."),
+        ),
+        height=1800,
     ),
     Shot(
         "portal-notifications",
@@ -1175,7 +1227,11 @@ SHOTS: list[Shot] = [
         height=1240,
     ),
     Shot(
-        "portal-government-connection", "portal", "/access", "light", "My access",
+        "portal-government-connection",
+        "portal",
+        "/access",
+        "light",
+        "My access",
         actions=(
             open_grant_connection("gpt-4o-mini", "Customer Insights", cloud="Azure Government"),
             wait_for_text("Authentication"),
@@ -1183,7 +1239,11 @@ SHOTS: list[Shot] = [
         height=1420,
     ),
     Shot(
-        "portal-government-mcp-connection", "portal", "/access", "dark", "My access",
+        "portal-government-mcp-connection",
+        "portal",
+        "/access",
+        "dark",
+        "My access",
         actions=(
             open_grant_connection(
                 "Government Docs Search", "Customer Insights", cloud="Azure Government"
@@ -1355,14 +1415,15 @@ def _assert_no_document_overflow(
     if (
         geometry["scrollWidth"] > geometry["clientWidth"] + 1
         or geometry["scrollX"] != 0
-        or expected_width is not None and (
-            geometry["clientWidth"] != expected_width
-            or geometry["scrollWidth"] != expected_width
+        or (
+            expected_width is not None
+            and (
+                geometry["clientWidth"] != expected_width
+                or geometry["scrollWidth"] != expected_width
+            )
         )
     ):
-        raise CaptureError(
-            f"{context}: document overflows horizontally: {json.dumps(geometry)}"
-        )
+        raise CaptureError(f"{context}: document overflows horizontally: {json.dumps(geometry)}")
 
 
 def _check_local_table_scroll(page: Page, context: str, *, require_scroll: bool = False) -> None:
@@ -1384,10 +1445,10 @@ def _check_local_table_scroll(page: Page, context: str, *, require_scroll: bool 
             )
             _settle(page)
             if container.evaluate("(element) => element.scrollLeft") <= 0:
-                raise CaptureError(f"{context}: local table {operation} did not reveal its last column")
-            _assert_no_document_overflow(
-                page, f"{context}: table {operation}", expected_width=1440
-            )
+                raise CaptureError(
+                    f"{context}: local table {operation} did not reveal its last column"
+                )
+            _assert_no_document_overflow(page, f"{context}: table {operation}", expected_width=1440)
         container.evaluate("(element) => { element.scrollLeft = 0 }")
         _assert_no_document_overflow(page, f"{context}: table reset", expected_width=1440)
         checked += 1
@@ -1592,8 +1653,10 @@ def _check_navigation(page: Page, app: App) -> None:
     if collapsed is None or collapsed["width"] > 90:
         raise CaptureError(f"{app}: collapsed primary navigation is not a compact rail")
     content_after = page.locator(".content-inner").bounding_box()
-    if content_before is None or content_after is None or (
-        content_after["width"] - content_before["width"] < 120
+    if (
+        content_before is None
+        or content_after is None
+        or (content_after["width"] - content_before["width"] < 120)
     ):
         raise CaptureError(f"{app}: collapsing primary navigation did not release its width")
     if app == "portal":
@@ -1756,9 +1819,7 @@ def _check_identity_workspace(page: Page) -> None:
     page.locator("[data-workspace-editor]").get_by_role("button", name="Back", exact=True).click()
     page.get_by_role("dialog", name="Discard unsaved changes?", exact=True).wait_for()
     page.get_by_role("button", name="Stay", exact=True).click()
-    page.get_by_role("dialog", name="Discard unsaved changes?", exact=True).wait_for(
-        state="hidden"
-    )
+    page.get_by_role("dialog", name="Discard unsaved changes?", exact=True).wait_for(state="hidden")
     page.wait_for_function(
         "(element) => element === document.activeElement", arg=label.element_handle()
     )
@@ -1884,35 +1945,49 @@ def _check_console_reflow(page: Page) -> None:
         page.get_by_role("button", name="Collapse Analytics sections", exact=True).click()
         collapsed = page.evaluate(content_width)
         secondary_collapsed = nav.bounding_box()
-        if secondary_expanded is None or secondary_collapsed is None or (
-            collapsed - expanded < 150
-            or abs(collapsed - expanded - (
-                secondary_expanded["width"] - secondary_collapsed["width"]
-            )) > 1
+        if (
+            secondary_expanded is None
+            or secondary_collapsed is None
+            or (
+                collapsed - expanded < 150
+                or abs(
+                    collapsed
+                    - expanded
+                    - (secondary_expanded["width"] - secondary_collapsed["width"])
+                )
+                > 1
+            )
         ):
-            raise CaptureError(f"console: {theme} secondary collapse did not release its full width")
+            raise CaptureError(
+                f"console: {theme} secondary collapse did not release its full width"
+            )
         for item in nav.get_by_role("button").all()[1:]:
             if not item.locator("svg").count() or not item.get_attribute("aria-label"):
-                raise CaptureError("console: collapsed section is missing an icon or accessible label")
+                raise CaptureError(
+                    "console: collapsed section is missing an icon or accessible label"
+                )
         page.get_by_role("button", name="Collapse navigation", exact=True).click()
         both = page.evaluate(content_width)
         primary_collapsed = page.locator(".sidebar").bounding_box()
-        if primary_expanded is None or primary_collapsed is None or (
-            both - collapsed < 120
-            or abs(both - collapsed - (
-                primary_expanded["width"] - primary_collapsed["width"]
-            )) > 1
+        if (
+            primary_expanded is None
+            or primary_collapsed is None
+            or (
+                both - collapsed < 120
+                or abs(both - collapsed - (primary_expanded["width"] - primary_collapsed["width"]))
+                > 1
+            )
         ):
             raise CaptureError(f"console: {theme} primary collapse did not release its full width")
         page.get_by_role("button", name="Expand Analytics sections", exact=True).click()
         primary_only = page.evaluate(content_width)
-        if both - primary_only < 150 or abs(
-            both - primary_only - (collapsed - expanded)
-        ) > 1:
+        if both - primary_only < 150 or abs(both - primary_only - (collapsed - expanded)) > 1:
             raise CaptureError(f"console: {theme} secondary expansion did not restore its width")
         page.get_by_role("button", name="Expand navigation", exact=True).click()
         if abs(page.evaluate(content_width) - expanded) > 1:
-            raise CaptureError(f"console: {theme} both expanded rails did not restore the workspace")
+            raise CaptureError(
+                f"console: {theme} both expanded rails did not restore the workspace"
+            )
         for width in (1920, 1440, 1280, 768, 720, 390):
             page.set_viewport_size({"width": width, "height": 900})
             if page.evaluate("document.documentElement.scrollWidth > window.innerWidth + 1"):
@@ -1930,11 +2005,11 @@ def _check_console_reflow(page: Page) -> None:
             "(theme) => document.documentElement.dataset.theme === theme", arg=theme
         )
         primary = page.locator(".sidebar").bounding_box()
-        secondary = page.get_by_role(
-            "navigation", name="Pools sections", exact=True
-        ).bounding_box()
-        if primary is None or primary["width"] < 200 or (
-            secondary is None or secondary["width"] < 200
+        secondary = page.get_by_role("navigation", name="Pools sections", exact=True).bounding_box()
+        if (
+            primary is None
+            or primary["width"] < 200
+            or (secondary is None or secondary["width"] < 200)
         ):
             raise CaptureError(f"console: {theme} pool checks require both expanded rails")
         page.get_by_role("list", name="Model pools", exact=True).get_by_role(
@@ -1942,7 +2017,10 @@ def _check_console_reflow(page: Page) -> None:
         ).click()
         sections = page.get_by_role("navigation", name="Pool sections", exact=True)
         for section in (
-            "Overview", "Models and deployments", "Access and connection", "Health",
+            "Overview",
+            "Models and deployments",
+            "Access and connection",
+            "Health",
             "Policy and runs",
         ):
             sections.get_by_role("button", name=section, exact=True).click()
@@ -1952,7 +2030,8 @@ def _check_console_reflow(page: Page) -> None:
                 scroll_to_text("calls to each model ended", margin=168)(page)
                 _settle(page)
             _assert_no_document_overflow(
-                page, f"console: {theme} pool {section} with both rails expanded",
+                page,
+                f"console: {theme} pool {section} with both rails expanded",
                 expected_width=1440,
             )
             _check_local_table_scroll(page, f"{theme} pool {section}")
@@ -1969,8 +2048,10 @@ def _check_console_reflow(page: Page) -> None:
         secondary = page.get_by_role(
             "navigation", name="Pricing sections", exact=True
         ).bounding_box()
-        if primary is None or primary["width"] < 200 or (
-            secondary is None or secondary["width"] < 200
+        if (
+            primary is None
+            or primary["width"] < 200
+            or (secondary is None or secondary["width"] < 200)
         ):
             raise CaptureError(f"console: {theme} pricing checks require both expanded rails")
         _assert_no_document_overflow(page, f"{theme} pricing", expected_width=1440)
@@ -1982,7 +2063,9 @@ def _check_console_reflow(page: Page) -> None:
         _check_local_table_scroll(page, f"{theme} filtered pricing", require_scroll=True)
         page.goto(origin + "/analytics")
         _settle(page)
-    print("verified every pool section, scrolled Health, and Pricing with both expanded rails in both themes")
+    print(
+        "verified every pool section, scrolled Health, and Pricing with both expanded rails in both themes"
+    )
     print("verified both themes, all rail combinations, width recovery, reflow, and control lines")
 
 
@@ -2063,7 +2146,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--output", type=Path, default=OUTPUT_DIR)
     parser.add_argument(
-        "--logs-dir", type=Path,
+        "--logs-dir",
+        type=Path,
         help="Keep server logs and unredacted failure captures in this dedicated directory",
     )
     parser.add_argument("--api-port", type=int, default=18000)

@@ -18,12 +18,16 @@ from pathlib import Path
 from typing import Any, Literal
 
 import httpx
+import jwt
+from cryptography.hazmat.primitives.asymmetric import rsa
+from mosaic_api.errors import UpstreamAuthorizationError, ValidationError
 from mosaic_api.integrations.apim.diagnostics import (
     AZURE_MONITOR,
     api_diagnostic_payload,
     azure_monitor_logger_payload,
 )
 from mosaic_api.integrations.loganalytics import Row
+from mosaic_api.integrations.teams import BOT_ISSUER, BOT_KEYS_URL, BOT_METADATA_URL
 
 TESTS_DIR = Path(__file__).resolve().parents[2] / "apps" / "api" / "tests"
 if str(TESTS_DIR) not in sys.path:
@@ -68,9 +72,12 @@ __all__ = [
     "LOG_WORKSPACE_ID",
     "PARTNER_GATEWAY_RESOURCE_ID",
     "DemoApim",
+    "DemoBotTokens",
     "DemoCognitiveAccount",
     "DemoLogs",
     "DemoMcpServer",
+    "DemoTeamsProvider",
+    "DemoTeamsVault",
     "FakeCredential",
     "FakeKeyStore",
     "PoolMemberTraffic",
@@ -86,6 +93,93 @@ __all__ = [
     "send_logs_to_workspace",
     "stream_calls",
 ]
+
+
+class DemoTeamsVault(FakeKeyStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.denied: set[str] = set()
+
+    async def read(self, uri: str) -> str:
+        if uri in self.denied:
+            raise UpstreamAuthorizationError("The fictional vault denied secret access.")
+        value = self.current(uri)
+        if value is None:
+            raise ValidationError("The fictional secret is missing.")
+        return value
+
+
+@dataclass(frozen=True)
+class DemoBotTokens:
+    bot_app_id: str
+    configuration_id: str = "fictional-demo-bot-identity"
+
+    async def token(self) -> str:
+        return "demo-bot-token-not-a-real-credential"
+
+
+class DemoTeamsProvider:
+    """Local Connector signing keys and accepted sends; no network or actual Teams messages."""
+
+    host = "contoso-notifications.westus.logic.azure.com"
+    service_url = "https://smba.trafficmanager.net/amer/"
+
+    def __init__(self) -> None:
+        self.key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        self.requests: list[httpx.Request] = []
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        if str(request.url) == BOT_METADATA_URL:
+            return httpx.Response(
+                200, json={
+                    "issuer": BOT_ISSUER, "jwks_uri": BOT_KEYS_URL,
+                    "id_token_signing_alg_values_supported": ["RS256"],
+                },
+            )
+        if str(request.url) == BOT_KEYS_URL:
+            jwk = jwt.algorithms.RSAAlgorithm.to_jwk(self.key.public_key(), as_dict=True)
+            assert isinstance(jwk, dict)
+            return httpx.Response(
+                200, json={"keys": [{**jwk, "kid": "demo-key", "endorsements": ["msteams"]}]}
+            )
+        if request.method == "POST" and request.url.host in {
+            self.host,
+            "smba.trafficmanager.net",
+        }:
+            self.requests.append(request)
+            return httpx.Response(202, json={"id": f"demo-teams-message-{len(self.requests)}"})
+        raise AssertionError("Unexpected request outside the fictional Teams provider.")
+
+    def installation(self, tenant: str, user: str, bot: str) -> tuple[str, dict[str, Any]]:
+        now = datetime.now(UTC)
+        token = jwt.encode(
+            {
+                "iss": BOT_ISSUER,
+                "aud": bot,
+                "exp": now + timedelta(minutes=10),
+                "nbf": now - timedelta(seconds=5),
+                "serviceurl": self.service_url,
+            },
+            self.key,
+            algorithm="RS256",
+            headers={"kid": "demo-key"},
+        )
+        return "Bearer " + token, {
+            "type": "installationUpdate",
+            "action": "add",
+            "channelId": "msteams",
+            "timestamp": now.isoformat(),
+            "serviceUrl": self.service_url,
+            "conversation": {
+                "id": f"demo-personal-conversation-{user}",
+                "tenantId": tenant,
+                "conversationType": "personal",
+            },
+            "channelData": {"tenant": {"id": tenant}},
+            "from": {"id": f"29:demo-{user}", "aadObjectId": user},
+            "recipient": {"id": "28:" + bot},
+        }
+
 
 GATEWAY_RESOURCE_ID = RESOURCE_ID
 GOV_GATEWAY_RESOURCE_ID = (

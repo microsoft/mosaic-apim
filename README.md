@@ -354,10 +354,10 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-email-settings.png" alt="The Email section of Settings, turned on, with a Communication Services endpoint and sender address, and a test email that was accepted">
-      <p><b>Budget email.</b> Budget email goes through Azure Communication Services, which MOSAIC
-      signs in to as its managed identity, so no key is kept. It's off until an administrator saves
-      an endpoint and a sender here, and <b>Send test email</b> checks both.</p>
+      <img src="docs/images/screenshots/console-email-settings.png" alt="Notifications Email setup with a Graph sending mailbox, read-only access checks, and the last explicit test result">
+      <p><b>Email setup.</b> Configure one Microsoft Graph sending mailbox, check the API's managed
+      identity, and send an explicit test. Separate checks explain missing access and how to fix it;
+      provider acceptance is not a delivery receipt.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-analytics-mcp-model-use.png" alt="The Consumers section's Model use through MCP servers table, listing each person, the MCP server, and the application that called models for them, with requests, tokens, share, and cost, below a count of the references MOSAIC couldn't attribute, by reason">
@@ -365,6 +365,20 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
       each person who called the server, with the application, requests, tokens, and cost, and the
       references MOSAIC couldn't use, by reason. The calls stay the application's own in every
       other figure, so the table adds to no total.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-teams-shared.png" alt="Shared Teams setup with a selected Workflow, a failed secret-access check, corrective instructions, and saved test evidence">
+      <p><b>Shared Teams access.</b> Check a Workflow's secret, approved endpoint and notification
+      routing without sending a message. Failed checks identify what to correct and who can fix it;
+      Workflow execution and channel receipt remain separate checks.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-teams-private.png" alt="Private Teams setup with the saved bot registration, runtime OAuth check, personal installation and opt-in checks, and last synthetic test">
+      <p><b>Private Teams access.</b> Check the bot identity, your authenticated installation and
+      your channel preferences, then explicitly test your own private chat. Saved results belong
+      to your signed-in persona and never redirect private notifications to a shared channel.</p>
     </td>
   </tr>
   <tr>
@@ -725,8 +739,8 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
 - Budgets: a monthly budget per cost center, in dollars across every gateway, emails its owners
   and any other address at 80% and 100%, and either lets calls continue or blocks them at the
   gateway until it's raised or the UTC month ends. An organization budget only warns. Email goes
-  through Azure Communication Services as MOSAIC's managed identity, off until it's set up in
-  Settings. The Dashboard shows each budget's progress and forecast, and the portal tells people
+  through Microsoft Graph as MOSAIC's managed identity, scoped to one Exchange Online mailbox
+  and off until it's set up in Settings. The Dashboard shows each budget's progress and forecast, and the portal tells people
   when a cost center they charge is near or past its budget. See
   [Budgets and alerts](docs/budgets-and-alerts.md) and
   [ADR 0023](docs/adr/0023-budgets-and-notifications.md)
@@ -740,7 +754,7 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
 - Idempotent Entra application/service-principal setup through `azd` hooks
 
 The Gateways workspace, the Identity workspace, the Models and MCPs workspaces, the Entitlements
-workspace, Cost centers and their budgets, Settings → Environments and Email, model publishing,
+workspace, Cost centers and their budgets, Settings → Environments and Notifications, model publishing,
 the Dashboard, Analytics, Pricing, the end-user portal, and the deterministic policy preview use
 live API contracts. Usage figures in
 Azure are measured from gateway logs; only local and test runs simulate the portal's, labeled
@@ -754,9 +768,12 @@ preflight reports the missing write permissions precisely rather than failing du
 Measured usage also needs `azd provision`, which adds the `usage-rollups` container, the
 gateway's `azuremonitor` logger, and Monitoring Reader on the gateway for the API's identity.
 Publications applied before budgets existed don't check them until they're applied again, which
-also creates each gateway's `mosaic-blocked-cost-centers` named value. Budget email needs Azure
-Communication Services: set `MOSAIC_DEPLOY_EMAIL` to `true` before `azd provision` to create it,
-then turn email on in **Settings > Email**. See [Budgets and alerts](docs/budgets-and-alerts.md).
+also creates each gateway's `mosaic-blocked-cost-centers` named value. Email needs an existing
+Exchange Online mailbox and mailbox-scoped **Application Mail.Send** for the API managed identity.
+Configure it in **Settings > Notifications > Email**; provisioning does not grant Exchange access.
+Old email endpoints require migration and are never reused. See
+[Notification setup](docs/notification-setup.md) for email and both Teams paths, access checks,
+explicit tests, and corrective administrator commands.
 
 ## Azure Government from a commercial deployment
 
@@ -852,7 +869,10 @@ Budgets and their email have these. See [Budgets and alerts](docs/budgets-and-al
 | `MOSAIC_BUDGETS_ENABLED` | `true` | Runs the background check that judges budgets, emails at thresholds, and blocks cost centers. It runs only where usage comes from rollups. Off, budgets are kept but never judged. |
 | `MOSAIC_BUDGET_INTERVAL_SECONDS` | `900` | How often every budget is checked, from 60 to 86,400 seconds. |
 | `MOSAIC_BUDGET_FAST_INTERVAL_SECONDS` | `300` | How often a budget at 90% or more, with a threshold or a block to come, is checked, from 60 to 3,600 seconds. |
-| `MOSAIC_EMAIL_SUGGESTED_ENDPOINT`, `MOSAIC_EMAIL_SUGGESTED_SENDER` | None | The Communication Services endpoint and sender `azd` created. They only fill in **Settings > Email**; email stays off until an administrator saves it there. |
+
+The Graph sender mailbox and separate budget-email switch are saved in
+**Settings > Notifications > Email**, not deployment environment variables. The removed
+`MOSAIC_DEPLOY_EMAIL` and `MOSAIC_EMAIL_SUGGESTED_*` settings no longer provision or configure email.
 
 Approval and notification worker settings, channel prerequisites, and delivery semantics are
 documented in [Approvals and notifications](docs/approvals-and-notifications.md#hosting-settings).
@@ -1068,8 +1088,8 @@ not. The domain distinguishes:
   per-person defaults and pooled quotas; `CostCenterSettings` names the tenant's default
   ([ADR 0022](docs/adr/0022-cost-centers.md))
 - `Budget`: a cost center's or the organization's monthly amount, thresholds, recipients, and
-  whether it blocks at 100%; `EmailSettings`: the Communication Services endpoint and sender, and
-  whether email is on ([ADR 0023](docs/adr/0023-budgets-and-notifications.md))
+  whether it blocks at 100%; `EmailSettings`: the Graph mailbox object ID, configuration revision,
+  budget-email switch, and last explicit test ([email setup](docs/notification-setup.md))
 - `CredentialReference`: Key Vault secret URI only
 - `PriceVersion`: a price an administrator added, or a new version of a listed one, with the day it
   takes effect, its source, and a note; never edited or deleted
@@ -1131,8 +1151,8 @@ measured scale, not speculation.
   [Managing Government resources](docs/azure-government.md).
 - Backend access is scoped to Cosmos data contributor, Key Vault Secrets User, Key Vault Secrets
   Officer and Reader on MOSAIC's Key Vault, API Management contributor, Log Analytics Reader, and
-  Monitoring Reader, and, when `azd` deploys Communication Services for budget email,
-  Communication and Email Service Owner on that resource. Secrets Officer on that one vault lets
+  Monitoring Reader. Email separately needs mailbox-scoped Exchange **Application Mail.Send**
+  for the API managed identity, configured by an Exchange administrator. Secrets Officer on that one vault lets
   MOSAIC write an API key an administrator gives it, replace it, and delete it with its endpoint
   ([ADR 0021](docs/adr/0021-keys-mosaic-keeps.md)).
   Monitoring Reader on each API Management service lets MOSAIC read that gateway's logs for usage
@@ -1149,9 +1169,10 @@ measured scale, not speculation.
   audited. And the budget check writes one named value, `mosaic-blocked-cost-centers`, on managed
   gateways that carry MOSAIC's publications, listing the cost centers whose budgets block their
   calls; each write is audited ([ADR 0023](docs/adr/0023-budgets-and-notifications.md)).
-- MOSAIC sends email only through Azure Communication Services, as its managed identity, so it
-  keeps no email credential. Email is off until an administrator saves an endpoint and a sender,
-  and budget emails carry a cost center's totals, never who spent them.
+- MOSAIC sends email through Microsoft Graph as the API's system-assigned managed identity, so it
+  keeps no email credential. An Exchange administrator scopes **Application Mail.Send** to the
+  selected mailbox; an additional organization-wide Entra `Mail.Send` grant would defeat that
+  restriction. Budget emails carry a cost center's totals, never who spent them.
 - The contributor role carries `subscriptions/listSecrets`. Only an explicit credential-reveal
   operation uses it, after checking caller ownership and a trusted, applied grant. Inventory and
   publishing do not read keys. Reveals are audited without their secret values; responses are
@@ -2510,16 +2531,18 @@ blocks them at the gateway. An organization budget counts every priced call and 
 
 - A background job in the API judges budgets every 15 minutes, after each rollup, and every 5
   minutes for any at 90% or more. Each threshold emails once a month, and a block and its lifting
-  email once each. Budget state is saved with conditional writes, so API instances can't send an
-  email twice.
+  email once each as logical notices. Conditional writes preserve notice identity and ownership;
+  uncertain provider outcomes retry automatically within the finite attempt budget, so duplicate
+  external messages are possible.
 - A blocked cost center is listed in the `mosaic-blocked-cost-centers` named value MOSAIC keeps on
   each managed gateway. The governed policy, a governed model pool's included, refuses its calls
   with 403 once it has matched the grant, and the gateway's trace records
   `mosaic-deny v=1 r=budget`. The block lifts when the UTC month ends or an administrator raises
   the budget, and it lands about 15 to 30 minutes after the spend. It never revokes a grant.
-- Email goes through Azure Communication Services as MOSAIC's managed identity. It's off until an
-  administrator saves an endpoint and a sender in **Settings > Email**, which can send a test.
-  `azd` deploys Communication Services when `MOSAIC_DEPLOY_EMAIL` is `true`.
+- Email goes through Microsoft Graph as the API managed identity. Select the mailbox in
+  **Settings > Notifications > Email**, arrange mailbox-scoped Exchange access, check runtime
+  identity access, and explicitly send a test. The budget-email switch is independent of general
+  notification channel enablement. See [Notification setup](docs/notification-setup.md).
 - Reserved capacity nobody called, and calls MOSAIC couldn't link to a grant, count only toward
   the organization's budget.
 
@@ -2529,7 +2552,8 @@ blocks them at the gateway. An organization budget counts every priced call and 
 | POST | `/budgets/check` | Check every budget now, at most once a minute |
 | GET, PUT, DELETE | `/budgets/organization` | The organization's budget, which only warns |
 | GET, PUT, DELETE | `/cost-centers/{id}/budget` | A cost center's budget |
-| GET, PUT | `/settings/email` | Email settings: on or off, the Communication Services endpoint, and the sender |
+| GET, PUT | `/settings/email` | Graph mailbox settings, revision, budget-email switch, and last test |
+| GET | `/settings/email/checks` | Read-only runtime identity and configuration checks; never sends or grants access |
 | POST | `/settings/email/test` | Send a test email |
 | GET | `/me/budgets` | The caller's cost centers near, past, or blocked at their budgets (`User`) |
 

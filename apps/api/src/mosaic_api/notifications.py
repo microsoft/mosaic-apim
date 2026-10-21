@@ -517,6 +517,22 @@ class CapabilityCheck(MosaicModel):
         return self
 
 
+class NotificationTestEvidence(MosaicModel):
+    outcome: Literal[
+        "providerAccepted",
+        "confirmedDelivered",
+        "retryableFailure",
+        "permanentFailure",
+        "unknownOutcome",
+        "suppressed",
+    ]
+    message: SafeText
+    tested_at: UtcInstant
+    configuration_revision: str | None = None
+    error_code: SafeText | None = None
+    confirmed_delivered: bool = False
+
+
 class NotificationChannelHealth(Entity):
     entity_type: Literal["notificationChannelHealth"] = "notificationChannelHealth"
     channel: NotificationChannel
@@ -525,6 +541,7 @@ class NotificationChannelHealth(Entity):
     last_provider_accepted_at: UtcInstant | None = None
     last_confirmed_delivered_at: UtcInstant | None = None
     last_failure_at: UtcInstant | None = None
+    last_test: NotificationTestEvidence | None = None
 
 
 class NotificationWorkerState(Entity):

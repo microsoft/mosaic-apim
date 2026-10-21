@@ -198,8 +198,9 @@ class NotificationDeliveryRepository(Protocol):
         now: datetime,
         lease_seconds: int,
         limit: int,
+        max_attempts: int = 5,
     ) -> list[NotificationDelivery]:
-        """Do not blindly resend expired unknown provider outcomes without deduplication."""
+        """Recover expired/uncertain sends under the bounded, duplicate-tolerant retry policy."""
         ...
 
     async def save_delivery(
@@ -277,6 +278,10 @@ class NotificationDeliveryRepository(Protocol):
     ) -> NotificationAlertIncident: ...
 
     async def list_channel_health(self, tenant_id: str) -> list[NotificationChannelHealth]: ...
+
+    async def get_channel_health(
+        self, tenant_id: str, identifier: str
+    ) -> NotificationChannelHealth | None: ...
 
     async def save_channel_health(self, health: NotificationChannelHealth) -> None: ...
 

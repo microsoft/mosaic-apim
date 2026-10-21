@@ -72,7 +72,7 @@ Construct `NotificationPreferenceService(repository, directory=...,
 authorize_recipient=..., expand_recipients=..., budget_recipients=..., clock=...)`.
 It implements the worker's
 `resolve(event)` audience port and `authorize(delivery, events)` send-time authorization port;
-`mailbox_resolver(delivery)` supplies a single directory-backed ACS recipient. The
+`mailbox_resolver(delivery)` supplies a single directory-backed Graph email recipient. The
 `authorize_recipient(event, object_id, persona)` callback must resolve **current** subject
 visibility from durable source records. Portal delivery fails closed when this callback is
 absent. Administrator recipients additionally require fresh actual-role verification.
@@ -134,7 +134,7 @@ and hashed replay receipts; a prepared window is immutable. Publishing a determi
 `notificationDigest` source event and removing its stream references share one
 `commit_source_event(..., checkpoint=...)` transaction. An interrupted or conflicting publish
 does not lose references or create a second delivery. The normal engine still owns delivery
-claims, provider idempotency, unknown outcomes and retries.
+claims, uncertain outcomes and bounded retries, without claiming provider deduplication.
 
 An unregistered, mismatched, unpublished or early `digest_window_id` never authorizes sending.
 The supported async validator is `coordinator.validate_window(delivery, events) -> str | None`;
@@ -148,7 +148,7 @@ never to a shared route or different audience.
 
 `DigestNotificationDispatcher` expands the synthetic event into the bounded, newly authorized
 original events immediately before the existing email or Teams transport. It preserves the
-fallback transport's idempotency support. Quiet hours and future due times defer durably without
+fallback transport's declared idempotency support (false for Graph and Teams). Quiet hours and future due times defer durably without
 consuming provider attempts, including a changed preference between authorization and dispatch.
 
 Completed usage summaries are already durable producer events:
@@ -203,7 +203,7 @@ arbitrary forwarding addresses. `budget_delivery_migrated` defaults false to pre
 general email sends; the bridge's durable source ownership does not require enabling it.
 Enable generic budget routing only after a separate coordinated ownership transfer, and supply
 the fresh budget-recipient callback. Opaque recipient references contain a budget ID and address
-hash, not the external mailbox. The email dispatcher order is ordinary ACS, then
+hash, not the external mailbox. The email dispatcher order is ordinary Graph, then
 `BudgetNotificationBridge(fallback=ordinary_acs)`, then
 `DigestNotificationDispatcher(digests, budget_bridge)`.
 
@@ -211,5 +211,5 @@ Events with `origin=budgetNotificationBridge` always suppress **generic** email 
 including opted-in personal/admin routes and general explicit-budget routes. Send-time
 authorization enforces the same rule even when directory discovery is unavailable. The migration
 bridge's separate compatibility job and legacy-budget authorizer retain exclusive email
-ownership and the existing ACS operation identity; in-app and opted-in Teams channels remain
+ownership and the existing correlation identity; in-app and opted-in Teams channels remain
 independent. This guard does not require enabling `budget_delivery_migrated` globally.

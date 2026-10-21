@@ -31,8 +31,9 @@ export interface IndependentModelEvidence {
   }[]
   government?: {
     cloud: string
-    resourceDeployed: boolean
-    domainDeployed: boolean
+    provider: 'graph'
+    mailboxScopeVerified: boolean
+    unscopedSendGrantPresent: boolean
     managedIdentity: boolean
     tokenScope: string
     apiVersion: string
@@ -169,18 +170,25 @@ export function propagationEvidence(scope: ModelJourneys, runtime: RuntimeEviden
 
 export function governmentEmailEvidence(evidence: IndependentModelEvidence): void {
   const gov = evidence.government
-  if (!gov || gov.cloud !== 'government' || !gov.resourceDeployed || !gov.domainDeployed || !gov.managedIdentity ||
-      gov.tokenScope !== 'https://communication.azure.us/.default' || gov.apiVersion !== '2023-03-31') {
-    throw new ModelProofError('R13 requires actual Azure Government deployment and ACS managed-identity evidence; commercial/source/mock evidence cannot pass')
+  if (!gov || gov.cloud !== 'government' || gov.provider !== 'graph' ||
+      !gov.mailboxScopeVerified || gov.unscopedSendGrantPresent !== false || !gov.managedIdentity ||
+      !['https://graph.microsoft.us/.default', 'https://dod-graph.microsoft.us/.default'].includes(gov.tokenScope) ||
+      gov.apiVersion !== 'v1.0') {
+    throw new ModelProofError('R13 requires actual Government Graph managed-identity and mailbox-scoped Exchange evidence; commercial/source/mock evidence cannot pass')
   }
-  if (gov.attempts.length !== 2 || !gov.attempts[0].operationId || gov.attempts[0].operationId !== gov.attempts[1].operationId ||
-      gov.attempts[0].status !== 202 || ![200, 202, 409].includes(gov.attempts[1].status) ||
-      timestamp(gov.attempts[1].at) < timestamp(gov.attempts[0].at)) throw new ModelProofError('Record two actual sends with the same Operation-Id and the observed second status')
-  const observedThrough = observationWindow(gov.mailboxObservation, timestamp(gov.attempts[1].at))
-  if (gov.receipts.length !== 1 || gov.receipts[0].operationId !== gov.attempts[0].operationId ||
-      !gov.receipts[0].messageId || timestamp(gov.receipts[0].receivedAt) < timestamp(gov.attempts[0].at) ||
-      timestamp(gov.receipts[0].receivedAt) > observedThrough) {
-    throw new ModelProofError('ACS acceptance is not delivery; exactly one actual mailbox receipt is required')
+  if (!gov.attempts.length || gov.attempts.length > 5 || !gov.attempts[0].operationId ||
+      gov.attempts.at(-1)!.status !== 202 || gov.attempts.some((attempt, index) =>
+        attempt.operationId !== gov.attempts[0].operationId ||
+        ![0, 202, 408, 429, 500, 502, 503, 504].includes(attempt.status) ||
+        (index > 0 && timestamp(attempt.at) < timestamp(gov.attempts[index - 1].at)))) {
+    throw new ModelProofError('Record bounded actual Graph sends with one correlation ID, ordered timestamps and final 202 acceptance')
+  }
+  const observedThrough = observationWindow(gov.mailboxObservation, timestamp(gov.attempts.at(-1)!.at))
+  if (!gov.receipts.length || gov.receipts.some((receipt) =>
+      receipt.operationId !== gov.attempts[0].operationId || !receipt.messageId ||
+      timestamp(receipt.receivedAt) < timestamp(gov.attempts[0].at) ||
+      timestamp(receipt.receivedAt) > observedThrough)) {
+    throw new ModelProofError('Graph acceptance is not delivery; actual correlated mailbox receipts are required, and duplicates are acceptable')
   }
 }
 
@@ -188,7 +196,7 @@ export interface NotificationDeliveryEvidence {
   amount: number
   /** Actual priced spend observed at successive checks, not synthetic input to a budget. */
   checks: { costCenterId: string; spend: number; through: string; observedAt: string }[]
-  noticesBeforeRecheck: { costCenterId: string; id: string; kind: 'threshold' | 'blocked' | 'unblocked'; threshold?: number; status: string; operationId: string; sentAt: string }[]
+  noticesBeforeRecheck: { costCenterId: string; id: string; kind: 'threshold' | 'blocked' | 'unblocked'; threshold?: number; status: string; operationId: string; sentAt: string; firstAttemptAt?: string }[]
   noticesAfterRecheck: string[]
   recheck: EvidenceWindow
   mailboxObservation: EvidenceWindow
@@ -228,19 +236,27 @@ export function notificationDeliveryEvidence(scope: ModelJourneys, e: Notificati
   }
   if (notices.some((n) => !n.id) || new Set(notices.map((n) => n.id)).size !== notices.length ||
       new Set(notices.map((n) => n.operationId)).size !== notices.length ||
-      JSON.stringify(notices.map((n) => n.id).sort()) !== JSON.stringify([...e.noticesAfterRecheck].sort())) throw new ModelProofError('Recheck changed notification identity/count; dedupe not proved')
-  const blockedAt = timestamp(notices.find((n) => n.kind === 'blocked')!.sentAt)
-  const raisedAt = timestamp(notices.find((n) => n.kind === 'unblocked')!.sentAt)
+      JSON.stringify(notices.map((n) => n.id).sort()) !== JSON.stringify([...e.noticesAfterRecheck].sort())) throw new ModelProofError('Recheck changed logical notification identity/count')
+  const firstAttempt = (notice: NotificationDeliveryEvidence['noticesBeforeRecheck'][number]) => timestamp(notice.firstAttemptAt ?? notice.sentAt)
+  const blockedAt = firstAttempt(notices.find((n) => n.kind === 'blocked')!)
+  const raisedAt = firstAttempt(notices.find((n) => n.kind === 'unblocked')!)
   if (blockedAt < notified.get(100)! || raisedAt < blockedAt) throw new ModelProofError('Block/unblock sends must follow the actual 100% check in order')
   const recheckedThrough = observationWindow(e.recheck, Math.max(checkedAt, ...notices.map((n) => timestamp(n.sentAt))))
   const observedThrough = observationWindow(e.mailboxObservation, recheckedThrough)
-  if (e.receipts.length !== notices.length || new Set(e.receipts.map((r) => r.messageId)).size !== notices.length) throw new ModelProofError('Need exactly one independent mailbox message per notice')
+  if (new Set(e.receipts.map((r) => r.messageId)).size !== e.receipts.length ||
+      e.receipts.some((r) => !notices.some((notice) => notice.operationId === r.operationId))) {
+    throw new ModelProofError('Each independent mailbox receipt must identify a distinct message and an expected notice')
+  }
   for (const notice of notices) {
     const sentAt = timestamp(notice.sentAt)
-    if (notice.kind === 'threshold' && sentAt < notified.get(notice.threshold!)!) throw new ModelProofError('Threshold send predates its actual priced check')
+    const firstAttemptAt = firstAttempt(notice)
+    if (firstAttemptAt > sentAt) throw new ModelProofError('First attempt must not follow final send acceptance')
+    if (notice.kind === 'threshold' && firstAttemptAt < notified.get(notice.threshold!)!) throw new ModelProofError('Threshold send predates its actual priced check')
     const receipts = e.receipts.filter((r) => r.operationId === notice.operationId)
-    if (receipts.length !== 1 || !receipts[0].messageId) throw new ModelProofError('Duplicate or missing actual receipt')
-    const receivedAt = timestamp(receipts[0].receivedAt)
-    if (receivedAt < sentAt || receivedAt > observedThrough) throw new ModelProofError('Mailbox receipt must follow its notice send and precede the completed observation')
+    if (!receipts.length || receipts.some((receipt) => !receipt.messageId)) throw new ModelProofError('Missing actual receipt')
+    for (const receipt of receipts) {
+      const receivedAt = timestamp(receipt.receivedAt)
+      if (receivedAt < firstAttemptAt || receivedAt > observedThrough) throw new ModelProofError('Mailbox receipt must follow its first send attempt and precede the completed observation')
+    }
   }
 }

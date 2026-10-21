@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import importlib.util
 import io
@@ -9,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -24,6 +26,7 @@ from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
 from mosaic_api.domain import KeyVaultSecretId
 from mosaic_api.errors import (
     DomainError,
+    UpstreamAuthorizationError,
     ValidationError,
     domain_error_handler,
     request_validation_error_handler,
@@ -41,9 +44,11 @@ from mosaic_api.integrations.teams import (
     WorkflowEndpointPolicy,
     provider_result,
 )
+from mosaic_api.notification_delivery_api import notification_delivery_router
 from mosaic_api.notifications import (
     NotificationAudience,
     NotificationCategory,
+    NotificationChannelHealth,
     NotificationDelivery,
     NotificationEvent,
     NotificationEventType,
@@ -52,6 +57,7 @@ from mosaic_api.notifications import (
     TeamsDestinationInput,
 )
 from mosaic_api.repositories.memory_notifications import InMemoryNotificationRepository
+from mosaic_api.services.notifications import NotificationDispatchResult
 from mosaic_api.services.teams import (
     TeamsChannelDispatcher,
     TeamsPersonalDispatcher,
@@ -90,7 +96,9 @@ class Vault:
 
     async def read(self, secret_uri: str) -> str:
         if self.fail:
-            raise RuntimeError(WEBHOOK)
+            raise UpstreamAuthorizationError("The fictional vault denied access.")
+        if secret_uri not in self.values:
+            raise ValidationError("The fictional secret is missing.")
         return self.values[secret_uri]
 
     async def delete(self, secret: KeyVaultSecretId) -> bool:
@@ -101,6 +109,7 @@ class Vault:
 
 class Tokens:
     bot_app_id = BOT
+    configuration_id = "fictional-bot-token-source"
 
     async def token(self) -> str:
         return "fictional-oauth-token"
@@ -331,6 +340,162 @@ async def test_secret_store_errors_are_redacted(harness: Harness) -> None:
         await harness.destination()
     assert WEBHOOK not in str(raised.value)
     assert raised.value.__suppress_context__
+
+
+async def test_shared_access_checks_are_read_only_and_distinguish_secret_failures(
+    harness: Harness,
+) -> None:
+    destination = await harness.destination()
+    checks = {
+        check.feature: check
+        for check in await harness.service.destination_checks(TENANT, destination.id)
+    }
+    assert checks["teamsWorkflowAccess"].state == "verified"
+    assert checks["teamsWorkflowRouting"].state == "needsAction"
+    assert checks["teamsWorkflowExecution"].state == "unknown"
+    assert not harness.provider.requests
+    harness.vault.fail = True
+    checks = await harness.service.destination_checks(TENANT, destination.id)
+    access = next(check for check in checks if check.feature == "teamsWorkflowAccess")
+    assert access.state == "failed" and "secret-read" in (access.reason or "")
+    assert "teamsSecretAccessDenied" in access.model_dump_json()
+    assert WEBHOOK not in access.model_dump_json()
+    harness.vault.fail = False
+    harness.vault.values.clear()
+    checks = await harness.service.destination_checks(TENANT, destination.id)
+    assert any("teamsSecretUnavailable" in check.model_dump_json() for check in checks)
+    assert not harness.provider.requests and not harness.vault.deleted
+
+
+async def test_shared_test_evidence_persists_and_secret_rotation_invalidates_it(
+    harness: Harness,
+) -> None:
+    destination = await harness.destination()
+    result = await harness.service.test_shared(TENANT, destination.id)
+    assert result.outcome == "providerAccepted" and result.configuration_revision
+    reloaded = TeamsService(
+        harness.repository,
+        tenant_id=TENANT,
+        secret_reader=harness.vault,
+        secret_writer=harness.vault,
+        transport=harness.service.transport,
+        authenticator=TeamsLifecycleAuthenticator(harness.client),
+        token_source=Tokens(),
+        console_origin="https://console.example.invalid",
+        portal_origin="https://portal.example.invalid",
+        clock=lambda: harness.provider.now,
+    )
+    checks = await reloaded.destination_checks(TENANT, destination.id)
+    assert next(check for check in checks if check.feature == "teamsTest").state == "verified"
+    harness.vault.values[destination.credential_reference_id] = WEBHOOK + "&rotation=2"
+    checks = await reloaded.destination_checks(TENANT, destination.id)
+    test = next(check for check in checks if check.feature == "teamsTest")
+    assert test.state == "needsAction" and test.last_test_at == result.tested_at
+    assert "stale" in (test.reason or "")
+    assert len(harness.provider.requests) == 1
+
+
+async def test_older_inflight_test_does_not_replace_a_newer_configuration_result(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = await harness.destination()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def send(*args: Any, **kwargs: Any) -> NotificationDispatchResult:
+        if not entered.is_set():
+            entered.set()
+            await release.wait()
+        return NotificationDispatchResult("providerAccepted")
+
+    monkeypatch.setattr(harness.service, "send_shared", send)
+    older = asyncio.create_task(harness.service.test_shared(TENANT, destination.id))
+    await entered.wait()
+    try:
+        harness.provider.now += timedelta(seconds=1)
+        await harness.service.save_destination(
+            TENANT,
+            USER,
+            TeamsDestinationInput(
+                name="Updated fictional channel",
+                enabled=True,
+                allowed_categories=[NotificationCategory.REQUEST_LIFECYCLE],
+            ),
+            identifier=destination.id,
+        )
+        newer = await harness.service.test_shared(TENANT, destination.id)
+    finally:
+        release.set()
+        older_result = await older
+    assert older_result.configuration_revision != newer.configuration_revision
+    assert "newer test result" in older_result.message
+    checks = await harness.service.destination_checks(TENANT, destination.id)
+    check = next(item for item in checks if item.feature == "teamsTest")
+    assert check.state == "verified"
+    assert check.last_test_at == newer.tested_at
+    assert check.configuration_revision == newer.configuration_revision
+
+
+async def test_private_checks_and_test_evidence_are_caller_and_persona_scoped(
+    harness: Harness,
+) -> None:
+    await harness.install()
+    checks = await harness.service.personal_checks(TENANT, USER, "portal", verify_access=True)
+    assert next(check for check in checks if check.feature == "teamsBotOAuth").state == "verified"
+    assert not harness.provider.requests
+    result = await harness.service.test_personal(TENANT, USER, "portal")
+    status = await harness.service.personal_status(TENANT, USER, "portal")
+    assert status.last_test and status.last_test.tested_at == result.tested_at
+    assert "private Teams chat" in result.message and "Workflow" not in result.message
+    assert (
+        next(check for check in status.checks if check.feature == "teamsTest").state == "verified"
+    )
+    assert (await harness.service.personal_status(TENANT, USER, "admin")).last_test is None
+    assert (await harness.service.personal_status(TENANT, OTHER, "portal")).last_test is None
+    assert "conversationId" not in status.model_dump_json()
+    assert "serviceUrl" not in status.model_dump_json()
+    await harness.enable()
+    changed = await harness.service.personal_status(TENANT, USER, "portal")
+    assert (
+        next(check for check in changed.checks if check.feature == "teamsTest").state
+        == "needsAction"
+    )
+    assert len(harness.provider.requests) == 1
+
+
+async def test_private_oauth_diagnostics_and_transient_sends_are_not_conflated(
+    harness: Harness,
+) -> None:
+    await harness.install()
+
+    class UnavailableTokens(Tokens):
+        async def token(self) -> str:
+            raise TeamsAuthenticationError(
+                "Bot OAuth endpoint unavailable.",
+                code="teamsBotOAuthUnavailable",
+                retryable=True,
+                retry_after_seconds=120,
+            )
+
+    service = TeamsService(
+        harness.repository,
+        tenant_id=TENANT,
+        secret_reader=harness.vault,
+        secret_writer=harness.vault,
+        transport=harness.service.transport,
+        authenticator=TeamsLifecycleAuthenticator(harness.client),
+        token_source=UnavailableTokens(),
+        console_origin="https://console.example.invalid",
+        portal_origin="https://portal.example.invalid",
+        clock=lambda: harness.provider.now,
+    )
+    checks = await service.personal_checks(TENANT, USER, "portal", verify_access=True)
+    oauth = next(check for check in checks if check.feature == "teamsBotOAuth")
+    assert oauth.state == "failed" and oauth.reason == "Bot OAuth endpoint unavailable."
+    result = await service.test_personal(TENANT, USER, "portal")
+    assert result.outcome == "retryableFailure" and result.error_code == "teamsBotOAuthUnavailable"
+    assert (await service.personal_status(TENANT, USER)).state == "installed"
+    assert not harness.provider.requests
 
 
 @pytest.mark.parametrize(
@@ -930,6 +1095,14 @@ async def test_api_authorization_self_scope_and_callback_never_local_auth(harnes
     ) as client:
         assert (await client.get("/api/v1/settings/teams/destinations")).status_code == 403
         assert (await client.get("/api/v1/notifications/me/teams")).status_code == 403
+        assert (await client.get("/api/v1/notifications/me/teams/checks")).status_code == 403
+        assert (
+            await client.get("/api/v1/settings/teams/destinations/other/checks")
+        ).status_code == 403
+        checks = await client.get("/api/v1/me/notifications/teams/checks?userObjectId=" + OTHER)
+        assert checks.status_code == 200
+        assert "conversationId" not in checks.text and "serviceUrl" not in checks.text
+        assert not harness.provider.requests
         response = await client.get("/api/v1/me/notifications/teams?userObjectId=" + OTHER)
         assert response.status_code == 200
         assert "conversationId" not in response.text and "serviceUrl" not in response.text
@@ -965,6 +1138,37 @@ async def test_api_authorization_self_scope_and_callback_never_local_auth(harnes
         assert response.status_code == 422 and "DO-NOT-ECHO" not in response.text
 
 
+async def test_tenant_channel_health_does_not_expose_scoped_teams_test_history(
+    harness: Harness,
+) -> None:
+    await harness.install()
+    destination = await harness.destination()
+    await harness.service.test_shared(TENANT, destination.id)
+    await harness.service.test_personal(TENANT, USER, "portal")
+    await harness.service.test_personal(TENANT, USER, "admin")
+    await harness.repository.save_channel_health(
+        NotificationChannelHealth(id="ordinary-health", tenant_id=TENANT, channel="email")
+    )
+    app = FastAPI()
+    app.state.notification_service = SimpleNamespace(repository=harness.repository)
+    app.state.authenticator = LocalAuthenticator(TENANT)
+    app.state.settings = Settings(
+        tenant_id=TENANT,
+        auth_mode=AuthMode.LOCAL,
+        environment=Environment.TEST,
+        repository_backend=RepositoryBackend.MEMORY,
+    )
+    app.include_router(notification_delivery_router)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://test.invalid"
+    ) as client:
+        response = await client.get("/api/v1/notifications/channel-health")
+        assert response.status_code == 200, response.text
+        assert [item["id"] for item in response.json()] == ["ordinary-health"]
+        assert "lastTest" not in response.text or response.json()[0]["lastTest"] is None
+        assert "teamsTest-" not in response.text
+
+
 @pytest.mark.parametrize("roles", [frozenset({"Admin"}), frozenset({"Admin", "User"})])
 async def test_teams_test_routes_keep_portal_and_admin_personas_separate(
     harness: Harness,
@@ -981,9 +1185,17 @@ async def test_teams_test_routes_keep_portal_and_admin_personas_separate(
         repository_backend=RepositoryBackend.MEMORY,
     )
     authenticator = LocalAuthenticator(TENANT)
-    monkeypatch.setattr(authenticator, "authenticate", AsyncMock(return_value=AuthContext(
-        tenant_id=TENANT, object_id=USER, roles=roles,
-    )))
+    monkeypatch.setattr(
+        authenticator,
+        "authenticate",
+        AsyncMock(
+            return_value=AuthContext(
+                tenant_id=TENANT,
+                object_id=USER,
+                roles=roles,
+            )
+        ),
+    )
     app.state.authenticator = authenticator
     app.include_router(teams_router)
     async with httpx.AsyncClient(

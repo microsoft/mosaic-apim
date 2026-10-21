@@ -23,7 +23,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Literal, Self
-from urllib.parse import urlsplit
+from uuid import UUID
 
 from pydantic import Field, field_validator, model_validator
 
@@ -50,8 +50,7 @@ BLOCKED_LIST_PATTERN = re.compile(
 DEFAULT_THRESHOLDS = (80, 100)
 MAX_THRESHOLDS = 5
 MAX_THRESHOLD = 1000
-# With a cost center's owners, at most 40 addresses: one message, which Communication Services caps
-# at 50 recipients unless its quota is raised.
+# Preserve the existing bounded budget audience when sending through Exchange Online.
 MAX_RECIPIENTS = 20
 EMAIL_RECIPIENTS_PER_MESSAGE = 50
 # Amounts are kept in cents, so the smallest budget is one cent.
@@ -68,8 +67,6 @@ ORGANIZATION = "organization"
 NOTIFICATION_ATTEMPTS = 3
 # A notification still sending this long after it was claimed belongs to a check that stopped.
 STUCK_AFTER = timedelta(hours=1)
-# Hosts MOSAIC sends its managed identity's Communication Services token to.
-EMAIL_HOST_SUFFIXES = (".communication.azure.com", ".communication.azure.us")
 _EMAIL = re.compile(r"[^@\s,;<>\"']+@[^@\s,;<>\"']+\.[^@\s,;<>\"']+")
 
 BudgetAction = Literal["block", "continue"]
@@ -245,9 +242,9 @@ class BudgetUpdate(MosaicModel):
 class BudgetNotification(MosaicModel):
     """One email about a budget this month: a threshold reached, or a block put on or lifted.
 
-    It's recorded, as ``sending``, before the email goes, in the same conditional write that
-    decides it's due. So two checks can never both send it, and a check that stopped half way
-    never sends it twice. A send ACS refused is tried again on later checks.
+    It's recorded before the email goes, in the same conditional write that decides it's due.
+    Ownership keeps competing checks from creating another logical notice. Transient and
+    uncertain Graph sends retry within finite limits, so a provider may deliver duplicates.
     """
 
     id: str = Field(default_factory=lambda: new_id("notice"))
@@ -304,30 +301,6 @@ class GateState(Entity):
     left_out: list[str] = Field(default_factory=list)
 
 
-def _endpoint(value: str | None) -> str | None:
-    if value is None or not value.strip():
-        return None
-    candidate = value.strip().rstrip("/")
-    parts = urlsplit(candidate)
-    host = (parts.hostname or "").casefold()
-    if (
-        parts.scheme != "https"
-        or parts.path not in {"", "/"}
-        or parts.query
-        or parts.fragment
-        or parts.username
-        or parts.password
-        or parts.port not in {None, 443}
-        or not host.endswith(EMAIL_HOST_SUFFIXES)
-        or host in {suffix.lstrip(".") for suffix in EMAIL_HOST_SUFFIXES}
-    ):
-        raise ValueError(
-            "Use your Communication Services resource's endpoint, such as "
-            "https://contoso-mosaic.communication.azure.com"
-        )
-    return f"https://{host}"
-
-
 def _sender(value: str | None) -> str | None:
     if value is None or not value.strip():
         return None
@@ -335,51 +308,74 @@ def _sender(value: str | None) -> str | None:
 
 
 class EmailSettings(Entity):
-    """How MOSAIC sends email, through Azure Communication Services, with its managed identity.
-
-    Nothing secret is kept: MOSAIC signs in to Communication Services as itself.
-    """
+    """Unversioned records remain legacy until an administrator selects a Graph mailbox."""
 
     entity_type: Literal["emailSettings"] = "emailSettings"
     enabled: bool = False
+    provider: Literal["graph", "acs"] = "acs"
+    sender_mailbox_id: str | None = None
+    revision: int = Field(default=1, ge=1)
+    # Read compatibility only. New configuration never accepts or uses an ACS endpoint.
     endpoint: str | None = None
     sender: str | None = None
     updated_by: str | None = None
     last_test_at: datetime | None = None
     last_test_error: str | None = None
+    last_test_revision: int | None = None
+    last_test_outcome: str | None = None
+    last_test_request_id: str | None = None
+
+    @property
+    def configured(self) -> bool:
+        return self.provider == "graph" and bool(self.sender_mailbox_id)
+
+    @property
+    def migration_required(self) -> bool:
+        return self.provider == "acs" and bool(self.endpoint or self.sender)
 
     @property
     def ready(self) -> bool:
-        return self.enabled and bool(self.endpoint) and bool(self.sender)
+        return self.enabled and self.configured
 
 
 class EmailSettingsUpdate(MosaicModel):
     enabled: bool = False
-    endpoint: str | None = Field(default=None, max_length=300)
+    sender_mailbox_id: str | None = None
     sender: str | None = Field(default=None, max_length=254)
+    expected_revision: int | None = Field(default=None, ge=1)
 
-    _validate_endpoint = field_validator("endpoint")(_endpoint)
     _validate_sender = field_validator("sender")(_sender)
+
+    @field_validator("sender_mailbox_id")
+    @classmethod
+    def _mailbox_id(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        return str(UUID(value.strip()))
 
     @model_validator(mode="after")
     def _validate_ready(self) -> Self:
-        if self.enabled and not (self.endpoint and self.sender):
-            raise ValueError("Email needs a Communication Services endpoint and a sender address")
+        if self.enabled and not self.sender_mailbox_id:
+            raise ValueError("Email needs the sending mailbox's Entra object ID")
         return self
 
 
 class EmailSettingsView(MosaicModel):
     enabled: bool = False
-    endpoint: str | None = None
+    provider: Literal["graph", "acs"] = "graph"
+    sender_mailbox_id: str | None = None
     sender: str | None = None
+    configured: bool = False
+    migration_required: bool = False
+    revision: int = 1
     ready: bool = False
     updated_at: datetime | None = None
     updated_by: str | None = None
     last_test_at: datetime | None = None
     last_test_error: str | None = None
-    # What this deployment's own Communication Services resource is, when azd deployed one.
-    suggested_endpoint: str | None = None
-    suggested_sender: str | None = None
+    last_test_revision: int | None = None
+    last_test_outcome: str | None = None
+    last_test_request_id: str | None = None
 
 
 class EmailTest(MosaicModel):
@@ -390,9 +386,15 @@ class EmailTest(MosaicModel):
 
 class EmailTestResult(MosaicModel):
     sent: bool
+    evidence_recorded: bool = True
     to: str
     operation_id: str | None = None
     error: str | None = None
+    outcome: Literal["providerAccepted", "retryableFailure", "permanentFailure", "unknownOutcome"]
+    tested_at: datetime
+    configuration_revision: int
+    request_id: str | None = None
+    error_code: str | None = None
 
 
 class BudgetGatewayView(MosaicModel):

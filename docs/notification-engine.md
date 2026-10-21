@@ -90,14 +90,15 @@ no compatibility email is sent. Re-enabling resumes after the durable next-attem
 Keep the preference resolver's `origin="budgetNotificationBridge"` generic-email guard:
 the compatibility delivery owns the existing explicit owner/recipient email exclusively. In-app
 and authorized Teams targets remain independent. The bridge preserves legacy message content,
-ACS operation IDs, and the three-attempt budget, including already consumed attempts. It rechecks
-the legacy budget-email switch and audience immediately before sending. A legacy in-flight claim
-is unknown, not queued; durable acceptance receipts can repair either projection after a crash.
+correlation IDs, and the three-attempt budget, including already consumed attempts. It rechecks
+the legacy budget-email switch and audience immediately before sending. A legacy uncertain
+in-flight claim transfers atomically and retries while attempts remain; durable acceptance
+receipts can repair either projection after a crash.
 
 When installing `NotificationDigestCoordinator`, use it as `audience_resolver`, retain preferences
 as `delivery_authorizer`, and wrap the bridge with
 `DigestNotificationDispatcher(digests, budget_bridge)` for the email dispatcher. Its fallback chain
-is digest wrapper → budget bridge → ordinary ACS adapter. Register `digests.reconcile` as another
+is digest wrapper → budget bridge → ordinary Graph adapter. Register `digests.reconcile` as another
 source. Teams dispatchers can be wrapped independently; no provider is enabled just by adding it
 to the dispatcher map.
 
@@ -147,10 +148,11 @@ hosting, not merely a successful HTTP startup.
 
 External channels remain opt-in. Compatibility budget email is the deliberate exception only
 for its already-explicit legacy switch and recipient audience. A provider acceptance receipt is
-not confirmation of delivery. Unknown outcomes are never automatically resent; an audited manual
-retry needs explicit acknowledgement and an idempotent provider.
-An imported pre-migration unknown claim still owned by the legacy sender cannot be reclaimed
-by that retry endpoint; it reports a conflict instead of queuing a send it cannot authorize.
+not confirmation of delivery. Uncertain outcomes and expired sending leases retry automatically
+with normal bounded backoff and attempt limits; duplicates are acceptable. Exhausted uncertainty
+remains visible as `unknownOutcome`. Audited manual retries require neither an idempotent provider
+nor a duplicate-risk acknowledgement. Existing ownership, audience, opt-out and CAS protections
+remain; provider correlation identifiers do not guarantee deduplication.
 
 ## Independent audience failures
 
@@ -178,6 +180,6 @@ would lose the unresolved audience.
 
 The memory and conditional Cosmos-batch doubles exercise tenant isolation, atomic fan-out,
 fenced renewable leases, crash replay, retries, quiet-hour deferrals, exact inbox reads, legacy
-budget ownership transfer, and receipt repair. Live ACS acceptance, actual recipient receipt,
+budget ownership transfer, and receipt repair. Live Graph acceptance, actual recipient receipt,
 Cosmos deployment settings, and continuously running worker hosting require deployment checks;
 offline tests do not assert those external facts.

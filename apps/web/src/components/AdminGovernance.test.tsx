@@ -1,6 +1,6 @@
 import { FluentProvider, webLightTheme } from '@fluentui/react-components'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -23,6 +23,7 @@ const api = vi.hoisted(() => ({
   listNotificationInbox: vi.fn(), listAccessRequests: vi.fn(), listPrincipals: vi.fn(),
   getSyncRun: vi.fn(),
   getNotificationInboxItem: vi.fn(), setNotificationRead: vi.fn(),
+  getMyTeamsStatus: vi.fn(), checkMyTeamsAccess: vi.fn(), testMyTeamsConnection: vi.fn(),
 }))
 vi.mock('../api', () => ({ useMosaicApi: () => api }))
 const first: ApprovalPreview = {
@@ -47,6 +48,7 @@ beforeEach(() => {
   api.previewBulkApprovals.mockResolvedValue({ items: [first, second], unavailable: [] })
   api.getApprovalRecommendations.mockResolvedValue([])
   api.getNotificationPreferences.mockResolvedValue(structuredClone(preferences))
+  api.getMyTeamsStatus.mockResolvedValue({ enabled: false, state: 'notInstalled', checks: [], lastTest: null })
   api.listNotificationInbox.mockResolvedValue({ items: [], unreadCount: 7, continuationToken: null })
   api.listAccessRequests.mockResolvedValue([first.request, second.request])
   api.listPrincipals.mockResolvedValue([])
@@ -190,6 +192,19 @@ describe('readiness and notification truth', () => {
     mount(<CapabilityEvidence check={{ feature: 'email', scope: 'tenant', required: true, state: 'verified', checkedAt: '2020-01-01T00:00:00Z', freshUntil: '2020-01-02T00:00:00Z', evidence: ['Provider accepted a historical test.'] }} />)
     expect(screen.getByText('Stale evidence')).toBeVisible()
     expect(screen.queryByText('verified')).not.toBeInTheDocument()
+  })
+  it('expires capability evidence while the page remains open', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-10-01T12:00:00Z'))
+      mount(<CapabilityEvidence check={{ feature: 'teamsTest', scope: 'self', required: true, state: 'verified', checkedAt: '2026-10-01T12:00:00Z', freshUntil: '2026-10-01T12:00:20Z', evidence: ['A synthetic test was accepted.'] }} />)
+      expect(screen.getByText('verified')).toBeVisible()
+      act(() => vi.advanceTimersByTime(30_000))
+      expect(screen.getByText('Stale evidence')).toBeVisible()
+      expect(screen.queryByText('verified')).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
   })
   it('keeps unread counts distinct from the pending request count', async () => {
     mount(<><RequestNotifications /><NotificationBell /></>)

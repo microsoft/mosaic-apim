@@ -265,10 +265,15 @@ class NotificationStore:
         self, tenant_id: str, user_object_id: str, persona: NotificationPersona, item_id: str
     ) -> NotificationInboxItem | None:
         item = await self._get(NotificationInboxItem, tenant_id, item_id)
-        return item if item is None or (
-            item.user_object_id.casefold() == user_object_id.casefold()
-            and item.persona == persona
-        ) else None
+        return (
+            item
+            if item is None
+            or (
+                item.user_object_id.casefold() == user_object_id.casefold()
+                and item.persona == persona
+            )
+            else None
+        )
 
     async def append_event(self, event: NotificationEvent) -> bool:
         try:
@@ -297,8 +302,10 @@ class NotificationStore:
     async def import_budget_delivery(
         self, event: NotificationEvent, delivery: NotificationDelivery
     ) -> None:
-        if delivery.tenant_id != event.tenant_id or delivery.event_ids != [event.id] or (
-            not delivery.legacy_budget_notice_id or event.origin != "budgetNotificationBridge"
+        if (
+            delivery.tenant_id != event.tenant_id
+            or delivery.event_ids != [event.id]
+            or (not delivery.legacy_budget_notice_id or event.origin != "budgetNotificationBridge")
         ):
             raise ConflictError(
                 "A budget projection must identify its own source notice and tenant"
@@ -314,7 +321,8 @@ class NotificationStore:
             elif current.legacy_budget_notice_id != delivery.legacy_budget_notice_id:
                 raise ConflictError("A delivery ID belongs to another budget notice")
             elif (
-                delivery.state == "queued" and current.state == "unknownOutcome"
+                delivery.state == "queued"
+                and current.state == "unknownOutcome"
                 and current.last_error_code == "legacyUnclaimed"
             ):
                 mutations.append((current, delivery.model_copy(update={"etag": current.etag})))
@@ -323,9 +331,17 @@ class NotificationStore:
                 if current.state != "sending" or (
                     current.lease_expires_at and current.lease_expires_at <= self._clock()
                 ):
-                    mutations.append((current, delivery.model_copy(update={
-                        "etag": current.etag, "attempts": max(current.attempts, delivery.attempts),
-                    })))
+                    mutations.append(
+                        (
+                            current,
+                            delivery.model_copy(
+                                update={
+                                    "etag": current.etag,
+                                    "attempts": max(current.attempts, delivery.attempts),
+                                }
+                            ),
+                        )
+                    )
             if not mutations:
                 return
             try:
@@ -596,20 +612,36 @@ class NotificationStore:
         now: datetime,
         lease_seconds: int,
         limit: int,
+        max_attempts: int = 5,
     ) -> list[NotificationDelivery]:
         self._claim_limits(lease_seconds, limit)
+        if not 1 <= max_attempts <= 10:
+            raise ValueError("Choose a delivery retry limit between 1 and 10")
         claims: list[NotificationDelivery] = []
         for item in await self._list(
             NotificationDelivery, tenant_id, "notificationDelivery", limit=limit * 4
         ):
-            if item.max_attempts is not None and item.attempts >= item.max_attempts and (
-                item.state in {"queued", "retrying"}
+            retry_limit = item.max_attempts or max_attempts
+            if item.attempts >= retry_limit and (
+                item.state in {"queued", "retrying", "unknownOutcome"}
             ):
+                if item.state == "unknownOutcome":
+                    if item.max_attempts is None:
+                        try:
+                            await self._save(item.model_copy(update={"max_attempts": retry_limit}))
+                        except ConflictError:
+                            pass
+                    continue
                 try:
-                    await self._save(item.model_copy(update={
-                        "state": "permanentlyFailed", "last_error_code": "retryBudgetExhausted",
-                        "last_error": "The configured provider retry budget is exhausted.",
-                    }))
+                    await self._save(
+                        item.model_copy(
+                            update={
+                                "state": "permanentlyFailed",
+                                "last_error_code": "retryBudgetExhausted",
+                                "last_error": "The configured provider retry budget is exhausted.",
+                            }
+                        )
+                    )
                 except ConflictError:
                     pass
                 continue
@@ -637,10 +669,15 @@ class NotificationStore:
                         item,
                         item.model_copy(
                             update={
-                                "state": "unknownOutcome",
+                                "state": "retrying"
+                                if item.attempts < retry_limit
+                                else "unknownOutcome",
+                                "max_attempts": retry_limit,
+                                "next_attempt_at": now if item.attempts < retry_limit else None,
                                 "last_error_code": "leaseExpired",
                                 "last_error": (
-                                    "Worker lease expired; provider acceptance is unknown."
+                                    "Worker lease expired; acceptance is uncertain. "
+                                    "MOSAIC retries within the normal attempt limit."
                                 ),
                                 "lease_owner": None,
                                 "lease_token": None,
@@ -654,7 +691,7 @@ class NotificationStore:
                 except ConflictError:
                     pass
                 continue
-            if item.state not in {"queued", "retrying"} or (
+            if item.state not in {"queued", "retrying", "unknownOutcome"} or (
                 item.next_attempt_at and item.next_attempt_at > now
             ):
                 continue
@@ -667,6 +704,7 @@ class NotificationStore:
                         "lease_token": token,
                         "lease_expires_at": now + timedelta(seconds=lease_seconds),
                         "attempts": item.attempts + 1,
+                        "max_attempts": retry_limit,
                         "updated_at": now,
                         "provider_operation_id": item.provider_operation_id
                         or str(uuid5(NAMESPACE_URL, f"mosaic-notification:{item.id}")),
@@ -829,6 +867,7 @@ class NotificationStore:
             item
             for item in await self._list(NotificationDelivery, tenant_id, "notificationDelivery")
             if item.state in {"queued", "retrying", "sending"}
+            or (item.state == "unknownOutcome" and item.attempts < (item.max_attempts or 5))
         )
         return len(queued), min((item.created_at for item in queued), default=None)
 
@@ -946,6 +985,11 @@ class NotificationStore:
 
     async def list_channel_health(self, tenant_id: str) -> list[NotificationChannelHealth]:
         return await self._list(NotificationChannelHealth, tenant_id, "notificationChannelHealth")
+
+    async def get_channel_health(
+        self, tenant_id: str, identifier: str
+    ) -> NotificationChannelHealth | None:
+        return await self._get(NotificationChannelHealth, tenant_id, identifier)
 
     async def save_channel_health(self, health: NotificationChannelHealth) -> None:
         await self._save(health)

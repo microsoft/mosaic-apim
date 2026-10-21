@@ -56,7 +56,8 @@ class NotificationPartialAudienceError(DirectoryError):
     """Known-safe independent targets, with unresolved audiences left for durable replay."""
 
     def __init__(
-        self, targets: Sequence[NotificationTarget],
+        self,
+        targets: Sequence[NotificationTarget],
         reason: str = "Some notification audiences could not be resolved.",
     ) -> None:
         self.targets = tuple(targets)
@@ -371,7 +372,7 @@ class NotificationService:
                     async with asyncio.timeout(self._send_timeout):
                         result = await dispatcher.send(delivery, events)
                 except (TimeoutError, httpx.HTTPError):
-                    # A timeout may occur after acceptance; never silently resend it.
+                    # Delivery is preferred over duplicate avoidance; the attempt stays honest.
                     result = NotificationDispatchResult(
                         "unknownOutcome",
                         error_code="providerOutcomeUnknown",
@@ -401,7 +402,7 @@ class NotificationService:
                 next_attempt_at=result.next_attempt_at,
                 attempts=max(delivery.attempts - 1, 0),
             )
-        elif result.outcome == "retryableFailure" and delivery.attempts < (
+        elif result.outcome in {"retryableFailure", "unknownOutcome"} and delivery.attempts < (
             delivery.max_attempts or self._max_attempts
         ):
             updates.update(
@@ -554,18 +555,24 @@ class NotificationService:
                 now=self._clock(),
                 lease_seconds=self._lease_seconds,
                 limit=1,
+                max_attempts=self._max_attempts,
             )
             if not deliveries:
                 break
             await self._deliver(deliveries[0])
         backlog, oldest = await self.repository.get_backlog(tenant_id)
         partial_error = (
-            "Unresolved notification audiences (NotificationPartialAudienceError); "
-            "safe targets continued. Inspect outbox retries and dead letters."
-        ) if partial_failures else (
-            state.last_error if backlog and (state.last_error or "").startswith(
-                "Unresolved notification audiences"
-            ) else None
+            (
+                "Unresolved notification audiences (NotificationPartialAudienceError); "
+                "safe targets continued. Inspect outbox retries and dead letters."
+            )
+            if partial_failures
+            else (
+                state.last_error
+                if backlog
+                and (state.last_error or "").startswith("Unresolved notification audiences")
+                else None
+            )
         )
         await self.repository.update_worker_state(
             tenant_id,
@@ -573,7 +580,8 @@ class NotificationService:
             lambda current: current.model_copy(
                 update={
                     "last_succeeded_at": current.last_succeeded_at
-                    if partial_error else self._clock(),
+                    if partial_error
+                    else self._clock(),
                     "last_error": partial_error,
                     "heartbeat_at": self._clock(),
                     "hosting_verified": self._hosting_verified,
@@ -623,22 +631,6 @@ class NotificationService:
         delivery = await self.repository.get_delivery(tenant_id, delivery_id)
         if delivery is None:
             raise NotFoundError("The notification delivery does not exist")
-        if delivery.state == "unknownOutcome":
-            dispatcher = self._dispatchers.get(delivery.channel)
-            if not allow_unknown or dispatcher is None or not dispatcher.supports_idempotency:
-                raise ConflictError(
-                    "Provider acceptance is unknown. Retrying needs an explicit request "
-                    "and a provider that deduplicates the stable operation ID."
-                )
-            if delivery.legacy_budget_notice_id is not None:
-                events = []
-                for identity in delivery.event_ids:
-                    event = await self.repository.get_event(tenant_id, identity)
-                    if event is None:
-                        raise ConflictError("The legacy budget notification has expired")
-                    events.append(event)
-                if reason := await self._suppression(delivery, events):
-                    raise ConflictError(f"The legacy budget delivery cannot be retried: {reason}")
         return await self.repository.requeue_delivery(
             delivery,
             AuditEvent(
@@ -648,7 +640,7 @@ class NotificationService:
                 resource_type="notificationDelivery",
                 resource_id=delivery.id,
                 actor_object_id=actor_object_id,
-                details={"previousState": delivery.state, "acknowledgedUnknown": allow_unknown},
+                details={"previousState": delivery.state},
             ),
         )
 
@@ -699,9 +691,7 @@ class NotificationService:
     async def get_inbox_item(
         self, tenant_id: str, user_object_id: str, persona: NotificationPersona, item_id: str
     ) -> NotificationInboxItem:
-        item = await self.repository.get_inbox_item(
-            tenant_id, user_object_id, persona, item_id
-        )
+        item = await self.repository.get_inbox_item(tenant_id, user_object_id, persona, item_id)
         if item is None:
             raise NotFoundError("The notification does not exist")
         return await self._inbox_view(item)

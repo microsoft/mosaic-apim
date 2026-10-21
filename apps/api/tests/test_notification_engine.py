@@ -222,7 +222,7 @@ async def test_retry_after_is_durable_and_retry_budget_is_bounded(
     assert len(dispatcher.sent) == 2
 
 
-async def test_ambiguous_provider_timeout_requires_safe_explicit_retry(
+async def test_ambiguous_provider_timeouts_retry_automatically_with_a_finite_limit(
     store: tuple[NotificationPersistence, Clock],
 ) -> None:
     repository, clock = store
@@ -232,23 +232,21 @@ async def test_ambiguous_provider_timeout_requires_safe_explicit_retry(
     engine = service(repository, clock, dispatcher=dispatcher)
     await engine.publish(event())
     await engine.run_once("tenant")
-    [unknown] = await repository.list_deliveries("tenant", state="unknownOutcome")
-    assert unknown.provider_operation_id
+    [retrying] = await repository.list_deliveries("tenant", state="retrying")
+    assert retrying.provider_operation_id and retrying.attempts == 1
+    assert retrying.next_attempt_at and retrying.max_attempts == 2
+    dispatcher.supports_idempotency = False
     clock.now += timedelta(days=1)
     await engine.run_once("tenant")
-    assert len(dispatcher.sent) == 1
-    with pytest.raises(ConflictError, match="unknown"):
-        await engine.retry_delivery("tenant", unknown.id, actor_object_id="admin")
-    dispatcher.supports_idempotency = False
-    with pytest.raises(ConflictError):
-        await engine.retry_delivery(
-            "tenant", unknown.id, actor_object_id="admin", allow_unknown=True
-        )
-    dispatcher.supports_idempotency = True
-    dispatcher.timeout = False
-    await engine.retry_delivery("tenant", unknown.id, actor_object_id="admin", allow_unknown=True)
+    [unknown] = await repository.list_deliveries("tenant", state="unknownOutcome")
+    assert unknown.attempts == 2 and len(dispatcher.sent) == 2
+    clock.now += timedelta(days=1)
     await engine.run_once("tenant")
     assert len(dispatcher.sent) == 2
+    dispatcher.timeout = False
+    await engine.retry_delivery("tenant", unknown.id, actor_object_id="admin")
+    await engine.run_once("tenant")
+    assert len(dispatcher.sent) == 3
     assert dispatcher.sent[0].provider_operation_id == dispatcher.sent[1].provider_operation_id
 
 
@@ -275,7 +273,7 @@ async def test_slow_authorization_cannot_send_under_an_expired_claim(
     await repository.claim_deliveries(
         "tenant", "replacement", now=clock.now, lease_seconds=60, limit=1
     )
-    assert len(await repository.list_deliveries("tenant", state="unknownOutcome")) == 1
+    assert len(await repository.list_deliveries("tenant", state="retrying")) == 1
 
 
 async def test_fanout_resolution_failure_checkpoints_retry_and_exhaustion(
@@ -340,7 +338,8 @@ async def test_partial_audience_commits_safe_inbox_and_replays_unresolved_admins
 
 
 async def test_partial_source_does_not_starve_bounded_fanout_or_queued_private_delivery(
-    store: tuple[NotificationPersistence, Clock], monkeypatch: pytest.MonkeyPatch,
+    store: tuple[NotificationPersistence, Clock],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository, clock = store
     await enable_email(repository)
@@ -360,12 +359,18 @@ async def test_partial_source_does_not_starve_bounded_fanout_or_queued_private_d
     resolver = PartialResolver([])
     dispatcher = Dispatcher(NotificationDispatchResult("providerAccepted", "private-operation"))
     engine = NotificationService(
-        repository, audience_resolver=resolver, delivery_authorizer=Authorizer(),
-        dispatchers={"email": dispatcher}, clock=clock, batch_size=3, hosting_verified=True,
+        repository,
+        audience_resolver=resolver,
+        delivery_authorizer=Authorizer(),
+        dispatchers={"email": dispatcher},
+        clock=clock,
+        batch_size=3,
+        hosting_verified=True,
     )
-    sources = [event(identity) for identity in (
-        "partial-first", "independent-next", "partial-third", "beyond-batch"
-    )]
+    sources = [
+        event(identity)
+        for identity in ("partial-first", "independent-next", "partial-third", "beyond-batch")
+    ]
     for source in sources:
         await engine.publish(source)
     with monkeypatch.context() as scoped_patch, capture_logs() as logs:
@@ -405,7 +410,8 @@ async def test_partial_source_does_not_starve_bounded_fanout_or_queued_private_d
 
 
 async def test_partial_failure_checkpoint_storage_fault_is_not_swallowed(
-    store: tuple[NotificationPersistence, Clock], monkeypatch: pytest.MonkeyPatch,
+    store: tuple[NotificationPersistence, Clock],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository, clock = store
     await enable_email(repository)
@@ -422,9 +428,10 @@ async def test_partial_failure_checkpoint_storage_fault_is_not_swallowed(
 
     dispatcher = Dispatcher(NotificationDispatchResult("providerAccepted"))
     engine = service(
-        repository, clock, resolver=PartialResolver([
-            NotificationTarget("requester", "inApp", "portal")
-        ]), dispatcher=dispatcher,
+        repository,
+        clock,
+        resolver=PartialResolver([NotificationTarget("requester", "inApp", "portal")]),
+        dispatcher=dispatcher,
     )
     await engine.publish(event("partial"))
     monkeypatch.setattr(repository, "fail_fanout", unavailable)
@@ -435,7 +442,8 @@ async def test_partial_failure_checkpoint_storage_fault_is_not_swallowed(
 
 @pytest.mark.parametrize("failure", [DirectoryError, DirectoryForbiddenError])
 async def test_optional_recipient_authorization_outage_preserves_other_targets_and_retries(
-    store: tuple[NotificationPersistence, Clock], failure: type[DomainError],
+    store: tuple[NotificationPersistence, Clock],
+    failure: type[DomainError],
 ) -> None:
     repository, clock = store
     await enable_email(repository)
@@ -453,12 +461,17 @@ async def test_optional_recipient_authorization_outage_preserves_other_targets_a
     authorizer = OptionalAuthorizer()
     dispatcher = Dispatcher(NotificationDispatchResult("providerAccepted"))
     engine = service(
-        repository, clock, authorizer=authorizer, dispatcher=dispatcher,
-        resolver=Resolver([
-            NotificationTarget("user", "inApp", "portal"),
-            NotificationTarget("user", "email", "portal"),
-            NotificationTarget("administrator", "inApp", "admin"),
-        ]),
+        repository,
+        clock,
+        authorizer=authorizer,
+        dispatcher=dispatcher,
+        resolver=Resolver(
+            [
+                NotificationTarget("user", "inApp", "portal"),
+                NotificationTarget("user", "email", "portal"),
+                NotificationTarget("administrator", "inApp", "admin"),
+            ]
+        ),
     )
     source = event()
     await engine.publish(source)
@@ -483,7 +496,9 @@ async def test_partial_audience_exhaustion_remains_visible_in_dead_letters(
             raise NotificationPartialAudienceError(self.targets)
 
     engine = service(
-        repository, clock, max_attempts=2,
+        repository,
+        clock,
+        max_attempts=2,
         resolver=PartialResolver([NotificationTarget("user", "inApp", "portal")]),
     )
     source = event()
@@ -605,7 +620,9 @@ async def test_inbox_read_and_listing_sanitize_revoked_privileged_references(
     exact = await engine.get_inbox_item("tenant", "user", "portal", item.id)
     assert exact.read_at and exact.subject.request_id is None
     for tenant, user, persona in (
-        ("other", "user", "portal"), ("tenant", "other", "portal"), ("tenant", "user", "admin")
+        ("other", "user", "portal"),
+        ("tenant", "other", "portal"),
+        ("tenant", "user", "admin"),
     ):
         with pytest.raises(NotFoundError):
             await engine.get_inbox_item(tenant, user, persona, item.id)

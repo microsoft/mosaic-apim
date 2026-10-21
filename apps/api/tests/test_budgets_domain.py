@@ -155,30 +155,33 @@ def test_the_organizations_budget_only_warns() -> None:
         "https://contoso.communication.azure.com:8443",
     ],
 )
-def test_email_goes_only_to_a_communication_services_endpoint(endpoint: str) -> None:
+def test_sender_mailbox_cannot_be_an_endpoint_url(endpoint: str) -> None:
     with pytest.raises(ValidationError):
-        EmailSettingsUpdate(enabled=False, endpoint=endpoint, sender="mosaic@contoso.com")
+        EmailSettingsUpdate(enabled=False, sender_mailbox_id=endpoint, sender="mosaic@contoso.com")
 
 
-def test_email_settings_need_an_endpoint_and_a_sender_to_be_on() -> None:
-    with pytest.raises(ValidationError, match="endpoint and a sender"):
-        EmailSettingsUpdate(enabled=True, endpoint="https://contoso.communication.azure.com")
+def test_email_settings_need_a_mailbox_to_enable_budget_email() -> None:
+    with pytest.raises(ValidationError, match="object ID"):
+        EmailSettingsUpdate(enabled=True)
 
     commercial = EmailSettingsUpdate(
         enabled=True,
-        endpoint="https://Contoso-Mosaic.communication.azure.com/",
+        sender_mailbox_id="AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
         sender="DoNotReply@contoso.com",
     )
     government = EmailSettingsUpdate(
         enabled=True,
-        endpoint="https://contoso.communication.azure.us",
+        sender_mailbox_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         sender="DoNotReply@contoso.com",
     )
     off = EmailSettingsUpdate(enabled=False)
 
-    assert commercial.endpoint == "https://contoso-mosaic.communication.azure.com"
-    assert government.endpoint == "https://contoso.communication.azure.us"
-    assert (off.endpoint, off.sender) == (None, None)
+    assert (
+        commercial.sender_mailbox_id
+        == government.sender_mailbox_id
+        == ("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    )
+    assert (off.sender_mailbox_id, off.sender) == (None, None)
     with pytest.raises(ValidationError):
         EmailTest(to="nobody")
 

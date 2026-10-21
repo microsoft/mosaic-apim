@@ -231,12 +231,12 @@ MCP M5/M6 pooled-call evidence does not prove model grant selection or a pooled 
 | R10 | My access disambiguates same-model grants by cost center and shows each connection header; token explicit/default/unknown/malformed matrix, uppercase selection, existing key own/absent/other matrix | A 200 does not identify its grant. Correlate each success to the exact grant and cost center in real Analytics, each refusal to `mosaic-deny` in the gateway trace, and explicit-header successes to independently captured backend headers. Source/XML never proves stripping. |
 | R11 | Two distinct User personas' applied grants consume one fresh monthly MODEL token pool; remaining pooled and own TPM/monthly headers, both callers' final 429s, other-center 200 | The applied model pool must match exactly, with no call pool. Own quotas must remain larger. Missing headers, dirty counters, unrelated throttles or accounting mismatches fail; do not infer APIM behavior. This is not M6's MCP call quota or R5's call-rate budget. |
 | R12 | UI saves a budget below existing real priced spend, probes actual budget 403 and first success after UI raise, records timestamps and all managed gateways' sync states | Raw plain named-value ARM GETs before/block/raise and `gateway.blockedCostCentersUpdated` write audits are human-assisted: current MOSAIC API exposes named-value metadata, not its value or raw write audits. Cached `syncedAt` is not write/on-wire proof. Measure runtime latency only on the called gateway. |
-| R13 | Offline evidence assertions and explicit blocked live spec | Requires actual Government ACS resource/domain, managed-identity token, API `2023-03-31`, `https://communication.azure.us/.default`, two actual sends with one Operation-Id, observed second status and exactly one actual mailbox message. No provisioning/settings/sends implemented. |
-| R14 | UI sets a no-recipient blocking budget above current spend; bounded actual usage followed by an advancing priced rollup, selected-center budget 403, other-center 200, blocked My access banner, UI raise and allowed calls/banner clearing | Same independent denial/ARM/audit requirements as R12. Notification delivery/dedupe is **NOT RUN** in the no-email leg, not passed. A sent record or ACS 202 is not a receipt. |
+| R13 | Offline evidence assertions and explicit blocked live spec | Requires actual Government Graph/Exchange mailbox, API managed identity, verified mailbox scope without additive unscoped send grants, `v1.0` sendMail, the correct Government Graph token scope, bounded correlated attempts, and actual mailbox receipt. Duplicates are acceptable. No provisioning/settings/sends implemented. |
+| R14 | UI sets a no-recipient blocking budget above current spend; bounded actual usage followed by an advancing priced rollup, selected-center budget 403, other-center 200, blocked My access banner, UI raise and allowed calls/banner clearing | Same independent denial/ARM/audit requirements as R12. Notification delivery is **NOT RUN** in the no-email leg, not passed. A sent record or Graph 202 is not a receipt. |
 
 The parent investigation's sanitized readiness findings are **not live proofs or permission**:
 usage is rollup-backed and budgets are default-enabled (no explicit override); email has no
-saved endpoint/sender or prior test send, and no ACS/Government fixture was available. Observed
+saved sender or prior test send, and no Government email fixture was available. Observed
 managed gateways were classic Developer with plain empty blocked lists; v2 is not required
 when unavailable and must not be labelled tested. Host, account, tenant, actor and resource
 inventory is intentionally omitted. The earlier candidate's regional price match was verified
@@ -412,33 +412,40 @@ contract (unit fixtures show valid and rejected examples):
   gateway yields measured runtime latency; an absent v2 fixture is reported unavailable.
   Runtime timings must name the first correlated `budget-block-probe-N` 403 and
   `budget-raise-probe-N` 200 for the exact isolated budget grant, after their respective UI saves.
-- R13: `government` with actual deployment/domain/MI facts, Government token scope and API
-  version, two attempts carrying one Operation-Id and measured statuses/timestamps, and one
-  mailbox message ID/receipt timestamp. `mailboxObservation.startedAt` must follow the retry,
+- R13: `government` with `provider: "graph"`, actual managed identity, verified mailbox-scoped
+  Exchange authorization (`mailboxScopeVerified: true`, `unscopedSendGrantPresent: false`),
+  Government Graph token scope and API `v1.0`, one to five attempts carrying one correlation ID,
+  measured statuses/timestamps and final 202 acceptance, and actual mailbox receipts.
+  The old ACS domain/Operation-Id/exactly-one-mail requirement is superseded.
+  `mailboxObservation.startedAt` must follow the last attempt,
   and `completedAt` must close a nonempty observation window reviewing all correlated receipts
   from the first send through that completion.
   A receipt delivered before the retry is valid only with that later mailbox observation.
   This requires human-attested original Government captures; the validator cannot authenticate
   a JSON assertion.
 - R14's separate human-assisted mail leg: `notifications` with actual priced checks, notices
-  and IDs before/after a recheck, operation IDs, and one independent mailbox receipt per notice.
+  and IDs before/after a recheck, correlation IDs, and at least one independent mailbox receipt
+  per notice. Duplicate provider deliveries are acceptable.
   Notice IDs must be nonempty, unique and unchanged across the recheck; only the expected
   threshold, blocked and unblocked notices are accepted.
   Every check and notice must name the approved budget's `costCenterId`, and `amount` must match
   the reviewed scope. Checks include ordered `observedAt` timestamps as well as rollup `through`;
-  notices include `sentAt`, after the corresponding priced check. `recheck.startedAt/completedAt`
+  notices include final acceptance `sentAt`, after the corresponding priced check. For retried
+  sends, also record the actual `firstAttemptAt`, no earlier than that check and no later than
+  final acceptance. `recheck.startedAt/completedAt`
   must follow the sends; `mailboxObservation.startedAt/completedAt` must follow that recheck.
-  Each receipt must follow its own send and be received by the observation's completion.
+  Each receipt must follow its notice's first attempt and be received by the observation's
+  completion; a successful uncertain attempt can deliver before the final retry is accepted.
   Count all correlated receipts since those sends, including deliveries before the recheck or
-  mailbox window started; the later observation must confirm that no duplicates arrived by its end.
+  mailbox window started; record duplicates rather than blocking or failing delivery for them.
   Budgets are at least $0.01 and compare rounded cents. A one-cent budget crosses 80/100 in the
   same check and deliberately sends **only the highest threshold**, not two emails. Use a staged
   higher budget and separately observed checks for distinct 80% and 100% emails, with exact
   recipient/send approval. Never fabricate spend or alter global prices to force the thresholds.
 
 Evidence assertions validate semantics/correlation, not authenticity, and don't change roadmap
-statuses automatically. Mail dedupe is bounded by the recorded observation window; it does not
-claim that no message can arrive later. Retain originals privately, not in the PR. No raw
+statuses automatically. Mail receipt evidence is bounded by the recorded observation window;
+Graph correlation IDs are not a deduplication guarantee. Retain originals privately, not in the PR. No raw
 credentials, host inventory, actor IDs, mailbox addresses or real screenshots in committed examples.
 
 There is **no automatic cleanup** and no cleanup permission inferred from a run flag. A failure

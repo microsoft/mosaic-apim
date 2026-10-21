@@ -98,18 +98,22 @@ Read-only checks do not send messages or mutate Azure, Entra, Teams, or gateway 
 | Channel or prerequisite | Setup and evidence |
 | --- | --- |
 | In-app | Reachable notification storage and an authenticated, self-scoped inbox. Use Cosmos for durable records; local memory is lost at restart. |
-| Email | Configure ACS and its connected sending domain, grant the API identity email-send permission, save the sender/endpoint, enable the channel, and explicitly send a test. See [email setup](budgets-and-alerts.md#set-up-email). |
-| Admin shared Teams | Configure an approved Teams Workflows destination and Key Vault secret, its owner/co-owner, route, and explicit test. A workflow may stop working when its owner or connection changes. |
-| Private Teams | Configure the single-tenant bot, authenticated callback, approved personal app, and installation for the person. The person must also opt in. Uninstalled or blocked apps need repair; no shared-channel fallback is used. |
+| Email | Select an Exchange Online mailbox; an Exchange administrator grants mailbox-scoped Application Mail.Send to the API managed identity. Check runtime identity, enable the channel, and explicitly send a test. The budget-email switch is separate. See [setup and remediation](notification-setup.md#microsoft-graph-email). |
+| Admin shared Teams | Save an approved Teams Workflow in Key Vault, arrange owner/co-owner and Teams connection, enable a matching admin route, then use Check access and Send test. Read-only secret/URL checks cannot verify downstream execution; inspect Workflow run history and receipt. |
+| Private Teams | Configure the exact single-tenant bot identity, authenticated callback and approved personal app. Check access acquires a runtime Bot Connector token without sending; installation, persona opt-in and an explicit self-test are separate. Uninstalled or blocked apps need repair; no shared-channel fallback is used. |
 | Recipients | Resolve actual role assignments and directory contacts. Grant missing read permissions externally; a health check does not grant consent. |
 | Scheduling | Keep at least one API instance awake and inspect current successful worker heartbeats and backlog. App Service Always On or a minimum running replica is required for reliable in-process timing. |
 | Usage | Configure gateway telemetry, Log Analytics read access, successful rollups, and pricing coverage. Use the gateway's existing Telemetry checks and explicit diagnostic/apply workflows. |
 
 An email/Teams HTTP success means **provider accepted**, not confirmed recipient delivery or
-reading. Unknown timeout outcomes stay indeterminate when the provider cannot deduplicate a
-retry. Review delivery diagnostics before retrying, since external delivery is not universally
-exactly once. Webhook URLs and bot credentials are secrets, not settings to expose in screenshots,
-audit payloads, or browser responses.
+reading. Transient and uncertain outcomes retry automatically within finite attempt limits;
+delivery takes priority over avoiding duplicates. Exhausted uncertainty stays indeterminate,
+and manual retry needs no duplicate-risk acknowledgement. Webhook URLs and bot credentials are
+secrets, not settings to expose in screenshots, audit payloads, or browser responses.
+
+[Notification setup](notification-setup.md) explains the administrator responsibilities,
+supported deployment settings, diagnostic boundaries and corrective actions for all three paths.
+Checks and explicit tests are separate actions; saving settings never sends a message.
 
 ## Usage, limits, and summaries
 

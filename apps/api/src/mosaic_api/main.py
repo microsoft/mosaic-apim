@@ -42,7 +42,7 @@ from mosaic_api.integrations.aoai.key_check import EndpointKeyProbe
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient, ApimKeyManager
 from mosaic_api.integrations.azure_connections import AzureClientRegistry
-from mosaic_api.integrations.email import AcsEmailClient
+from mosaic_api.integrations.email import GraphEmailClient
 from mosaic_api.integrations.graph import DirectoryLookup, GraphDirectoryLookup
 from mosaic_api.integrations.graph.notifications import GraphNotificationDirectory
 from mosaic_api.integrations.key_vault import KeyVaultSecretWriter
@@ -143,7 +143,7 @@ from mosaic_api.services.notification_digests import (
     DigestNotificationDispatcher,
     NotificationDigestCoordinator,
 )
-from mosaic_api.services.notification_email import AcsNotificationDispatcher
+from mosaic_api.services.notification_email import GraphNotificationDispatcher
 from mosaic_api.services.notification_preferences import NotificationPreferenceService
 from mosaic_api.services.notification_sources import (
     CosmosNotificationRunSource,
@@ -631,9 +631,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             interval_seconds=app_settings.usage_rollup_interval_seconds,
             principal_id=app_settings.managed_identity_principal_id,
             identity_resolver=arm_client.caller_object_id,
-            gateway_identity_resolver=lambda gateway: (
-                azure_clients.arm_for(gateway).caller_object_id()
-            ),
+            gateway_identity_resolver=lambda gateway: azure_clients.arm_for(
+                gateway
+            ).caller_object_id(),
         )
         pool_health_service = PoolHealthService(
             model_pool_service,
@@ -643,9 +643,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             logs_factory=azure_clients.logs_for if uses_rollups else None,
             principal_id=app_settings.managed_identity_principal_id,
             identity_resolver=arm_client.caller_object_id,
-            gateway_identity_resolver=lambda gateway: (
-                azure_clients.arm_for(gateway).caller_object_id()
-            ),
+            gateway_identity_resolver=lambda gateway: azure_clients.arm_for(
+                gateway
+            ).caller_object_id(),
         )
         rollup_service = (
             UsageRollupService(
@@ -711,7 +711,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             retention_days=app_settings.usage_rollup_retention_days,
             cost_center_repository=cost_center_repository,
         )
-        email_client = AcsEmailClient(credential)
+        email_credential = ManagedIdentityCredential()
+        email_client = GraphEmailClient(
+            email_credential,
+            tenant_id=app_settings.tenant_id,
+            endpoint=str(app_settings.graph_endpoint),
+            principal_id=app_settings.managed_identity_principal_id,
+        )
         console_origin = (
             str(app_settings.frontend_url).rstrip("/")
             if app_settings.frontend_url and app_settings.frontend_url.scheme == "https"
@@ -807,7 +813,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             console_origin=console_origin,
             portal_origin=portal_origin,
         )
-        email_dispatcher = AcsNotificationDispatcher(
+        email_dispatcher = GraphNotificationDispatcher(
             email_client,
             budget_repository,
             mailbox_resolver=preferences.mailbox_resolver,
@@ -862,8 +868,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             priced=uses_rollups,
             interval_seconds=app_settings.budget_interval_seconds,
             fast_interval_seconds=app_settings.budget_fast_interval_seconds,
-            suggested_endpoint=app_settings.email_suggested_endpoint,
-            suggested_sender=app_settings.email_suggested_sender,
+            email_directory=notification_directory,
             enabled=app_settings.budgets_enabled,
             notification_bridge=budget_bridge,
         )
@@ -899,9 +904,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return await teams_service.capability_checks(actor.tenant_id)
 
         async def personal_team_readiness(actor: Actor) -> list[CapabilityCheck]:
-            return await teams_service.capability_checks(
+            return await teams_service.personal_checks(
                 actor.tenant_id,
-                user_object_id=actor.object_id,
+                actor.object_id,
+                "portal",
+            )
+
+        async def admin_personal_team_readiness(actor: Actor) -> list[CapabilityCheck]:
+            return await teams_service.personal_checks(
+                actor.tenant_id,
+                actor.object_id,
+                "admin",
             )
 
         async def directory_readiness(actor: Actor) -> list[CapabilityCheck]:
@@ -954,7 +967,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 digest_readiness,
                 gateway_usage_probe(gateway_repository, telemetry_service, configured=uses_rollups),
             ),
-            admin_self_probes=(admin_usage_readiness,),
+            admin_self_probes=(admin_usage_readiness, admin_personal_team_readiness),
             personal_probes=(
                 personal_team_readiness,
                 personal_directory_readiness,
@@ -1145,6 +1158,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await key_vault_writer.close()
             await endpoint_key_probe.close()
             await email_client.close()
+            await email_credential.close()
             await mcp_http_client.aclose()
             if log_client is not None:
                 await log_client.close()

@@ -37,28 +37,21 @@ addresses, and always lets calls continue.
 
 ## Set up email
 
-MOSAIC sends email through [Azure Communication Services
-Email](https://learn.microsoft.com/azure/communication-services/concepts/email/email-overview),
-signed in as its own managed identity, so it keeps no key. Email is off until an administrator
-turns it on.
+MOSAIC sends email through Microsoft Graph as the API's system-assigned managed identity, with
+Exchange Application RBAC scoped to one existing Microsoft 365 mailbox. It keeps no email key.
+See [notification setup](notification-setup.md#microsoft-graph-email) for the administrator-run
+Exchange commands, exact identity distinctions, diagnostic meanings, and cloud requirements.
 
-1. Create a Communication Services resource, an Email Communication Services resource with a
-   domain, and connect the domain to the first resource. An Azure-managed domain sends from
-   `DoNotReply@<generated>.azurecomm.net` with no DNS to set up. `azd` can create all three: set
-   `MOSAIC_DEPLOY_EMAIL` to `true` and run `azd provision`. `MOSAIC_EMAIL_DATA_LOCATION` chooses
-   where they keep data, **United States** by default.
-2. Give MOSAIC's API identity **Communication and Email Service Owner** on the Communication
-   Services resource. `azd` does it when it creates the resource. A custom role with
-   `Microsoft.Communication/CommunicationServices/Read`,
-   `Microsoft.Communication/CommunicationServices/Write`, and
-   `Microsoft.Communication/EmailServices/Write` is enough, if you'd rather not grant the
-   built-in one.
-3. In the console, open **Settings > Email**. Enter the resource's endpoint, such as
-   `https://contoso-mosaic.unitedstates.communication.azure.com`, and a sender address on the
-   connected domain. When `azd` created the resource, **Use them** fills both in.
-4. Save, then use **Send test email** to send one to yourself. It sends from the saved settings even
-   while email is off, so you can check them first.
-5. Turn on **Send budget email** and save.
+1. Provision or select an approved Exchange Online sender mailbox. An Exchange administrator
+   grants the API identity **Application Mail.Send** scoped only to that mailbox, not an
+   organization-wide Entra Mail.Send grant.
+2. In **Settings > Notifications > Email**, save the sender mailbox's Entra user object ID.
+   Existing ACS records explicitly require migration; old endpoints are never reused.
+3. Run **Check email access**, review the mailbox authorization simulation guidance, then
+   explicitly send a synthetic test. Token acquisition is not proof of send access; an empty
+   Graph 202 response proves acceptance, not recipient delivery.
+4. Turn on **Send budget email** and save. General notification email separately uses the
+   Channels switch, routing, and recipient preferences.
 
 With email off, budgets still reach their thresholds, show on the Dashboard, and block, but the
 emails are recorded as not sent.
@@ -117,24 +110,25 @@ happens at 100%. A block or unblock email also says how many of the gateways MOS
 refuse, or allow, the cost center's calls, so a gateway MOSAIC couldn't write yet isn't hidden. None
 says who spent it. Thresholds reached by one check send one email, for the highest.
 
-Each email goes at most once. A check records an email as being sent before it sends it, so two
-API instances can't both send it, and Communication Services is told each try is the same
-operation. A refused email is retried with bounded delay, three times in all. If MOSAIC stops
-while sending one, it doesn't send it again: a missed email is better than a duplicate. Each
-budget's card lists its emails this month and how each went.
+Conditional claims fence concurrent workers, but external delivery is not exactly once.
+Refusals, transient failures, uncertain outcomes and expired send leases retry with bounded
+delay, three attempts in all. Delivery is preferred over duplicate avoidance; a timeout can
+produce a duplicate. Graph client-request-id is correlation, not a deduplication guarantee.
+Each budget's card lists its notices this month and how each went.
 
 With the notification worker configured, judging queues the email durably rather than waiting
-for ACS inside the budget request. The budget state and its send-ownership outbox commit together
+for Graph inside the budget request. The budget state and its send-ownership outbox commit together
 in `usage-rollups`; replay creates the shared event and delivery together in `desired-state`.
 The inline budget sender does not also send it. Block/unblock notices wait for the gateway-sync
 attempt and retain its actual enforcement counts.
 
 Migration preserves the explicitly configured owner/recipient audience, original message
-content, original notice IDs, and the stable ACS operation ID. Previously sent or skipped notices
-are not emailed again. An old in-flight claim remains **outcome unknown** unless a durable
-provider-acceptance receipt resolves it; it is never automatically resent. Refused sends retain
-their previous attempts, with three attempts in total. Provider acceptance is not confirmation
-that the email reached its recipient.
+content, original notice IDs, and correlation identity. Previously sent or skipped notices
+are not emailed again. Old uncertain in-flight notices transfer to the normal worker and retry
+automatically while attempts remain. Refused and uncertain sends retain their consumed attempts,
+with three in total. Exhausted uncertainty stays visible rather than claiming failure or delivery.
+Pending legacy configuration defers until a Graph sender is selected. Provider acceptance is not
+confirmation that the email reached its recipient.
 
 Immediately before sending, MOSAIC rechecks the budget, its current recipients, and the legacy
 budget-email switch. Those explicitly enabled budget emails do not silently opt their recipients
@@ -198,8 +192,7 @@ Publications applied before budgets existed don't check the list until they're a
 | `MOSAIC_BUDGETS_ENABLED` | `true` | Runs the background check. Off, budgets are kept but never judged: saving one doesn't judge it, `POST /budgets/check` is refused, and no one is emailed or blocked. A block already on a gateway stays until checks are back on or its budget is removed. |
 | `MOSAIC_BUDGET_INTERVAL_SECONDS` | `900` | How often every budget is checked, from 60 to 86,400 seconds. |
 | `MOSAIC_BUDGET_FAST_INTERVAL_SECONDS` | `300` | How often a budget at 90% or more, with a threshold or block to come, is checked, from 60 to 3,600 seconds. |
-| `MOSAIC_EMAIL_SUGGESTED_ENDPOINT` | None | The endpoint of a Communication Services resource `azd` created. It only fills in **Settings > Email**. |
-| `MOSAIC_EMAIL_SUGGESTED_SENDER` | None | The sender address of the domain `azd` created. It only fills in **Settings > Email**. |
+| `MOSAIC_GRAPH_ENDPOINT` | `https://graph.microsoft.com` | Supported Microsoft Graph cloud origin; also used by directory integration. The sender mailbox is configured in Notifications, not an environment variable. |
 
 ## API
 
@@ -229,5 +222,5 @@ People (`User`), for themselves only:
   credits, and other currencies aren't modelled.
 - A blocked cost center's calls are refused on every gateway MOSAIC manages. A gateway MOSAIC only
   observes doesn't check the list.
-- Communication Services in Azure Government, and how long API Management takes to apply a named
+- Exchange/Graph mailbox sending in the chosen cloud, and how long API Management takes to apply a named
   value, still need checking on a live deployment. See [the end-to-end roadmap](e2e/roadmap.md).

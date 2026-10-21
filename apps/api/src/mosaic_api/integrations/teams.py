@@ -16,11 +16,17 @@ from uuid import UUID
 import httpx
 import jwt
 from azure.core.credentials_async import AsyncTokenCredential
+from azure.core.exceptions import AzureError, ClientAuthenticationError
 from jwt.algorithms import RSAAlgorithm
 from opentelemetry.instrumentation.utils import suppress_http_instrumentation
 
 from mosaic_api.domain import KeyVaultSecretId
-from mosaic_api.errors import ValidationError
+from mosaic_api.errors import (
+    NotFoundError,
+    UpstreamAuthorizationError,
+    UpstreamError,
+    ValidationError,
+)
 from mosaic_api.services.notifications import NotificationDispatchResult
 
 BOT_ISSUER = "https://api.botframework.com"
@@ -49,11 +55,27 @@ class BotTokenSource(Protocol):
     @property
     def bot_app_id(self) -> str: ...
 
+    @property
+    def configuration_id(self) -> str: ...
+
     async def token(self) -> str: ...
 
 
 class TeamsAuthenticationError(Exception):
     """No upstream exception text or activity content may cross the callback boundary."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "teamsAuthenticationFailed",
+        retryable: bool = False,
+        retry_after_seconds: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+        self.retry_after_seconds = retry_after_seconds
 
 
 def application_id(value: str) -> str:
@@ -221,8 +243,25 @@ class ManagedIdentityBotTokenSource:
     def bot_app_id(self) -> str:
         return self._bot_app_id
 
+    @property
+    def configuration_id(self) -> str:
+        return f"managedIdentity:{self._bot_app_id}"
+
     async def token(self) -> str:
-        return (await self._credential.get_token(BOT_SCOPE)).token
+        try:
+            return (await self._credential.get_token(BOT_SCOPE)).token
+        except ClientAuthenticationError:
+            raise TeamsAuthenticationError(
+                "Bot managed identity authentication failed. Check that the exact user-assigned "
+                "bot identity is attached to the API host.",
+                code="teamsBotIdentityUnavailable",
+            ) from None
+        except AzureError:
+            raise TeamsAuthenticationError(
+                "The bot managed identity token service is unavailable. Check host connectivity.",
+                code="teamsBotIdentityUnavailable",
+                retryable=True,
+            ) from None
 
 
 class SecretBotTokenSource:
@@ -250,9 +289,31 @@ class SecretBotTokenSource:
     def bot_app_id(self) -> str:
         return self._bot_app_id
 
+    @property
+    def configuration_id(self) -> str:
+        return f"clientSecret:{self._tenant_id}:{self._bot_app_id}:{self._secret_reference}"
+
     async def token(self) -> str:
         try:
             secret = await self._reader.read(self._secret_reference)
+        except UpstreamAuthorizationError:
+            raise TeamsAuthenticationError(
+                "Bot OAuth cannot read its Key Vault credential. Check the API identity's "
+                "secret-read role and vault network access.",
+                code="teamsBotSecretAccessDenied",
+            ) from None
+        except (ValidationError, NotFoundError):
+            raise TeamsAuthenticationError(
+                "The bot OAuth secret is missing or empty. Correct its Key Vault reference.",
+                code="teamsBotSecretUnavailable",
+            ) from None
+        except (UpstreamError, AzureError):
+            raise TeamsAuthenticationError(
+                "The bot OAuth credential vault is unavailable. Check vault connectivity.",
+                code="teamsBotVaultUnavailable",
+                retryable=True,
+            ) from None
+        try:
             response = await self._client.post(
                 f"https://login.microsoftonline.com/{self._tenant_id}/oauth2/v2.0/token",
                 data={
@@ -263,17 +324,33 @@ class SecretBotTokenSource:
                 },
                 follow_redirects=False,
             )
-            if response.status_code != 200:
-                raise TeamsAuthenticationError("Teams bot OAuth credential was not accepted.")
+        except httpx.HTTPError:
+            raise TeamsAuthenticationError(
+                "The bot OAuth endpoint could not be reached. Check outbound network access.",
+                code="teamsBotOAuthUnavailable",
+                retryable=True,
+            ) from None
+        if response.status_code != 200:
+            transient = response.status_code in {408, 429} or response.status_code >= 500
+            raise TeamsAuthenticationError(
+                "Bot OAuth is temporarily unavailable; MOSAIC retries queued notifications."
+                if transient
+                else "Bot OAuth rejected the credential. Check the single-tenant "
+                "app ID, tenant, secret value and expiry; a secret ID is not a secret value.",
+                code="teamsBotOAuthUnavailable" if transient else "teamsBotCredentialRejected",
+                retryable=transient,
+                retry_after_seconds=_retry_after(response.headers["Retry-After"])
+                if response.headers.get("Retry-After")
+                else None,
+            )
+        try:
             payload = response.json()
-            token = payload.get("access_token")
+            token = payload.get("access_token") if isinstance(payload, dict) else None
             if not isinstance(token, str) or not token or payload.get("token_type") != "Bearer":
                 raise TeamsAuthenticationError("Teams bot OAuth response is invalid.")
             return token
-        except TeamsAuthenticationError:
-            raise
-        except Exception:
-            raise TeamsAuthenticationError("Teams bot OAuth acquisition failed.") from None
+        except ValueError:
+            raise TeamsAuthenticationError("Teams bot OAuth response is invalid.") from None
 
 
 def _retry_after(value: str) -> int:
@@ -319,12 +396,32 @@ def provider_result(
         return NotificationDispatchResult(
             "unknownOutcome",
             error_code="teamsUnknownOutcome",
-            safe_error="Teams did not confirm acceptance; retry may duplicate a message.",
+            safe_error=("Teams acceptance is uncertain. Queued notifications retry automatically."),
         )
+    if personal:
+        guidance = {
+            400: "Check the bot registration and supported Adaptive Card payload.",
+            401: "Check the bot's OAuth tenant, client ID and current credential.",
+            403: "Check the exact bot identity, personal app installation and Teams app policy. "
+            "A 403 alone cannot distinguish these causes; correct setup and reinstall.",
+            404: "The personal conversation was not found. Reinstall the approved MOSAIC app.",
+            410: "The personal conversation is no longer available. Reinstall the app.",
+        }
+    else:
+        guidance = {
+            400: "Check the webhook trigger and post-card action schema in Workflow run history.",
+            401: "Check the saved secret URL and the trigger's Anyone authentication mode. "
+            "Do not weaken tenant policy if that mode is forbidden.",
+            403: "Check the Workflow trigger's authentication mode, enabled state and policies. "
+            "The response alone does not prove which policy refused it.",
+            404: "The Workflow endpoint was not found. Save its current webhook URL again.",
+            410: "The Workflow endpoint was removed or replaced. Save the current URL again.",
+        }
     return NotificationDispatchResult(
         "permanentFailure",
         error_code=f"teamsHttp{status}",
-        safe_error="Teams rejected the request. Check app installation, credentials or workflow.",
+        safe_error=f"Teams refused the request (HTTP {status}). "
+        + guidance.get(status, "Check the configured provider endpoint and administrator setup."),
     )
 
 
@@ -399,6 +496,8 @@ class TeamsHttpTransport:
             return NotificationDispatchResult(
                 "unknownOutcome",
                 error_code="teamsUnknownOutcome",
-                safe_error="Teams acceptance is unknown; retry may duplicate a message.",
+                safe_error=(
+                    "Teams acceptance is uncertain. Queued notifications retry automatically."
+                ),
             )
         return provider_result(response, personal=token is not None)

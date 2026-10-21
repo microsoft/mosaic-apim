@@ -1,4 +1,4 @@
-"""The compatibility sender transfers ownership durably, without changing legacy ACS IDs."""
+"""Budget compatibility transfers ownership and preserves existing notice identities."""
 
 import asyncio
 from datetime import timedelta
@@ -41,8 +41,12 @@ from test_notification_repository import store as store
 
 def audit(identity: str) -> AuditEvent:
     return AuditEvent(
-        id=f"audit_{identity}", tenant_id="tenant", action="test",
-        resource_type="budget", resource_id="budget", actor_object_id="admin",
+        id=f"audit_{identity}",
+        tenant_id="tenant",
+        action="test",
+        resource_type="budget",
+        resource_id="budget",
+        actor_object_id="admin",
     )
 
 
@@ -59,9 +63,7 @@ class SourceContainer(NotificationContainer):
         self.items[body["tenantId"], item] = {**body, "_etag": str(self.version)}
         return self.items[body["tenantId"], item]
 
-    async def delete_item(
-        self, *, item: str, partition_key: str, **conditions: Any
-    ) -> None:
+    async def delete_item(self, *, item: str, partition_key: str, **conditions: Any) -> None:
         current = self.items.get((partition_key, item))
         if current is not None and conditions.get("etag", current["_etag"]) != current["_etag"]:
             raise exceptions.CosmosAccessConditionFailedError(status_code=412)
@@ -86,7 +88,7 @@ class Email:
         self.unknown = False
 
     async def send(
-        self, endpoint: str, sender: str, message: EmailMessage, *, operation_id: str
+        self, sender_mailbox_id: str, message: EmailMessage, *, operation_id: str
     ) -> EmailSendResult:
         self.sent.append((message, operation_id))
         return EmailSendResult(
@@ -95,6 +97,11 @@ class Email:
 
     async def close(self) -> None:
         pass
+
+    async def check_access(self):
+        from mosaic_api.integrations.email import EmailAccessResult
+
+        return EmailAccessResult(True)
 
 
 class Gateways:
@@ -123,53 +130,103 @@ class Migration:
         self.email, self.gate = Email(), Gate()
         self.fallback = Dispatcher(NotificationDispatchResult("permanentFailure"))
         self.bridge = BudgetNotificationBridge(
-            budgets, notifications, cost_center_repository=self.centers, sender=self.email,
-            fallback=self.fallback, tenant_id="tenant", clock=clock,
+            budgets,
+            notifications,
+            cost_center_repository=self.centers,
+            sender=self.email,
+            fallback=self.fallback,
+            tenant_id="tenant",
+            clock=clock,
         )
         self.budget = Budget(
-            id=budget_id("tenant", "center"), tenant_id="tenant", scope="costCenter",
-            cost_center_id="center", amount=100, thresholds=[80], action="block",
-            recipients=["owner@example.com", "finance@example.com"], notify_owners=True,
+            id=budget_id("tenant", "center"),
+            tenant_id="tenant",
+            scope="costCenter",
+            cost_center_id="center",
+            amount=100,
+            thresholds=[80],
+            action="block",
+            recipients=["owner@example.com", "finance@example.com"],
+            notify_owners=True,
         )
         self.spend = 85.0
         self.service = BudgetService(
-            budgets, cost_center_repository=self.centers,
-            gateway_repository=cast(Any, Gateways()), gate=cast(Any, self.gate),
-            client_factory=lambda _: cast(Any, None), writer_factory=lambda _: cast(Any, None),
-            analytics=cast(Any, SimpleNamespace(budget_spend=self.figures)), email=self.email,
-            portal=None, tenant_id="tenant", clock=clock, notification_bridge=self.bridge,
+            budgets,
+            cost_center_repository=self.centers,
+            gateway_repository=cast(Any, Gateways()),
+            gate=cast(Any, self.gate),
+            client_factory=lambda _: cast(Any, None),
+            writer_factory=lambda _: cast(Any, None),
+            analytics=cast(Any, SimpleNamespace(budget_spend=self.figures)),
+            email=self.email,
+            portal=None,
+            tenant_id="tenant",
+            clock=clock,
+            notification_bridge=self.bridge,
         )
         self.engine = NotificationService(
-            notifications, audience_resolver=Resolver([]), delivery_authorizer=Authorizer(),
-            legacy_budget_authorizer=self.bridge, dispatchers={"email": self.bridge},
-            clock=clock, hosting_verified=True,
+            notifications,
+            audience_resolver=Resolver([]),
+            delivery_authorizer=Authorizer(),
+            legacy_budget_authorizer=self.bridge,
+            dispatchers={"email": self.bridge},
+            clock=clock,
+            hosting_verified=True,
         )
 
     async def figures(self, *_: Any, **__: Any) -> BudgetSpend:
-        return BudgetSpend(cost_centers={"center": AnalyticsSpend(
-            month_start=self.clock.now.date().replace(day=1), days_in_month=31,
-            days_elapsed=16, month_to_date=self.spend, forecast=100,
-            through=self.clock.now,
-        )})
+        return BudgetSpend(
+            cost_centers={
+                "center": AnalyticsSpend(
+                    month_start=self.clock.now.date().replace(day=1),
+                    days_in_month=31,
+                    days_elapsed=16,
+                    month_to_date=self.spend,
+                    forecast=100,
+                    through=self.clock.now,
+                )
+            }
+        )
 
     async def seed(self) -> None:
-        await self.centers.create_cost_center(CostCenter(
-            id="center", tenant_id="tenant", name="Research", code="RESEARCH",
-            owners=["OWNER@example.com"],
-        ), audit("center"))
+        await self.centers.create_cost_center(
+            CostCenter(
+                id="center",
+                tenant_id="tenant",
+                name="Research",
+                code="RESEARCH",
+                owners=["OWNER@example.com"],
+            ),
+            audit("center"),
+        )
         await self.budgets.save_budget(self.budget, audit("budget"))
         self.budget = await self.budgets.get_budget("tenant", self.budget.id)
-        await self.budgets.save_email_settings(EmailSettings(
-            id=email_settings_id("tenant"), tenant_id="tenant", enabled=True,
-            endpoint="https://example.communication.azure.com", sender="sender@example.com",
-        ), audit("settings"))
+        await self.budgets.save_email_settings(
+            EmailSettings(
+                id=email_settings_id("tenant"),
+                tenant_id="tenant",
+                enabled=True,
+                provider="graph",
+                sender_mailbox_id="33333333-3333-4333-8333-333333333333",
+                sender="sender@example.com",
+            ),
+            audit("settings"),
+        )
 
     async def legacy(self, notices: list[BudgetNotification]) -> None:
         await self.budgets.update_budget_state(
-            "tenant", self.budget.id, lambda state: state.model_copy(update={
-                "month": "2026-10", "amount": 100.0, "month_to_date": 85.0,
-                "cost_center_id": "center", "crossed": [80], "notifications": notices,
-            })
+            "tenant",
+            self.budget.id,
+            lambda state: state.model_copy(
+                update={
+                    "month": "2026-10",
+                    "amount": 100.0,
+                    "month_to_date": 85.0,
+                    "cost_center_id": "center",
+                    "crossed": [80],
+                    "notifications": notices,
+                }
+            ),
         )
 
 
@@ -217,45 +274,50 @@ async def test_owned_notice_uses_shared_worker_once_and_preserves_legacy_content
     assert not m.fallback.sent
 
 
-async def test_existing_sent_skipped_and_unknown_notices_are_not_resent(
+async def test_history_is_preserved_and_uncertain_legacy_notices_resume_automatically(
     migration: Migration,
 ) -> None:
     m = migration
     notices = [
         BudgetNotification(
-            id=f"notice-{status}", kind="threshold", threshold=80, status=status,
-            attempts=3 if status == "failed" else 1, created_at=m.clock.now,
+            id=f"notice-{status}",
+            kind="threshold",
+            threshold=80,
+            status=status,
+            attempts=3 if status == "failed" else 1,
+            created_at=m.clock.now,
         )
         for status in ("sent", "skipped", "sending", "failed")
     ]
     await m.legacy(notices)
     await m.service.run_check()
     await m.engine.run_once("tenant")
-    assert not m.email.sent
+    assert len(m.email.sent) == 1
     assert {item.state for item in await m.notifications.list_deliveries("tenant")} == {
-        "providerAccepted", "suppressed", "unknownOutcome", "permanentlyFailed"
+        "providerAccepted",
+        "suppressed",
+        "permanentlyFailed",
     }
-    [unknown] = await m.notifications.list_deliveries("tenant", state="unknownOutcome")
-    with pytest.raises(ConflictError, match="legacy"):
-        await m.engine.retry_delivery(
-            "tenant", unknown.id, actor_object_id="admin", allow_unknown=True
-        )
+    accepted = await m.notifications.list_deliveries("tenant", state="providerAccepted")
+    assert sorted(item.attempts for item in accepted) == [1, 2]
 
 
-async def test_failed_legacy_notice_handoff_retains_attempts_and_operation_id(
+async def test_uncertain_legacy_handoff_retains_attempts_and_operation_id(
     migration: Migration,
 ) -> None:
     m = migration
     notice = BudgetNotification(
-        id="refused", kind="threshold", threshold=80, status="sending",
-        attempts=1, created_at=m.clock.now,
+        id="refused",
+        kind="threshold",
+        threshold=80,
+        status="sending",
+        attempts=1,
+        created_at=m.clock.now,
     )
     await m.legacy([notice])
     await m.bridge.reconcile()
-    [unknown] = await m.notifications.list_deliveries("tenant")
-    assert unknown.state == "unknownOutcome"
-    await m.legacy([notice.model_copy(update={"status": "failed"})])
-    await m.service.run_check()
+    [queued] = await m.notifications.list_deliveries("tenant")
+    assert queued.state == "queued" and queued.attempts == 1
     await m.engine.run_once("tenant")
     [delivery] = await m.notifications.list_deliveries("tenant")
     assert delivery.state == "providerAccepted" and delivery.attempts == 2
@@ -328,9 +390,7 @@ async def test_source_receipt_repairs_shared_unknown_without_provider_resend(
         "tenant", "crashed", now=m.clock.now, lease_seconds=60, limit=1
     )
     [source] = await m.budgets.list_notification_outboxes("tenant")
-    await m.bridge._receipt(
-        claimed, source, NotificationDispatchResult("providerAccepted"), 2
-    )
+    await m.bridge._receipt(claimed, source, NotificationDispatchResult("providerAccepted"), 2)
     m.clock.now += timedelta(minutes=2)
     await m.bridge.reconcile()
     await m.engine.run_once("tenant")
@@ -366,7 +426,8 @@ async def test_removal_intent_recovers_delete_crash_but_cannot_announce_failed_d
 
 
 async def test_shared_acceptance_repairs_failed_source_receipt(
-    migration: Migration, monkeypatch: pytest.MonkeyPatch,
+    migration: Migration,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     m = migration
     await m.service.run_check()
@@ -387,7 +448,9 @@ async def test_shared_acceptance_repairs_failed_source_receipt(
     assert len(m.email.sent) == 1
 
 
-async def test_unknown_provider_outcome_is_not_automatically_retried(migration: Migration) -> None:
+async def test_unknown_provider_outcomes_retry_with_the_budget_attempt_limit(
+    migration: Migration,
+) -> None:
     m = migration
     m.email.status, m.email.unknown = 504, True
     await m.service.run_check()
@@ -396,7 +459,14 @@ async def test_unknown_provider_outcome_is_not_automatically_retried(migration: 
     await m.service.run_check()
     await m.engine.run_once("tenant")
     [delivery] = await m.notifications.list_deliveries("tenant")
-    assert delivery.state == "unknownOutcome" and len(m.email.sent) == 1
+    assert delivery.state == "retrying" and len(m.email.sent) == 2
+    m.clock.now += timedelta(hours=2)
+    await m.engine.run_once("tenant")
+    [delivery] = await m.notifications.list_deliveries("tenant")
+    assert delivery.state == "unknownOutcome" and len(m.email.sent) == 3
+    m.clock.now += timedelta(hours=2)
+    await m.engine.run_once("tenant")
+    assert len(m.email.sent) == 3
 
 
 async def test_legacy_switch_is_rechecked_before_provider_and_receipted_as_skipped(
@@ -421,12 +491,22 @@ async def test_disabled_budget_processing_defers_owned_notice_without_consuming_
     m = migration
     await m.service.run_check()
     disabled = BudgetNotificationBridge(
-        m.budgets, m.notifications, cost_center_repository=m.centers, sender=m.email,
-        fallback=m.fallback, tenant_id="tenant", enabled=False, clock=m.clock,
+        m.budgets,
+        m.notifications,
+        cost_center_repository=m.centers,
+        sender=m.email,
+        fallback=m.fallback,
+        tenant_id="tenant",
+        enabled=False,
+        clock=m.clock,
     )
     engine = NotificationService(
-        m.notifications, audience_resolver=Resolver([]), delivery_authorizer=Authorizer(),
-        legacy_budget_authorizer=disabled, dispatchers={"email": disabled}, clock=m.clock,
+        m.notifications,
+        audience_resolver=Resolver([]),
+        delivery_authorizer=Authorizer(),
+        legacy_budget_authorizer=disabled,
+        dispatchers={"email": disabled},
+        clock=m.clock,
     )
     await disabled.reconcile()
     await engine.run_once("tenant")
@@ -450,9 +530,7 @@ async def test_disabled_budget_processing_defers_owned_notice_without_consuming_
 
 async def test_cosmos_state_and_outbox_rollback_together_on_batch_conflict() -> None:
     cosmos = SourceCosmos()
-    budgets = CosmosBudgetRepository(
-        cast(CosmosClient, cosmos), "db", "desired", "audit", "usage"
-    )
+    budgets = CosmosBudgetRepository(cast(CosmosClient, cosmos), "db", "desired", "audit", "usage")
     notifications, clock = cast(Any, None), Clock()
     from mosaic_api.repositories.memory_notifications import InMemoryNotificationRepository
 
@@ -462,10 +540,17 @@ async def test_cosmos_state_and_outbox_rollback_together_on_batch_conflict() -> 
     book = await load_book(m.centers, "tenant")
     notice = BudgetNotification(kind="threshold", threshold=80, created_at=clock.now)
     notice.delivery_owner = "notificationPipeline"
-    source = m.bridge.sources(m.budget, BudgetState(
-        id=budget_state_id("tenant", m.budget.id), tenant_id="tenant",
-        budget_id=m.budget.id, month="2026-10", notifications=[notice],
-    ), book)[0]
+    source = m.bridge.sources(
+        m.budget,
+        BudgetState(
+            id=budget_state_id("tenant", m.budget.id),
+            tenant_id="tenant",
+            budget_id=m.budget.id,
+            month="2026-10",
+            notifications=[notice],
+        ),
+        book,
+    )[0]
     container = cosmos.containers["usage"]
     original = container.execute_item_batch
 
@@ -476,7 +561,8 @@ async def test_cosmos_state_and_outbox_rollback_together_on_batch_conflict() -> 
     container.execute_item_batch = conflict
     with pytest.raises(ConflictError):
         await budgets.update_budget_state_with_outbox(
-            "tenant", m.budget.id,
+            "tenant",
+            m.budget.id,
             lambda state: state.model_copy(update={"notifications": [notice]}),
             lambda state: [source],
         )
@@ -490,9 +576,7 @@ async def test_cosmos_outbox_update_returns_its_own_committed_state_and_etag(
     existing: bool,
 ) -> None:
     cosmos = SourceCosmos()
-    budgets = CosmosBudgetRepository(
-        cast(CosmosClient, cosmos), "db", "desired", "audit", "usage"
-    )
+    budgets = CosmosBudgetRepository(cast(CosmosClient, cosmos), "db", "desired", "audit", "usage")
     identifier = budget_id("tenant", "center")
     if existing:
         await budgets.update_budget_state("tenant", identifier, lambda state: state)
@@ -502,15 +586,19 @@ async def test_cosmos_outbox_update_returns_its_own_committed_state_and_etag(
 
     async def write_between_commit_and_return(**kwargs: Any) -> Any:
         responses = await original(**kwargs)
-        concurrent.append(await budgets.update_budget_state(
-            "tenant", identifier,
-            lambda state: state.model_copy(update={"blocked": True, "crossed": [80, 100]}),
-        ))
+        concurrent.append(
+            await budgets.update_budget_state(
+                "tenant",
+                identifier,
+                lambda state: state.model_copy(update={"blocked": True, "crossed": [80, 100]}),
+            )
+        )
         return responses
 
     container.execute_item_batch = write_between_commit_and_return
     saved = await budgets.update_budget_state_with_outbox(
-        "tenant", identifier,
+        "tenant",
+        identifier,
         lambda state: state.model_copy(update={"blocked": False, "crossed": [80]}),
         lambda state: [],
     )
@@ -522,16 +610,21 @@ async def test_cosmos_outbox_update_returns_its_own_committed_state_and_etag(
     assert remaining == concurrent[0]
 
 
-@pytest.mark.parametrize("responses", [
-    [], [{}], [{"eTag": None}], [{"eTag": ""}], [{"eTag": 1}],
-])
+@pytest.mark.parametrize(
+    "responses",
+    [
+        [],
+        [{}],
+        [{"eTag": None}],
+        [{"eTag": ""}],
+        [{"eTag": 1}],
+    ],
+)
 async def test_cosmos_outbox_update_rejects_missing_or_invalid_committed_etag(
     responses: list[dict[str, Any]],
 ) -> None:
     cosmos = SourceCosmos()
-    budgets = CosmosBudgetRepository(
-        cast(CosmosClient, cosmos), "db", "desired", "audit", "usage"
-    )
+    budgets = CosmosBudgetRepository(cast(CosmosClient, cosmos), "db", "desired", "audit", "usage")
     identifier = budget_id("tenant", "center")
     container = cosmos.containers["usage"]
     original = container.execute_item_batch
@@ -543,7 +636,8 @@ async def test_cosmos_outbox_update_rejects_missing_or_invalid_committed_etag(
     container.execute_item_batch = omit_saved_version
     with pytest.raises(ConflictError, match="saved state version"):
         await budgets.update_budget_state_with_outbox(
-            "tenant", identifier,
+            "tenant",
+            identifier,
             lambda state: state.model_copy(update={"crossed": [80]}),
             lambda state: [],
         )
@@ -558,9 +652,7 @@ async def test_budget_removal_preserves_recreated_budget_judged_before_lift_retu
 ) -> None:
     notifications, clock = store
     cosmos = SourceCosmos()
-    budgets = CosmosBudgetRepository(
-        cast(CosmosClient, cosmos), "db", "desired", "audit", "usage"
-    )
+    budgets = CosmosBudgetRepository(cast(CosmosClient, cosmos), "db", "desired", "audit", "usage")
     m = Migration(budgets, notifications, clock)
     await m.seed()
     m.spend = 110

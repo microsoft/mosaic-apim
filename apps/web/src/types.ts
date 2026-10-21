@@ -242,31 +242,43 @@ export interface BudgetOverview {
   notes: string[]
 }
 
-/** How MOSAIC sends email, through Azure Communication Services as its managed identity. */
+/** Saved Graph sender and revision-bound test evidence. */
 export interface EmailSettings {
   enabled: boolean
-  endpoint: string | null
+  provider: 'graph' | 'acs'
+  senderMailboxId: string | null
   sender: string | null
+  configured: boolean
+  migrationRequired: boolean
+  revision: number
   ready: boolean
   updatedAt: string | null
   updatedBy: string | null
   lastTestAt: string | null
   lastTestError: string | null
-  suggestedEndpoint: string | null
-  suggestedSender: string | null
+  lastTestRevision: number | null
+  lastTestOutcome: string | null
+  lastTestRequestId: string | null
 }
 
 export interface EmailSettingsUpdate {
   enabled: boolean
-  endpoint: string | null
+  senderMailboxId: string | null
   sender: string | null
+  expectedRevision?: number
 }
 
 export interface EmailTestResult {
   sent: boolean
+  evidenceRecorded?: boolean
   to: string
   operationId: string | null
   error: string | null
+  outcome: 'providerAccepted' | 'retryableFailure' | 'permanentFailure' | 'unknownOutcome'
+  testedAt: string
+  configurationRevision: number
+  requestId: string | null
+  errorCode: string | null
 }
 
 export interface GrantKey {

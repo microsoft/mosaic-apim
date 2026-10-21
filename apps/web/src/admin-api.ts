@@ -44,13 +44,15 @@ export function adminApi(request: Request) {
     saveTeamsDestination: (destinationId: string | null, body: T.TeamsDestinationInput) => request<T.TeamsDestination>(path(`/settings/teams/destinations${destinationId ? `/${id(destinationId)}` : ''}`), { method: destinationId ? 'PUT' : 'POST', body }),
     deleteTeamsDestination: (destinationId: string) => request<void>(path(`/settings/teams/destinations/${id(destinationId)}`), { method: 'DELETE' }),
     testTeamsDestination: (destinationId: string) => request<T.TeamsTestResult>(path(`/settings/teams/destinations/${id(destinationId)}/test`), { method: 'POST' }),
+    checkTeamsDestination: (destinationId: string) => request<T.CapabilityCheck[]>(path(`/settings/teams/destinations/${id(destinationId)}/checks`)),
     getPersonalTeamsSettings: () => request<T.PersonalTeamsSettings>(path('/settings/teams/personal')),
     savePersonalTeamsSettings: (body: T.PersonalTeamsSettingsInput) => request<T.PersonalTeamsSettings>(path('/settings/teams/personal'), { method: 'PUT', body }),
     getMyTeamsStatus: () => request<T.PersonalTeamsStatus>(path('/notifications/me/teams')),
+    checkMyTeamsAccess: () => request<T.CapabilityCheck[]>(path('/notifications/me/teams/checks')),
     testMyTeamsConnection: () => request<T.TeamsTestResult>(path('/notifications/me/teams/test'), { method: 'POST' }),
     listNotificationDeliveries: () => request<T.NotificationDelivery[]>(path('/notifications/deliveries')),
     getNotificationHealth: () => request<T.CapabilityCheck[]>(path('/notifications/health')),
-    retryNotificationDelivery: (deliveryId: string, allowUnknown = false) => request<T.NotificationDelivery>(path(`/notifications/deliveries/${id(deliveryId)}/retry`), { method: 'POST', body: { allowUnknown } }),
+    retryNotificationDelivery: (deliveryId: string) => request<T.NotificationDelivery>(path(`/notifications/deliveries/${id(deliveryId)}/retry`), { method: 'POST', body: {} }),
   }
 }
 export type AdminApi = ReturnType<typeof adminApi>

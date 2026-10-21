@@ -8,10 +8,11 @@ again every ``MOSAIC_BUDGET_FAST_INTERVAL_SECONDS``, a rollup that finishes wake
 the start of each UTC month, which lifts every block.
 
 Each budget's state is saved only over the version that was read, and the emails a check decides
-are due are recorded in that same write before any is sent. So two checks can't both send one, and
-a check that stops half way never sends one twice. A lease keeps two API instances from judging at
-once; the gateway writes and the emails follow it. A check that can't price the month changes
-nothing on that account: it never lifts a block.
+are due are recorded in that same write before any is sent. Conditional ownership and leases
+keep checks from creating competing logical notices. The notification pipeline retries transient
+and uncertain sends within finite limits; an interrupted send can produce a duplicate. A lease
+keeps two API instances from judging at once; gateway writes and emails follow it. A check that
+can't price the month changes nothing on that account: it never lifts a block.
 """
 
 from __future__ import annotations
@@ -63,6 +64,8 @@ from mosaic_api.cost_centers import CostCenterBook
 from mosaic_api.domain import AuditEvent, Gateway, new_id, utc_now
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
 from mosaic_api.integrations.email import EmailSender
+from mosaic_api.integrations.graph.notifications import NotificationDirectory
+from mosaic_api.notifications import CapabilityCheck, CapabilityRemediation
 from mosaic_api.repositories import BudgetRepository, CostCenterRepository, GatewayRepository
 from mosaic_api.services.analytics import AnalyticsService
 from mosaic_api.services.analytics.models import AnalyticsSpend, BudgetSpend
@@ -237,8 +240,7 @@ class BudgetService:
         fast_interval_seconds: float = 300,
         clock: Callable[[], datetime] = utc_now,
         owner_id: str | None = None,
-        suggested_endpoint: str | None = None,
-        suggested_sender: str | None = None,
+        email_directory: NotificationDirectory | None = None,
         enabled: bool = True,
         notification_bridge: BudgetNotificationBridge | None = None,
     ) -> None:
@@ -260,8 +262,7 @@ class BudgetService:
         self._fast_interval = timedelta(seconds=fast_interval_seconds)
         self._clock = clock
         self._owner = owner_id or f"budgets-{uuid4().hex}"
-        self._suggested_endpoint = suggested_endpoint
-        self._suggested_sender = suggested_sender
+        self._email_directory = email_directory
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._next_full: datetime | None = None
@@ -380,9 +381,14 @@ class BudgetService:
         result = judging.result
         # Gateways first, so a block notice goes once the gateways have been told to refuse.
         synced: GateSync | None = None
-        if full or result.blocked or result.unblocked or (
-            self._notification_bridge is not None
-            and await self._notification_bridge.requires_gateway_sync()
+        if (
+            full
+            or result.blocked
+            or result.unblocked
+            or (
+                self._notification_bridge is not None
+                and await self._notification_bridge.requires_gateway_sync()
+            )
         ):
             synced = await self._gate.sync(
                 tenant_id,
@@ -421,9 +427,7 @@ class BudgetService:
             # listed goes: a budget set again since, under the same ID, keeps its own check's state.
             kept = {budget.id for budget in live}
             for gone in set(states) - kept:
-                await self._repository.delete_budget_state(
-                    tenant_id, gone, etag=states[gone].etag
-                )
+                await self._repository.delete_budget_state(tenant_id, gone, etag=states[gone].etag)
         wanted = set(only or ())
         targets = [
             budget
@@ -488,7 +492,8 @@ class BudgetService:
         def change(current: BudgetState) -> BudgetState:
             previous_sources = (
                 self._notification_bridge.sources(budget, current, book)
-                if self._notification_bridge is not None else []
+                if self._notification_bridge is not None
+                else []
             )
             result = evaluate(
                 budget,
@@ -505,11 +510,14 @@ class BudgetService:
                 for notice in result.due:
                     notice.delivery_owner = "notificationPipeline"
                 combined = {source.id: source for source in previous_sources}
-                combined.update({
-                    source.id: source for source in self._notification_bridge.sources(
-                        budget, result.state, book, result.due
-                    )
-                })
+                combined.update(
+                    {
+                        source.id: source
+                        for source in self._notification_bridge.sources(
+                            budget, result.state, book, result.due
+                        )
+                    }
+                )
                 sources[:] = list(combined.values())
             return result.state
 
@@ -612,7 +620,7 @@ class BudgetService:
             error: str | None
             if not still_there and notice.kind != "unblocked":
                 error = BUDGET_GONE
-            elif email is None or not email.ready or not email.endpoint or not email.sender:
+            elif email is None or not email.ready or not email.sender_mailbox_id:
                 error = EMAIL_OFF
             elif not recipients:
                 error = NOBODY
@@ -628,11 +636,9 @@ class BudgetService:
                     _enforcement(budget, synced, notice),
                 )
                 outcome = await self._email.send(
-                    email.endpoint,
-                    email.sender,
+                    email.sender_mailbox_id,
                     message,
-                    # The same notification is the same Communication Services operation, however
-                    # many times it's tried.
+                    # A correlation ID, not a provider deduplication guarantee.
                     operation_id=str(uuid5(NAMESPACE_URL, f"mosaic-budget-notice:{notice.id}")),
                 )
                 attempted = True
@@ -754,8 +760,7 @@ class BudgetService:
 
     async def _gate_views(self, tenant_id: str) -> list[tuple[Gateway, GateState | None]]:
         states = {
-            state.gateway_id: state
-            for state in await self._repository.list_gate_states(tenant_id)
+            state.gateway_id: state for state in await self._repository.list_gate_states(tenant_id)
         }
         return [
             (gateway, states.get(gateway.id)) for gateway in await self._gate.gateways(tenant_id)
@@ -953,10 +958,14 @@ class BudgetService:
         try:
             if self._notification_bridge is not None:
                 saved = await self._repository.update_budget_state_with_outbox(
-                    budget.tenant_id, budget.id, lift,
-                    lambda current: self._notification_bridge.sources(
-                        budget, current, book, [notice]
-                    ) if self._notification_bridge is not None else [],
+                    budget.tenant_id,
+                    budget.id,
+                    lift,
+                    lambda current: (
+                        self._notification_bridge.sources(budget, current, book, [notice])
+                        if self._notification_bridge is not None
+                        else []
+                    ),
                 )
             else:
                 saved = await self._repository.update_budget_state(
@@ -1011,21 +1020,23 @@ class BudgetService:
 
     def _email_view(self, settings: EmailSettings | None) -> EmailSettingsView:
         if settings is None:
-            return EmailSettingsView(
-                suggested_endpoint=self._suggested_endpoint,
-                suggested_sender=self._suggested_sender,
-            )
+            return EmailSettingsView()
         return EmailSettingsView(
             enabled=settings.enabled,
-            endpoint=settings.endpoint,
+            provider=settings.provider,
+            sender_mailbox_id=settings.sender_mailbox_id,
             sender=settings.sender,
+            configured=settings.configured,
+            migration_required=settings.migration_required,
+            revision=settings.revision,
             ready=settings.ready,
             updated_at=settings.updated_at,
             updated_by=settings.updated_by,
             last_test_at=settings.last_test_at,
             last_test_error=settings.last_test_error,
-            suggested_endpoint=self._suggested_endpoint,
-            suggested_sender=self._suggested_sender,
+            last_test_revision=settings.last_test_revision,
+            last_test_outcome=settings.last_test_outcome,
+            last_test_request_id=settings.last_test_request_id,
         )
 
     async def email_settings(self, actor: Actor) -> EmailSettingsView:
@@ -1036,18 +1047,28 @@ class BudgetService:
     ) -> EmailSettingsView:
         tenant_id = actor.tenant_id
         current = await self._repository.get_email_settings(tenant_id)
+        if request.expected_revision is not None and request.expected_revision != (
+            current.revision if current else 1
+        ):
+            raise ConflictError("Email configuration changed. Reload before saving.")
         now = self._clock()
         settings = EmailSettings(
             id=email_settings_id(tenant_id),
             tenant_id=tenant_id,
             enabled=request.enabled,
-            endpoint=request.endpoint,
+            provider="graph" if request.sender_mailbox_id or current is None else current.provider,
+            sender_mailbox_id=request.sender_mailbox_id,
+            revision=current.revision + 1 if current else 1,
+            endpoint=current.endpoint if current and not request.sender_mailbox_id else None,
             sender=request.sender,
             updated_by=actor.object_id,
             created_at=current.created_at if current else now,
             updated_at=now,
             last_test_at=current.last_test_at if current else None,
             last_test_error=current.last_test_error if current else None,
+            last_test_revision=current.last_test_revision if current else None,
+            last_test_outcome=current.last_test_outcome if current else None,
+            last_test_request_id=current.last_test_request_id if current else None,
             etag=current.etag if current else None,
         )
         saved = await self._repository.save_email_settings(
@@ -1061,20 +1082,164 @@ class BudgetService:
                 actor_object_id=actor.object_id,
                 details={
                     "enabled": settings.enabled,
-                    "endpoint": settings.endpoint,
+                    "provider": settings.provider,
+                    "revision": settings.revision,
                     "previouslyEnabled": bool(current and current.enabled),
                 },
             ),
         )
         return self._email_view(saved)
 
+    async def check_email_access(self, actor: Actor) -> list[CapabilityCheck]:
+        settings = await self._repository.get_email_settings(actor.tenant_id)
+        now = self._clock()
+        path = "/settings?tab=notifications&notificationView=email"
+        checks = [
+            CapabilityCheck(
+                feature="emailConfiguration",
+                scope="tenant",
+                checked_at=now,
+                state="verified" if settings and settings.configured else "notConfigured",
+                configuration_revision=str(settings.revision) if settings else None,
+                reason=(
+                    "A Graph sending mailbox is selected. This is not proof of send authorization."
+                    if settings and settings.configured
+                    else "Migration required: select a Microsoft 365 mailbox "
+                    "instead of the old email "
+                    "endpoint."
+                    if settings and settings.migration_required
+                    else "Select the sending mailbox's Entra object ID in Notifications > Email."
+                ),
+                evidence=["The saved configuration selects a Graph mailbox."]
+                if settings and settings.configured
+                else [],
+                remediation=CapabilityRemediation(
+                    action="Select a provisioned Exchange Online mailbox and save its object ID.",
+                    path=path,
+                ),
+            )
+        ]
+        access = await self._email.check_access() if self._email else None
+        checks.append(
+            CapabilityCheck(
+                feature="emailIdentity",
+                scope="tenant",
+                checked_at=now,
+                state="verified" if access and access.authenticated else "failed",
+                fresh_until=now + timedelta(minutes=5) if access and access.authenticated else None,
+                reason=(
+                    "The API acquired an app-only Graph token in the configured tenant."
+                    if access and access.authenticated
+                    else access.error
+                    if access and access.error
+                    else "No Graph sender is available."
+                ),
+                evidence=[
+                    "The runtime credential returned an app-only Graph token.",
+                    *(
+                        [f"Managed identity object ID: {access.identity_object_id}"]
+                        if access and access.identity_object_id
+                        else []
+                    ),
+                ]
+                if access and access.authenticated
+                else [],
+                remediation=CapabilityRemediation(
+                    action="Enable the API host's managed identity and check its tenant and Graph "
+                    "cloud. Use that identity, not the API sign-in app or a developer's login.",
+                    path="/settings?tab=runtime",
+                    owner="azureAdmin",
+                ),
+            )
+        )
+        if settings and settings.sender_mailbox_id and self._email_directory:
+            contact = await self._email_directory.contact(
+                actor.tenant_id, settings.sender_mailbox_id
+            )
+            checks.append(
+                CapabilityCheck(
+                    feature="emailMailbox",
+                    scope="tenant",
+                    checked_at=now,
+                    state="verified" if contact.available else "needsAction",
+                    reason=(
+                        "The directory resolved a mailbox address. Exchange provisioning and send "
+                        "scope still need an explicit send test."
+                        if contact.available
+                        else contact.reason or "The sending mailbox could not be resolved."
+                    ),
+                    evidence=["A current directory-backed mail address was resolved."]
+                    if contact.available
+                    else [],
+                    remediation=CapabilityRemediation(
+                        action="Check the mailbox object ID and User.ReadBasic.All for directory "
+                        "resolution. Ask Exchange administration to check mailbox provisioning.",
+                        path=path,
+                        owner="entraAdmin",
+                    ),
+                )
+            )
+        tested = bool(
+            settings
+            and settings.last_test_revision == settings.revision
+            and settings.last_test_outcome == "providerAccepted"
+        )
+        fresh = bool(
+            tested
+            and settings
+            and settings.last_test_at
+            and timedelta(0) <= now - settings.last_test_at < timedelta(minutes=5)
+        )
+        checks.append(
+            CapabilityCheck(
+                feature="emailSendAuthorization",
+                scope="tenant",
+                checked_at=now,
+                state="verified" if fresh else "needsAction",
+                configuration_revision=str(settings.revision) if settings else None,
+                last_test_at=settings.last_test_at if settings else None,
+                fresh_until=settings.last_test_at + timedelta(minutes=5)
+                if fresh and settings and settings.last_test_at
+                else None,
+                reason=(
+                    "Graph recently accepted an explicit test from this saved mailbox. "
+                    "This is observed send access, not proof of exclusive mailbox scope, "
+                    "receipt, or read status."
+                    if fresh
+                    else "The previous accepted test is stale. Check access and send a new "
+                    "explicit test; historical acceptance is not current authorization."
+                    if tested
+                    else "Send authorization needs an explicit test. "
+                    "Graph sendMail has no send-only "
+                    "dry run; acquiring a token does not prove mailbox-scoped permission."
+                ),
+                evidence=[f"Last provider acceptance: {settings.last_test_at}"]
+                if tested and settings
+                else [],
+                remediation=CapabilityRemediation(
+                    action="An Exchange administrator must scope Application Mail.Send to this "
+                    "mailbox for the API managed identity. Do not add unscoped Entra Mail.Send. "
+                    "Run the authorization simulation, then explicitly send a test.",
+                    command=(
+                        "Test-ServicePrincipalAuthorization "
+                        "-Identity <API-managed-identity-object-id> "
+                        f"-Resource {settings.sender_mailbox_id or '<mailbox-object-id>'}"
+                    )
+                    if settings
+                    else None,
+                    path=path,
+                    owner="entraAdmin",
+                ),
+            )
+        )
+        return checks
+
     async def send_test_email(self, actor: Actor, request: EmailTest) -> EmailTestResult:
         tenant_id = actor.tenant_id
         settings = await self._repository.get_email_settings(tenant_id)
-        if settings is None or not settings.endpoint or not settings.sender:
+        if settings is None or not settings.configured or not settings.sender_mailbox_id:
             raise ConflictError(
-                "Save a Communication Services endpoint and a sender address before sending a "
-                "test email.",
+                "Save a Microsoft 365 sender mailbox object ID before sending a test email.",
                 details={"reason": "notConfigured"},
             )
         if self._email is None:
@@ -1084,7 +1249,18 @@ class BudgetService:
             raise TooManyRequestsError("A test email went less than 30 seconds ago")
         self._last_test = now
         outcome = await self._email.send(
-            settings.endpoint, settings.sender, trial_email(request.to), operation_id=str(uuid4())
+            settings.sender_mailbox_id, trial_email(request.to), operation_id=str(uuid4())
+        )
+        outcome_name: Literal[
+            "providerAccepted", "unknownOutcome", "retryableFailure", "permanentFailure"
+        ] = (
+            "providerAccepted"
+            if outcome.accepted
+            else "unknownOutcome"
+            if outcome.outcome_unknown
+            else "retryableFailure"
+            if outcome.retryable
+            else "permanentFailure"
         )
         await self._repository.record_audit(
             AuditEvent(
@@ -1097,10 +1273,17 @@ class BudgetService:
                 details={"status": outcome.status_code, "error": outcome.error},
             )
         )
+        evidence_recorded = True
         try:
             await self._repository.save_email_settings(
                 settings.model_copy(
-                    update={"last_test_at": now, "last_test_error": outcome.error}
+                    update={
+                        "last_test_at": now,
+                        "last_test_error": outcome.error,
+                        "last_test_revision": settings.revision,
+                        "last_test_outcome": outcome_name,
+                        "last_test_request_id": outcome.request_id,
+                    }
                 ),
                 AuditEvent(
                     id=new_id("audit"),
@@ -1114,11 +1297,18 @@ class BudgetService:
             )
         except ConflictError:
             logger.info("email_test_not_recorded", reason="settingsChanged")
+            evidence_recorded = False
         return EmailTestResult(
             sent=outcome.accepted,
+            evidence_recorded=evidence_recorded,
             to=request.to,
             operation_id=outcome.operation_id,
             error=outcome.error,
+            outcome=outcome_name,
+            tested_at=now,
+            configuration_revision=settings.revision,
+            request_id=outcome.request_id,
+            error_code=outcome.error_code,
         )
 
     # -- the portal -------------------------------------------------------------------------

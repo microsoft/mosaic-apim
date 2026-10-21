@@ -12,7 +12,12 @@ const ownerLabels = {
   entraAdmin: 'Entra administrator', teamsAdmin: 'Teams administrator', user: 'You',
 }
 
-const featureLabels: Record<string, string> = { inApp: 'In-app inbox', email: 'Email', teamsPersonal: 'Private Teams' }
+const featureLabels: Record<string, string> = {
+  inApp: 'In-app inbox', email: 'Email', teamsPersonal: 'Private Teams',
+  teamsBotConfiguration: 'Bot identity', teamsBotOAuth: 'Runtime bot access',
+  teamsPersonalInstallation: 'Your personal installation',
+  teamsPersonalPreferences: 'Private channel and preferences', teamsTest: 'Last explicit test',
+}
 
 export function NotificationCapabilityChecks({ checks }: { checks: CapabilityCheck[] }) {
   const [now, setNow] = useState(Date.now)
@@ -34,7 +39,7 @@ export function NotificationCapabilityChecks({ checks }: { checks: CapabilityChe
             {check.checkedAt && <p className="notification-meta">Checked <time dateTime={check.checkedAt}>{new Date(check.checkedAt).toLocaleString()}</time>
               {check.freshUntil && <> · Evidence expires {new Date(check.freshUntil).toLocaleString()}</>}</p>}
             {check.lastTestAt && <p className="notification-meta">Last test: {new Date(check.lastTestAt).toLocaleString()}. Provider acceptance is not confirmed delivery.</p>}
-            {check.remediation && <div className="notification-remediation">
+            {check.remediation && status !== 'Verified' && <div className="notification-remediation">
               <strong>{ownerLabels[check.remediation.owner]}</strong>
               <p>{check.remediation.action}</p>
               {path && (check.remediation.owner === 'user' || path.startsWith('https:')
