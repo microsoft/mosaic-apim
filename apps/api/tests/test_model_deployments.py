@@ -7,6 +7,7 @@ import httpx
 import pytest
 from aoai_double import AI_PROJECT_ID, AI_RESOURCE_ID, FakeDeploymentServices
 from azure.core.credentials_async import AsyncTokenCredential
+from azure.cosmos import exceptions
 from azure.cosmos.aio import CosmosClient
 from conftest import _no_sleep, build_aoai_arm_client, build_endpoint_service
 from mosaic_api.clouds import cloud_profile
@@ -29,8 +30,30 @@ from mosaic_api.services.model_deployments import ModelDeploymentService
 from mosaic_api.services.model_endpoints import ModelEndpointService
 from test_cloud_routing import ScopedCredential
 from test_cosmos_usage_state import Cosmos
+from test_notification_repository import NotificationContainer
 
 ACTOR = Actor(object_id="deployment-admin", tenant_id="tenant-test")
+
+
+class DeploymentCosmos:
+    def __init__(self) -> None:
+        self.containers = {
+            name: NotificationContainer() for name in ("desired", "audit", "sync", "observed")
+        }
+
+    def get_database_client(self, _name: str) -> "DeploymentCosmos":
+        return self
+
+    def get_container_client(self, name: str) -> NotificationContainer:
+        return self.containers[name]
+
+
+def cosmos_repository() -> tuple[CosmosModelEndpointRepository, DeploymentCosmos]:
+    cosmos = DeploymentCosmos()
+    repository = CosmosModelEndpointRepository(
+        cast(CosmosClient, cosmos), "mosaic", "desired", "audit", "sync", "observed"
+    )
+    return repository, cosmos
 
 
 def configuration(**changes: Any) -> ModelDeploymentCreate:
@@ -273,6 +296,55 @@ async def test_unknown_after_put_keeps_lock_and_never_retries_write(estate) -> N
     )
 
 
+@pytest.mark.parametrize("lost_response", [False, True])
+async def test_terminal_mismatch_requires_confirmed_recovery_to_release_the_account(
+    estate, monkeypatch, lost_response
+) -> None:
+    fake, _, gateways, endpoints, service, endpoint = estate
+    await enable(estate)
+    fake.timeout_after_write = lost_response
+    fake.accepted_reads = 0
+    original_poll = service._poll
+
+    def change_version() -> None:
+        fake.deployments[-1]["properties"]["model"]["version"] = "2025-01-01"
+
+    async def changed_poll(*args):
+        change_version()
+        return await original_poll(*args)
+
+    monkeypatch.setattr(service, "_poll", changed_poll)
+    plan = await service.plan(ACTOR, endpoint.id, configuration())
+    run = await service.apply(ACTOR, endpoint.id, plan.id)
+    await finish(service)
+    if lost_response:
+        change_version()
+    resource = deepcopy(fake.deployments[-1])
+    interrupted = await service.get_run(ACTOR, endpoint.id, run.id)
+    assert interrupted.status == "interrupted"
+    checked = await service.reconcile(ACTOR, endpoint.id, run.id, DeploymentRecoveryRequest())
+    assert checked.status == "interrupted"
+    assert checked.etag == interrupted.etag
+    assert (
+        await gateways.get_publication_lock(ACTOR.tenant_id, deployment_lock_scope(endpoint))
+        == run.id
+    )
+    recovered = await service.reconcile(
+        ACTOR, endpoint.id, run.id, DeploymentRecoveryRequest(confirm_worker_stopped=True)
+    )
+    assert recovered.status == "failed"
+    assert recovered.provisioning_state == "Succeeded"
+    assert "does not match the reviewed configuration" in recovered.error
+    assert len(fake.writes) == 1
+    assert fake.deployments[-1] == resource
+    assert (
+        await gateways.get_publication_lock(ACTOR.tenant_id, deployment_lock_scope(endpoint))
+        is None
+    )
+    await endpoints.update(ACTOR, endpoint.id, ModelEndpointUpdate(management_mode="observe"))
+    await endpoints.delete(ACTOR, endpoint.id)
+
+
 @pytest.mark.parametrize("read_stage", ["deployment", "operation"])
 @pytest.mark.parametrize("status", [400, 403, 429])
 async def test_a_refused_read_after_accepted_put_is_not_a_rejected_create(
@@ -420,6 +492,140 @@ async def test_successful_provisioning_with_failed_sync_can_refresh_without_crea
     assert len(fake.writes) == 1
 
 
+@pytest.mark.parametrize("refresh_stage", ["initial", "retry"])
+async def test_inventory_refresh_rechecks_a_stored_read_denial(estate, refresh_stage) -> None:
+    fake, repository, _, endpoints, service, endpoint = estate
+    await enable(estate)
+    plan = await service.plan(ACTOR, endpoint.id, configuration())
+    if refresh_stage == "retry":
+        fake.fail_always("deployments", 403)
+        run = await service.apply(ACTOR, endpoint.id, plan.id)
+        await finish(service)
+        assert (await service.get_run(ACTOR, endpoint.id, run.id)).refresh_status == "failed"
+        fake.persistent_failures.pop("deployments")
+    current = await endpoints.get_endpoint(ACTOR, endpoint.id)
+    await repository.record_endpoint_state(
+        current.model_copy(update={"access": current.access.model_copy(update={"can_read": False})})
+    )
+    if refresh_stage == "initial":
+        run = await service.apply(ACTOR, endpoint.id, plan.id)
+        await finish(service)
+        result = await service.get_run(ACTOR, endpoint.id, run.id)
+    else:
+        result = await service.retry_refresh(ACTOR, endpoint.id, run.id)
+    assert result.status == "succeeded"
+    assert result.refresh_status == "succeeded"
+    assert (await endpoints.get_endpoint(ACTOR, endpoint.id)).access.can_read
+    assert len(fake.writes) == 1
+
+
+async def test_refresh_claim_is_honored_by_other_workers_and_reconciliation(
+    estate, monkeypatch
+) -> None:
+    fake, repository, gateways, endpoints, service, endpoint = estate
+    await enable(estate)
+    plan = await service.plan(ACTOR, endpoint.id, configuration())
+    fake.fail_always("deployments", 403)
+    run = await service.apply(ACTOR, endpoint.id, plan.id)
+    await finish(service)
+    fake.persistent_failures.pop("deployments")
+    other = ModelDeploymentService(
+        repository,
+        gateway_repository=gateways,
+        endpoint_service=endpoints,
+        client_factory=service._client_factory,
+        writer_factory=service._writer_factory,
+    )
+    started, release = asyncio.Event(), asyncio.Event()
+    original_sync = endpoints.sync_now
+
+    async def blocked_sync(*args):
+        started.set()
+        await release.wait()
+        return await original_sync(*args)
+
+    monkeypatch.setattr(endpoints, "sync_now", blocked_sync)
+    retry = asyncio.create_task(service.retry_refresh(ACTOR, endpoint.id, run.id))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        claimed = await service.get_run(ACTOR, endpoint.id, run.id)
+        assert claimed.refresh_status == "running"
+        with pytest.raises(ConflictError, match="still refreshing"):
+            await service.retry_refresh(ACTOR, endpoint.id, run.id)
+        with pytest.raises(ConflictError, match="may still be running"):
+            await other.retry_refresh(ACTOR, endpoint.id, run.id)
+        with pytest.raises(ConflictError, match="still executing"):
+            await service.reconcile(
+                ACTOR, endpoint.id, run.id, DeploymentRecoveryRequest(confirm_worker_stopped=True)
+            )
+        checked = await other.reconcile(ACTOR, endpoint.id, run.id, DeploymentRecoveryRequest())
+        assert checked.refresh_status == "running"
+        assert "Verify that it stopped" in checked.refresh_error
+        assert (await other.get_run(ACTOR, endpoint.id, run.id)).etag == claimed.etag
+    finally:
+        release.set()
+        await retry
+        await other.aclose()
+    assert (await service.get_run(ACTOR, endpoint.id, run.id)).refresh_status == "succeeded"
+    assert run.id not in service._active
+    assert len(fake.writes) == 1
+
+
+async def test_competing_refresh_claims_cannot_overwrite_the_successful_result(
+    estate, monkeypatch
+) -> None:
+    fake, repository, gateways, endpoints, service, endpoint = estate
+    await enable(estate)
+    plan = await service.plan(ACTOR, endpoint.id, configuration())
+    fake.fail_always("deployments", 403)
+    run = await service.apply(ACTOR, endpoint.id, plan.id)
+    await finish(service)
+    fake.persistent_failures.pop("deployments")
+    other = ModelDeploymentService(
+        repository,
+        gateway_repository=gateways,
+        endpoint_service=endpoints,
+        client_factory=service._client_factory,
+        writer_factory=service._writer_factory,
+    )
+    claims = 0
+    both_read = asyncio.Event()
+    original_save = repository.save_model_deployment_run
+    original_sync = endpoints.sync_now
+    refreshes = 0
+
+    async def competing_claim(candidate, audit_event=None):
+        nonlocal claims
+        if candidate.refresh_status == "running":
+            claims += 1
+            if claims == 2:
+                both_read.set()
+            await asyncio.wait_for(both_read.wait(), timeout=5)
+        return await original_save(candidate, audit_event)
+
+    async def count_sync(*args):
+        nonlocal refreshes
+        refreshes += 1
+        return await original_sync(*args)
+
+    monkeypatch.setattr(repository, "save_model_deployment_run", competing_claim)
+    monkeypatch.setattr(endpoints, "sync_now", count_sync)
+    try:
+        results = await asyncio.gather(
+            service.retry_refresh(ACTOR, endpoint.id, run.id),
+            other.retry_refresh(ACTOR, endpoint.id, run.id),
+            return_exceptions=True,
+        )
+    finally:
+        await other.aclose()
+    assert sum(isinstance(result, ConflictError) for result in results) == 1
+    assert sum(isinstance(result, ModelDeploymentRun) for result in results) == 1
+    assert claims == 2
+    assert refreshes == 1
+    assert (await service.get_run(ACTOR, endpoint.id, run.id)).refresh_status == "succeeded"
+    assert len(fake.writes) == 1
+
+
 async def test_project_registration_targets_parent_account_for_every_write(estate) -> None:
     fake, repository, gateways, endpoints, service, endpoint = estate
     await endpoints.delete(ACTOR, endpoint.id)
@@ -540,6 +746,46 @@ async def test_cloud_calls_do_not_hold_record_leases_and_write_lock_has_a_persis
     assert not gateways.scope_leases
 
 
+@pytest.mark.parametrize("change", [{"name": "A renamed endpoint"}, {"management_mode": "observe"}])
+async def test_endpoint_updates_keep_the_version_read_before_checking_the_lock(
+    estate, monkeypatch, change
+) -> None:
+    fake, _, gateways, original_endpoints, _, endpoint = estate
+    repository, _cosmos = cosmos_repository()
+    await repository.create_endpoint(
+        endpoint.model_copy(update={"management_mode": "manage"}),
+        original_endpoints._audit(ACTOR, "modelEndpoint.registered", endpoint.id),
+    )
+    endpoints = build_endpoint_service(fake, repository=repository, gateway_repository=gateways)
+    original_lock = gateways.get_publication_lock
+    scope = deployment_lock_scope(endpoint)
+
+    async def lock_claimed_after_the_check(tenant_id, lock_scope):
+        owner = await original_lock(tenant_id, lock_scope)
+        if lock_scope == scope and owner is None:
+            # The updater's record lease expired while it was paused after this read.
+            await gateways.acquire_publication_lock(tenant_id, scope, "deploymentrun_other")
+            current = await repository.get_endpoint(tenant_id, endpoint.id)
+            await repository.save_endpoint(
+                current,
+                ModelDeploymentService._audit(
+                    ACTOR, "modelDeployment.locked", "deploymentrun_other", endpoint.id
+                ),
+            )
+        return owner
+
+    monkeypatch.setattr(gateways, "get_publication_lock", lock_claimed_after_the_check)
+    try:
+        with pytest.raises(ConflictError, match="endpoint changed"):
+            await endpoints.update(ACTOR, endpoint.id, ModelEndpointUpdate.model_validate(change))
+        stored = await repository.get_endpoint(ACTOR.tenant_id, endpoint.id)
+        assert stored.name == endpoint.name
+        assert stored.management_mode == "manage"
+        assert await original_lock(ACTOR.tenant_id, scope) == "deploymentrun_other"
+    finally:
+        await endpoints.aclose()
+
+
 @pytest.mark.parametrize("crash_stage", ["before-lock", "after-lock"])
 async def test_a_crash_before_worker_start_always_leaves_recoverable_history(
     estate,
@@ -603,7 +849,14 @@ async def test_shutdown_during_refresh_preserves_azure_success_and_recovers_with
         await gateways.get_publication_lock(ACTOR.tenant_id, deployment_lock_scope(endpoint))
         == run.id
     )
-    recovered = await service.reconcile(ACTOR, endpoint.id, run.id, DeploymentRecoveryRequest())
+    checked = await service.reconcile(ACTOR, endpoint.id, run.id, DeploymentRecoveryRequest())
+    assert checked.refresh_status == "running"
+    assert checked.etag == result.etag
+    with pytest.raises(ConflictError, match="may still be running"):
+        await service.retry_refresh(ACTOR, endpoint.id, run.id)
+    recovered = await service.reconcile(
+        ACTOR, endpoint.id, run.id, DeploymentRecoveryRequest(confirm_worker_stopped=True)
+    )
     assert recovered.status == "succeeded"
     assert recovered.refresh_status == "failed"
     assert (
@@ -770,3 +1023,100 @@ async def test_cosmos_plans_runs_tenant_isolation_and_conditional_updates(
     with pytest.raises(ConflictError, match="Reload"):
         await repository.save_model_deployment_run(run)
     assert (await repository.get_model_deployment_run(ACTOR.tenant_id, run.id)).error == "new state"
+
+
+@pytest.mark.parametrize("interruption", ["audit-outage", "before-projection", "after-projection"])
+async def test_terminal_audit_intent_survives_projection_failure_and_restart(
+    estate, monkeypatch, interruption
+) -> None:
+    await enable(estate)
+    service, endpoint = estate[4], estate[5]
+    plan = await service.plan(ACTOR, endpoint.id, configuration())
+    repository, cosmos = cosmos_repository()
+    run = await repository.create_model_deployment_run(
+        ModelDeploymentRun(
+            id="deploymentrun_audited",
+            tenant_id=ACTOR.tenant_id,
+            endpoint_id=endpoint.id,
+            plan_id=plan.id,
+            target=plan.target,
+            configuration=plan.configuration,
+            actor_object_id=ACTOR.object_id,
+        ),
+        service._audit(ACTOR, "modelDeployment.requested", "deploymentrun_audited", endpoint.id),
+    )
+    audit = service._audit(ACTOR, "modelDeployment.succeeded", run.id, endpoint.id)
+    terminal = run.model_copy(update={"status": DeploymentRunStatus.SUCCEEDED})
+    sync, audit_container = cosmos.containers["sync"], cosmos.containers["audit"]
+
+    async def unavailable(*args, **kwargs):
+        raise exceptions.CosmosHttpResponseError(status_code=503)
+
+    async def stopped(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    with monkeypatch.context() as patch:
+        if interruption == "audit-outage":
+            patch.setattr(audit_container, "create_item", unavailable)
+            saved = await repository.save_model_deployment_run(terminal, audit)
+            assert saved.status == "succeeded"
+            assert saved.etag != run.etag
+            assert not await repository.ready()
+        else:
+            if interruption == "before-projection":
+                patch.setattr(repository, "_project_audit_event", stopped)
+            else:
+                patch.setattr(sync, "delete_item", stopped)
+            with pytest.raises(asyncio.CancelledError):
+                await repository.save_model_deployment_run(terminal, audit)
+    stored = await repository.get_model_deployment_run(ACTOR.tenant_id, run.id)
+    assert stored.status == "succeeded"
+    assert sync.items[(ACTOR.tenant_id, audit.id)]["action"] == "modelDeployment.succeeded"
+    assert not cosmos.containers["desired"].items
+    restarted = CosmosModelEndpointRepository(
+        cast(CosmosClient, cosmos), "mosaic", "desired", "audit", "sync", "observed"
+    )
+    assert await restarted.ready()
+    assert (ACTOR.tenant_id, audit.id) not in sync.items
+    assert audit_container.items[(ACTOR.tenant_id, audit.id)]["resourceId"] == run.id
+    assert await restarted.ready()
+    assert len(audit_container.items) == 2
+    assert not estate[0].writes
+
+
+async def test_terminal_run_and_audit_intent_roll_back_together_on_a_conflict(estate) -> None:
+    await enable(estate)
+    service, endpoint = estate[4], estate[5]
+    plan = await service.plan(ACTOR, endpoint.id, configuration())
+    repository, cosmos = cosmos_repository()
+    run = await repository.create_model_deployment_run(
+        ModelDeploymentRun(
+            id="deploymentrun_atomic",
+            tenant_id=ACTOR.tenant_id,
+            endpoint_id=endpoint.id,
+            plan_id=plan.id,
+            target=plan.target,
+            configuration=plan.configuration,
+            actor_object_id=ACTOR.object_id,
+        ),
+        service._audit(ACTOR, "modelDeployment.requested", "deploymentrun_atomic", endpoint.id),
+    )
+    audit = service._audit(ACTOR, "modelDeployment.succeeded", run.id, endpoint.id)
+    cosmos.containers["sync"].conflict_index = 1
+    terminal = run.model_copy(update={"status": DeploymentRunStatus.SUCCEEDED})
+    with pytest.raises(ConflictError, match="run changed"):
+        await repository.save_model_deployment_run(terminal, audit)
+    stored = await repository.get_model_deployment_run(ACTOR.tenant_id, run.id)
+    assert stored.status == "running"
+    assert stored.etag == run.etag
+    assert (ACTOR.tenant_id, audit.id) not in cosmos.containers["sync"].items
+    assert (ACTOR.tenant_id, audit.id) not in cosmos.containers["audit"].items
+    saved = await repository.save_model_deployment_run(terminal, audit)
+    assert saved.status == "succeeded"
+    assert saved.etag != run.etag
+    with pytest.raises(ConflictError, match="run changed"):
+        await repository.save_model_deployment_run(
+            terminal, audit.model_copy(update={"id": "audit_stale"})
+        )
+    assert (ACTOR.tenant_id, "audit_stale") not in cosmos.containers["sync"].items
+    assert (ACTOR.tenant_id, "audit_stale") not in cosmos.containers["audit"].items

@@ -153,6 +153,8 @@ export function DeployModelWorkspace({ endpoint, onClose }: {
 
   const model = catalogue.data?.models.find((item) => modelKey(item) === selectedModel)
   const sku = model?.skus.find((item) => item.name === skuName)
+  const verifiedRaiPolicyName = !catalogue.data?.policyError && catalogue.data?.raiPolicies.includes(raiPolicyName)
+    ? raiPolicyName : ''
   const numericCapacity = Number(capacity)
   const validCapacity = capacity.trim() !== '' && Number.isSafeInteger(numericCapacity) && numericCapacity > 0
     && (sku?.capacity.minimum == null || numericCapacity >= sku.capacity.minimum)
@@ -181,7 +183,7 @@ export function DeployModelWorkspace({ endpoint, onClose }: {
         modelPublisher: model.modelPublisher, source: model.source, sourceAccount: model.sourceAccount,
       },
       skuName, capacity: numericCapacity,
-      raiPolicyName: raiPolicyName || null, versionUpgradeOption: versionUpgradeOption || null,
+      raiPolicyName: verifiedRaiPolicyName || null, versionUpgradeOption: versionUpgradeOption || null,
     })
   }
 
@@ -233,8 +235,12 @@ export function DeployModelWorkspace({ endpoint, onClose }: {
               : 'Refreshing the endpoint inventory. No separate sync is needed.'}
           </MessageBarBody></MessageBar>}
           {run.data.status === 'succeeded' && run.data.refreshStatus === 'failed' && <Button onClick={() => refresh.mutate()} disabled={pending}>Retry inventory refresh</Button>}
+          {run.data.status === 'succeeded' && run.data.refreshStatus === 'running' && <Checkbox
+            checked={recoveryConfirmed} onChange={(_, data) => setRecoveryConfirmed(data.checked === true)}
+            label="I verified the original inventory-refresh worker has stopped." />}
           {run.data.status === 'succeeded' && run.data.refreshStatus !== 'succeeded' && <Button
-            onClick={() => reconcile.mutate({ confirmWorkerStopped: false, confirmNoPendingOperation: false })} disabled={pending}>
+            onClick={() => reconcile.mutate({ confirmWorkerStopped: recoveryConfirmed, confirmNoPendingOperation: false })}
+            disabled={pending || (run.data.refreshStatus === 'running' && !recoveryConfirmed)}>
             Reconcile interrupted refresh
           </Button>}
           {run.data.status === 'failed' && <Button
@@ -367,7 +373,7 @@ export function DeployModelWorkspace({ endpoint, onClose }: {
                 <Input value={deploymentName} maxLength={64} onChange={(_, data) => setDeploymentName(data.value)} />
               </Field>
               <Field label="Content-filter policy" hint={catalogue.data.policyError ?? 'Only existing policies can be selected. No new policy is created.'}>
-                <Select aria-label="Content-filter policy" value={raiPolicyName} disabled={Boolean(catalogue.data.policyError)}
+                <Select aria-label="Content-filter policy" value={verifiedRaiPolicyName} disabled={Boolean(catalogue.data.policyError)}
                   onChange={(event) => setRaiPolicyName(event.target.value)}>
                   <option value="">Azure default; no override</option>
                   {catalogue.data.raiPolicies.map((policy) => <option key={policy} value={policy}>{policy}</option>)}

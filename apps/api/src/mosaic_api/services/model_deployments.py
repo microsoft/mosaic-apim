@@ -497,14 +497,33 @@ class ModelDeploymentService:
         )
 
     async def _complete(
-        self, actor: Actor, endpoint: ModelEndpoint, run: ModelDeploymentRun, resource: JsonObject
+        self,
+        actor: Actor,
+        endpoint: ModelEndpoint,
+        run: ModelDeploymentRun,
+        resource: JsonObject,
+        *,
+        confirmed_recovery: bool = False,
     ) -> ModelDeploymentRun:
         state = _text(_properties(resource).get("provisioningState"))
         if not self._matches(run.configuration, resource):
+            message = (
+                "Azure's deployment does not match the reviewed configuration. Inspect it in "
+                "Azure; MOSAIC will not overwrite or delete it."
+            )
+            if confirmed_recovery:
+                return await self._finish(
+                    actor,
+                    endpoint,
+                    run,
+                    succeeded=False,
+                    state=state,
+                    error=f"{message} An administrator confirmed the original worker stopped "
+                    "and Azure reports a terminal deployment. No create was retried.",
+                )
             return await self._interrupt(
                 run,
-                "Azure's deployment does not match the reviewed configuration. Inspect it in "
-                "Azure; MOSAIC will not overwrite or delete it.",
+                message,
             )
         return await self._finish(
             actor,
@@ -569,6 +588,9 @@ class ModelDeploymentService:
     async def _refresh(self, actor: Actor, run: ModelDeploymentRun) -> ModelDeploymentRun:
         error: str | None = None
         try:
+            endpoint = await self._endpoints.get_endpoint(actor, run.endpoint_id)
+            if not endpoint.access.can_read:
+                await self._endpoints.preflight(actor, run.endpoint_id)
             sync = await self._endpoints.sync_now(actor, run.endpoint_id)
             if sync.status != GatewaySyncStatus.SUCCEEDED:
                 error = "; ".join(sync.errors) or "The inventory synchronization was incomplete."
@@ -635,6 +657,13 @@ class ModelDeploymentService:
                 "running",
                 "notStarted",
             }:
+                if run.refresh_status == "running" and not request.confirm_worker_stopped:
+                    return run.model_copy(
+                        update={
+                            "refresh_error": "An inventory-refresh worker may still be running. "
+                            "Verify that it stopped before confirming recovery.",
+                        }
+                    )
                 run = await self._repository.save_model_deployment_run(
                     run.model_copy(
                         update={
@@ -661,7 +690,9 @@ class ModelDeploymentService:
                         "this operation and releases its account lock. No create was retried.",
                     }
                 )
-            return await self._complete(actor, endpoint, run, resource or {})
+            return await self._complete(
+                actor, endpoint, run, resource or {}, confirmed_recovery=True
+            )
         if (
             resource is None
             and request.confirm_worker_stopped
@@ -691,7 +722,25 @@ class ModelDeploymentService:
             raise ConflictError("Only a confirmed successful deployment can refresh its inventory")
         if run.id in self._active:
             raise ConflictError("This API worker is still refreshing the deployment inventory")
-        return await self._refresh(actor, run)
+        if run.refresh_status == "running":
+            raise ConflictError(
+                "An inventory-refresh worker may still be running. Reconcile it after verifying "
+                "that the original worker stopped."
+            )
+        self._active.add(run.id)
+        try:
+            claimed = await self._repository.save_model_deployment_run(
+                run.model_copy(
+                    update={
+                        "refresh_status": "running",
+                        "refresh_error": None,
+                        "updated_at": utc_now(),
+                    }
+                )
+            )
+            return await self._refresh(actor, claimed)
+        finally:
+            self._active.discard(run.id)
 
     @staticmethod
     def _audit(actor: Actor, action: str, run_id: str, endpoint_id: str) -> AuditEvent:

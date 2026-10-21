@@ -28,6 +28,15 @@ class CosmosModelEndpointRepository(CosmosEndpointStateBase):
     endpoints share.
     """
 
+    async def ready(self) -> bool:
+        if not await super().ready():
+            return False
+        try:
+            await self._flush_audit_outbox(source=self._sync)
+        except exceptions.CosmosHttpResponseError:
+            return False
+        return True
+
     async def list_endpoints(self, tenant_id: str) -> list[ModelEndpoint]:
         items = await self._query(ModelEndpoint, tenant_id, "modelEndpoint")
         return sorted(items, key=lambda item: item.name.casefold())
@@ -162,6 +171,17 @@ class CosmosModelEndpointRepository(CosmosEndpointStateBase):
     ) -> ModelDeploymentRun:
         if run.etag is None:
             raise ConflictError("Reload the deployment run before continuing")
+        if audit_event is not None:
+            responses = await self._execute_batch(
+                [
+                    self._replace_operation(run),
+                    ("create", (self._document(audit_event),)),
+                ],
+                audit_event,
+                "The deployment run changed; reload it before continuing",
+                source=self._sync,
+            )
+            return self._model(ModelDeploymentRun, responses[0]["resourceBody"])
         try:
             item = await self._sync.replace_item(
                 item=run.id, body=self._document(run),
@@ -172,8 +192,6 @@ class CosmosModelEndpointRepository(CosmosEndpointStateBase):
             exceptions.CosmosResourceNotFoundError,
         ):
             raise ConflictError("The deployment run changed; reload it before continuing") from None
-        if audit_event is not None:
-            await self._audit.create_item(self._document(audit_event))
         return self._model(ModelDeploymentRun, item)
 
     async def get_model_deployment_run(

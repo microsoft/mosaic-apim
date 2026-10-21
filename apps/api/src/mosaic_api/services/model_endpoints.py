@@ -868,6 +868,7 @@ class ModelEndpointService:
         async with scope_lease(
             self._gateways, actor.tenant_id, deployment_lock_scope(endpoint)
         ):
+            endpoint = await self.get_endpoint(actor, endpoint_id)
             if await self._gateways.get_publication_lock(
                 actor.tenant_id, deployment_lock_scope(endpoint)
             ):
@@ -875,7 +876,6 @@ class ModelEndpointService:
                     "An Azure model deployment is active or unconfirmed. Finish or reconcile it "
                     "in deployment history before changing this endpoint."
                 )
-            endpoint = await self.get_endpoint(actor, endpoint_id)
             return await self._update(actor, endpoint, request)
 
     async def _update(
@@ -1760,6 +1760,12 @@ class ModelEndpointService:
         return results
 
     async def start_sync(self, actor: Actor, endpoint_id: str) -> ModelEndpointSyncRun:
+        run, _task = await self._start_sync(actor, endpoint_id)
+        return run
+
+    async def _start_sync(
+        self, actor: Actor, endpoint_id: str
+    ) -> tuple[ModelEndpointSyncRun, asyncio.Task[None]]:
         endpoint = await self.get_endpoint(actor, endpoint_id)
         if endpoint.is_bedrock():
             raise ConflictError(
@@ -1804,13 +1810,13 @@ class ModelEndpointService:
         task = asyncio.create_task(self._run_sync(endpoint, run))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
-        return run
+        return run, task
 
     async def sync_now(self, actor: Actor, endpoint_id: str) -> ModelEndpointSyncRun:
         """Run a sync to completion, for dependent control-plane workflows and tests."""
 
-        run = await self.start_sync(actor, endpoint_id)
-        await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
+        run, task = await self._start_sync(actor, endpoint_id)
+        await asyncio.gather(task, return_exceptions=True)
         completed = await self._repository.get_endpoint_sync_run(actor.tenant_id, run.id)
         return completed or run
 

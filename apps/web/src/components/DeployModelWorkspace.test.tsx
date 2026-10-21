@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { DeploymentCatalogue, ModelDeploymentPlan, ModelDeploymentRun, ModelEndpoint } from '../types'
+import type { DeploymentCatalogue, ModelDeploymentCreate, ModelDeploymentPlan, ModelDeploymentRun, ModelEndpoint } from '../types'
 import { DeployModelWorkspace } from './DeployModelWorkspace'
 
 const endpoint: ModelEndpoint = {
@@ -150,6 +150,29 @@ describe('Azure model deployment workspace', () => {
     expect(api.planModelDeployment).not.toHaveBeenCalled()
   })
 
+  it.each(['unreadable', 'removed'])('reviews Azure default when a selected content filter becomes %s', async (reason) => {
+    const user = userEvent.setup()
+    api.getDeployableModels.mockResolvedValueOnce(structuredClone(catalogue)).mockResolvedValue({
+      ...catalogue, raiPolicies: [],
+      policyError: reason === 'unreadable' ? 'Content-filter policies could not be read.' : null,
+    })
+    api.planModelDeployment.mockImplementation((_endpointId: string, configuration: ModelDeploymentCreate) =>
+      Promise.resolve({ ...plan, configuration }))
+    renderWorkspace(true)
+    await configure(user)
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Content-filter policy' }), 'Microsoft.DefaultV2')
+    await user.click(screen.getByRole('button', { name: 'Check catalogue again' }))
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Content-filter policy' })).toHaveValue(''))
+    if (reason === 'unreadable') {
+      expect(screen.getByRole('combobox', { name: 'Content-filter policy' })).toBeDisabled()
+    }
+    await user.click(screen.getByRole('button', { name: 'Review deployment' }))
+    expect(await screen.findByRole('button', { name: 'Deploy to Azure' })).toBeVisible()
+    expect(api.planModelDeployment).toHaveBeenCalledWith(endpoint.id, expect.objectContaining({ raiPolicyName: null }))
+    expect(screen.getByText('Content filter').parentElement).toHaveTextContent('Azure default; no override')
+    expect(api.applyModelDeployment).not.toHaveBeenCalled()
+  })
+
   it('refreshes inventory after remote success without resubmitting creation', async () => {
     const user = userEvent.setup()
     const failedRefresh = { ...completed, refreshStatus: 'failed', refreshError: 'Injected sync failure' }
@@ -174,6 +197,24 @@ describe('Azure model deployment workspace', () => {
     await user.click(await screen.findByRole('button', { name: 'Reconcile completed operation' }))
     expect(api.reconcileModelDeployment).toHaveBeenCalledWith(endpoint.id, failed.id, {
       confirmWorkerStopped: false, confirmNoPendingOperation: false,
+    })
+    expect(api.applyModelDeployment).not.toHaveBeenCalled()
+  })
+
+  it('requires stopped-worker confirmation before recovering a running inventory refresh', async () => {
+    const user = userEvent.setup()
+    const refreshing = { ...completed, refreshStatus: 'running' as const }
+    api.getDeployableModels.mockResolvedValue({ ...catalogue, blockingRunId: refreshing.id })
+    api.listModelDeploymentRuns.mockResolvedValue([refreshing])
+    api.getModelDeploymentRun.mockResolvedValue(refreshing)
+    api.reconcileModelDeployment.mockResolvedValue({ ...completed, refreshStatus: 'failed' })
+    renderWorkspace(true)
+    const recover = await screen.findByRole('button', { name: 'Reconcile interrupted refresh' })
+    expect(recover).toBeDisabled()
+    await user.click(screen.getByRole('checkbox', { name: 'I verified the original inventory-refresh worker has stopped.' }))
+    await user.click(recover)
+    expect(api.reconcileModelDeployment).toHaveBeenCalledWith(endpoint.id, completed.id, {
+      confirmWorkerStopped: true, confirmNoPendingOperation: false,
     })
     expect(api.applyModelDeployment).not.toHaveBeenCalled()
   })

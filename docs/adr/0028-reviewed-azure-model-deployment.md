@@ -46,7 +46,9 @@ Repeat permission, quota, catalogue, target, and name checks immediately before 
 Persist the plan and run in the existing sync-operations container, separate from inventory sync
 history. A plan has one deterministic run ID. Conditional run updates use etags. Record the
 attempt before PUT; never replay an uncertain PUT, including transport retries or after restart.
-Audit request and terminal outcome independently of inventory refresh.
+Audit request and terminal outcome independently of inventory refresh. Commit terminal outcome
+audit intent in the same sync-operations transaction as the run transition; the existing audit
+outbox projects it idempotently and retries deferred projection during readiness checks.
 Keep a lock-owning operation visible even when it falls outside recent history. Its ID is also
 returned with the live catalogue so the console can open recovery instead of another create.
 
@@ -68,11 +70,16 @@ could still be paused before PUT. If the resource is absent, also require confir
 Azure operation is pending. Read-only outcome checks do not overwrite a potentially active worker's
 run version. Refuse recovery while the local worker is active. Terminal provisioning remains
 terminal even if the following inventory sync fails or is interrupted: recover the refresh
-separately without issuing another create.
+separately without issuing another create. After worker-stopped confirmation, a terminal resource
+that differs from the plan records a failed operation and releases the account lock without
+changing Azure; automatic mismatch handling still retains the lock.
 
 On success, synchronize inventory automatically and invalidate endpoint, deployment, publication
 candidate, pool, and pricing queries. Deployment does not publish to APIM or create access.
 Existing synchronous-publishing and pool eligibility rules still exclude batch deployments.
+Recheck a saved read denial before refresh and await only this endpoint's sync. Claim each refresh
+conditionally on its run before synchronization, so competing API workers cannot overwrite its
+outcome. Recovering a running refresh requires confirmation that its original worker stopped.
 
 ## Limits and consequences
 

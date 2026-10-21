@@ -1460,6 +1460,10 @@ timeout or API restart, open **Deployment history** and **Check outcome in Azure
 operations keep the account locked. Before **Confirm worker-stopped recovery**, verify the original
 deployment worker has stopped; a terminal Azure resource alone cannot fence a worker paused before
 its write. For an absent deployment, also verify that no Azure operation is pending.
+If a terminal deployment no longer matches the reviewed configuration, confirmed recovery records
+a failed operation and releases the account lock without changing Azure. A running inventory
+refresh also requires confirmation that its original worker stopped before **Reconcile interrupted
+refresh** releases its claim.
 
 MOSAIC refuses existing deployment names, does not resize, replace, or delete deployments, and
 serializes its own deployment writes and endpoint-management changes. Azure's deployment PUT is
