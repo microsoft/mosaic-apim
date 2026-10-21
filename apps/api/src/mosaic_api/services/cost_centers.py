@@ -493,7 +493,7 @@ class CostCenterService:
         return await self.get_cost_center(actor, cost_center_id), True
 
     async def remove_member(
-        self, actor: Actor, cost_center_id: str, principal_id: str
+        self, actor: Actor, cost_center_id: str, principal_id: str, *, explicit_only: bool = False
     ) -> CostCenterView:
         """Stop a principal charging the cost center, and revoke the grants that relied on it.
 
@@ -505,12 +505,29 @@ class CostCenterService:
         A grant whose model is busy stays pending, and applies leave it out until it's checked.
         Repeating the request, or checking the cost center's grants again, finishes the job. The
         next apply of each revoked grant's model deletes its key.
+
+        With ``explicit_only``, an absent reference needs a recorded explicit removal to retry.
+        An older removal must not reset a default assigned since then.
         """
 
         current = await self._stored(actor, cost_center_id)
         principal = await self._directory.get_principal(actor.tenant_id, principal_id)
         explicit = principal_id in current.member_ids()
         is_default = principal is not None and principal.default_cost_center_id == current.id
+        if (
+            explicit_only
+            and not explicit
+            and not await self._repository.member_removal_recorded(
+                actor.tenant_id,
+                current.id,
+                principal_id,
+                not_before=principal.updated_at if principal is not None and is_default else None,
+            )
+        ):
+            raise NotFoundError(
+                "That principal isn't a member of this cost center",
+                details={"costCenterId": cost_center_id, "principalId": principal_id},
+            )
         settings = await self._repository.get_settings(actor.tenant_id)
         charged = current.id == tenant_default_id(settings, actor.tenant_id)
         remaining = (
@@ -550,7 +567,8 @@ class CostCenterService:
                 ),
             )
         )
-        if explicit or pending != current.pending_rechecks:
+        # A retry that still resets a default must validate the cost center's ETag too.
+        if explicit or pending != current.pending_rechecks or (explicit_only and is_default):
             await self._repository.save_cost_center(
                 current.model_copy(
                     update={

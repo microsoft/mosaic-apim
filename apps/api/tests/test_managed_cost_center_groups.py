@@ -1,17 +1,25 @@
 """The experimental group foundation shares the existing roster and never enables access."""
 
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from copy import deepcopy
+from datetime import timedelta
 from typing import Any, cast
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 from azure.cosmos.aio import CosmosClient
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from mosaic_api.auth import LocalAuthenticator
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
-from mosaic_api.cost_centers import CostCenter, CostCenterBook, CostCenterMember, CostCenterView
+from mosaic_api.cost_centers import (
+    CostCenter,
+    CostCenterBook,
+    CostCenterMember,
+    CostCenterView,
+    PendingRecheck,
+)
 from mosaic_api.domain import (
     AuditEvent,
     Entitlement,
@@ -23,6 +31,7 @@ from mosaic_api.domain import (
     Principal,
     general_cost_center_id,
     new_id,
+    utc_now,
 )
 from mosaic_api.errors import ConflictError, ValidationError
 from mosaic_api.main import create_app
@@ -104,6 +113,22 @@ async def seed_model(client: TestClient) -> str:
     return model.id
 
 
+async def grant(
+    client: TestClient, principal_id: str, cost_center_id: str, kind: str = "user"
+) -> str:
+    resource_id = await seed_model(client)
+    response = client.post(
+        "/api/v1/entitlements",
+        json={
+            "subject": {"kind": kind, "id": principal_id},
+            "resource": {"kind": "modelApi", "id": resource_id},
+            "costCenterId": cost_center_id,
+        },
+    )
+    assert response.status_code == 201, response.text
+    return cast(str, response.json()["id"])
+
+
 def repositories(backend: str) -> tuple[DirectoryRepository, CostCenterRepository]:
     if backend == "memory":
         directory = InMemoryDirectoryRepository()
@@ -174,6 +199,59 @@ def test_implicit_default_charge_eligibility_is_not_managed_group_membership(
     assert response.status_code == 200, response.text
     assert client.get(f"/api/v1/cost-centers/{created['id']}").json()["memberDetails"]
     assert client.get(f"/api/v1/groups/{created['groupId']}/members").json() == []
+
+
+@pytest.mark.parametrize("removed_before", [False, True])
+@pytest.mark.parametrize("with_pending", [False, True])
+async def test_removing_an_absent_group_member_preserves_default_only_eligibility(
+    client: TestClient, removed_before: bool, with_pending: bool
+) -> None:
+    app = cast(FastAPI, client.app)
+    created, user = create_center(client), principal(client)
+    center_url = f"/api/v1/cost-centers/{created['id']}"
+    member_url = f"/api/v1/groups/{created['groupId']}/members/{user}"
+    if removed_before:
+        assert client.put(member_url).status_code == 201
+        assert client.delete(member_url).status_code == 204
+    assert client.patch(
+        f"/api/v1/principals/{user}", json={"defaultCostCenterId": created["id"]}
+    ).status_code == 200
+    grant_id = await grant(client, user, created["id"])
+    repository: InMemoryCostCenterRepository = app.state.cost_center_repository
+    if with_pending:
+        stored = await repository.get_cost_center(TENANT, created["id"])
+        assert stored is not None
+        await repository.save_cost_center(
+            stored.model_copy(
+                update={"pending_rechecks": [PendingRecheck(reason="memberRemoved")]}, deep=True
+            ),
+            audit(),
+        )
+    directory: InMemoryDirectoryRepository = app.state.repository
+    grants = app.state.entitlement_repository
+    state = (
+        repository.cost_centers,
+        repository.audit_events,
+        directory.principals,
+        directory.groups,
+        directory.memberships,
+        directory.audit_events,
+        grants.entitlements,
+        grants.audit_events,
+    )
+    before = deepcopy(state)
+
+    refused = client.delete(member_url)
+
+    assert refused.status_code == 404, refused.text
+    assert state == before
+    assert client.get(f"/api/v1/groups/{created['groupId']}/members").json() == []
+
+    # The cost-center route still supports removing default-only charge eligibility.
+    removed = client.delete(f"{center_url}/members/{user}")
+    assert removed.status_code == 200, removed.text
+    assert client.get(f"/api/v1/principals/{user}").json()["defaultCostCenterId"] is None
+    assert client.get(f"/api/v1/entitlements/{grant_id}").json()["enabled"] is False
 
 
 def test_only_owner_can_rename_or_delete_managed_group(client: TestClient) -> None:
@@ -272,6 +350,100 @@ async def test_memory_collision_or_stale_save_changes_neither_roster_nor_audit()
         await repository.save_cost_center(saved, event)
     assert directory.groups[identifier].name == "Cost center: Renamed"
     assert event.id not in repository.audit_events
+
+
+@pytest.mark.parametrize(
+    ("backend", "outbox"), [("memory", False), ("cosmos", False), ("cosmos", True)]
+)
+async def test_recorded_removal_requires_a_matching_explicit_audit_event(
+    backend: str, outbox: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, repository = repositories(backend)
+    now = utc_now()
+    recorded = audit().model_copy(
+        update={
+            "action": "costCenter.memberRemoved",
+            "resource_id": center().id,
+            "details": {"principalId": "principal_test", "listed": True},
+            "created_at": now,
+        },
+        deep=True,
+    )
+    if isinstance(repository, CosmosCostCenterRepository):
+        for container in (repository._desired, repository._audit):
+            stored = cast(Container, container)
+
+            async def query_items(
+                *,
+                query: str,
+                parameters: list[dict[str, Any]],
+                partition_key: str,
+                stored: Container = stored,
+            ) -> AsyncIterator[dict[str, Any]]:
+                if stored.failure:
+                    raise stored.failure
+                assert all(
+                    clause in query
+                    for clause in (
+                        "SELECT TOP 1",
+                        "c.tenantId = @tenantId",
+                        "c.entityType = 'auditEvent'",
+                        "c.action = 'costCenter.memberRemoved'",
+                        "c.resourceType = 'costCenter'",
+                        "c.resourceId = @costCenterId",
+                        "c.details.principalId = @principalId",
+                        "c.details.listed = true",
+                        "ORDER BY c.createdAt DESC",
+                    )
+                )
+                values = {item["name"]: item["value"] for item in parameters}
+                assert values["@tenantId"] == partition_key
+                matches = [
+                    item
+                    for item in stored.items.values()
+                    if item["tenantId"] == partition_key
+                    and item["entityType"] == "auditEvent"
+                    and item["action"] == "costCenter.memberRemoved"
+                    and item["resourceType"] == "costCenter"
+                    and item["resourceId"] == values["@costCenterId"]
+                    and item["details"].get("principalId") == values["@principalId"]
+                    and item["details"].get("listed") is True
+                ]
+                for item in sorted(matches, key=lambda item: item["createdAt"], reverse=True)[:1]:
+                    yield item
+
+            monkeypatch.setattr(stored, "query_items", query_items, raising=False)
+
+    async def save_event(event: AuditEvent) -> None:
+        if isinstance(repository, InMemoryCostCenterRepository):
+            repository.audit_events[event.id] = event
+        else:
+            assert isinstance(repository, CosmosCostCenterRepository)
+            container = repository._desired if outbox else repository._audit
+            await container.create_item(event.model_dump(mode="json", by_alias=True))
+
+    for changes in (
+        {"tenant_id": "another-tenant"},
+        {"action": "costCenter.memberAdded"},
+        {"resource_type": "principal"},
+        {"resource_id": "another-center"},
+        {"details": {"principalId": "another-principal", "listed": True}},
+        {"details": {"principalId": "principal_test", "listed": False}},
+    ):
+        await save_event(recorded.model_copy(update={**changes, "id": new_id("audit")}))
+    assert not await repository.member_removal_recorded(TENANT, center().id, "principal_test")
+    await save_event(recorded)
+    assert await repository.member_removal_recorded(
+        TENANT, center().id, "principal_test", not_before=now
+    )
+    assert not await repository.member_removal_recorded(
+        TENANT, center().id, "principal_test", not_before=now + timedelta(microseconds=1)
+    )
+    if isinstance(repository, CosmosCostCenterRepository) and outbox:
+        cast(Container, repository._audit).failure = AssertionError("Projection is unavailable")
+        assert await repository.member_removal_recorded(
+            TENANT, center().id, "principal_test", not_before=now
+        )
 
 
 async def test_cosmos_owns_one_atomic_group_center_audit_batch_even_at_500_members() -> None:
@@ -533,6 +705,104 @@ async def test_group_removal_preserves_charge_rechecks_and_resets_the_personal_d
     assert revoked["enabled"] is False
     assert revoked["revocation"]["costCenterId"] == created["id"]
     assert client.get(f"/api/v1/principals/{user}").json()["defaultCostCenterId"] is None
+
+
+@pytest.mark.parametrize("kind", ["user", "securityGroup"])
+async def test_group_removal_retry_finishes_its_pending_recheck(
+    client: TestClient, kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = cast(FastAPI, client.app)
+    created, member = create_center(client), principal(client, kind)
+    center_url = f"/api/v1/cost-centers/{created['id']}"
+    member_url = f"/api/v1/groups/{created['groupId']}/members/{member}"
+    assert client.put(member_url).status_code == 201
+    grant_id = await grant(client, member, created["id"], kind)
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            app.state.entitlement_service,
+            "revoke_for_cost_center",
+            AsyncMock(side_effect=ConflictError("The model is busy")),
+        )
+        removed = client.delete(member_url)
+    assert removed.status_code == 204, removed.text
+    view = client.get(center_url).json()
+    assert view["members"] == []
+    [pending] = view["pendingRechecks"]
+    assert pending["subjectId"] == (None if kind == "securityGroup" else member)
+    assert pending["entitlementIds"] == [grant_id]
+    assert client.get(f"/api/v1/entitlements/{grant_id}").json()["enabled"] is True
+
+    repeated = client.delete(member_url)
+
+    assert repeated.status_code == 204, repeated.text
+    updated = client.get(center_url).json()
+    assert updated["pendingRechecks"] == []
+    assert updated["membershipRevision"] == view["membershipRevision"]
+    assert client.get(f"/api/v1/entitlements/{grant_id}").json()["enabled"] is False
+
+
+@pytest.mark.parametrize("tenant_default", [False, True])
+@pytest.mark.parametrize("stale_retry", [False, True])
+async def test_group_removal_retry_completes_a_failed_default_reset(
+    client: TestClient,
+    tenant_default: bool,
+    stale_retry: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = cast(FastAPI, client.app)
+    created, user = create_center(client), principal(client)
+    center_url = f"/api/v1/cost-centers/{created['id']}"
+    member_url = f"/api/v1/groups/{created['groupId']}/members/{user}"
+    assert client.put(member_url).status_code == 201
+    assert client.patch(
+        f"/api/v1/principals/{user}", json={"defaultCostCenterId": created["id"]}
+    ).status_code == 200
+    if tenant_default:
+        assert client.put(
+            "/api/v1/cost-center-settings", json={"defaultCostCenterId": created["id"]}
+        ).status_code == 200
+    grant_id = await grant(client, user, created["id"])
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            app.state.repository,
+            "save_principal",
+            AsyncMock(side_effect=ConflictError("The default reset was interrupted")),
+        )
+        interrupted = client.delete(member_url)
+    assert interrupted.status_code == 409, interrupted.text
+    view = client.get(center_url).json()
+    assert view["members"] == []
+    assert client.get(f"/api/v1/principals/{user}").json()["defaultCostCenterId"] == created["id"]
+    assert client.get(f"/api/v1/entitlements/{grant_id}").json()["enabled"] is True
+
+    if stale_retry:
+        repository: InMemoryCostCenterRepository = app.state.cost_center_repository
+        save = repository.save_cost_center
+
+        async def changed_meanwhile(
+            cost_center: CostCenter, audit_event: AuditEvent
+        ) -> CostCenter:
+            await save(cost_center.model_copy(update={"description": "Concurrent change"}), audit())
+            return await save(cost_center, audit_event)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(repository, "save_cost_center", changed_meanwhile)
+            conflicted = client.delete(member_url)
+        assert conflicted.status_code == 409, conflicted.text
+        assert (
+            client.get(f"/api/v1/principals/{user}").json()["defaultCostCenterId"]
+            == created["id"]
+        )
+        assert client.get(f"/api/v1/entitlements/{grant_id}").json()["enabled"] is True
+
+    repeated = client.delete(member_url)
+
+    assert repeated.status_code == 204, repeated.text
+    updated = client.get(center_url).json()
+    assert updated["membershipRevision"] == view["membershipRevision"]
+    assert updated["pendingRechecks"] == []
+    assert client.get(f"/api/v1/principals/{user}").json()["defaultCostCenterId"] is None
+    assert client.get(f"/api/v1/entitlements/{grant_id}").json()["enabled"] is tenant_default
 
 
 async def test_group_subject_grants_under_another_center_prevent_owner_deletion(

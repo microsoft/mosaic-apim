@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import uuid4
 
 from mosaic_api.cost_centers import CostCenter, CostCenterSettings
@@ -96,6 +97,25 @@ class InMemoryCostCenterRepository:
             self._directory.groups[group.id] = group.model_copy(update={"etag": uuid4().hex})
         self.audit_events[audit_event.id] = audit_event
         return stored.model_copy(deep=True)
+
+    async def member_removal_recorded(
+        self,
+        tenant_id: str,
+        cost_center_id: str,
+        principal_id: str,
+        *,
+        not_before: datetime | None = None,
+    ) -> bool:
+        return any(
+            event.tenant_id == tenant_id
+            and event.action == "costCenter.memberRemoved"
+            and event.resource_type == "costCenter"
+            and event.resource_id == cost_center_id
+            and event.details.get("principalId") == principal_id
+            and event.details.get("listed") is True
+            and (not_before is None or event.created_at >= not_before)
+            for event in self.audit_events.values()
+        )
 
     async def delete_cost_center(self, cost_center: CostCenter, audit_event: AuditEvent) -> None:
         key = (cost_center.tenant_id, cost_center.id)

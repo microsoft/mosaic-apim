@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from azure.cosmos import exceptions
 from azure.cosmos.aio import CosmosClient
 
@@ -103,6 +105,36 @@ class CosmosCostCenterRepository(CosmosRepositoryBase):
             cost_center, None, audit_event, "replace", conflict_message=COST_CENTER_CHANGED
         )
         return cost_center
+
+    async def member_removal_recorded(
+        self,
+        tenant_id: str,
+        cost_center_id: str,
+        principal_id: str,
+        *,
+        not_before: datetime | None = None,
+    ) -> bool:
+        query = (
+            "SELECT TOP 1 * FROM c WHERE c.tenantId = @tenantId "
+            "AND c.entityType = 'auditEvent' AND c.action = 'costCenter.memberRemoved' "
+            "AND c.resourceType = 'costCenter' AND c.resourceId = @costCenterId "
+            "AND c.details.principalId = @principalId AND c.details.listed = true "
+            "ORDER BY c.createdAt DESC"
+        )
+        parameters: list[dict[str, object]] = [
+            {"name": "@tenantId", "value": tenant_id},
+            {"name": "@costCenterId", "value": cost_center_id},
+            {"name": "@principalId", "value": principal_id},
+        ]
+        # The event can still be in the transactional outbox when audit projection is deferred.
+        for container in (self._desired, self._audit):
+            async for item in container.query_items(
+                query=query, parameters=parameters, partition_key=tenant_id
+            ):
+                event = self._model(AuditEvent, item)
+                if not_before is None or event.created_at >= not_before:
+                    return True
+        return False
 
     async def delete_cost_center(self, cost_center: CostCenter, audit_event: AuditEvent) -> None:
         current = await self.get_cost_center(cost_center.tenant_id, cost_center.id)

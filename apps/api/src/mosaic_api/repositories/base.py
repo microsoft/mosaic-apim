@@ -1,4 +1,5 @@
 from collections.abc import Callable, Sequence
+from datetime import datetime
 from typing import Protocol
 
 from mosaic_api.budget_notifications import BudgetNotificationOutbox
@@ -673,6 +674,17 @@ class CostCenterRepository(Protocol):
         self, cost_center: CostCenter, audit_event: AuditEvent
     ) -> CostCenter:
         """Replace the version that was read; raises ``ConflictError`` if it changed since."""
+        ...
+
+    async def member_removal_recorded(
+        self,
+        tenant_id: str,
+        cost_center_id: str,
+        principal_id: str,
+        *,
+        not_before: datetime | None = None,
+    ) -> bool:
+        """Whether an explicit removal was durably saved, optionally since a principal version."""
         ...
 
     async def delete_cost_center(

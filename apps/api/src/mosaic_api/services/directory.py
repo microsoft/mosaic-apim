@@ -99,7 +99,7 @@ class CostCenterMemberships(Protocol):
     ) -> tuple[CostCenterView, bool]: ...
 
     async def remove_member(
-        self, actor: Actor, cost_center_id: str, principal_id: str
+        self, actor: Actor, cost_center_id: str, principal_id: str, *, explicit_only: bool = False
     ) -> CostCenterView: ...
 
 
@@ -833,7 +833,9 @@ class DirectoryService:
         group = await self._repository.get_group(actor.tenant_id, group_id)
         if group is not None and group.purpose == GroupPurpose.COST_CENTER:
             center = await self._managed_center(actor, group)
-            await self._membership_service().remove_member(actor, center.id, principal_id)
+            await self._membership_service().remove_member(
+                actor, center.id, principal_id, explicit_only=True
+            )
             return
         membership = await self._repository.get_membership(actor.tenant_id, group_id, principal_id)
         if not membership:

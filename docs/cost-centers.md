@@ -126,9 +126,12 @@ limit, and preserve the existing grant rechecks and personal-default reset on re
 reference occupies one row; neither response expands the group's directory membership.
 
 A person's default, and permission to charge the tenant's default, **do not** make that person
-an explicit group member. Rename or delete the group through its owning cost center; independent
-group edits/deletion are refused. Deleting a center also removes its owned group atomically, but
-is refused if a grant still references that group, even under another center.
+an explicit group member. Removing an absent group reference returns 404 without changing defaults
+or grants, except that a recorded explicit removal can be retried to finish its default reset or
+grant rechecks. The cost-center route still supports removing default-only charge eligibility.
+Rename or delete the group through its owning cost center; independent group edits/deletion are
+refused. Deleting a center also removes its owned group atomically, but is refused if a grant still
+references that group, even under another center.
 
 The console distinguishes these records in **Identity > MOSAIC groups** with a managed-group
 badge, owning-center navigation, and an **Edit members** workspace. It accepts recorded people,
