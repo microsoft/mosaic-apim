@@ -1,10 +1,18 @@
-from collections.abc import AsyncIterator
+import asyncio
+from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+from math import ceil
 from typing import Protocol
 from uuid import UUID
 
-from mosaic_api.cost_centers import COST_CENTERS_BUSY, COST_CENTERS_SCOPE, RecheckReason
+from mosaic_api.cost_centers import (
+    COST_CENTERS_BUSY,
+    COST_CENTERS_SCOPE,
+    CostCenterView,
+    RecheckReason,
+)
 from mosaic_api.domain import (
     AuditEvent,
     DirectoryMemberPage,
@@ -12,9 +20,12 @@ from mosaic_api.domain import (
     DirectoryPermissionStatus,
     DirectorySearchKind,
     DirectoryStatus,
+    DirectoryVerificationState,
+    DirectoryVerificationStatus,
     Group,
     GroupCreate,
     GroupMembership,
+    GroupPurpose,
     GroupUpdate,
     Principal,
     PrincipalCreate,
@@ -31,10 +42,13 @@ from mosaic_api.errors import (
     DirectoryDisabledError,
     DirectoryError,
     DirectoryForbiddenError,
+    DirectoryThrottledError,
     NotFoundError,
     ValidationError,
 )
 from mosaic_api.integrations.graph import DirectoryLookup, DirectoryPhoto
+from mosaic_api.integrations.graph.membership import verification_scope
+from mosaic_api.managed_cost_center_groups import group_membership, require_unmanaged_group
 from mosaic_api.repositories import (
     CostCenterRepository,
     DirectoryRepository,
@@ -77,6 +91,18 @@ class CostCenterChecks(Protocol):
     ) -> list[str]: ...
 
 
+class CostCenterMemberships(Protocol):
+    async def get_cost_center(self, actor: Actor, cost_center_id: str) -> CostCenterView: ...
+
+    async def add_member_with_status(
+        self, actor: Actor, cost_center_id: str, principal_id: str
+    ) -> tuple[CostCenterView, bool]: ...
+
+    async def remove_member(
+        self, actor: Actor, cost_center_id: str, principal_id: str
+    ) -> CostCenterView: ...
+
+
 def _moves_default(principal: Principal, request: PrincipalUpdate) -> bool:
     """Whether the update may take away the principal's default cost center."""
 
@@ -99,6 +125,8 @@ class DirectoryService:
         group_claims_enabled: bool = True,
         cost_center_repository: CostCenterRepository | None = None,
         cost_center_checks: CostCenterChecks | None = None,
+        cost_center_memberships: CostCenterMemberships | None = None,
+        clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._repository = repository
         self._gateways = gateway_repository
@@ -109,6 +137,10 @@ class DirectoryService:
         # The EntitlementService, which revokes a principal's grants under a former default
         # cost center it may no longer charge.
         self._cost_center_checks = cost_center_checks
+        self._cost_center_memberships = cost_center_memberships
+        self._clock = clock
+        self._directory_checks: dict[str, DirectoryVerificationStatus] = {}
+        self._directory_check_locks: dict[str, asyncio.Lock] = {}
 
     async def _onboarding_default(
         self, actor: Actor, kind: PrincipalKind, requested: str | None
@@ -181,7 +213,7 @@ class DirectoryService:
         return await self._repository.list_principals(actor.tenant_id)
 
     async def directory_status(
-        self, _actor: Actor, *, include_permissions: bool = False
+        self, actor: Actor, *, include_permissions: bool = False
     ) -> DirectoryStatus:
         if not self._directory:
             message = "Directory lookup requires Entra authentication. Use manual entry instead."
@@ -223,6 +255,126 @@ class DirectoryService:
                 for permission, capability, required in permission_definitions
             ],
             permission_status_message=permission_status_message,
+            message=message,
+            membership_check=self._directory_check_status(actor),
+        )
+
+    def _directory_check_status(self, actor: Actor) -> DirectoryVerificationStatus:
+        if self._directory is None:
+            return DirectoryVerificationStatus(state=DirectoryVerificationState.DISABLED)
+        status = self._directory_checks.get(
+            actor.tenant_id.casefold(), DirectoryVerificationStatus()
+        )
+        if status.state == DirectoryVerificationState.READY and (
+            status.checked_at is None
+            or status.fresh_until is None
+            or not status.checked_at <= self._clock() < status.fresh_until
+        ):
+            return status.model_copy(update={"state": DirectoryVerificationState.STALE})
+        return status
+
+    async def check_directory_group(
+        self, actor: Actor, group_object_id: str
+    ) -> DirectoryVerificationStatus:
+        if self._directory is None:
+            raise DirectoryDisabledError(
+                "Directory lookup requires Entra authentication. Use manual entry instead."
+            )
+        group_id, _ = verification_scope(group_object_id, [group_object_id])
+        tenant = actor.tenant_id.casefold()
+        previous = self._directory_check_status(actor)
+        lock = self._directory_check_locks.setdefault(tenant, asyncio.Lock())
+        if lock.locked():
+            if previous.group_object_id == group_id:
+                return previous
+            raise ConflictError("A directory group check is already in progress")
+        now = self._clock()
+        if previous.retry_at is not None and previous.retry_at > now:
+            raise DirectoryThrottledError(
+                previous.message or "Microsoft Graph membership verification is throttled",
+                retry_after=ceil((previous.retry_at - now).total_seconds()),
+            )
+        async with lock:
+            self._directory_checks[tenant] = DirectoryVerificationStatus(
+                state=DirectoryVerificationState.CHECKING,
+                group_object_id=group_id,
+                checked_at=now,
+                last_successful_at=previous.last_successful_at,
+                last_successful_group_object_id=previous.last_successful_group_object_id,
+            )
+            try:
+                # Matching the group itself only supplies a bounded diagnostic cohort. The
+                # result is discarded, never published as a person's authorization evidence.
+                evidence = await self._directory.verify_group_members(group_id, [group_id])
+                if (
+                    evidence.tenant_id.casefold() != tenant
+                    or evidence.group_object_id != group_id
+                    or evidence.candidate_object_ids != frozenset({group_id})
+                ):
+                    raise DirectoryForbiddenError(
+                        "Directory verification returned evidence for an unexpected scope"
+                    )
+            except DirectoryThrottledError as exc:
+                self._record_directory_check_failure(
+                    tenant, DirectoryVerificationState.THROTTLED, str(exc), exc.retry_after
+                )
+                raise
+            except DirectoryForbiddenError as exc:
+                self._record_directory_check_failure(
+                    tenant, DirectoryVerificationState.FORBIDDEN, str(exc)
+                )
+                raise
+            except DirectoryError as exc:
+                self._record_directory_check_failure(
+                    tenant, DirectoryVerificationState.UNAVAILABLE, str(exc)
+                )
+                raise
+            except asyncio.CancelledError:
+                self._record_directory_check_failure(
+                    tenant, DirectoryVerificationState.CANCELLED, "Directory check was cancelled"
+                )
+                raise
+            else:
+                checked_at = min(now, evidence.checked_at)
+                self._directory_checks[tenant] = DirectoryVerificationStatus(
+                    state=DirectoryVerificationState.READY,
+                    group_object_id=group_id,
+                    checked_at=checked_at,
+                    completed_at=self._clock(),
+                    last_successful_at=checked_at,
+                    last_successful_group_object_id=group_id,
+                    fresh_until=checked_at + timedelta(minutes=5),
+                )
+            finally:
+                if self._directory_checks[tenant].state == DirectoryVerificationState.CHECKING:
+                    self._record_directory_check_failure(
+                        tenant,
+                        DirectoryVerificationState.UNAVAILABLE,
+                        "Directory check did not complete",
+                    )
+        return self._directory_check_status(actor)
+
+    def _record_directory_check_failure(
+        self,
+        tenant: str,
+        state: DirectoryVerificationState,
+        message: str,
+        retry_after: int | None = None,
+    ) -> None:
+        current = self._directory_checks[tenant]
+        completed_at = self._clock()
+        self._directory_checks[tenant] = DirectoryVerificationStatus(
+            state=state,
+            group_object_id=current.group_object_id,
+            checked_at=current.checked_at,
+            completed_at=completed_at,
+            last_successful_at=current.last_successful_at,
+            last_successful_group_object_id=current.last_successful_group_object_id,
+            retry_at=(
+                completed_at + timedelta(seconds=retry_after)
+                if retry_after is not None
+                else None
+            ),
             message=message,
         )
 
@@ -573,6 +725,7 @@ class DirectoryService:
 
     async def update_group(self, actor: Actor, group_id: str, request: GroupUpdate) -> Group:
         group = await self.get_group(actor, group_id)
+        require_unmanaged_group(group)
         changes = request.model_dump(exclude_unset=True)
         updated = Group.model_validate(
             {
@@ -590,6 +743,7 @@ class DirectoryService:
 
     async def delete_group(self, actor: Actor, group_id: str) -> None:
         group = await self.get_group(actor, group_id)
+        require_unmanaged_group(group)
         memberships = await self._repository.list_memberships(actor.tenant_id, group_id=group_id)
         if memberships:
             raise ConflictError(
@@ -602,13 +756,43 @@ class DirectoryService:
         )
 
     async def list_memberships(self, actor: Actor, group_id: str) -> list[GroupMembership]:
-        await self.get_group(actor, group_id)
+        group = await self.get_group(actor, group_id)
+        if group.purpose == GroupPurpose.COST_CENTER:
+            center = await self._managed_center(actor, group)
+            return [group_membership(group, member) for member in center.members]
         return await self._repository.list_memberships(actor.tenant_id, group_id=group_id)
+
+    def _membership_service(self) -> CostCenterMemberships:
+        if self._cost_center_memberships is None:
+            raise ConflictError("The managed cost-center membership service is not configured")
+        return self._cost_center_memberships
+
+    async def _managed_center(self, actor: Actor, group: Group) -> CostCenterView:
+        if group.purpose != GroupPurpose.COST_CENTER or not group.cost_center_id:
+            raise ConflictError("The group does not identify an owning cost center")
+        center = await self._membership_service().get_cost_center(actor, group.cost_center_id)
+        if center.group_id != group.id:
+            raise ConflictError("The cost center does not own this group")
+        return center
 
     async def add_membership(
         self, actor: Actor, group_id: str, principal_id: str
     ) -> tuple[GroupMembership, bool]:
         group = await self.get_group(actor, group_id)
+        if group.purpose == GroupPurpose.COST_CENTER:
+            center = await self._managed_center(actor, group)
+            updated, created = await self._membership_service().add_member_with_status(
+                actor, center.id, principal_id
+            )
+            member = next(
+                (item for item in updated.members if item.principal_id == principal_id), None
+            )
+            if member is None:
+                raise ConflictError(
+                    "The cost-center membership changed; reload it and try again",
+                    details={"costCenterId": center.id, "principalId": principal_id},
+                )
+            return group_membership(group, member), created
         principal = await self.get_principal(actor, principal_id)
         if principal.kind == PrincipalKind.SECURITY_GROUP:
             raise ValidationError(
@@ -646,6 +830,11 @@ class DirectoryService:
         return saved, True
 
     async def remove_membership(self, actor: Actor, group_id: str, principal_id: str) -> None:
+        group = await self._repository.get_group(actor.tenant_id, group_id)
+        if group is not None and group.purpose == GroupPurpose.COST_CENTER:
+            center = await self._managed_center(actor, group)
+            await self._membership_service().remove_member(actor, center.id, principal_id)
+            return
         membership = await self._repository.get_membership(actor.tenant_id, group_id, principal_id)
         if not membership:
             raise NotFoundError(

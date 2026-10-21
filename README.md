@@ -33,7 +33,10 @@ which MOSAIC keeps in its own Key Vault.
 
 These show the administrator console (`apps/web`) and the end-user portal (`apps/portal`) running
 against a fictional Contoso estate that [`scripts/screenshots`](scripts/screenshots) seeds
-locally, not a real tenant; that is why the console reports **Local mode**. Endpoint URLs, host
+locally, not a real tenant; that is why the console reports **Local mode**. Directory data,
+Graph permission claims, and verification results are simulated to illustrate Entra-backed
+workflows; they are not live connectivity evidence. Normal local-authentication deployments
+cannot perform Graph lookups. Endpoint URLs, host
 and resource names, tenant and object IDs, MOSAIC record IDs, and keys are blurred. When the UI
 changes, regenerate them and update their descriptions as described in
 [docs/screenshots.md](docs/screenshots.md).
@@ -221,6 +224,14 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
     </td>
   </tr>
   <tr>
+    <td colspan="2" valign="top">
+      <img src="docs/images/screenshots/console-directory-verification.png" alt="An explicit complete-group read with group-scoped status, timestamps, and diagnostic freshness, separate from the member preview">
+      <p><b>Complete group-read verification.</b> An explicit check shows a selected Entra group's
+      complete-read result, scope, and freshness, illustrated here with a simulated Graph response. This process-local
+      diagnostic does not grant access or replace owner eligibility.</p>
+    </td>
+  </tr>
+  <tr>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-people-search.png" alt="The full-workspace Add person editor with a selected Entra search result and explicit Add action">
       <p><b>Find a person.</b> Search Microsoft Entra instead of copying object IDs into a form.
@@ -257,9 +268,18 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-cost-center-detail.png" alt="A selected cost center's Members section with member kinds and default badges, alongside Overview, Limits, and Budget navigation">
       <p><b>Cost center members.</b> The selected center's people, applications, agents, and
-      security groups, with overview, limits, and budget in separate sections. Removing a member
+      security groups share an explicit roster with its linked MOSAIC group, separate from defaults.
+      Removing a member
       revokes the grants that relied on it and deletes their
       keys on the next apply.</p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <img src="docs/images/screenshots/console-cost-center-group.png" alt="A managed MOSAIC group's cost-center ownership, explicit membership references, and separate member-editing action">
+      <p><b>Managed cost-center group.</b> Inspect the owning cost center and edit its single
+      explicit roster of individuals and registered Entra security-group references from either
+      membership view. Membership permits charging the center; it does not grant model access.</p>
     </td>
   </tr>
   <tr>
@@ -403,11 +423,11 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-runtime-configuration.png" alt="Runtime configuration in Settings with read-only deployment details and granted or missing Microsoft Graph permissions">
-      <p><b>Runtime configuration.</b> Read-only deployment details and directory availability sit
-      alongside the granted or missing state of every required and optional Microsoft Graph
-      permission. Administrators can refresh the check and open remediation guidance for missing
-      consent.</p>
+      <img src="docs/images/screenshots/console-runtime-configuration.png" alt="Runtime configuration with read-only deployment details, Graph consent, and separate complete-group-read diagnostic status">
+      <p><b>Runtime configuration.</b> Read-only deployment details separate Graph permission consent
+      from complete-group-read verification; the demo's Graph states are simulated.
+      Refresh status, open consent remediation, or choose an Entra
+      group in Identity for an explicit check.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-notification-readiness.png" alt="Notification readiness checks with evidence and remediation for storage, always-on hosting, email, public message links, and disabled workers">

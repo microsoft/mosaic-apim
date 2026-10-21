@@ -11,6 +11,7 @@ export interface WorkspaceEditorFrameProps {
   onBack: () => void
   onCancel?: () => void
   backLabel?: string
+  cancelLabel?: string
   actions?: ReactNode | ((requestLeave: RequestWorkspaceLeave) => ReactNode)
   primaryAction?: { label: string; onClick: () => void; disabled?: boolean }
   dirty?: boolean
@@ -22,7 +23,7 @@ export interface WorkspaceEditorFrameProps {
 }
 
 export function WorkspaceEditorFrame({
-  title, description, children, onBack, onCancel, backLabel = 'Back',
+  title, description, children, onBack, onCancel, backLabel = 'Back', cancelLabel = 'Cancel',
   actions, primaryAction, dirty = false, pending = false, pendingLabel = 'Saving…',
   error, validationSummary, className,
 }: WorkspaceEditorFrameProps) {
@@ -45,7 +46,7 @@ export function WorkspaceEditorFrame({
               {description && <div className={styles.description}>{description}</div>}
             </div>
             <div className={styles.actions}>
-              {onCancel && <Button onClick={() => requestLeave(onCancel)}>Cancel</Button>}
+              {onCancel && <Button onClick={() => requestLeave(onCancel)}>{cancelLabel}</Button>}
               {typeof actions === 'function' ? actions(requestLeave) : actions}
               {primaryAction && <Button appearance="primary" disabled={pending || primaryAction.disabled}
                 onClick={primaryAction.onClick}>{primaryAction.label}</Button>}

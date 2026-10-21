@@ -230,6 +230,22 @@ describe('Entitlements workbench', () => {
     expect(await screen.findByRole('combobox', { name: 'Published model' })).toHaveValue(modelPublication.id)
   })
 
+  it('excludes managed cost-center groups from unsupported legacy grant subjects', async () => {
+    const user = userEvent.setup()
+    api.listGroups.mockResolvedValue([
+      { id: 'group_1', name: 'Engineering' },
+      { id: 'managed-group', name: 'Cost center: Support', purpose: 'costCenter', costCenterId: 'cc-support' },
+    ])
+    renderPage()
+    const newGrant = screen.getByRole('button', { name: 'New grant' })
+    await waitFor(() => expect(newGrant).toBeEnabled())
+    await user.click(newGrant)
+    const editor = await screen.findByRole('region', { name: 'New grant' })
+    expect(await within(editor).findByRole('option', { name: 'Engineering (MOSAIC group)' })).toBeVisible()
+    expect(within(editor).queryByRole('option', { name: /Cost center: Support/ })).not.toBeInTheDocument()
+    expect(api.createEntitlement).not.toHaveBeenCalled()
+  })
+
   it('creates in the full workspace and returns with the saved grant selected, preserving filters', async () => {
     const user = userEvent.setup()
     api.createEntitlement.mockImplementation(async () => {

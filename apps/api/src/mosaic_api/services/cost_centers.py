@@ -9,6 +9,7 @@ import structlog
 from mosaic_api.cost_centers import (
     COST_CENTERS_BUSY,
     COST_CENTERS_SCOPE,
+    MAX_MEMBERS,
     CostCenter,
     CostCenterBook,
     CostCenterCreate,
@@ -29,12 +30,14 @@ from mosaic_api.cost_centers import (
 from mosaic_api.domain import (
     AuditEvent,
     EntitlementResourceKind,
+    EntitlementSubjectKind,
     PrincipalKind,
     general_cost_center_id,
     new_id,
     utc_now,
 )
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
+from mosaic_api.managed_cost_center_groups import linked_cost_center, managed_group
 from mosaic_api.repositories import (
     CostCenterRepository,
     DirectoryRepository,
@@ -135,6 +138,7 @@ class CostCenterService:
         entitlement_repository: EntitlementRepository,
         gateway_repository: GatewayRepository,
         entitlements: Any,
+        managed_groups_enabled: bool = False,
     ) -> None:
         # ``entitlements`` is the EntitlementService, which revokes a removed member's grants
         # under the publication locks its own mutations take.
@@ -143,6 +147,7 @@ class CostCenterService:
         self._entitlement_records = entitlement_repository
         self._gateways = gateway_repository
         self._entitlements = entitlements
+        self._managed_groups_enabled = managed_groups_enabled
 
     @staticmethod
     def _audit(
@@ -283,12 +288,42 @@ class CostCenterService:
                 owners=request.owners,
                 keys_allowed=request.keys_allowed,
             )
+            if self._managed_groups_enabled:
+                cost_center = linked_cost_center(cost_center)
+            details: dict[str, Any] = {"code": request.code}
+            if cost_center.group_id is not None:
+                details["groupId"] = cost_center.group_id
             await self._repository.create_cost_center(
                 cost_center,
-                self._audit(actor, "costCenter.created", cost_center.id, {"code": request.code}),
+                self._audit(actor, "costCenter.created", cost_center.id, details),
             )
         logger.info("cost_center_created", cost_center_id=cost_center.id, tenant_id=actor.tenant_id)
         return await self.get_cost_center(actor, cost_center.id)
+
+    async def enable_managed_group(self, actor: Actor, cost_center_id: str) -> CostCenterView:
+        if not self._managed_groups_enabled:
+            raise ValidationError("Experimental managed cost-center groups are disabled")
+        async with scope_lease(
+            self._gateways, actor.tenant_id, COST_CENTERS_SCOPE, busy_message=COST_CENTERS_BUSY
+        ):
+            current = await self._stored(actor, cost_center_id)
+            if current.group_id is None:
+                updated = linked_cost_center(current)
+                await self._repository.save_cost_center(
+                    updated,
+                    self._audit(
+                        actor,
+                        "costCenter.groupLinked",
+                        current.id,
+                        {"groupId": updated.group_id, "memberCount": len(current.members)},
+                    ),
+                )
+            else:
+                group = await self._directory.get_group(actor.tenant_id, current.group_id)
+                if group is None:
+                    raise ConflictError("The cost center's managed group is missing")
+                managed_group(current, group)
+        return await self.get_cost_center(actor, cost_center_id)
 
     async def update_cost_center(
         self, actor: Actor, cost_center_id: str, request: CostCenterUpdate
@@ -339,15 +374,25 @@ class CostCenterService:
                     "This is the tenant's default cost center. Choose another default first.",
                     details={"reason": "tenantDefault"},
                 )
+            all_grants = await self._entitlement_records.list_entitlements(actor.tenant_id)
             grants = [
                 grant
-                for grant in await self._entitlement_records.list_entitlements(actor.tenant_id)
+                for grant in all_grants
                 if grant.cost_center_id == current.id
             ]
             if grants:
                 raise ConflictError(
                     "Grants are charged to this cost center. Remove them before deleting it.",
                     details={"reason": "hasGrants", "grants": len(grants)},
+                )
+            if current.group_id and any(
+                grant.subject.kind == EntitlementSubjectKind.GROUP
+                and grant.subject.id == current.group_id
+                for grant in all_grants
+            ):
+                raise ConflictError(
+                    "Grants still reference this cost center's managed group",
+                    details={"reason": "groupHasGrants", "groupId": current.group_id},
                 )
             defaults = [
                 principal.id
@@ -413,13 +458,19 @@ class CostCenterService:
     async def add_member(
         self, actor: Actor, cost_center_id: str, principal_id: str
     ) -> CostCenterView:
+        view, _ = await self.add_member_with_status(actor, cost_center_id, principal_id)
+        return view
+
+    async def add_member_with_status(
+        self, actor: Actor, cost_center_id: str, principal_id: str
+    ) -> tuple[CostCenterView, bool]:
         principal = await self._directory.get_principal(actor.tenant_id, principal_id)
         if principal is None:
             raise NotFoundError("Principal was not found", details={"id": principal_id})
         current = await self._stored(actor, cost_center_id)
         if principal_id in current.member_ids():
-            return await self.get_cost_center(actor, cost_center_id)
-        if len(current.members) >= 500:
+            return await self.get_cost_center(actor, cost_center_id), False
+        if len(current.members) >= MAX_MEMBERS:
             raise ValidationError(
                 "A cost center lists at most 500 members. Add a security group instead."
             )
@@ -439,7 +490,7 @@ class CostCenterService:
                 actor, "costCenter.memberAdded", cost_center_id, {"principalId": principal_id}
             ),
         )
-        return await self.get_cost_center(actor, cost_center_id)
+        return await self.get_cost_center(actor, cost_center_id), True
 
     async def remove_member(
         self, actor: Actor, cost_center_id: str, principal_id: str

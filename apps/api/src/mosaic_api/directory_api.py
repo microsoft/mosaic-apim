@@ -1,13 +1,16 @@
 from typing import Annotated, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
 from mosaic_api.auth import AuthContext, require_admin
 from mosaic_api.domain import (
+    DirectoryGroupCheckRequest,
     DirectoryMemberPage,
     DirectoryObject,
     DirectorySearchKind,
     DirectoryStatus,
+    DirectoryVerificationState,
+    DirectoryVerificationStatus,
 )
 from mosaic_api.services import DirectoryService
 from mosaic_api.services.directory import Actor
@@ -39,6 +42,24 @@ async def directory_status(
     return await _service(request).directory_status(
         _actor(auth), include_permissions=include_permissions
     )
+
+
+@directory_router.post(
+    "/directory/group-check",
+    response_model=DirectoryVerificationStatus,
+    responses={202: {"model": DirectoryVerificationStatus, "description": "Check in progress"}},
+)
+async def check_directory_group(
+    request: Request, response: Response, auth: Admin, payload: DirectoryGroupCheckRequest
+) -> DirectoryVerificationStatus:
+    if auth.tenant_id.casefold() != request.app.state.settings.tenant_id.casefold():
+        raise HTTPException(
+            status_code=403, detail="Directory checks are restricted to this tenant"
+        )
+    result = await _service(request).check_directory_group(_actor(auth), payload.group_object_id)
+    if result.state == DirectoryVerificationState.CHECKING:
+        response.status_code = status.HTTP_202_ACCEPTED
+    return result
 
 
 @directory_router.get("/directory/search", response_model=list[DirectoryObject])

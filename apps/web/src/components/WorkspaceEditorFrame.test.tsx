@@ -14,6 +14,20 @@ function Fluent({ children }: { children: ReactNode }) {
 }
 
 describe('WorkspaceEditorFrame and leave guard', () => {
+  it.each(['Cancel', 'Done'])('guards the %s close action', async (label) => {
+    const user = userEvent.setup()
+    const onCancel = vi.fn()
+    render(<Fluent><MemoryRouter><WorkspaceEditorFrame title="Edit model" dirty
+      onBack={vi.fn()} onCancel={onCancel} cancelLabel={label === 'Cancel' ? undefined : label}>
+      Form
+    </WorkspaceEditorFrame></MemoryRouter></Fluent>)
+    await user.click(screen.getByRole('button', { name: label }))
+    expect(screen.getByRole('dialog', { name: 'Discard unsaved changes?' })).toBeVisible()
+    expect(onCancel).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Discard changes' }))
+    expect(onCancel).toHaveBeenCalledOnce()
+  })
+
   it('guards controlled close in legacy MemoryRouter and restores focus after Stay', async () => {
     const user = userEvent.setup()
     const onBack = vi.fn()

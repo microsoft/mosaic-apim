@@ -32,6 +32,7 @@ import type {
   DirectoryObject,
   DirectorySearchKind,
   DirectoryStatus,
+  DirectoryVerificationStatus,
   EmailSettings,
   EmailSettingsUpdate,
   EmailTestResult,
@@ -269,6 +270,7 @@ export interface MosaicApi extends AdminApi {
   addMembership(groupId: string, principalId: string): Promise<GroupMembership>
   removeMembership(groupId: string, principalId: string): Promise<void>
   getDirectoryStatus(includePermissions?: boolean): Promise<DirectoryStatus>
+  checkDirectoryGroup(groupObjectId: string): Promise<DirectoryVerificationStatus>
   searchDirectory(kind: DirectorySearchKind, query: string, limit?: number): Promise<DirectoryObject[]>
   getDirectoryObject(objectId: string): Promise<DirectoryObject>
   getDirectoryPhoto(objectId: string): Promise<Blob | null>
@@ -783,6 +785,10 @@ export function useMosaicApi(): MosaicApi {
         request<DirectoryStatus>(
           `/api/v1/directory/status${includePermissions ? '?includePermissions=true' : ''}`,
         ),
+      checkDirectoryGroup: (groupObjectId) =>
+        request<DirectoryVerificationStatus>('/api/v1/directory/group-check', {
+          method: 'POST', body: { groupObjectId },
+        }),
       searchDirectory: (kind, query, limit = 20) =>
         request<DirectoryObject[]>(
           `/api/v1/directory/search?kind=${encodeURIComponent(kind)}&q=${encodeURIComponent(query)}&limit=${encodeURIComponent(String(limit))}`,

@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider, useLocation, useNavigate } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Group, Principal } from '../types'
+import type { Group, GroupMembership, Principal } from '../types'
 import { IdentityPage } from './IdentityPage'
 
 const mocks = vi.hoisted(() => ({
@@ -12,12 +12,15 @@ const mocks = vi.hoisted(() => ({
   getDirectoryStatus: vi.fn(),
   principals: [] as Principal[],
   groups: [] as Group[],
+  memberships: [] as GroupMembership[],
   mcpPublications: [] as Array<{ id: string; displayName: string; modelCallerId?: string | null }>,
   searchDirectory: vi.fn(),
   createPrincipal: vi.fn(),
   createGroup: vi.fn(),
   updatePrincipal: vi.fn(),
   updateGroup: vi.fn(),
+  addMembership: vi.fn(),
+  removeMembership: vi.fn(),
 }))
 
 vi.mock('../api', () => ({
@@ -43,7 +46,7 @@ vi.mock('../api', () => ({
       { id: 'cc-support', name: 'Support', code: 'support' },
     ],
     getCostCenterSettings: async () => ({ id: 'settings', tenantId: 'tenant', defaultCostCenterId: 'cc-general' }),
-    listMemberships: async () => [],
+    listMemberships: async (groupId: string) => mocks.memberships.filter((member) => member.groupId === groupId),
     listMcpPublications: async () => [...mocks.mcpPublications],
     createPrincipal: mocks.createPrincipal,
     updatePrincipal: mocks.updatePrincipal,
@@ -51,8 +54,8 @@ vi.mock('../api', () => ({
     createGroup: mocks.createGroup,
     updateGroup: mocks.updateGroup,
     deleteGroup: vi.fn(),
-    addMembership: vi.fn(),
-    removeMembership: vi.fn(),
+    addMembership: mocks.addMembership,
+    removeMembership: mocks.removeMembership,
   }),
 }))
 
@@ -103,14 +106,16 @@ function renderPage(path = '/identity?tab=users') {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
+  const router = createMemoryRouter([
+    { path: '/cost-centers/:costCenterId', element: <NavigationProbe /> },
+    { path: '*', element: <><IdentityPage /><NavigationProbe /></> },
+  ], { initialEntries: [path] })
   render(
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={createMemoryRouter([{
-        path: '*',
-        element: <><IdentityPage /><NavigationProbe /></>,
-      }], { initialEntries: [path] })} />
+      <RouterProvider router={router} />
     </QueryClientProvider>,
   )
+  return { queryClient, router }
 }
 
 function NavigationProbe() {
@@ -159,6 +164,7 @@ describe('IdentityPage', () => {
     })
     mocks.principals = seedPrincipals()
     mocks.groups = []
+    mocks.memberships = []
     mocks.mcpPublications = []
   })
 
@@ -391,7 +397,7 @@ describe('IdentityPage', () => {
     await user.click(principalRow(/Security Readers/))
     expect(await screen.findByText('Member User')).toBeVisible()
     expect(screen.getByText('Recorded in MOSAIC')).toBeVisible()
-    expect(screen.getByText(/member list is truncated/)).toBeVisible()
+    expect(screen.getByText(/bounded member preview is truncated/)).toBeVisible()
   })
 
   it('marks applications that MCP servers call models as', async () => {
@@ -799,6 +805,89 @@ describe('IdentityPage', () => {
     expect(screen.getByRole('button', { name: 'Clear selection and filter' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Edit local metadata' })).not.toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('shows cost-center ownership without independent metadata or deletion controls', async () => {
+    const user = userEvent.setup()
+    mocks.groups = [{
+      id: 'managed-group', tenantId: 'tenant', name: 'Cost center: Support',
+      purpose: 'costCenter', costCenterId: 'cc-support', description: 'Shared roster', ...timestamps,
+    }]
+    const { router } = renderPage('/identity?tab=groups&selected=managed-group&mode=edit')
+    const editor = await screen.findByRole('region', { name: 'Manage members for Cost center: Support' })
+    expect(within(editor).getByText('Managed cost-center group')).toBeVisible()
+    expect(within(editor).getByText(/does not grant model access/)).toBeVisible()
+    expect(within(editor).getByRole('button', { name: 'Open owning cost center' })).toBeVisible()
+    expect(within(editor).queryByRole('textbox', { name: 'Description' })).not.toBeInTheDocument()
+    expect(within(editor).queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument()
+    expect(within(editor).queryByRole('button', { name: 'Delete group' })).not.toBeInTheDocument()
+    expect(within(editor).queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument()
+    expect(within(editor).getAllByRole('button', { name: 'Done' })).toHaveLength(2)
+    expect(within(editor).getByText('Member changes are saved as you add or remove them.')).toBeVisible()
+    expect(within(editor).getByRole('option', { name: /Security Readers/ })).toBeVisible()
+    expect(mocks.updateGroup).not.toHaveBeenCalled()
+    await user.click(within(editor).getByRole('button', { name: 'Open owning cost center' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/cost-centers/cc-support'))
+    expect(new URLSearchParams(router.state.location.search).get('tab')).toBe('members')
+  })
+
+  it('adds and removes an Entra reference through the shared managed roster', async () => {
+    const user = userEvent.setup()
+    mocks.groups = [{
+      id: 'managed-group', tenantId: 'tenant', name: 'Cost center: Support',
+      purpose: 'costCenter', costCenterId: 'cc-support', ...timestamps,
+    }]
+    mocks.addMembership.mockImplementation(async (groupId: string, principalId: string) => {
+      const member: GroupMembership = { id: 'membership', tenantId: 'tenant', groupId, principalId, ...timestamps }
+      mocks.memberships.push(member)
+      return member
+    })
+    mocks.removeMembership.mockImplementation(async () => { mocks.memberships = [] })
+    const { queryClient } = renderPage('/identity?tab=groups&selected=managed-group')
+    queryClient.setQueryData(['cost-centers', 'cc-support'], { memberDetails: [] })
+    await user.click(await screen.findByRole('button', { name: 'Edit members' }))
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Add principal' }), 'group-principal')
+    await user.click(screen.getByRole('button', { name: 'Add member' }))
+    await waitFor(() => expect(mocks.addMembership).toHaveBeenCalledWith('managed-group', 'group-principal'))
+    expect(await screen.findByText('1 explicit reference')).toBeVisible()
+    expect(screen.getByText('Security Readers')).toBeVisible()
+    expect(queryClient.getQueryState(['cost-centers', 'cc-support'])?.isInvalidated).toBe(true)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove' })).toBeEnabled())
+    await user.click(screen.getAllByRole('button', { name: 'Done' })[0])
+    expect(await screen.findByRole('button', { name: 'Edit members' })).toBeVisible()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByText('Security Readers')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Edit members' }))
+    await user.click(screen.getByRole('button', { name: 'Remove' }))
+    const confirmation = await screen.findByRole('dialog', { name: 'Confirm action' })
+    expect(within(confirmation).getByText(/next apply deletes affected keys/)).toBeVisible()
+    await user.click(within(confirmation).getByRole('button', { name: 'Confirm' }))
+    await waitFor(() => expect(mocks.removeMembership).toHaveBeenCalledWith('managed-group', 'group-principal'))
+    expect(await screen.findByText('0 explicit references')).toBeVisible()
+    expect(mocks.updateGroup).not.toHaveBeenCalled()
+  })
+
+  it('does not expose managed editing when ownership data is missing', async () => {
+    mocks.groups = [{
+      id: 'managed-group', tenantId: 'tenant', name: 'Managed group',
+      purpose: 'costCenter', costCenterId: null, ...timestamps,
+    }]
+    renderPage('/identity?tab=groups&selected=managed-group&mode=edit')
+    expect(await screen.findByText('Cost-center ownership unavailable')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Refresh groups' })).toBeVisible()
+    expect(screen.queryByRole('combobox', { name: 'Add principal' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete group' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
+  })
+
+  it('continues to exclude Entra references from ordinary local groups', async () => {
+    const user = userEvent.setup()
+    mocks.groups = [{ id: 'local-group', tenantId: 'tenant', name: 'Local team', ...timestamps }]
+    renderPage('/identity?tab=groups&selected=local-group')
+    await user.click(await screen.findByRole('button', { name: 'Edit group' }))
+    expect(screen.getByRole('combobox', { name: 'Add principal' })).toBeVisible()
+    expect(screen.queryByRole('option', { name: /Security Readers/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Description' })).toBeVisible()
   })
 
   it('creates and edits a MOSAIC group in full workspaces without changing its immutable name', async () => {

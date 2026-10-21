@@ -3,6 +3,7 @@ from typing import Protocol
 
 from mosaic_api.domain import AuditEvent, Group, GroupMembership, Principal
 from mosaic_api.errors import ConflictError
+from mosaic_api.managed_cost_center_groups import require_unmanaged_group
 
 
 class TenantEntity(Protocol):
@@ -83,6 +84,8 @@ class InMemoryDirectoryRepository:
         )
 
     async def save_group(self, group: Group, audit_event: AuditEvent) -> Group:
+        require_unmanaged_group(group)
+        require_unmanaged_group(self.groups.get(group.id))
         self.groups[group.id] = group
         self.audit_events[audit_event.id] = audit_event
         return group
@@ -93,6 +96,8 @@ class InMemoryDirectoryRepository:
         return await self.save_group(group, audit_event)
 
     async def delete_group(self, group: Group, audit_event: AuditEvent) -> None:
+        require_unmanaged_group(group)
+        require_unmanaged_group(self.groups.get(group.id))
         if await self.get_group(group.tenant_id, group.id):
             del self.groups[group.id]
             self.audit_events[audit_event.id] = audit_event
@@ -129,6 +134,8 @@ class InMemoryDirectoryRepository:
         principal: Principal,
         audit_event: AuditEvent,
     ) -> GroupMembership:
+        require_unmanaged_group(group)
+        require_unmanaged_group(self.groups.get(membership.group_id))
         if group.id not in self.groups or principal.id not in self.principals:
             raise ConflictError("A referenced group or principal no longer exists")
         if membership.id in self.memberships:
@@ -138,6 +145,7 @@ class InMemoryDirectoryRepository:
         return membership
 
     async def delete_membership(self, membership: GroupMembership, audit_event: AuditEvent) -> None:
+        require_unmanaged_group(self.groups.get(membership.group_id))
         item = self.memberships.get(membership.id)
         if item and item.tenant_id == membership.tenant_id:
             del self.memberships[membership.id]

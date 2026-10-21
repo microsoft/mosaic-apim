@@ -10,6 +10,7 @@ design.
 - [What a cost center holds](#what-a-cost-center-holds)
 - [Set up cost centers](#set-up-cost-centers)
 - [Members and who may charge a cost center](#members-and-who-may-charge-a-cost-center)
+- [Experimental managed groups](#experimental-managed-groups)
 - [Limits and pooled quotas](#limits-and-pooled-quotas)
 - [Grants, requests, and approvals](#grants-requests-and-approvals)
 - [Choose a cost center on a call](#choose-a-cost-center-on-a-call)
@@ -97,6 +98,74 @@ be revoked yet, the cost center shows **Recheck pending**:
 - Applies leave the grants still to be checked out of runtime access, and the plan says which.
 - To finish, open the cost center and choose **Check grants again**. Any later member removal or
   default change finishes it too, and so does repeating the change.
+
+## Experimental managed groups
+
+`MOSAIC_MANAGED_COST_CENTER_GROUPS` is **false by default**. Opting in enables the
+[managed-group foundation](adr/0028-managed-cost-center-groups.md), not automatic model access.
+It makes no APIM configuration changes, creates no subscription keys or Entra groups, and adds
+no model-call dependency.
+
+With the setting enabled, each new cost center atomically gets one owned MOSAIC group.
+Administrators can link an existing center with
+`POST /api/v1/cost-centers/{id}/group`. This is idempotent and preserves its existing members,
+grants, keys, defaults, and IDs. A matching display name never causes an unrelated group to be
+adopted.
+
+The cost-center response adds `groupId` and `membershipRevision`; group metadata adds
+`purpose: "costCenter"` and `costCenterId`. Both membership routes read and mutate the **same
+explicit roster**:
+
+- `/api/v1/cost-centers/{id}/members/{principalId}`
+- `/api/v1/groups/{groupId}/members/{principalId}`
+
+The compatibility foundation keeps that roster in the existing cost-center record. The group
+API projects it rather than creating a second set of membership documents. Both routes support
+individual principals and existing Entra security-group references, share the 500-reference
+limit, and preserve the existing grant rechecks and personal-default reset on removal. An Entra
+reference occupies one row; neither response expands the group's directory membership.
+
+A person's default, and permission to charge the tenant's default, **do not** make that person
+an explicit group member. Rename or delete the group through its owning cost center; independent
+group edits/deletion are refused. Deleting a center also removes its owned group atomically, but
+is refused if a grant still references that group, even under another center.
+
+The console distinguishes these records in **Identity > MOSAIC groups** with a managed-group
+badge, owning-center navigation, and an **Edit members** workspace. It accepts recorded people,
+workloads, and Entra security-group references, and immediately saves additions/removals to the
+same roster as the cost center's **Members** section. **Done** closes the editor without undoing
+saved membership changes. Both views refresh related membership/default/grant
+data after changes. The managed name and description stay read-only here; edit them through
+the owning cost center. Missing ownership data is an explicit error, not permission to edit it
+as an ordinary group.
+
+Linked cost centers provide **View membership group** navigation from their overview and Members
+section. There are no new automatic-access or synchronization controls in the console or portal.
+Managed groups cannot be used as legacy group-entitlement subjects and are excluded from that
+grant selector.
+Generic MOSAIC groups remain desired-state-only and still reject Entra-group members.
+Turning the setting off stops new group creation/linkage; already-linked centers keep their
+shared membership behavior and ownership guards. It does not unlink or delete anything.
+
+The revision records membership changes, not a completed gateway synchronization. Renaming a
+center or changing its limits does not advance it. Missing or conflicting owned metadata is
+reported as an error instead of being silently adopted or recreated. APIM synchronization,
+automatic/request modes, explicit model selection, inherited personal keys, and per-gateway
+synchronization readiness remain separate, gated work.
+
+The directory adapter separately provides a
+[complete Entra verification prerequisite](cost-center-access-feasibility.md#independent-graph-verification-prerequisite).
+It checks an explicit owner cohort against every transitive-members page instead of using the
+bounded directory preview as authorization evidence. It returns no successful evidence after a
+partial or failed read. This is an internal control-plane contract, not an enabled background
+membership sync, a new portal capability, or live verification of a real tenant.
+
+Administrators can explicitly exercise that contract from **Identity > Entra security groups**
+with the
+[shared functional directory check](cost-center-access-feasibility.md#shared-functional-directory-check).
+Its group-scoped diagnostic observation also appears under **Settings > Runtime configuration**
+and in directory status, independently of configured lookup and token consent. It is process-local,
+does not grant access, and is not durable gateway sync status or inherited-key eligibility.
 
 ## Limits and pooled quotas
 
@@ -226,9 +295,10 @@ Administrators (`Admin`):
 | --- | --- | --- |
 | GET | `/cost-centers` | Every cost center, with its members, grant counts, and whether it's the tenant's default |
 | POST | `/cost-centers` | Create one: `name`, `code`, `description`, `owners`, `keysAllowed`; 409 `codeInUse` |
+| POST | `/cost-centers/{id}/group` | Experimental, setting required: idempotently link an existing center to its owned group; no model access or APIM apply |
 | GET | `/cost-centers/{id}` | One cost center |
 | PATCH | `/cost-centers/{id}` | Change its name, code, description, owners, or keys allowed |
-| DELETE | `/cost-centers/{id}` | Delete it; 409 `builtIn`, `tenantDefault`, `isDefault`, or `hasGrants` |
+| DELETE | `/cost-centers/{id}` | Delete it; 409 `builtIn`, `tenantDefault`, `isDefault`, `hasGrants`, or `groupHasGrants` |
 | PUT | `/cost-centers/{id}/members/{principalId}` | Add a member |
 | DELETE | `/cost-centers/{id}/members/{principalId}` | Remove a member, and revoke the grants that relied on it |
 | POST | `/cost-centers/{id}/recheck` | Check again the grants its pending rechecks cover |
@@ -260,3 +330,8 @@ People (`User`), for themselves only:
   from that total shows the other's.
 - Calls MOSAIC couldn't attribute belong to no cost center, so a cost center's figures can be lower
   than its gateway's.
+
+Automatic model access through MOSAIC-managed cost-center groups is **not implemented**.
+The [inherited-access feasibility probe](cost-center-access-feasibility.md) explores the proposed
+APIM-local membership and native personal-key design offline. The default-off group foundation
+above does not enable that runtime path.

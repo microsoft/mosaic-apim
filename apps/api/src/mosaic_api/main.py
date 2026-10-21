@@ -233,7 +233,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             rollup_repository = InMemoryUsageRollupRepository()
             pricing_repository = InMemoryPricingRepository()
-            cost_center_repository = InMemoryCostCenterRepository()
+            cost_center_repository = InMemoryCostCenterRepository(
+                repository, managed_groups_enabled=app_settings.managed_cost_center_groups
+            )
             budget_repository = InMemoryBudgetRepository()
             notification_repository = InMemoryNotificationRepository(
                 events=notification_events,
@@ -328,6 +330,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app_settings.cosmos_desired_state_container,
                 app_settings.cosmos_audit_events_container,
                 owns_client=False,
+                managed_groups_enabled=app_settings.managed_cost_center_groups,
             )
             budget_repository = CosmosBudgetRepository(
                 cosmos_client,
@@ -545,6 +548,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             cost_center_repository=cost_center_repository,
             environment_repository=environment_repository,
         )
+        cost_center_service = CostCenterService(
+            cost_center_repository,
+            directory_repository=repository,
+            entitlement_repository=entitlement_repository,
+            gateway_repository=gateway_repository,
+            entitlements=entitlement_service,
+            managed_groups_enabled=app_settings.managed_cost_center_groups,
+        )
         app.state.directory_service = DirectoryService(
             repository,
             gateway_repository=gateway_repository,
@@ -553,6 +564,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             group_claims_enabled=app_settings.entra_group_claims,
             cost_center_repository=cost_center_repository,
             cost_center_checks=entitlement_service,
+            cost_center_memberships=cost_center_service,
         )
         app.state.gateway_service = gateway_service
         app.state.model_endpoint_service = model_endpoint_service
@@ -561,13 +573,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.model_pool_service = model_pool_service
         app.state.mcp_endpoint_service = mcp_endpoint_service
         app.state.entitlement_service = entitlement_service
-        app.state.cost_center_service = CostCenterService(
-            cost_center_repository,
-            directory_repository=repository,
-            entitlement_repository=entitlement_repository,
-            gateway_repository=gateway_repository,
-            entitlements=entitlement_service,
-        )
+        app.state.cost_center_service = cost_center_service
         environment_service = EnvironmentService(
             environment_repository,
             gateway_repository=gateway_repository,

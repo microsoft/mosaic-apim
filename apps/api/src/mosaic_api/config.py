@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     environment: Environment = Environment.AZURE
     auth_mode: AuthMode = AuthMode.ENTRA
     repository_backend: RepositoryBackend = RepositoryBackend.COSMOS
+    managed_cost_center_groups: bool = Field(
+        default=False,
+        description=(
+            "Experimental MOSAIC-owned cost-center groups and shared membership APIs. "
+            "Does not enable inherited model access or change APIM configuration."
+        ),
+    )
     tenant_id: str
     api_client_id: str | None = None
     model_runtime_client_id: str | None = None

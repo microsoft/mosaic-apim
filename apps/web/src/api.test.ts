@@ -337,6 +337,52 @@ describe('useMosaicApi', () => {
     ])
   })
 
+  it('checks one explicit directory group and reads shared progress without another probe', async () => {
+    const progress = {
+      state: 'checking',
+      groupObjectId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      checkedAt: '2026-10-21T12:00:00Z',
+      lastSuccessfulAt: null,
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(progress), {
+        status: 202, headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        lookupEnabled: true, groupClaimsEnabled: true, permissions: [], membershipCheck: progress,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useMosaicApi())
+
+    expect(await result.current.checkDirectoryGroup(progress.groupObjectId)).toEqual(progress)
+    expect((await result.current.getDirectoryStatus()).membershipCheck).toEqual(progress)
+
+    expect(fetchMock.mock.calls.map(([url]) => String(url).replace(/^https?:\/\/[^/]+/, ''))).toEqual([
+      '/api/v1/directory/group-check',
+      '/api/v1/directory/status',
+    ])
+    const options = fetchMock.mock.calls[0][1]
+    expect(options.method).toBe('POST')
+    expect(new Headers(options.headers).get('Content-Type')).toBe('application/json')
+    expect(JSON.parse(options.body)).toEqual({ groupObjectId: progress.groupObjectId })
+  })
+
+  it('does not turn a throttled directory check into successful readiness', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({
+      code: 'directory_throttled',
+      message: 'Microsoft Graph membership verification is throttled',
+      details: { retryAfter: 30 },
+    }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '30' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useMosaicApi())
+
+    await expect(result.current.checkDirectoryGroup('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'))
+      .rejects.toMatchObject({
+        status: 429, body: { code: 'directory_throttled', details: { retryAfter: 30 } },
+      })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
   it('sends only the management mode when switching a gateway, and surfaces a refusal', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: 'gateway_1', managementMode: 'manage' }), {

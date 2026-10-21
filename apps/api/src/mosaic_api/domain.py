@@ -646,10 +646,23 @@ class Principal(Entity):
     default_cost_center_id: str | None = None
 
 
+class GroupPurpose(StrEnum):
+    LOCAL = "local"
+    COST_CENTER = "costCenter"
+
+
 class Group(Entity):
     entity_type: Literal["group"] = "group"
     name: str
     description: str | None = None
+    purpose: GroupPurpose = GroupPurpose.LOCAL
+    cost_center_id: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_owner(self) -> Self:
+        if (self.purpose == GroupPurpose.COST_CENTER) != (self.cost_center_id is not None):
+            raise ValueError("Only a managed cost-center group names its owning cost center")
+        return self
 
 
 class GroupMembership(Entity):
@@ -2966,6 +2979,42 @@ class DirectoryPermissionStatus(MosaicModel):
     granted: bool | None = None
 
 
+class DirectoryVerificationState(StrEnum):
+    DISABLED = "disabled"
+    NOT_CHECKED = "notChecked"
+    CHECKING = "checking"
+    READY = "ready"
+    STALE = "stale"
+    FORBIDDEN = "forbidden"
+    THROTTLED = "throttled"
+    UNAVAILABLE = "unavailable"
+    CANCELLED = "cancelled"
+
+
+class DirectoryVerificationStatus(MosaicModel):
+    """An operational observation of one complete group read, never owner eligibility.
+
+    The five-minute freshness window describes this diagnostic, not an authorization TTL.
+    Last success retains its own group scope when a later check of another group fails.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    state: DirectoryVerificationState = DirectoryVerificationState.NOT_CHECKED
+    group_object_id: str | None = None
+    checked_at: datetime | None = None
+    completed_at: datetime | None = None
+    last_successful_at: datetime | None = None
+    last_successful_group_object_id: str | None = None
+    fresh_until: datetime | None = None
+    retry_at: datetime | None = None
+    message: str | None = None
+
+
+class DirectoryGroupCheckRequest(MosaicModel):
+    group_object_id: str = Field(min_length=1, max_length=128)
+
+
 class DirectoryStatus(MosaicModel):
     """Whether directory search is available, and whether group grants can be enforced.
 
@@ -2976,6 +3025,8 @@ class DirectoryStatus(MosaicModel):
     it was not checked or could not be verified.
     ``group_claims_enabled`` records whether the deployment configured Entra to put group IDs in
     tokens (``MOSAIC_ENTRA_GROUP_CLAIMS``); without that, the gateway can't match a group grant.
+    ``membership_check`` separately reports an explicit functional verification. Neither
+    configured lookup nor token consent proves a complete group read succeeded.
     """
 
     lookup_enabled: bool
@@ -2983,6 +3034,9 @@ class DirectoryStatus(MosaicModel):
     permissions: list[DirectoryPermissionStatus] = Field(default_factory=list)
     permission_status_message: str | None = None
     message: str | None = None
+    membership_check: DirectoryVerificationStatus = Field(
+        default_factory=DirectoryVerificationStatus
+    )
 
 
 class GrantOverlapKind(StrEnum):
