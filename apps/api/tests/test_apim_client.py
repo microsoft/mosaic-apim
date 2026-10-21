@@ -26,6 +26,36 @@ async def test_list_follows_next_link_across_pages(fake_apim: FakeApim) -> None:
     assert [api["name"] for api in apis] == ["chat-api", "echo-api", "orders-mcp"]
 
 
+@pytest.mark.parametrize("required", [False, True])
+async def test_collection_completeness_is_explicit_and_truncation_never_passes_when_required(
+    required: bool,
+) -> None:
+    arm, requests = _recording_arm(lambda request: httpx.Response(200, json={
+        "value": [{"name": "first"}], "nextLink": "/resources/next",
+    }))
+    if required:
+        with pytest.raises(UpstreamError, match="incomplete collection"):
+            await arm.list("/resources", max_pages=1, require_complete=True)
+    else:
+        assert await arm.list("/resources", max_pages=1) == [{"name": "first"}]
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("payload", [
+    {}, {"value": None}, {"value": ["invalid"]}, {"value": [], "nextLink": 42},
+])
+async def test_required_collections_reject_invalid_response_shapes(payload: object) -> None:
+    arm, _ = _recording_arm(lambda request: httpx.Response(200, json=payload))
+    with pytest.raises(UpstreamError, match="invalid collection"):
+        await arm.list("/resources", require_complete=True)
+
+
+async def test_a_missing_required_collection_is_not_successfully_empty() -> None:
+    arm, _ = _recording_arm(lambda request: httpx.Response(404, json={}))
+    with pytest.raises(UpstreamError, match="incomplete collection"):
+        await arm.list("/resources", allow_not_found=True, require_complete=True)
+
+
 async def test_service_read_returns_sku_and_gateway_url(fake_apim: FakeApim) -> None:
     service = await _client(fake_apim).get_service()
 
@@ -636,9 +666,10 @@ async def test_a_refused_request_says_why_in_azures_words() -> None:
         f"fields contain incorrect values. Detail: {MISSING_FRAGMENT}"
     )
     assert error.summary == "Azure Resource Manager rejected the request"
-    # The details are unchanged: Azure's code and its top-level message, as Azure sent them.
+    # Keep Azure's fields intact and identify whether a write or a later read failed.
     assert error.details == {
         "url": API_POLICY_URL,
+        "method": "PUT",
         "statusCode": 400,
         "code": "ValidationError",
         "reason": "One or more fields contain incorrect values:",
@@ -673,7 +704,12 @@ async def test_a_request_that_keeps_failing_says_why(
         f"{code}: {reason}."
     )
     assert error.summary == "Azure Resource Manager did not return a usable response"
-    assert error.details == {"url": API_POLICY_URL, "reason": reason}
+    assert error.details == {
+        "url": API_POLICY_URL,
+        "method": "PUT",
+        "statusCode": status_code,
+        "reason": reason,
+    }
     assert len(requests) == 4
 
 

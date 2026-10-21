@@ -38,7 +38,7 @@ from aoai_double import (  # noqa: E402
     AI_SUBSCRIPTION_ID,
     AZURE_OPENAI_USER_ROLE_ID,
     COGNITIVE_SERVICES_USER_ROLE_ID,
-    FakeCognitiveServices,
+    FakeDeploymentServices,
     role_assignment,
 )
 from apim_double import (  # noqa: E402
@@ -952,6 +952,13 @@ def _available(
             "version": version,
             "lifecycleStatus": lifecycle,
             "capabilities": capabilities,
+            "skus": [
+                {
+                    "name": sku, "usageName": f"quota-{sku}",
+                    "capacity": {"minimum": 1, "maximum": 2000, "step": 1, "default": 100},
+                }
+                for sku in ("GlobalStandard", "ProvisionedManaged", "GlobalBatch")
+            ],
         },
     }
 
@@ -1088,7 +1095,7 @@ SUBSCRIPTION_ACCOUNTS: list[tuple[str, str, str, str]] = [
 ]
 
 
-class DemoCognitiveAccount(FakeCognitiveServices):
+class DemoCognitiveAccount(FakeDeploymentServices):
     """One fictional Azure AI account, served under its own resource ID."""
 
     def __init__(
@@ -1102,13 +1109,26 @@ class DemoCognitiveAccount(FakeCognitiveServices):
         runtime_role_id: str,
         location: str = "eastus2",
     ) -> None:
-        super().__init__(kind=kind)
+        super().__init__()
+        self.kind = kind
         self.resource_id = resource_id
         self.account_name = resource_id.rsplit("/", 1)[-1]
         self.endpoint = endpoint
         self.location = location
         self.deployments = deployments
         self.models = models
+        for usage in self.usages:
+            usage["limit"] = 2000
+        self.capacities = [
+            {
+                "location": location, "properties": {
+                    "model": {key: value for key, value in model["model"].items()
+                              if key in {"format", "name", "version"}},
+                    "skuName": "ProvisionedManaged", "availableCapacity": 2000,
+                },
+            }
+            for model in models
+        ]
         # The gateway's managed identity can call the account, so runtime access reads "ready".
         self.role_assignments = [role_assignment(runtime_role_id, resource_id, APIM_PRINCIPAL_ID)]
         self.accounts_by_subscription = {

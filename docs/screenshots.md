@@ -214,6 +214,8 @@ survives to be read back.
   API paths, product names, and fictional person/workload/gateway names and directory aliases are
   redacted too.
 - Exact offering names in `.resource-offering` text are blurred, independently of literal matches.
+- Deployment account names and identifiers marked by `data-deployment-account` and
+  `data-deployment-identifier` are blurred as complete regions, including reviewed model sources.
 - `REDACTION_PATTERNS` in `capture.py`: GUIDs, email addresses, URLs and URIs, Azure resource IDs,
   Azure, Graph, Workflows, Bot Connector and Contoso hostnames, IPv4 addresses, MOSAIC record IDs and the
   APIM names derived from them, and the demo's placeholder keys.
@@ -291,6 +293,8 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-models` | Console | `/models`, compact list with selected publication detail | Dark | Models |
 | `console-register-key-endpoint` | Console | `/models?register=1`, **Azure AI with an API key** tab with a pasted, masked key, filled in and never submitted | Light | Register with an API key |
 | `console-key-endpoint` | Console | `/models?tab=endpoints`, Fabrikam partner Foundry selected, scrolled to its **Access** card with **Replace API key** | Dark | Endpoint reached with an API key |
+| `console-deploy-model` | Console | `/models?tab=endpoints`, **Deploy model** on the fictional Azure OpenAI account; explicit deployment-management opt-in, fresh version/SKU/quota configuration, no Azure create | Light | Deploy an Azure model |
+| `console-deploy-model-review` | Console | The same workflow's **Review deployment** step with exact target, native capacity, quota, billing/residency warnings, and unsubmitted **Deploy to Azure** action | Dark | Review before Azure creation |
 | `console-pools` | Console | `/pools`, compact list with Anthropic Claude selected, **Overview** detail and separate Suggestions navigation | Light | Model pools |
 | `console-pool-detail` | Console | Anthropic Claude detail, **Models and deployments** section with both navigation rails compact | Dark | A model pool |
 | `console-pool-access` | Console | Anthropic Claude detail, **Access and connection** section with both navigation rails compact | Light | Who can call a pool |

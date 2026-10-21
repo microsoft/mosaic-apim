@@ -1,0 +1,93 @@
+.workspace {
+  display: grid;
+  gap: 24px;
+  max-width: 1040px;
+  min-width: 0;
+}
+
+.section {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  padding-top: 24px;
+  border-top: 1px solid var(--mosaic-border-soft);
+}
+
+.sectionHeading,
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.workspace > button,
+.section > button {
+  justify-self: start;
+}
+
+.actions {
+  margin-top: 8px;
+}
+
+.actions > :first-child:not(button) {
+  flex: 1 1 26rem;
+  max-width: 70ch;
+}
+
+.formGrid,
+.summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px 24px;
+}
+
+.formGrid {
+  align-items: start;
+}
+
+.wide {
+  grid-column: 1 / -1;
+}
+
+.summary {
+  margin: 0;
+  padding: 16px 0;
+}
+
+.summary dt {
+  margin-bottom: 4px;
+  color: var(--mosaic-text-muted);
+}
+
+.summary dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+
+.warnings {
+  padding-left: 20px;
+  margin: 8px 0 12px;
+  max-width: 75ch;
+}
+
+.warnings li + li {
+  margin-top: 8px;
+}
+
+.workspace code {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .formGrid,
+  .summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .actions > button {
+    width: 100%;
+  }
+}

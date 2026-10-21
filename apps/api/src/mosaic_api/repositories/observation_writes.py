@@ -30,6 +30,7 @@ MODEL_ENDPOINT_AUTHORED_FIELDS: frozenset[str] = frozenset(
         "environment",
         "credential_reference_id",
         "declared_deployments",
+        "management_mode",
         "azure_cloud",
         "azure_connection_id",
     }

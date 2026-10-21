@@ -1230,6 +1230,8 @@ export interface ModelEndpoint {
   /** @deprecated Use environment. Legacy display-only data. */
   environmentLabel?: string | null
   authMode: EndpointAuthMode
+  /** Legacy records are read-only until an administrator explicitly opts in. */
+  managementMode?: ManagementMode
   credentialReferenceId?: string | null
   /**
    * True when MOSAIC keeps this endpoint's API key in its own Key Vault, because an administrator
@@ -1247,6 +1249,117 @@ export interface ModelEndpoint {
   lastSyncError?: string | null
   createdAt: string
   updatedAt: string
+}
+
+export interface DeploymentModelRef {
+  modelFormat: string
+  modelName: string
+  modelVersion: string
+  modelPublisher?: string | null
+  source?: string | null
+  sourceAccount?: string | null
+}
+
+export interface DeploymentAccess {
+  canDeploy: boolean
+  evaluation: 'allowed' | 'denied' | 'unknown' | 'unsupported'
+  scope?: string | null
+  checkedAt: string
+  requiredActions: string[]
+  missingActions: string[]
+  message: string
+}
+
+export interface DeploymentQuota {
+  usageName: string
+  currentValue: number
+  limit: number
+  available: number
+  unit?: string | null
+  blocked: boolean
+}
+
+export interface DeploymentSku {
+  name: string
+  capacity: {
+    minimum?: number | null
+    maximum?: number | null
+    step?: number | null
+    default?: number | null
+    allowedValues: number[]
+  }
+  quota?: DeploymentQuota | null
+  deprecationDate?: string | null
+}
+
+export interface DeployableModel extends DeploymentModelRef {
+  isDefaultVersion: boolean
+  lifecycleStatus?: string | null
+  deprecationInference?: string | null
+  capabilities: Record<string, string>
+  skus: DeploymentSku[]
+}
+
+export interface DeploymentTarget {
+  endpointId: string
+  endpointName: string
+  accountScope: string
+  azureCloud: AzureCloud
+  azureConnectionId?: string | null
+  subscriptionId: string
+  resourceGroup: string
+  accountName: string
+  location: string
+}
+
+export interface DeploymentCatalogue {
+  endpointId: string
+  blockingRunId?: string | null
+  target?: DeploymentTarget | null
+  access: DeploymentAccess
+  checkedAt: string
+  models: DeployableModel[]
+  raiPolicies: string[]
+  quotaError?: string | null
+  policyError?: string | null
+}
+
+export interface ModelDeploymentCreate {
+  deploymentName: string
+  model: DeploymentModelRef
+  skuName: string
+  capacity: number
+  raiPolicyName?: string | null
+  versionUpgradeOption?: 'OnceNewDefaultVersionAvailable' | 'OnceCurrentVersionExpired' | 'NoAutoUpgrade' | null
+}
+
+export interface ModelDeploymentPlan {
+  id: string
+  endpointId: string
+  target: DeploymentTarget
+  configuration: ModelDeploymentCreate
+  checks: { quota: DeploymentQuota; availableCapacity?: number | null; warnings: string[] }
+}
+
+export interface ModelDeploymentRun {
+  id: string
+  endpointId: string
+  planId: string
+  target: DeploymentTarget
+  configuration: ModelDeploymentCreate
+  status: 'running' | 'succeeded' | 'failed' | 'interrupted'
+  startedAt: string
+  completedAt?: string | null
+  writeAttempted: boolean
+  provisioningState?: string | null
+  error?: string | null
+  refreshStatus: 'notStarted' | 'running' | 'succeeded' | 'failed'
+  refreshError?: string | null
+}
+
+export interface DeploymentRecoveryRequest {
+  confirmWorkerStopped: boolean
+  confirmNoPendingOperation: boolean
 }
 
 
