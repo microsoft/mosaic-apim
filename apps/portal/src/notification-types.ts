@@ -122,6 +122,7 @@ export interface PersonalTeamsStatus {
   enabled: boolean
   state: 'notInstalled' | 'installed' | 'uninstalled' | 'blocked'
   checks: CapabilityCheck[]
+  lastTest?: PersonalTeamsTestResult | null
 }
 
 export interface PersonalTeamsTestResult {
@@ -129,4 +130,6 @@ export interface PersonalTeamsTestResult {
   message: string
   testedAt: string
   confirmedDelivered: boolean
+  configurationRevision?: string | null
+  errorCode?: string | null
 }

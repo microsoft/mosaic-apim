@@ -6,5 +6,5 @@ const targets = loadTargets()
 console.log(JSON.stringify({
   scopeSha256: modelScopeHash(targets),
   readiness: Object.fromEntries((['R10', 'R11', 'R12', 'R14'] as const).map((j) => [j, modelReadiness(targets, j, process.env)])),
-  R13: 'BLOCKED: human-assisted Government fixture, MI send and actual mailbox/dedupe evidence required',
+  R13: 'BLOCKED: human-assisted Government Graph/Exchange fixture, mailbox-scoped MI access and actual receipt required; duplicates acceptable',
 }, null, 2))

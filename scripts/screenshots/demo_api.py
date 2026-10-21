@@ -97,10 +97,15 @@ from mosaic_api.integrations.aoai.key_check import KeyCheckOutcome, KeyCheckResu
 from mosaic_api.integrations.aoai.writer import ModelDeploymentWriter
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient, ApimKeyManager
-from mosaic_api.integrations.email import EmailMessage, EmailSendResult
+from mosaic_api.integrations.email import EmailAccessResult, EmailMessage, EmailSendResult
 from mosaic_api.integrations.graph import DirectoryPhoto
 from mosaic_api.integrations.graph.fake import FakeDirectoryLookup
 from mosaic_api.integrations.graph.notifications import AdministratorDiscovery, NotificationContact
+from mosaic_api.integrations.teams import (
+    TeamsHttpTransport,
+    TeamsLifecycleAuthenticator,
+    WorkflowEndpointPolicy,
+)
 from mosaic_api.main import create_app
 from mosaic_api.model_pools import (
     ModelPoolCreate,
@@ -112,6 +117,7 @@ from mosaic_api.model_pools import (
     uses_backend_pools,
 )
 from mosaic_api.notifications import (
+    CapabilityCheck,
     CategoryNotificationPreference,
     ChannelCadence,
     DigestSchedule,
@@ -120,8 +126,11 @@ from mosaic_api.notifications import (
     NotificationChannelSettingsInput,
     NotificationEventType,
     NotificationPreferencesInput,
+    NotificationRouteInput,
     NotificationSubject,
     NotificationTemplateData,
+    PersonalTeamsSettingsInput,
+    TeamsDestinationInput,
 )
 from mosaic_api.pricing import DeploymentPricingUpdate, EndpointPricingUpdate, PriceCreate
 from mosaic_api.repositories import GatewayRepository, InMemoryEntitlementRepository
@@ -153,6 +162,7 @@ from mosaic_api.services.notifications import NotificationDispatchResult
 from mosaic_api.services.pool_health import PoolHealthService
 from mosaic_api.services.portal_access import PortalAccessService
 from mosaic_api.services.pricing import PricingService
+from mosaic_api.services.teams import TeamsChannelDispatcher, TeamsPersonalDispatcher, TeamsService
 from mosaic_api.services.telemetry import TelemetryService, member_host
 from mosaic_api.services.usage import RollupUsageSource
 from mosaic_api.services.usage_rollup import UsageRollupService
@@ -171,7 +181,10 @@ from scripts.screenshots.demo_fakes import (
     KEY_VAULT_ID,
     PARTNER_GATEWAY_RESOURCE_ID,
     DemoApim,
+    DemoBotTokens,
     DemoLogs,
+    DemoTeamsProvider,
+    DemoTeamsVault,
     FakeCredential,
     FakeKeyStore,
     PoolMemberTraffic,
@@ -407,10 +420,10 @@ COST_CENTER_MEMBERS: dict[str, list[Person]] = {
     "CLM-520": [CLAIMS_TRIAGE],
 }
 
-# Budget email goes through a Communication Services double that accepts every message and
-# delivers none. Both names are invented.
-DEMO_EMAIL_ENDPOINT = "https://contoso-mosaic.unitedstates.communication.azure.com"
-DEMO_EMAIL_SENDER = "DoNotReply@notify.contoso.com"
+DEMO_EMAIL_MAILBOX_ID = "bd8e3c7a-4f91-4253-b6e7-f8091a2b3c4d"
+DEMO_EMAIL_SENDER = "notifications@contoso.com"
+DEMO_TEAMS_APP_ID = "ce9f4d8b-50a2-4364-87f8-091a2b3c4d5e"
+DEMO_BOT_APP_ID = "dfa05e9c-61b3-4475-9809-1a2b3c4d5e6f"
 
 
 @dataclass(frozen=True)
@@ -437,16 +450,19 @@ BUDGETS = [
 
 
 class DemoEmail:
-    """Azure Communication Services Email that accepts every message and sends none."""
+    """Graph email double that accepts every message and delivers none."""
 
     def __init__(self) -> None:
         self.accepted: list[EmailMessage] = []
 
     async def send(
-        self, endpoint: str, sender: str, message: EmailMessage, *, operation_id: str
+        self, sender_mailbox_id: str, message: EmailMessage, *, operation_id: str
     ) -> EmailSendResult:
         self.accepted.append(message)
         return EmailSendResult(accepted=True, operation_id=operation_id, status_code=202)
+
+    async def check_access(self) -> EmailAccessResult:
+        return EmailAccessResult(True, identity_object_id=MOSAIC_PRINCIPAL_ID)
 
     async def close(self) -> None:
         return None
@@ -459,6 +475,9 @@ SENSITIVE_LITERALS = [
     MOSAIC_PRINCIPAL_ID,
     MODEL_RUNTIME_CLIENT_ID,
     MODEL_CLIENT_ID,
+    DEMO_EMAIL_MAILBOX_ID,
+    DEMO_TEAMS_APP_ID,
+    DEMO_BOT_APP_ID,
     *(person.object_id for person in PEOPLE),
     *(blueprint for blueprint in AGENT_BLUEPRINTS.values()),
     *(item.object_id for item in EXTRA_DIRECTORY_OBJECTS),
@@ -561,6 +580,13 @@ class DemoNotificationDirectory:
     async def contact(self, tenant_id: str, object_id: str) -> NotificationContact:
         if tenant_id != TENANT_ID:
             raise SeedError("Notification lookup outside the fictional demo tenant")
+        if object_id == DEMO_EMAIL_MAILBOX_ID:
+            return NotificationContact(
+                object_id=object_id,
+                display_name="MOSAIC notification sender",
+                mailbox=DEMO_EMAIL_SENDER,
+                available=True,
+            )
         person = next((person for person in PEOPLE if person.object_id == object_id), None)
         return NotificationContact(
             object_id=object_id,
@@ -637,6 +663,8 @@ class DemoServices:
     portal_access: PortalAccessService
     analytics: AnalyticsService
     budgets: BudgetService
+    teams_provider: DemoTeamsProvider
+    teams_vault: DemoTeamsVault
     pools: ModelPoolService
     clients: list[httpx.AsyncClient] = field(default_factory=list)
 
@@ -943,10 +971,25 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         email=DemoEmail(),
         portal=state.portal_service,
         tenant_id=settings.tenant_id,
-        suggested_endpoint=DEMO_EMAIL_ENDPOINT,
-        suggested_sender=DEMO_EMAIL_SENDER,
+        email_directory=DemoNotificationDirectory(),
     )
     state.budget_service = budgets
+    teams_provider = DemoTeamsProvider()
+    teams_vault = DemoTeamsVault()
+    teams_http = httpx.AsyncClient(transport=httpx.MockTransport(teams_provider.handle))
+    state.teams_service = TeamsService(
+        state.notification_repository,
+        tenant_id=TENANT_ID,
+        secret_reader=teams_vault,
+        secret_writer=teams_vault,
+        transport=TeamsHttpTransport(
+            teams_http, WorkflowEndpointPolicy(frozenset({teams_provider.host}))
+        ),
+        authenticator=TeamsLifecycleAuthenticator(teams_http),
+        token_source=DemoBotTokens(DEMO_BOT_APP_ID),
+        console_origin="https://console.contoso.com",
+        portal_origin="https://portal.contoso.com",
+    )
     state.authenticator = DemoAuthenticator(settings.tenant_id, portal_origins)
     return DemoServices(
         directory=directory,
@@ -968,12 +1011,74 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         portal_access=portal_access,
         analytics=state.analytics_service,
         budgets=budgets,
+        teams_provider=teams_provider,
+        teams_vault=teams_vault,
         pools=pools,
-        clients=[gateway_http, ai_http, gov_gateway_http, gov_ai_http, vault_http, mcp_http],
+        clients=[
+            gateway_http,
+            ai_http,
+            gov_gateway_http,
+            gov_ai_http,
+            vault_http,
+            mcp_http,
+            teams_http,
+        ],
     )
 
 
-async def seed_approvals_and_notifications(app: FastAPI, estate: "Estate") -> None:
+async def seed_teams(app: FastAPI, services: DemoServices) -> None:
+    teams: TeamsService = app.state.teams_service
+    await teams.save_personal_settings(
+        TENANT_ID,
+        ADMIN.object_id,
+        PersonalTeamsSettingsInput(
+            enabled=True,
+            app_id=DEMO_TEAMS_APP_ID,
+            bot_app_id=DEMO_BOT_APP_ID,
+        ),
+    )
+    for person, persona in ((ADMIN, "admin"), (PORTAL_USER, "portal")):
+        authorization, activity = services.teams_provider.installation(
+            TENANT_ID, person.object_id, DEMO_BOT_APP_ID
+        )
+        await teams.lifecycle(authorization, activity)
+        await teams.test_personal(TENANT_ID, person.object_id, persona)
+    for index, name in enumerate(("Platform operations", "Workflow requiring attention")):
+        destination = await teams.save_destination(
+            TENANT_ID,
+            ADMIN.object_id,
+            TeamsDestinationInput(
+                name=name,
+                enabled=True,
+                allowed_categories=[NotificationCategory.OPERATIONAL_ISSUES],
+                webhook_url=SecretStr(
+                    f"https://{services.teams_provider.host}/workflows/demo-{index}/"
+                    "triggers/manual/paths/invoke?sig=demo-secret-not-a-real-credential"
+                ),
+            ),
+        )
+        await app.state.notification_preference_service.save_route(
+            TENANT_ID,
+            ADMIN.object_id,
+            NotificationRouteInput(
+                name=name,
+                enabled=True,
+                audience="teamsDestination",
+                channel="teamsChannel",
+                teams_destination_id=destination.id,
+                categories=[NotificationCategory.OPERATIONAL_ISSUES],
+            ),
+        )
+        if index:
+            services.teams_vault.denied.add(destination.credential_reference_id)
+        await teams.test_shared(TENANT_ID, destination.id)
+
+
+async def seed_approvals_and_notifications(
+    app: FastAPI,
+    estate: "Estate",
+    services: DemoServices,
+) -> None:
     """Exercise production persistence/routing with only fictional local integrations."""
 
     state = app.state
@@ -988,16 +1093,25 @@ async def seed_approvals_and_notifications(app: FastAPI, estate: "Estate") -> No
     preferences._expand_recipients = recipients.expand
     preferences._authorize_recipient = visibility.authorize
     state.notification_service._dispatchers = {
-        channel: DemoNotificationDispatcher()
-        for channel in ("email", "teamsPersonal", "teamsChannel")
+        "email": DemoNotificationDispatcher(),
+        "teamsPersonal": TeamsPersonalDispatcher(state.teams_service),
+        "teamsChannel": TeamsChannelDispatcher(state.teams_service),
     }
     await preferences.save_settings(
-        TENANT_ID, ADMIN.object_id,
-        NotificationChannelSettingsInput(in_app_enabled=True, email_enabled=True),
+        TENANT_ID,
+        ADMIN.object_id,
+        NotificationChannelSettingsInput(
+            in_app_enabled=True,
+            email_enabled=True,
+            teams_channel_enabled=True,
+            teams_personal_enabled=True,
+        ),
     )
     for person, persona in ((ADMIN, "admin"), (PORTAL_USER, "portal")):
         await preferences.save_preferences(
-            TENANT_ID, person.object_id, persona,
+            TENANT_ID,
+            person.object_id,
+            persona,
             NotificationPreferencesInput(
                 time_zone="America/New_York",
                 categories=[
@@ -1010,6 +1124,7 @@ async def seed_approvals_and_notifications(app: FastAPI, estate: "Estate") -> No
                             if category is NotificationCategory.USAGE_AND_BUDGETS
                             else ChannelCadence(mode="immediate")
                         ),
+                        teams=ChannelCadence(mode="immediate"),
                     )
                     for category in NotificationCategory
                 ],
@@ -1018,6 +1133,7 @@ async def seed_approvals_and_notifications(app: FastAPI, estate: "Estate") -> No
                 ],
             ),
         )
+    await seed_teams(app, services)
     await state.approval_service.save_policy(
         Actor(ADMIN.object_id, TENANT_ID),
         ApprovalPolicySaveInput.model_validate(
@@ -1053,70 +1169,99 @@ async def seed_approvals_and_notifications(app: FastAPI, estate: "Estate") -> No
     )
     requests = list(state.entitlement_repository.access_requests.values())
     request = next(
-        request for request in requests
+        request
+        for request in requests
         if request.requester_object_id == PORTAL_USER.object_id and request.state == "pending"
     )
     grant = next(
-        grant for grant in state.entitlement_repository.entitlements.values()
+        grant
+        for grant in state.entitlement_repository.entitlements.values()
         if grant.enabled
         and grant.subject.id == estate.principals[PORTAL_USER.label]
         and grant.enforcement.tokens
         and grant.enforcement.tokens.token_quota
     )
     now = utc_now()
-    for index, (event_type, summary, severity) in enumerate((
+    for index, (event_type, summary, severity) in enumerate(
         (
-            NotificationEventType.REQUEST_SUBMITTED,
-            "Your production model request is waiting for administrator review.",
-            "information",
-        ),
-        (
-            NotificationEventType.QUOTA_APPROACHING,
-            "Your attributed monthly token use has reached 80% of its grant quota.",
-            "warning",
-        ),
-        (
-            NotificationEventType.USAGE_SUMMARY,
-            "Your completed daily usage summary is ready. Unpriced activity is shown separately.",
-            "information",
-        ),
-    )):
+            (
+                NotificationEventType.REQUEST_SUBMITTED,
+                "Your production model request is waiting for administrator review.",
+                "information",
+            ),
+            (
+                NotificationEventType.QUOTA_APPROACHING,
+                "Your attributed monthly token use has reached 80% of its grant quota.",
+                "warning",
+            ),
+            (
+                NotificationEventType.USAGE_SUMMARY,
+                "Your completed daily usage summary is ready. Unpriced activity is shown separately.",
+                "information",
+            ),
+        )
+    ):
         subject = (
             NotificationSubject(
-                request_id=request.id, resource=request.resource,
+                request_id=request.id,
+                resource=request.resource,
                 cost_center_id=request.cost_center_id,
             )
             if event_type is NotificationEventType.REQUEST_SUBMITTED
             else NotificationSubject(
-                entitlement_id=grant.id, resource=grant.resource,
+                entitlement_id=grant.id,
+                resource=grant.resource,
                 cost_center_id=grant.cost_center_id,
             )
         )
-        await state.notification_service.publish(build_notification_event(
-            tenant_id=TENANT_ID,
-            event_type=event_type,
-            source_id=subject.request_id or grant.id,
-            source_revision=f"demo-screenshot-{index}",
-            occurred_at=now - timedelta(seconds=index),
-            origin="screenshotDemo",
-            severity=severity,
-            subject=subject,
-            audience=NotificationAudience(
-                user_object_ids=[PORTAL_USER.object_id], include_administrators=True,
-            ),
-            data=NotificationTemplateData(summary=summary),
-        ))
+        await state.notification_service.publish(
+            build_notification_event(
+                tenant_id=TENANT_ID,
+                event_type=event_type,
+                source_id=subject.request_id or grant.id,
+                source_revision=f"demo-screenshot-{index}",
+                occurred_at=now - timedelta(seconds=index),
+                origin="screenshotDemo",
+                severity=severity,
+                subject=subject,
+                audience=NotificationAudience(
+                    user_object_ids=[PORTAL_USER.object_id],
+                    include_administrators=True,
+                ),
+                data=NotificationTemplateData(summary=summary),
+            )
+        )
     for _ in range(5):
         await state.notification_service.run_once(TENANT_ID)
 
     readiness = state.notification_readiness_service
-    # Other production probes read the same repository and the substituted directory/model.
-    # Only the gateway probe captured an Azure-facing service before the demo replaced it.
+
+    async def team_readiness(actor: Actor) -> list[CapabilityCheck]:
+        return await state.teams_service.capability_checks(actor.tenant_id)
+
+    async def personal_team_readiness(actor: Actor) -> list[CapabilityCheck]:
+        return await state.teams_service.personal_checks(actor.tenant_id, actor.object_id, "portal")
+
+    async def admin_personal_team_readiness(actor: Actor) -> list[CapabilityCheck]:
+        return await state.teams_service.personal_checks(actor.tenant_id, actor.object_id, "admin")
+
     readiness._admin_probes = tuple(
         gateway_usage_probe(state.gateway_repository, state.telemetry_service, configured=True)
         if probe.__qualname__ == f"{gateway_usage_probe.__qualname__}.<locals>.check"
+        else team_readiness
+        if probe.__name__ == "team_readiness"
         else probe
         for probe in readiness._admin_probes
+    )
+    readiness._personal_probes = tuple(
+        personal_team_readiness if probe.__name__ == "personal_team_readiness" else probe
+        for probe in readiness._personal_probes
+    )
+    readiness._admin_self_probes = tuple(
+        admin_personal_team_readiness
+        if probe.__name__ == "admin_personal_team_readiness"
+        else probe
+        for probe in readiness._admin_self_probes
     )
 
 
@@ -2875,7 +3020,9 @@ async def seed_budgets(services: DemoServices, estate: Estate, tenant_id: str) -
     admin = Actor(ADMIN.object_id, tenant_id)
     await services.budgets.save_email_settings(
         admin,
-        EmailSettingsUpdate(enabled=True, endpoint=DEMO_EMAIL_ENDPOINT, sender=DEMO_EMAIL_SENDER),
+        EmailSettingsUpdate(
+            enabled=True, sender_mailbox_id=DEMO_EMAIL_MAILBOX_ID, sender=DEMO_EMAIL_SENDER
+        ),
     )
     await services.budgets.send_test_email(admin, EmailTest(to=_directory_detail(ADMIN) or ""))
     spend = await services.analytics.budget_spend(
@@ -2973,7 +3120,7 @@ def build_demo_app(console_port: int, portal_port: int) -> FastAPI:
                 await services.portal_access.resume_automatic_keys(TENANT_ID)
                 await seed_usage(services, estate, TENANT_ID)
                 await seed_budgets(services, estate, TENANT_ID)
-                await seed_approvals_and_notifications(demo_app, estate)
+                await seed_approvals_and_notifications(demo_app, estate, services)
                 demo_app.state.demo_estate = estate
                 print(
                     "MOSAIC demo estate ready: "

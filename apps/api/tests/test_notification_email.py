@@ -1,4 +1,4 @@
-"""ACS shared adapter preserves opt-in and exposes acceptance, not actual receipt."""
+"""Graph adapter preserves audience boundaries and reports acceptance, not receipt."""
 
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
@@ -9,11 +9,11 @@ import pytest
 from azure.core.credentials_async import AsyncTokenCredential
 from mosaic_api.budgets import EmailSettings
 from mosaic_api.domain import AuditEvent
-from mosaic_api.integrations.email import AcsEmailClient, EmailMessage, EmailSendResult
+from mosaic_api.integrations.email import EmailMessage, EmailSendResult, GraphEmailClient
 from mosaic_api.notifications import NotificationDelivery, NotificationSubject
 from mosaic_api.repositories.memory_budgets import InMemoryBudgetRepository
-from mosaic_api.services.notification_email import AcsNotificationDispatcher
-from test_email_client import ENDPOINT, MESSAGE, SENDER, Credential
+from mosaic_api.services.notification_email import GraphNotificationDispatcher
+from test_email_client import MAILBOX, MESSAGE, SENDER, TENANT, Credential
 from test_notification_repository import event
 
 
@@ -24,12 +24,17 @@ class Sender:
         self.operations: list[str] = []
 
     async def send(
-        self, endpoint: str, sender: str, message: EmailMessage, *, operation_id: str
+        self, sender_mailbox_id: str, message: EmailMessage, *, operation_id: str
     ) -> EmailSendResult:
-        assert endpoint == ENDPOINT and sender == SENDER
+        assert sender_mailbox_id == MAILBOX
         self.messages.append(message)
         self.operations.append(operation_id)
         return self.result
+
+    async def check_access(self):
+        from mosaic_api.integrations.email import EmailAccessResult
+
+        return EmailAccessResult(True)
 
     async def close(self) -> None:
         return None
@@ -38,7 +43,12 @@ class Sender:
 async def email_settings(repository: InMemoryBudgetRepository, *, enabled: bool = True) -> None:
     await repository.save_email_settings(
         EmailSettings(
-            id="email", tenant_id="tenant", enabled=enabled, endpoint=ENDPOINT, sender=SENDER
+            id="email",
+            tenant_id="tenant",
+            enabled=enabled,
+            provider="graph",
+            sender_mailbox_id=MAILBOX,
+            sender=SENDER,
         ),
         AuditEvent(
             id="audit",
@@ -76,6 +86,10 @@ async def mailbox(_delivery: NotificationDelivery) -> str:
         (EmailSendResult(False, "operation", 400, error="sensitive recipient"), "permanentFailure"),
         (EmailSendResult(False, "operation", 403), "permanentFailure"),
         (EmailSendResult(False, "operation", outcome_unknown=True), "unknownOutcome"),
+        (
+            EmailSendResult(False, "operation", 503, outcome_unknown=True, retry_after_seconds=120),
+            "unknownOutcome",
+        ),
     ],
 )
 async def test_adapter_classifies_acceptance_failure_and_ambiguity_without_leaking_errors(
@@ -85,7 +99,7 @@ async def test_adapter_classifies_acceptance_failure_and_ambiguity_without_leaki
     repository = InMemoryBudgetRepository()
     await email_settings(repository)
     sender = Sender(response)
-    dispatcher = AcsNotificationDispatcher(
+    dispatcher = GraphNotificationDispatcher(
         sender, repository, mailbox_resolver=mailbox, portal_url="https://portal.example.test"
     )
     first = await dispatcher.send(delivery(), [event()])
@@ -98,38 +112,42 @@ async def test_adapter_classifies_acceptance_failure_and_ambiguity_without_leaki
     assert "/notifications" in sender.messages[0].plain_text
 
 
-async def test_adapter_never_sends_with_disabled_settings_or_missing_directory_contact() -> None:
+async def test_general_delivery_does_not_depend_on_the_budget_email_switch() -> None:
     repository = InMemoryBudgetRepository()
     await email_settings(repository, enabled=False)
     sender = Sender(EmailSendResult(True, "operation"))
-    dispatcher = AcsNotificationDispatcher(sender, repository, mailbox_resolver=mailbox)
-    assert (await dispatcher.send(delivery(), [event()])).outcome == "suppressed"
-    assert sender.messages == []
+    dispatcher = GraphNotificationDispatcher(sender, repository, mailbox_resolver=mailbox)
+    assert (await dispatcher.send(delivery(), [event()])).outcome == "providerAccepted"
+    sender.messages.clear()
 
     async def no_mailbox(_delivery: NotificationDelivery) -> None:
         return None
 
     enabled_repository = InMemoryBudgetRepository()
     await email_settings(enabled_repository)
-    dispatcher = AcsNotificationDispatcher(sender, enabled_repository, mailbox_resolver=no_mailbox)
+    dispatcher = GraphNotificationDispatcher(
+        sender, enabled_repository, mailbox_resolver=no_mailbox
+    )
     assert (await dispatcher.send(delivery(), [event()])).outcome == "suppressed"
     assert sender.messages == []
 
 
-@pytest.mark.parametrize(
-    "header", ["120", "future-http-date", "invalid", "-1"]
-)
-async def test_acs_exposes_retry_after_without_changing_legacy_refusal(header: str) -> None:
+@pytest.mark.parametrize("header", ["120", "future-http-date", "invalid", "-1"])
+@pytest.mark.parametrize("status", [429, 503])
+async def test_graph_exposes_retry_after(header: str, status: int) -> None:
     if header == "future-http-date":
         header = format_datetime(datetime.now(UTC) + timedelta(hours=1))
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(
-            lambda _request: httpx.Response(429, headers={"Retry-After": header})
+            lambda _request: httpx.Response(status, headers={"Retry-After": header})
         )
     )
-    sender = AcsEmailClient(cast(AsyncTokenCredential, Credential()), client=client)
-    response = await sender.send(ENDPOINT, SENDER, MESSAGE, operation_id="operation")
-    assert not response.accepted and response.status_code == 429
+    sender = GraphEmailClient(
+        cast(AsyncTokenCredential, Credential()), tenant_id=TENANT, client=client
+    )
+    response = await sender.send(MAILBOX, MESSAGE, operation_id="operation")
+    assert not response.accepted and response.status_code == status
+    assert response.outcome_unknown == (status == 503)
     if header == "120":
         assert response.retry_after_seconds == 120
     elif header == "invalid":
@@ -141,13 +159,15 @@ async def test_acs_exposes_retry_after_without_changing_legacy_refusal(header: s
     await client.aclose()
 
 
-async def test_acs_transport_timeout_exposes_unknown_outcome() -> None:
+async def test_graph_transport_timeout_exposes_unknown_outcome() -> None:
     def timed_out(_request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("after acceptance")
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(timed_out))
-    sender = AcsEmailClient(cast(AsyncTokenCredential, Credential()), client=client)
-    result = await sender.send(ENDPOINT, SENDER, MESSAGE, operation_id="operation")
+    sender = GraphEmailClient(
+        cast(AsyncTokenCredential, Credential()), tenant_id=TENANT, client=client
+    )
+    result = await sender.send(MAILBOX, MESSAGE, operation_id="operation")
     assert not result.accepted and result.outcome_unknown
     await client.aclose()
 
@@ -160,7 +180,7 @@ def test_message_links_only_use_trusted_https_mosaic_origins() -> None:
         "https://mosaic/?sig=key",
     ):
         with pytest.raises(ValueError, match="HTTPS"):
-            AcsNotificationDispatcher(
+            GraphNotificationDispatcher(
                 sender, InMemoryBudgetRepository(), mailbox_resolver=mailbox, portal_url=origin
             )
 
@@ -180,7 +200,7 @@ async def test_messages_link_to_exact_authenticated_request_and_personal_prefere
     repository = InMemoryBudgetRepository()
     await email_settings(repository)
     sender = Sender(EmailSendResult(True, "operation"))
-    dispatcher = AcsNotificationDispatcher(
+    dispatcher = GraphNotificationDispatcher(
         sender,
         repository,
         mailbox_resolver=mailbox,
@@ -195,18 +215,30 @@ async def test_messages_link_to_exact_authenticated_request_and_personal_prefere
 @pytest.mark.parametrize(
     ("subject", "path"),
     [
-        ({"publication_id": "item/a", "publication_target": "model"},
-         "/models?tab=published&selected=item%2Fa&runId=run%3F1"),
-        ({"publication_id": "item/a", "publication_target": "mcp"},
-         "/mcps?tab=published&selected=item%2Fa&runId=run%3F1"),
-        ({"publication_id": "item/a", "publication_target": "pool"},
-         "/pools/item%2Fa?tab=plans&runId=run%3F1"),
-        ({"endpoint_id": "item/a", "endpoint_kind": "model"},
-         "/models?tab=endpoints&selected=item%2Fa&syncRun=run%3F1"),
-        ({"endpoint_id": "item/a", "endpoint_kind": "mcp"},
-         "/mcps?tab=registered&selected=item%2Fa&syncRun=run%3F1"),
-        ({"gateway_id": "item/a", "integration": "gatewayInventory"},
-         "/gateways/item%2Fa?syncRun=run%3F1"),
+        (
+            {"publication_id": "item/a", "publication_target": "model"},
+            "/models?tab=published&selected=item%2Fa&runId=run%3F1",
+        ),
+        (
+            {"publication_id": "item/a", "publication_target": "mcp"},
+            "/mcps?tab=published&selected=item%2Fa&runId=run%3F1",
+        ),
+        (
+            {"publication_id": "item/a", "publication_target": "pool"},
+            "/pools/item%2Fa?tab=plans&runId=run%3F1",
+        ),
+        (
+            {"endpoint_id": "item/a", "endpoint_kind": "model"},
+            "/models?tab=endpoints&selected=item%2Fa&syncRun=run%3F1",
+        ),
+        (
+            {"endpoint_id": "item/a", "endpoint_kind": "mcp"},
+            "/mcps?tab=registered&selected=item%2Fa&syncRun=run%3F1",
+        ),
+        (
+            {"gateway_id": "item/a", "integration": "gatewayInventory"},
+            "/gateways/item%2Fa?syncRun=run%3F1",
+        ),
         ({"gateway_id": "item/a", "integration": "gatewayApply"}, "/gateways/item%2Fa"),
     ],
 )
@@ -216,11 +248,11 @@ async def test_admin_source_links_preserve_exact_historical_runs(
     repository = InMemoryBudgetRepository()
     await email_settings(repository)
     sender = Sender(EmailSendResult(True, "operation"))
-    dispatcher = AcsNotificationDispatcher(
+    dispatcher = GraphNotificationDispatcher(
         sender, repository, mailbox_resolver=mailbox, frontend_url="https://admin.example.test"
     )
-    source = event().model_copy(update={
-        "subject": NotificationSubject.model_validate({**subject, "run_id": "run?1"})
-    })
+    source = event().model_copy(
+        update={"subject": NotificationSubject.model_validate({**subject, "run_id": "run?1"})}
+    )
     await dispatcher.send(delivery().model_copy(update={"persona": "admin"}), [source])
     assert "https://admin.example.test" + path in sender.messages[0].plain_text

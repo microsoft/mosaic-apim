@@ -20,6 +20,7 @@ from mosaic_api.budgets import (
     EmailTestResult,
     PortalBudgetAlert,
 )
+from mosaic_api.notifications import CapabilityCheck
 from mosaic_api.services.budgets import BudgetService
 
 budgets_router = APIRouter(prefix="/api/v1", tags=["admin"])
@@ -77,9 +78,7 @@ async def set_cost_center_budget(
 @budgets_router.delete(
     "/cost-centers/{cost_center_id}/budget", status_code=status.HTTP_204_NO_CONTENT
 )
-async def delete_cost_center_budget(
-    request: Request, auth: Admin, cost_center_id: str
-) -> Response:
+async def delete_cost_center_budget(request: Request, auth: Admin, cost_center_id: str) -> Response:
     await _budgets(request).delete_budget(_actor(auth), cost_center_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -101,6 +100,12 @@ async def send_test_email(request: Request, auth: Admin, payload: EmailTest) -> 
     """Send one email, now, through the saved settings, whether or not email is turned on."""
 
     return await _budgets(request).send_test_email(_actor(auth), payload)
+
+
+@budgets_router.get("/settings/email/checks", response_model=list[CapabilityCheck])
+async def check_email_access(request: Request, auth: Admin) -> list[CapabilityCheck]:
+    """Inspect configuration and the runtime identity without sending email."""
+    return await _budgets(request).check_email_access(_actor(auth))
 
 
 @portal_budgets_router.get("/budgets", response_model=list[PortalBudgetAlert])

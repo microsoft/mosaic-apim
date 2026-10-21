@@ -96,17 +96,6 @@ class Settings(BaseSettings):
             "threshold or a block is still to come."
         ),
     )
-    email_suggested_endpoint: str | None = Field(
-        default=None,
-        description=(
-            "The endpoint of a Communication Services resource azd deployed for email. It only "
-            "pre-fills Settings: email stays off until an administrator saves it there."
-        ),
-    )
-    email_suggested_sender: str | None = Field(
-        default=None,
-        description="The sender address of the email domain azd deployed. Pre-fills Settings.",
-    )
     notifications_enabled: bool = Field(
         default=True,
         description=(

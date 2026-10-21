@@ -23,7 +23,11 @@ notification_delivery_router = APIRouter(prefix="/api/v1/notifications", tags=["
 
 
 class NotificationRetryInput(MosaicModel):
-    allow_unknown: bool = Field(default=False)
+    allow_unknown: bool = Field(
+        default=False,
+        deprecated=True,
+        description="Accepted for older clients; no longer gates retrying uncertain outcomes.",
+    )
 
 
 def _service(request: Request) -> NotificationService:
@@ -99,4 +103,8 @@ async def retry_delivery(
 
 @notification_delivery_router.get("/channel-health", response_model=list[NotificationChannelHealth])
 async def channel_health(request: Request, auth: Admin) -> list[NotificationChannelHealth]:
-    return await _service(request).repository.list_channel_health(auth.tenant_id)
+    return [
+        item
+        for item in await _service(request).repository.list_channel_health(auth.tenant_id)
+        if not item.id.startswith("teamsTest-")
+    ]

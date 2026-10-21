@@ -83,9 +83,9 @@ test.describe('55 isolated model cost centers and budgets', { tag: ['@model-budg
           timing: { blockSave: result.blockSave, raiseSave: result.raiseSave, first403At: result.first403.at, firstSuccessAt: result.firstSuccess.at },
           rollup: { blockedSpend: result.blocked.status.monthToDate, raisedSpend: result.raised.status.monthToDate, through: result.blocked.status.through },
           gateways: result.blocked.status.gateways.map((g) => ({ id: g.gatewayId, syncedAt: g.syncedAt })),
-          notificationEvidence: 'NOT RUN: zero recipients; skipped/ACS-accepted records are not mailbox delivery or dedupe',
+          notificationEvidence: 'NOT RUN: zero recipients; skipped/Graph-accepted records are not mailbox delivery',
         }
-        info.annotations.push({ type: 'NOT PROVEN', description: `${journey}: need actual named-value snapshots/write audits and budget denial trace; R14 email/dedupe NOT RUN` })
+        info.annotations.push({ type: 'NOT PROVEN', description: `${journey}: need actual named-value snapshots/write audits and budget denial trace; R14 email delivery NOT RUN` })
       } finally {
         await run.finish(details)
         info.annotations.push({ type: 'cleanup', description: 'No automatic cleanup, grant edits or deletes. A failed blocking run may leave its isolated budget blocked; owner must approve UI recovery. The shared lists must never be edited directly.' })
@@ -93,7 +93,7 @@ test.describe('55 isolated model cost centers and budgets', { tag: ['@model-budg
     })
   }
 
-  test('R13 Government ACS managed-identity delivery and repeated Operation-Id', async () => {
-    test.skip(true, 'NOT RUN: human-assisted Government ACS/domain/MI/recipient fixture and exact send approval required; no provisioning, email settings writes or sends implemented')
+  test('R13 Government Graph mailbox-scoped managed-identity email delivery', async () => {
+    test.skip(true, 'NOT RUN: human-assisted Government Exchange mailbox, scoped runtime identity and exact send approval required; no provisioning, email settings writes or sends implemented; duplicates are acceptable')
   })
 })

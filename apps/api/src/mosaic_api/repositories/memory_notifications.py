@@ -63,7 +63,14 @@ class InMemoryNotificationRepository(NotificationStore):
                 limit is None
                 or not isinstance(item, NotificationDelivery)
                 or (
-                    item.state in {"queued", "retrying", "sending"}
+                    (
+                        item.state in {"queued", "retrying", "sending"}
+                        or (
+                            item.state == "unknownOutcome"
+                            and not item.has_unresolved_outcome
+                            and (item.max_attempts is None or item.attempts < item.max_attempts)
+                        )
+                    )
                     and (item.next_attempt_at is None or item.next_attempt_at <= self._clock())
                     and (
                         item.state != "sending"

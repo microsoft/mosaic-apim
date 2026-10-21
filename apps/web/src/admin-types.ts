@@ -111,14 +111,15 @@ export interface NotificationRoutePreview {
 }
 export interface PersonalTeamsSettingsInput { enabled: boolean; appId: string | null; botAppId: string | null; cloud: 'public' | 'usGovernment' }
 export interface PersonalTeamsSettings extends PersonalTeamsSettingsInput, RecordMetadata {}
-export interface TeamsTestResult { outcome: 'providerAccepted' | 'confirmedDelivered' | 'retryableFailure' | 'permanentFailure' | 'unknownOutcome' | 'suppressed'; message: string; testedAt: string; confirmedDelivered: boolean }
-export interface PersonalTeamsStatus { enabled: boolean; state: 'notInstalled' | 'installed' | 'uninstalled' | 'blocked'; checks: CapabilityCheck[] }
+export interface TeamsTestResult { outcome: 'providerAccepted' | 'confirmedDelivered' | 'retryableFailure' | 'permanentFailure' | 'unknownOutcome' | 'suppressed'; message: string; testedAt: string; confirmedDelivered: boolean; configurationRevision?: string | null; errorCode?: string | null }
+export interface PersonalTeamsStatus { enabled: boolean; state: 'notInstalled' | 'installed' | 'uninstalled' | 'blocked'; checks: CapabilityCheck[]; lastTest?: TeamsTestResult | null }
 export interface TeamsDestinationInput { name: string; enabled: boolean; allowedCategories: NotificationCategory[]; webhookUrl?: string }
 export interface TeamsDestination extends Omit<TeamsDestinationInput, 'webhookUrl'>, RecordMetadata { credentialReferenceId: string }
 export interface CapabilityCheck {
   feature: string; scope: string; required: boolean
   state: 'disabled' | 'notConfigured' | 'needsAction' | 'checking' | 'verified' | 'degraded' | 'failed' | 'unknown'
   reason?: string | null; evidence: string[]; checkedAt?: string | null; freshUntil?: string | null
+  lastTestAt?: string | null; configurationRevision?: string | null
   remediation?: { action: string; path?: string | null; command?: string | null; owner: string } | null
 }
 export interface NotificationChannelHealth {
@@ -130,4 +131,5 @@ export interface NotificationDelivery {
   state: 'queued' | 'sending' | 'providerAccepted' | 'confirmedDelivered' | 'suppressed' | 'retrying' | 'permanentlyFailed' | 'unknownOutcome'
   nextAttemptAt?: string | null; lastError?: string | null; suppressionReason?: string | null
   providerAcceptedAt?: string | null; confirmedDeliveredAt?: string | null
+  hasUnresolvedOutcome?: boolean
 }

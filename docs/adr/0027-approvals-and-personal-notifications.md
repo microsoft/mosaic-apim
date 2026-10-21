@@ -2,6 +2,12 @@
 
 **Status:** Accepted
 
+**Email and delivery update:** [Notification setup](../notification-setup.md) replaces the ACS
+email option with Microsoft Graph and mailbox-scoped Exchange access. All external channels
+automatically retry transient and uncertain sends within normal finite limits, without
+duplicate-review holds. Saved configuration, read-only access checks, explicit test acceptance
+and observed receipt remain distinct evidence.
+
 **Builds on:** [ADR 0001](0001-apim-runtime-boundary.md),
 [ADR 0002](0002-cosmos-partitioning.md), [ADR 0008](0008-portal-identity-and-role-separation.md),
 [ADR 0019](0019-usage-telemetry.md), and [ADR 0023](0023-budgets-and-notifications.md).

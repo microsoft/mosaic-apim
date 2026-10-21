@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../api'
+import type { CapabilityCheck } from '../admin-types'
 import { MosaicThemeProvider } from '../theme'
 import { emailSettingsFixture } from '../test/budget-fixtures'
 import type { EmailSettings, EnvironmentCatalogView } from '../types'
@@ -24,8 +25,10 @@ const api = {
   listEnvironmentSuggestions: vi.fn(),
   assignEnvironments: vi.fn(),
   getEmailSettings: vi.fn(),
+  checkEmailAccess: vi.fn(),
   saveEmailSettings: vi.fn(),
   sendTestEmail: vi.fn(),
+  getNotificationSettings: vi.fn(),
 }
 
 vi.mock('../api', async (importOriginal) => {
@@ -80,13 +83,14 @@ const catalog: EnvironmentCatalogView = {
 
 function renderSettings(section = 'environments') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <MosaicThemeProvider>
         <MemoryRouter initialEntries={[`/settings?tab=${section}`]}><SettingsPage /></MemoryRouter>
       </MosaicThemeProvider>
     </QueryClientProvider>,
   )
+  return { ...view, queryClient }
 }
 
 describe('SettingsPage', () => {
@@ -101,6 +105,7 @@ describe('SettingsPage', () => {
     })
     api.listEnvironmentSuggestions.mockResolvedValue({ items: [] })
     api.getEmailSettings.mockResolvedValue(emailSettingsFixture)
+    api.getNotificationSettings.mockResolvedValue({ inAppEnabled: true, emailEnabled: false, teamsChannelEnabled: false, teamsPersonalEnabled: false, retentionDays: 90, revision: 1 })
     api.getDirectoryStatus.mockResolvedValue({
       lookupEnabled: true,
       groupClaimsEnabled: false,
@@ -155,8 +160,9 @@ describe('SettingsPage', () => {
     expect(api.getDirectoryStatus).toHaveBeenCalledWith(true)
     expect(screen.queryByRole('textbox', { name: 'Support destination alias' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Add environment' })).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Budget email' }))
-    expect(await screen.findByRole('form', { name: 'Email settings' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Notifications' }))
+    await user.click(screen.getByRole('tab', { name: /^Email$/ }))
+    expect(await screen.findByRole('heading', { name: 'Microsoft Graph email' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Save local preview' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Integration preview' })).not.toBeInTheDocument()
     expect(screen.queryByText('Live data')).not.toBeInTheDocument()
@@ -349,50 +355,52 @@ describe('SettingsPage', () => {
     expect(await screen.findByText(/Gateway: applied/)).toBeVisible()
   })
 
-  it('saves email settings, offering the deployment’s own Communication Services', async () => {
+  it('redirects legacy email settings and saves a scoped Graph mailbox', async () => {
     const user = userEvent.setup()
     const saved: EmailSettings = {
       ...emailSettingsFixture,
       enabled: true,
-      endpoint: 'https://contoso-mosaic.communication.azure.com',
-      sender: 'DoNotReply@contoso.azurecomm.net',
+      senderMailboxId: '33333333-3333-4333-8333-333333333333',
+      sender: 'notifications@example.test',
+      configured: true,
+      revision: 2,
       ready: true,
       updatedAt: '2026-09-01T12:00:00Z',
     }
     api.saveEmailSettings.mockResolvedValue(saved)
     renderSettings('email')
 
-    const form = await screen.findByRole('form', { name: 'Email settings' })
-    expect(screen.getByText('Not set up')).toBeVisible()
+    await screen.findByRole('heading', { name: 'Microsoft Graph email' })
+    expect(await screen.findByText('Not configured')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Send test email' })).toBeDisabled()
-    await user.click(within(form).getByRole('button', { name: 'Use them' }))
-    expect(within(form).getByRole('textbox', { name: 'Communication Services endpoint' })).toHaveValue(
-      'https://contoso-mosaic.communication.azure.com',
-    )
-    await user.click(within(form).getByRole('switch', { name: 'Send budget email' }))
-    await user.click(within(form).getByRole('button', { name: 'Save email settings' }))
+    await user.click(screen.getByRole('button', { name: 'Configure sender' }))
+    await user.type(screen.getByRole('textbox', { name: 'Sender mailbox object ID' }), saved.senderMailboxId!)
+    await user.type(screen.getByRole('textbox', { name: 'Sender address label (optional)' }), saved.sender!)
+    await user.click(screen.getByRole('checkbox', { name: 'Send budget email' }))
+    await user.click(screen.getByRole('button', { name: 'Save email settings' }))
 
     await waitFor(() =>
       expect(api.saveEmailSettings).toHaveBeenCalledWith({
         enabled: true,
-        endpoint: 'https://contoso-mosaic.communication.azure.com',
-        sender: 'DoNotReply@contoso.azurecomm.net',
+        senderMailboxId: saved.senderMailboxId,
+        sender: saved.sender,
+        expectedRevision: 1,
       }),
     )
-    expect(await screen.findByText(/Budget email goes out through this Communication Services/)).toBeVisible()
-    expect(screen.getByText('On')).toBeVisible()
-    expect(within(form).queryByRole('button', { name: 'Use them' })).not.toBeInTheDocument()
+    expect(await screen.findByText('Sender saved')).toBeVisible()
+    expect(screen.getByText(saved.senderMailboxId!)).toBeVisible()
+    expect(api.sendTestEmail).not.toHaveBeenCalled()
   })
 
-  it('refuses to turn email on without an endpoint and a sender', async () => {
+  it('cannot enable budget mail without a valid mailbox object ID', async () => {
     const user = userEvent.setup()
     renderSettings('email')
-    const form = await screen.findByRole('form', { name: 'Email settings' })
-    await user.click(within(form).getByRole('switch', { name: 'Send budget email' }))
-    await user.click(within(form).getByRole('button', { name: 'Save email settings' }))
-    expect(
-      await screen.findByText(/Email can be on only with a Communication Services endpoint/),
-    ).toBeVisible()
+    await user.click(await screen.findByRole('button', { name: 'Configure sender' }))
+    await user.click(screen.getByRole('checkbox', { name: 'Send budget email' }))
+    expect(screen.getByRole('button', { name: 'Save email settings' })).toBeDisabled()
+    await user.type(screen.getByRole('textbox', { name: 'Sender mailbox object ID' }), 'sender@example.test')
+    expect(screen.getByRole('button', { name: 'Save email settings' })).toBeDisabled()
+    expect(screen.getByText(/Enter the mailbox user object ID as a GUID/)).toBeVisible()
     expect(api.saveEmailSettings).not.toHaveBeenCalled()
   })
 
@@ -400,48 +408,207 @@ describe('SettingsPage', () => {
     const user = userEvent.setup()
     api.getEmailSettings.mockResolvedValue({
       ...emailSettingsFixture,
-      endpoint: 'https://contoso-mosaic.communication.azure.com',
-      sender: 'DoNotReply@contoso.azurecomm.net',
+      senderMailboxId: '33333333-3333-4333-8333-333333333333',
+      configured: true,
+      sender: 'notifications@example.test',
       lastTestAt: '2026-09-01T12:00:00Z',
-      lastTestError: 'Communication Services refused the call (403)',
+      lastTestRevision: 1,
+      lastTestOutcome: 'permanentFailure',
+      lastTestError: 'Graph denied this sender. Check mailbox-scoped Application Mail.Send.',
     })
     api.sendTestEmail
-      .mockResolvedValueOnce({ sent: true, to: 'avery@contoso.com', operationId: 'op-1', error: null })
+      .mockResolvedValueOnce({ sent: true, to: 'avery@contoso.com', operationId: 'op-1', error: null, outcome: 'providerAccepted', testedAt: '2026-09-01T12:00:00Z', configurationRevision: 1 })
       .mockRejectedValueOnce(new ApiError('A test email went less than 30 seconds ago', 429))
     renderSettings('email')
 
-    const test = await screen.findByRole('form', { name: 'Test email' })
-    expect(screen.getByText('Off')).toBeVisible()
-    expect(within(test).getByText(/failed: Communication Services refused the call \(403\)/)).toBeVisible()
-    await user.type(within(test).getByRole('textbox', { name: 'Send to' }), 'avery@contoso.com')
-    await user.click(within(test).getByRole('button', { name: 'Send test email' }))
+    const test = await screen.findByRole('region', { name: 'Test email' })
+    expect(await within(test).findByText(/Graph denied this sender/)).toBeVisible()
+    await user.type(within(test).getByRole('textbox', { name: 'Test recipient' }), 'avery@contoso.com')
+    await user.click(await within(test).findByRole('button', { name: 'Send test email' }))
+    expect(api.sendTestEmail).not.toHaveBeenCalled()
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Send synthetic email' }))
     await waitFor(() => expect(api.sendTestEmail).toHaveBeenCalledWith('avery@contoso.com'))
-    expect(await within(test).findByText(/accepted a test email to avery@contoso.com/)).toBeVisible()
+    expect(await screen.findByText(/Graph accepted the test request. Check the recipient mailbox/)).toBeVisible()
 
-    await user.click(within(test).getByRole('button', { name: 'Send test email' }))
-    expect(await within(test).findByText('A test email went less than 30 seconds ago')).toBeVisible()
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close' }))
+    await user.click(await within(test).findByRole('button', { name: 'Send test email' }))
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Send synthetic email' }))
+    expect(await screen.findByText('A test email went less than 30 seconds ago')).toBeVisible()
   })
 
-  it('makes unsaved email changes wait before a test', async () => {
+  it('keeps read-only access checks separate from sends and explains failures', async () => {
+    const user = userEvent.setup()
+    api.checkEmailAccess.mockResolvedValue([{
+      feature: 'emailConfiguration', scope: 'tenant', required: true, state: 'notConfigured',
+      configurationRevision: null, checkedAt: '2026-09-01T12:00:00Z', evidence: [],
+      reason: 'No Graph sender mailbox has been saved.',
+    }, {
+      feature: 'emailIdentity', scope: 'tenant', required: true, state: 'failed',
+      reason: 'The API managed identity could not acquire a token.', evidence: [],
+      checkedAt: '2026-09-01T12:00:00Z',
+      remediation: { action: 'Attach the correct managed identity to the API host.', owner: 'azureAdmin' },
+    }, {
+      feature: 'emailSendAuthorization', scope: 'tenant', required: true, state: 'unknown',
+      configurationRevision: null, checkedAt: null, evidence: [],
+      reason: 'Mailbox send authorization has not been checked.',
+    }])
+    renderSettings('email')
+    await user.click(await screen.findByRole('button', { name: 'Check email access' }))
+    expect(await screen.findByText('The API managed identity could not acquire a token.')).toBeVisible()
+    expect(screen.getByText('Attach the correct managed identity to the API host.')).toBeVisible()
+    const configuration = screen.getByRole('region', { name: 'Saved sender mailbox readiness' })
+    expect(within(configuration).getByText('notConfigured')).toBeVisible()
+    expect(within(configuration).getByText('No Graph sender mailbox has been saved.')).toBeVisible()
+    const authorization = screen.getByRole('region', { name: 'Mailbox send authorization readiness' })
+    expect(within(authorization).getByText('unknown')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Refresh sender settings' })).not.toBeInTheDocument()
+    expect(api.sendTestEmail).not.toHaveBeenCalled()
+    expect(api.saveEmailSettings).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Configure sender' }))
+    expect(screen.queryByRole('button', { name: 'Send test email' })).not.toBeInTheDocument()
+  })
+
+  it('shows matching sender evidence when identity and mailbox checks omit revisions', async () => {
+    const user = userEvent.setup()
+    const saved: EmailSettings = {
+      ...emailSettingsFixture, configured: true,
+      senderMailboxId: '33333333-3333-4333-8333-333333333333',
+    }
+    api.getEmailSettings.mockResolvedValue(saved)
+    api.checkEmailAccess.mockResolvedValue([{
+      feature: 'emailConfiguration', scope: 'tenant', required: true, state: 'verified',
+      configurationRevision: String(saved.revision), checkedAt: '2026-09-01T12:00:00Z',
+      evidence: ['The saved sender mailbox is configured.'],
+    }, {
+      feature: 'emailIdentity', scope: 'tenant', required: true, state: 'verified',
+      checkedAt: '2026-09-01T12:00:00Z', evidence: ['The runtime identity acquired a Graph token.'],
+    }, {
+      feature: 'emailMailbox', scope: 'tenant', required: false, state: 'verified',
+      checkedAt: '2026-09-01T12:00:00Z', evidence: ['The sender mailbox was found in the directory.'],
+    }, {
+      feature: 'emailSendAuthorization', scope: 'tenant', required: true, state: 'unknown',
+      configurationRevision: null, checkedAt: null, evidence: [],
+      reason: 'A read-only check does not prove mailbox send authorization.',
+    }])
+    renderSettings('email')
+    await user.click(await screen.findByRole('button', { name: 'Check email access' }))
+    expect(await screen.findByText('The saved sender mailbox is configured.')).toBeVisible()
+    expect(screen.getByText('The runtime identity acquired a Graph token.')).toBeVisible()
+    expect(screen.getByText('The sender mailbox was found in the directory.')).toBeVisible()
+    expect(screen.getByText('A read-only check does not prove mailbox send authorization.')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Refresh sender settings' })).not.toBeInTheDocument()
+    expect(api.sendTestEmail).not.toHaveBeenCalled()
+  })
+
+  it('hides email evidence checked for another sender revision and refreshes before checking again', async () => {
+    const user = userEvent.setup()
+    const original: EmailSettings = {
+      ...emailSettingsFixture, configured: true,
+      senderMailboxId: '33333333-3333-4333-8333-333333333333',
+    }
+    const updated: EmailSettings = {
+      ...original, revision: original.revision + 1,
+      senderMailboxId: '44444444-4444-4444-8444-444444444444',
+    }
+    api.getEmailSettings.mockResolvedValueOnce(original).mockResolvedValue(updated)
+    api.checkEmailAccess.mockResolvedValue([{
+      feature: 'emailConfiguration', scope: 'tenant', required: true, state: 'verified',
+      configurationRevision: String(updated.revision), checkedAt: '2026-09-01T12:00:00Z', evidence: [],
+    }, {
+      feature: 'emailSendAuthorization', scope: 'tenant', required: true, state: 'verified',
+      configurationRevision: String(updated.revision), checkedAt: '2026-09-01T12:00:00Z', evidence: [],
+      reason: 'Access was checked for the updated sender.',
+    }])
+    renderSettings('email')
+    await user.click(await screen.findByRole('button', { name: 'Check email access' }))
+    expect(await screen.findByText(/The sender configuration changed/)).toBeVisible()
+    expect(screen.getByText(original.senderMailboxId!)).toBeVisible()
+    expect(screen.queryByText('Access was checked for the updated sender.')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Refresh sender settings' }))
+    expect(await screen.findByText(updated.senderMailboxId!)).toBeVisible()
+    expect(screen.queryByText(original.senderMailboxId!)).not.toBeInTheDocument()
+    expect(screen.queryByText('Access was checked for the updated sender.')).not.toBeInTheDocument()
+    expect(api.checkEmailAccess).toHaveBeenCalledOnce()
+    await user.click(screen.getByRole('button', { name: 'Check email access' }))
+    expect(await screen.findByText('Access was checked for the updated sender.')).toBeVisible()
+    expect(api.checkEmailAccess).toHaveBeenCalledTimes(2)
+    expect(api.sendTestEmail).not.toHaveBeenCalled()
+  })
+
+  it('hides all email evidence when any returned check has a conflicting revision', async () => {
+    const user = userEvent.setup()
+    const saved: EmailSettings = {
+      ...emailSettingsFixture, configured: true,
+      senderMailboxId: '33333333-3333-4333-8333-333333333333',
+    }
+    api.getEmailSettings.mockResolvedValue(saved)
+    api.checkEmailAccess.mockResolvedValue([{
+      feature: 'emailConfiguration', scope: 'tenant', required: true, state: 'verified',
+      configurationRevision: String(saved.revision), checkedAt: '2026-09-01T12:00:00Z', evidence: [],
+    }, {
+      feature: 'emailSendAuthorization', scope: 'tenant', required: true, state: 'unknown',
+      configurationRevision: String(saved.revision + 1), checkedAt: null, evidence: [],
+      reason: 'Authorization evidence belongs to a different sender.',
+    }])
+    renderSettings('email')
+    await user.click(await screen.findByRole('button', { name: 'Check email access' }))
+    expect(await screen.findByText(/The sender configuration changed/)).toBeVisible()
+    expect(screen.queryByRole('region', { name: 'Saved sender mailbox readiness' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Authorization evidence belongs to a different sender.')).not.toBeInTheDocument()
+    expect(api.sendTestEmail).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { name: 'configured', configured: true, migrationRequired: false },
+    { name: 'migration-required', configured: false, migrationRequired: true },
+  ])('hides unversioned not-configured evidence for a $name sender', async ({ configured, migrationRequired }) => {
     const user = userEvent.setup()
     api.getEmailSettings.mockResolvedValue({
-      ...emailSettingsFixture,
-      endpoint: 'https://contoso-mosaic.communication.azure.com',
-      sender: 'DoNotReply@contoso.azurecomm.net',
+      ...emailSettingsFixture, configured, migrationRequired,
+      senderMailboxId: configured ? '33333333-3333-4333-8333-333333333333' : null,
     })
+    api.checkEmailAccess.mockResolvedValue([{
+      feature: 'emailConfiguration', scope: 'tenant', required: true, state: 'notConfigured',
+      configurationRevision: null, checkedAt: '2026-09-01T12:00:00Z', evidence: [],
+      reason: 'No sender configuration was checked.',
+    }])
     renderSettings('email')
-    const form = await screen.findByRole('form', { name: 'Email settings' })
-    const test = screen.getByRole('form', { name: 'Test email' })
-    expect(within(test).getByRole('button', { name: 'Send test email' })).toBeEnabled()
-    await user.type(within(form).getByRole('textbox', { name: 'Sender address' }), 'x')
-    expect(within(test).getByRole('button', { name: 'Send test email' })).toBeDisabled()
-    expect(within(test).getByText(/Save your changes first/)).toBeVisible()
-    await user.click(screen.getByRole('button', { name: 'Appearance' }))
-    expect(screen.queryByRole('form', { name: 'Email settings' })).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Budget email' }))
-    const returned = await screen.findByRole('form', { name: 'Email settings' })
-    expect(within(returned).getByRole('textbox', { name: 'Sender address' })).toHaveValue('DoNotReply@contoso.azurecomm.netx')
-    expect(screen.getByRole('button', { name: 'Send test email' })).toBeDisabled()
-    expect(screen.getByText(/Save your changes first/)).toBeVisible()
+    await user.click(await screen.findByRole('button', { name: 'Check email access' }))
+    expect(await screen.findByText(/The sender configuration changed/)).toBeVisible()
+    expect(screen.queryByText('No sender configuration was checked.')).not.toBeInTheDocument()
+    expect(api.sendTestEmail).not.toHaveBeenCalled()
+  })
+
+  it('hides email evidence when the displayed revision changes while a check is pending', async () => {
+    const user = userEvent.setup()
+    const original: EmailSettings = {
+      ...emailSettingsFixture, configured: true,
+      senderMailboxId: '33333333-3333-4333-8333-333333333333',
+    }
+    const updated: EmailSettings = {
+      ...original, revision: original.revision + 1,
+      senderMailboxId: '44444444-4444-4444-8444-444444444444',
+    }
+    let resolveChecks!: (value: CapabilityCheck[]) => void
+    api.getEmailSettings.mockResolvedValue(original)
+    api.checkEmailAccess.mockReturnValueOnce(new Promise<CapabilityCheck[]>(resolve => { resolveChecks = resolve }))
+    const { queryClient } = renderSettings('email')
+    await user.click(await screen.findByRole('button', { name: 'Check email access' }))
+    expect(screen.getByRole('button', { name: 'Checking access...' })).toBeDisabled()
+    await act(async () => {
+      queryClient.setQueryData(['email-settings'], updated)
+      resolveChecks([{
+        feature: 'emailConfiguration', scope: 'tenant', required: true, state: 'verified',
+        configurationRevision: String(updated.revision), checkedAt: '2026-09-01T12:00:00Z', evidence: [],
+      }, {
+        feature: 'emailSendAuthorization', scope: 'tenant', required: true, state: 'unknown',
+        configurationRevision: String(updated.revision), checkedAt: null, evidence: [],
+        reason: 'This evidence did not start with the displayed sender revision.',
+      }])
+    })
+    expect(await screen.findByText(updated.senderMailboxId!)).toBeVisible()
+    expect(await screen.findByText(/The sender configuration changed/)).toBeVisible()
+    expect(screen.queryByText('This evidence did not start with the displayed sender revision.')).not.toBeInTheDocument()
+    expect(api.sendTestEmail).not.toHaveBeenCalled()
   })
 })

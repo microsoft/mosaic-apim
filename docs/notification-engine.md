@@ -40,10 +40,10 @@ existing default retention if TTL is already enabled.
 
 ```python
 from mosaic_api.services.budget_notification_bridge import BudgetNotificationBridge
-from mosaic_api.services.notification_email import AcsNotificationDispatcher
+from mosaic_api.services.notification_email import GraphNotificationDispatcher
 from mosaic_api.services.notifications import NotificationService
 
-acs = AcsNotificationDispatcher(
+graph = GraphNotificationDispatcher(
     email_sender,
     budget_repository,
     mailbox_resolver=preferences.mailbox_resolver,
@@ -55,7 +55,7 @@ budget_bridge = BudgetNotificationBridge(
     repository,
     cost_center_repository=cost_center_repository,
     sender=email_sender,
-    fallback=acs,
+    fallback=graph,
     tenant_id=tenant_id,
     enabled=settings.budgets_enabled,
 )
@@ -90,14 +90,23 @@ no compatibility email is sent. Re-enabling resumes after the durable next-attem
 Keep the preference resolver's `origin="budgetNotificationBridge"` generic-email guard:
 the compatibility delivery owns the existing explicit owner/recipient email exclusively. In-app
 and authorized Teams targets remain independent. The bridge preserves legacy message content,
-ACS operation IDs, and the three-attempt budget, including already consumed attempts. It rechecks
-the legacy budget-email switch and audience immediately before sending. A legacy in-flight claim
-is unknown, not queued; durable acceptance receipts can repair either projection after a crash.
+correlation IDs, and the three-attempt budget, including already consumed attempts. It rechecks
+the legacy budget-email switch and audience immediately before sending. A legacy uncertain
+in-flight claim transfers atomically and retries while attempts remain; durable acceptance
+receipts can repair either projection after a crash.
+
+Each delivery durably retains `hasUnresolvedOutcome` across retries, expired leases, and manual
+requeues until provider acceptance resolves it. Retryable work uses `retrying`; a tracked
+`unknownOutcome` is terminal, including when a later permanent refusal or opt-out stops retries
+before the attempt limit. Untracked legacy ambiguity is adopted into the bounded retry path.
+Claims and backlog queries must distinguish those terminal outcomes from recoverable legacy
+records; the attempt log still records each individual response rather than rewriting refusals
+as uncertain responses.
 
 When installing `NotificationDigestCoordinator`, use it as `audience_resolver`, retain preferences
 as `delivery_authorizer`, and wrap the bridge with
 `DigestNotificationDispatcher(digests, budget_bridge)` for the email dispatcher. Its fallback chain
-is digest wrapper → budget bridge → ordinary ACS adapter. Register `digests.reconcile` as another
+is digest wrapper → budget bridge → ordinary Graph adapter. Register `digests.reconcile` as another
 source. Teams dispatchers can be wrapped independently; no provider is enabled just by adding it
 to the dispatcher map.
 
@@ -147,10 +156,11 @@ hosting, not merely a successful HTTP startup.
 
 External channels remain opt-in. Compatibility budget email is the deliberate exception only
 for its already-explicit legacy switch and recipient audience. A provider acceptance receipt is
-not confirmation of delivery. Unknown outcomes are never automatically resent; an audited manual
-retry needs explicit acknowledgement and an idempotent provider.
-An imported pre-migration unknown claim still owned by the legacy sender cannot be reclaimed
-by that retry endpoint; it reports a conflict instead of queuing a send it cannot authorize.
+not confirmation of delivery. Uncertain outcomes and expired sending leases retry automatically
+with normal bounded backoff and attempt limits; duplicates are acceptable. Exhausted uncertainty
+remains visible as `unknownOutcome`. Audited manual retries require neither an idempotent provider
+nor a duplicate-risk acknowledgement. Existing ownership, audience, opt-out and CAS protections
+remain; provider correlation identifiers do not guarantee deduplication.
 
 ## Independent audience failures
 
@@ -178,6 +188,6 @@ would lose the unresolved audience.
 
 The memory and conditional Cosmos-batch doubles exercise tenant isolation, atomic fan-out,
 fenced renewable leases, crash replay, retries, quiet-hour deferrals, exact inbox reads, legacy
-budget ownership transfer, and receipt repair. Live ACS acceptance, actual recipient receipt,
+budget ownership transfer, and receipt repair. Live Graph acceptance, actual recipient receipt,
 Cosmos deployment settings, and continuously running worker hosting require deployment checks;
 offline tests do not assert those external facts.

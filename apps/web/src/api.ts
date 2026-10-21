@@ -2,6 +2,7 @@ import { useMsal } from '@azure/msal-react'
 import { useMemo } from 'react'
 import { runtimeConfig } from './runtime-config'
 import { adminApi, type AdminApi } from './admin-api'
+import type { CapabilityCheck } from './admin-types'
 import type {
   AccessRequest,
   AccessRequestApproval,
@@ -248,6 +249,7 @@ export interface MosaicApi extends AdminApi {
   setOrganizationBudget(payload: BudgetUpdate): Promise<BudgetView>
   deleteOrganizationBudget(): Promise<void>
   getEmailSettings(): Promise<EmailSettings>
+  checkEmailAccess(): Promise<CapabilityCheck[]>
   saveEmailSettings(payload: EmailSettingsUpdate): Promise<EmailSettings>
   sendTestEmail(to: string): Promise<EmailTestResult>
   listPrincipals(): Promise<Principal[]>
@@ -759,6 +761,7 @@ export function useMosaicApi(): MosaicApi {
       deleteOrganizationBudget: () =>
         request<void>('/api/v1/budgets/organization', { method: 'DELETE' }),
       getEmailSettings: () => request<EmailSettings>('/api/v1/settings/email'),
+      checkEmailAccess: () => request<CapabilityCheck[]>('/api/v1/settings/email/checks'),
       saveEmailSettings: (payload) =>
         request<EmailSettings>('/api/v1/settings/email', { method: 'PUT', body: payload }),
       sendTestEmail: (to) =>

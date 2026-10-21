@@ -62,6 +62,7 @@ export interface PortalApi {
   getNotificationHealth(): Promise<CapabilityCheck[]>
   getNotificationPreferencePreview(): Promise<NotificationPreferencePreview>
   getPersonalTeamsStatus(): Promise<PersonalTeamsStatus>
+  checkPersonalTeamsAccess(): Promise<CapabilityCheck[]>
   testPersonalTeams(): Promise<PersonalTeamsTestResult>
   getProfile(): Promise<PortalProfile>
   listEntitlements(): Promise<ResolvedEntitlement[]>
@@ -153,6 +154,7 @@ export function usePortalApi(): PortalApi {
       getNotificationHealth: () => request<CapabilityCheck[]>('/api/v1/me/notifications/health', { cache: 'no-store' }),
       getNotificationPreferencePreview: () => request<NotificationPreferencePreview>('/api/v1/me/notifications/preferences/preview', { cache: 'no-store' }),
       getPersonalTeamsStatus: () => request<PersonalTeamsStatus>('/api/v1/me/notifications/teams', { cache: 'no-store' }),
+      checkPersonalTeamsAccess: () => request<CapabilityCheck[]>('/api/v1/me/notifications/teams/checks', { cache: 'no-store' }),
       testPersonalTeams: () => request<PersonalTeamsTestResult>('/api/v1/me/notifications/teams/test', { method: 'POST', cache: 'no-store' }),
       getProfile: () => request<PortalProfile>('/api/v1/portal/me'),
       listEntitlements: () => request<ResolvedEntitlement[]>('/api/v1/portal/entitlements'),

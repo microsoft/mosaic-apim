@@ -77,7 +77,13 @@ class CosmosNotificationRepository(NotificationStore, CosmosRepositoryBase):
                 " OR c.fanoutNextAttemptAt <= @now)"
             )
         if limit is not None and entity_type == "notificationDelivery":
-            query += " AND c.state IN ('queued', 'retrying', 'sending')"
+            query += (
+                " AND (c.state IN ('queued', 'retrying', 'sending') OR"
+                " (c.state = 'unknownOutcome' AND"
+                " (NOT IS_DEFINED(c.hasUnresolvedOutcome) OR c.hasUnresolvedOutcome = false) AND"
+                " (NOT IS_DEFINED(c.maxAttempts) OR IS_NULL(c.maxAttempts)"
+                " OR c.attempts < c.maxAttempts)))"
+            )
         if limit is not None:
             now = self._clock().isoformat().replace("+00:00", "Z")
             if entity_type == "notificationDelivery":
@@ -157,7 +163,11 @@ class CosmosNotificationRepository(NotificationStore, CosmosRepositoryBase):
             " AND (NOT IS_DEFINED(c.fanoutCompletedAt) OR IS_NULL(c.fanoutCompletedAt))"
             " AND (NOT IS_DEFINED(c.fanoutFailedAt) OR IS_NULL(c.fanoutFailedAt)))"
             " OR (c.entityType = 'notificationDelivery'"
-            " AND c.state IN ('queued', 'retrying', 'sending')))"
+            " AND (c.state IN ('queued', 'retrying', 'sending')"
+            " OR (c.state = 'unknownOutcome' AND"
+            " (NOT IS_DEFINED(c.hasUnresolvedOutcome) OR c.hasUnresolvedOutcome = false) AND"
+            " ((NOT IS_DEFINED(c.maxAttempts) OR IS_NULL(c.maxAttempts))"
+            " OR c.attempts < c.maxAttempts)))))"
         )
         rows = self._desired.query_items(
             query=query,

@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from mosaic_api.api import Admin, AnyMosaicRole
 from mosaic_api.integrations.teams import TeamsAuthenticationError
 from mosaic_api.notifications import (
+    CapabilityCheck,
     PersonalTeamsSettings,
     PersonalTeamsSettingsInput,
     TeamsDestination,
@@ -62,6 +63,15 @@ async def test_destination(request: Request, auth: Admin, identifier: str) -> Te
     return await _service(request).test_shared(auth.tenant_id, identifier)
 
 
+@teams_router.get(
+    "/settings/teams/destinations/{identifier}/checks", response_model=list[CapabilityCheck]
+)
+async def check_destination(
+    request: Request, auth: Admin, identifier: str
+) -> list[CapabilityCheck]:
+    return await _service(request).destination_checks(auth.tenant_id, identifier)
+
+
 @teams_router.get("/settings/teams/personal", response_model=PersonalTeamsSettings)
 async def personal_settings(request: Request, auth: Admin) -> PersonalTeamsSettings:
     return await _service(request).personal_settings(auth.tenant_id)
@@ -87,7 +97,21 @@ async def test_personal(request: Request, auth: AnyMosaicRole) -> TeamsTestResul
 
 @teams_router.get("/notifications/me/teams", response_model=PersonalTeamsStatus)
 async def admin_personal_status(request: Request, auth: Admin) -> PersonalTeamsStatus:
-    return await _service(request).personal_status(auth.tenant_id, auth.object_id)
+    return await _service(request).personal_status(auth.tenant_id, auth.object_id, "admin")
+
+
+@teams_router.get("/me/notifications/teams/checks", response_model=list[CapabilityCheck])
+async def check_personal_access(request: Request, auth: AnyMosaicRole) -> list[CapabilityCheck]:
+    return await _service(request).personal_checks(
+        auth.tenant_id, auth.object_id, "portal", verify_access=True
+    )
+
+
+@teams_router.get("/notifications/me/teams/checks", response_model=list[CapabilityCheck])
+async def check_admin_personal_access(request: Request, auth: Admin) -> list[CapabilityCheck]:
+    return await _service(request).personal_checks(
+        auth.tenant_id, auth.object_id, "admin", verify_access=True
+    )
 
 
 @teams_router.post("/notifications/me/teams/test", response_model=TeamsTestResult)

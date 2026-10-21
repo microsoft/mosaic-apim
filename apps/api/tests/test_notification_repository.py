@@ -115,11 +115,13 @@ class NotificationContainer:
                 assert document is not None and document["tenantId"] == partition_key
                 self.version += 1
                 staged[key] = {**document, "_etag": str(self.version)}
-                responses.append({
-                    "statusCode": 201 if verb == "create" else 200,
-                    "eTag": staged[key]["_etag"],
-                    "resourceBody": copy.deepcopy(staged[key]),
-                })
+                responses.append(
+                    {
+                        "statusCode": 201 if verb == "create" else 200,
+                        "eTag": staged[key]["_etag"],
+                        "resourceBody": copy.deepcopy(staged[key]),
+                    }
+                )
         self.items = staged
         return responses
 
@@ -137,6 +139,14 @@ class NotificationContainer:
             for (tenant, _), item in self.items.items()
             if partition_key is None or tenant == partition_key
         ]
+
+        def legacy_unknown(item: dict[str, Any]) -> bool:
+            return (
+                item["state"] == "unknownOutcome"
+                and not item.get("hasUnresolvedOutcome")
+                and (item.get("maxAttempts") is None or item["attempts"] < item["maxAttempts"])
+            )
+
         if "AS backlog" in query:
             queued = [
                 item
@@ -148,7 +158,7 @@ class NotificationContainer:
                 )
                 or (
                     item["entityType"] == "notificationDelivery"
-                    and item["state"] in {"queued", "retrying", "sending"}
+                    and (item["state"] in {"queued", "retrying", "sending"} or legacy_unknown(item))
                 )
             ]
 
@@ -199,7 +209,7 @@ class NotificationContainer:
             items = [
                 item
                 for item in items
-                if item["state"] in {"queued", "retrying", "sending"}
+                if (item["state"] in {"queued", "retrying", "sending"} or legacy_unknown(item))
                 and (not item.get("nextAttemptAt") or item["nextAttemptAt"] <= values["@now"])
                 and (item["state"] != "sending" or item["leaseExpiresAt"] <= values["@now"])
             ]
@@ -390,7 +400,7 @@ async def test_keyset_pagination_is_filter_and_persona_bound(
             await repository.list_inbox("tenant", "user", "portal", continuation_token=token)
 
 
-async def test_delivery_claim_and_crash_never_automatically_resend_unknown(
+async def test_expired_delivery_claim_recovers_for_a_bounded_automatic_retry(
     store: tuple[NotificationPersistence, Clock],
 ) -> None:
     repository, clock = store
@@ -407,16 +417,91 @@ async def test_delivery_claim_and_crash_never_automatically_resend_unknown(
         "tenant", "other", now=clock.now, lease_seconds=60, limit=1
     )
     stored = await repository.get_delivery("tenant", delivery.id)
-    assert stored and stored.state == "unknownOutcome"
+    assert stored and stored.state == "retrying" and stored.max_attempts == 5
+    assert stored.has_unresolved_outcome
     with pytest.raises(ConflictError, match="lease"):
         await repository.save_delivery(
             claimed.model_copy(
                 update={"state": "providerAccepted", "provider_accepted_at": clock.now}
             )
         )
-    assert not await repository.claim_deliveries(
+    [reclaimed] = await repository.claim_deliveries(
         "tenant", "restart", now=clock.now, lease_seconds=60, limit=1
     )
+    assert (
+        reclaimed.attempts == 2 and reclaimed.provider_operation_id == claimed.provider_operation_id
+    )
+    assert reclaimed.has_unresolved_outcome
+    attempts = await repository.list_delivery_attempts("tenant", delivery.id)
+    assert any(attempt.outcome == "unknownOutcome" and attempt.finished_at for attempt in attempts)
+
+
+@pytest.mark.parametrize("max_attempts", [1, 2])
+async def test_legacy_retrying_records_recover_uncertainty_from_durable_attempts(
+    store: tuple[NotificationPersistence, Clock],
+    max_attempts: int,
+) -> None:
+    repository, clock = store
+    _, _, delivery = await seed_fanout(repository)
+    [claimed] = await repository.claim_deliveries(
+        "tenant", "worker", now=clock.now, lease_seconds=60, limit=1, max_attempts=max_attempts
+    )
+    [attempt] = await repository.list_delivery_attempts("tenant", delivery.id)
+    saved = await repository.save_delivery(
+        claimed.model_copy(
+            update={
+                "state": "retrying",
+                "has_unresolved_outcome": True,
+                "next_attempt_at": clock.now,
+            }
+        ),
+        attempt.model_copy(update={"outcome": "unknownOutcome", "finished_at": clock.now}),
+    )
+    # Simulate the pre-migration schema, not an explicit false value from the new worker.
+    if isinstance(repository, InMemoryNotificationRepository):
+        repository.records["tenant", saved.id] = NotificationDelivery.model_validate(
+            saved.model_dump(exclude={"has_unresolved_outcome"})
+        ).model_copy(update={"etag": saved.etag})
+    else:
+        assert isinstance(repository, CosmosNotificationRepository)
+        container = cast(NotificationContainer, repository._desired)
+        del container.items["tenant", saved.id]["hasUnresolvedOutcome"]
+    claims = await repository.claim_deliveries(
+        "tenant", "restart", now=clock.now, lease_seconds=60, limit=1
+    )
+    restored = await repository.get_delivery("tenant", saved.id)
+    assert restored and restored.has_unresolved_outcome
+    if max_attempts == 1:
+        assert not claims and restored.state == "unknownOutcome"
+        assert await repository.get_backlog("tenant") == (0, None)
+    else:
+        assert len(claims) == 1 and restored.state == "sending" and restored.attempts == 2
+
+
+async def test_untracked_legacy_unknown_records_still_receive_a_bounded_retry(
+    store: tuple[NotificationPersistence, Clock],
+) -> None:
+    repository, clock = store
+    source = event().model_copy(
+        update={"origin": "budgetNotificationBridge", "fanout_completed_at": clock.now}
+    )
+    delivery = NotificationDelivery(
+        id="legacy-delivery",
+        tenant_id="tenant",
+        event_ids=[source.id],
+        channel="email",
+        recipient_reference="legacy-source",
+        legacy_budget_notice_id="legacy-notice",
+        state="unknownOutcome",
+        attempts=1,
+        max_attempts=3,
+    )
+    await repository.import_budget_delivery(source, delivery)
+    assert (await repository.get_backlog("tenant"))[0] == 1
+    [claimed] = await repository.claim_deliveries(
+        "tenant", "restart", now=clock.now, lease_seconds=60, limit=1
+    )
+    assert claimed.has_unresolved_outcome and claimed.attempts == 2
 
 
 async def test_source_checkpoint_and_event_commit_or_conflict_together(

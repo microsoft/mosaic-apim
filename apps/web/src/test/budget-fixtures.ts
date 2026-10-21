@@ -138,13 +138,18 @@ export const emptyBudgetOverviewFixture: BudgetOverview = {
 
 export const emailSettingsFixture: EmailSettings = {
   enabled: false,
-  endpoint: null,
+  provider: 'graph',
+  senderMailboxId: null,
   sender: null,
+  configured: false,
+  migrationRequired: false,
+  revision: 1,
   ready: false,
   updatedAt: null,
   updatedBy: null,
   lastTestAt: null,
   lastTestError: null,
-  suggestedEndpoint: 'https://contoso-mosaic.communication.azure.com',
-  suggestedSender: 'DoNotReply@contoso.azurecomm.net',
+  lastTestRevision: null,
+  lastTestOutcome: null,
+  lastTestRequestId: null,
 }
