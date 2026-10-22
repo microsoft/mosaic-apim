@@ -206,17 +206,24 @@ class NativeContractTests(unittest.TestCase):
         contract = probe.fixture_contract()
         for member in probe.fixture_members(10):
             name = contract.subscription_name(member.owner)
-            self.assertLessEqual(len(name), 256)
+            self.assertEqual(len(name), 80)
             self.assertEqual(
                 contract.owner_from_native_context(name, contract.product_name), member.owner
             )
             for bad_name, bad_product in (
                 (name, "some-other-product"),
                 (name + "-suffix", contract.product_name),
+                (
+                    f"{contract.prefix}-key-{member.owner.kind}-{member.owner.object_id.hex}",
+                    contract.product_name,
+                ),
                 (name.upper(), contract.product_name),
                 (name + "\n", contract.product_name),
-                (name.replace("-key-", "-key-x-"), contract.product_name),
-                (f"{contract.prefix}-key-u-{'0' * 32}", contract.product_name),
+                (
+                    name.replace(f"-{member.owner.kind}-", "-x-"),
+                    contract.product_name,
+                ),
+                (f"{contract.subscription_prefix}u-{'0' * 32}", contract.product_name),
             ):
                 with self.subTest(name=bad_name):
                     with self.assertRaises(probe.ProbeError):
@@ -257,6 +264,14 @@ class NativeContractTests(unittest.TestCase):
         self.assertIsNotNone(policy.find("inbound/return-response"))
         self.assertIsNone(policy.find(".//forward-request"))
         self.assertIsNone(policy.find(".//validate-jwt"))
+        owner_expressions = policy.findall("inbound/set-variable")
+        self.assertEqual(len(owner_expressions), 1)
+        owner_expression = owner_expressions[0].attrib["value"]
+        self.assertIn(
+            f'@"\\A{contract.subscription_prefix}([ua])-([0-9a-f]{{32}})\\z"',
+            owner_expression,
+        )
+        self.assertIn(f'context.Product.Id != "{contract.product_name}"', owner_expression)
         body = policy.findtext("inbound/return-response/set-body", "")
         self.assertIn('"diagnosticOnly", true', body)
         self.assertIn('"ownerMatchesFixture"', body)

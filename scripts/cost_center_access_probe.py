@@ -165,19 +165,23 @@ class Contract:
     def manifest_name(self) -> str:
         return f"{self.prefix}-manifest"
 
+    @property
+    def subscription_prefix(self) -> str:
+        return f"mosaic-cc-v1-{self.group_id.hex}-"
+
     def shard_name(self, bucket: int, bank: int) -> str:
         if not 0 <= bucket < 128 or bank not in {0, 1}:
             raise ProbeError("The shard address is outside the probe contract")
         return f"{self.prefix}-{bucket:02x}-{bank}"
 
     def subscription_name(self, owner: Owner) -> str:
-        return f"{self.prefix}-key-{owner.kind}-{owner.object_id.hex}"
+        return f"{self.subscription_prefix}{owner.kind}-{owner.object_id.hex}"
 
     def owner_from_native_context(self, subscription_id: str, product_id: str) -> Owner:
         if product_id != self.product_name:
             raise ProbeError("The native context is not scoped to the probe product")
         match = re.fullmatch(
-            re.escape(f"{self.prefix}-key-") + r"([ua])-([0-9a-f]{32})", subscription_id
+            re.escape(self.subscription_prefix) + r"([ua])-([0-9a-f]{32})", subscription_id
         )
         if match is None:
             raise ProbeError("The native subscription does not match the owner contract")
@@ -419,7 +423,7 @@ def render_membership_fragment(contract: Contract, bucket_count: int) -> str:
 def render_native_context_policy(contract: Contract, expected: Owner) -> str:
     """Diagnostic-only API policy: no token validation, model forwarding, or allow decision."""
 
-    prefix = f"{contract.prefix}-key-"
+    prefix = contract.subscription_prefix
     pattern = f"\\A{prefix}([ua])-([0-9a-f]{{32}})\\z"
     owner = _expression(
         [

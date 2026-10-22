@@ -142,6 +142,9 @@ scope/budget enforcement and runtime latency remain **NOT RUN / NOT MEASURED**.
 - A canonical subscription identifier carries the fictional owner, but owner recovery also requires
   the exact expected native product context. This is a candidate provisioning contract, not proof
   that real APIM populates that context in every authentication configuration.
+  The identifier is `mosaic-cc-v1-{groupUuidN}-{kind}-{ownerUuidN}`, exactly 80 characters for user
+  (`u`) or application (`a`) owners, within APIM's subscription-ID limit. Other probe resources keep
+  their separate `mosaic-cc-probe-v1-` namespace.
 
 The diagnostic API policy intentionally returns `200` with **diagnostic booleans and a local
 decision**, never a model response or an authorization success. It does not validate Entra tokens,
