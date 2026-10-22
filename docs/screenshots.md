@@ -6,6 +6,16 @@ the real MOSAIC API and both apps against a fictional Contoso estate, drives the
 Playwright, and blurs anything that looks like an endpoint, identifier, address, or secret before
 it saves the PNGs to `docs/images/screenshots/`.
 
+The demo signs in locally and uses fake Graph adapters to illustrate Entra-backed directory
+workflows without a real sign-in or directory request. Directory records, permission claims,
+and complete-group-read results are simulated, not evidence of live Graph connectivity.
+This is a screenshot-only fixture arrangement: normal local-authentication deployments disable
+Graph lookup and complete group checks.
+
+The fictional estate also explicitly enables managed cost-center record ownership. Its linked
+MOSAIC groups share the existing explicit rosters; this does not enable inherited model access,
+gateway synchronization, or new keys. Normal deployments keep that experimental setting off.
+
 ## When to update them
 
 Regenerate the affected shots, and reread their README descriptions, in the same change as any of
@@ -307,6 +317,7 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-identity-detail` | Console | `/identity?tab=agents`, selected agent overview workspace | Dark | Identity details |
 | `console-directory-picker` | Console | `/identity?tab=agents`, **Add agent** workspace with query `agent`, selected result, never added | Light | Directory picker |
 | `console-security-group-members` | Console | `/identity?tab=security-groups`, **AI Model Users** selected, scrolled to read-only **Security group members** | Dark | Security group members |
+| `console-directory-verification` | Console | `/identity?tab=security-groups`, **AI Model Users** selected, explicit complete-read check against the fictional directory, scrolled to its scoped diagnostic status | Light | Complete group-read verification |
 | `console-entitlements` | Console | `/entitlements`, selected grant with detailed state and limits | Light | Entitlements |
 | `console-access-requests` | Console | `/entitlements?tab=requests`, pending queue with the first request selected in **Selected access request** detail | Light | Access requests |
 | `console-model-access-settings` | Console | `/entitlements?tab=settings`, GPT-4o selected | Dark | Model access settings |
@@ -314,6 +325,7 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-cost-centers` | Console | `/cost-centers`, selected detail beside the compact list | Light | Cost centers |
 | `console-new-cost-center` | Console | `/cost-centers`, **New cost center** workspace, never saved | Dark | New cost center |
 | `console-cost-center-detail` | Console | Customer Insights detail, **Members** section | Dark | Cost center members |
+| `console-cost-center-group` | Console | `/identity?tab=groups`, managed Customer Insights group selected, explicit roster and owning-center navigation | Light | Managed cost-center group |
 | `console-mcp-publish` | Console | `/mcps`, full-workspace **Review changes** for the published Docs MCP server, intended changes and impact with collapsed execution, never applied | Light | MCP publish review |
 | `console-model-change-review` | Console | `/entitlements?tab=settings`, GPT-4o key setting saved but never applied, current edit separated from an earlier pending grant | Light | Model change review |
 | `console-unpublish-review` | Console | `/models`, GPT-4o selected, detail **More actions > Unpublish**, recorded removals, impact and callers losing access, never confirmed | Light | Unpublish review |
@@ -336,7 +348,7 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-environments` | Console | `/settings` | Light | Environments |
 | `console-azure-connections` | Console | `/settings?tab=connections`, commercial host identity and fictional Government service principal | Dark | Azure connections |
 | `console-environment-findings` | Console | `/settings?tab=findings` | Dark | Environment findings |
-| `console-runtime-configuration` | Console | `/settings?tab=runtime`, read-only deployment details, directory availability, and granted/missing Graph permission status; local demo authentication with a fictional directory double | Light | Runtime configuration |
+| `console-runtime-configuration` | Console | `/settings?tab=runtime`, read-only deployment details, directory availability, granted/missing Graph consent, and separate complete-group-read status; local demo authentication with a fictional directory double | Light | Runtime configuration |
 | `console-email-settings` | Console | `/settings?tab=notifications&notificationView=email`, saved Graph mailbox, read-only access checks and last explicit test | Light | Email setup |
 | `console-teams-shared` | Console | `/settings?tab=notifications&notificationView=teams`, selected fictional Workflow with denied vault access, correction guidance and saved test | Light | Shared Teams access |
 | `console-teams-private` | Console | `/settings?tab=notifications&notificationView=personalTeams`, saved bot registration, caller-scoped runtime access check, installation, opt-in and test | Dark | Private Teams access |

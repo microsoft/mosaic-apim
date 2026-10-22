@@ -69,6 +69,7 @@
 .detailCard {
   padding: 8px 0 24px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   min-width: 0;
 }
@@ -220,6 +221,7 @@
 
 .detailSection {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 

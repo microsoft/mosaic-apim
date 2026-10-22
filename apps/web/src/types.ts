@@ -48,6 +48,8 @@ export interface Group {
   tenantId: string
   name: string
   description?: string
+  purpose?: 'local' | 'costCenter'
+  costCenterId?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -138,6 +140,9 @@ export interface CostCenter {
   description: string | null
   owners: string[]
   members: CostCenterMember[]
+  groupId?: string | null
+  /** Saved roster revision, not an APIM synchronization status. */
+  membershipRevision?: number
   keysAllowed: boolean
   limits: CostCenterLimit[]
   builtIn: boolean
@@ -2228,6 +2233,28 @@ export interface DirectoryStatus {
   groupClaimsEnabled: boolean
   permissions: DirectoryPermissionStatus[]
   permissionStatusMessage?: string | null
+  message?: string | null
+  membershipCheck?: DirectoryVerificationStatus
+}
+
+export interface DirectoryVerificationStatus {
+  state:
+    | 'disabled'
+    | 'notChecked'
+    | 'checking'
+    | 'ready'
+    | 'stale'
+    | 'forbidden'
+    | 'throttled'
+    | 'unavailable'
+    | 'cancelled'
+  groupObjectId?: string | null
+  checkedAt?: string | null
+  completedAt?: string | null
+  lastSuccessfulAt?: string | null
+  lastSuccessfulGroupObjectId?: string | null
+  freshUntil?: string | null
+  retryAt?: string | null
   message?: string | null
 }
 

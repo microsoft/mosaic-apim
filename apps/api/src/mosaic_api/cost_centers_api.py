@@ -47,6 +47,13 @@ async def get_cost_center(request: Request, auth: Admin, cost_center_id: str) ->
     return await _cost_centers(request).get_cost_center(_actor(auth), cost_center_id)
 
 
+@cost_centers_router.post("/cost-centers/{cost_center_id}/group", response_model=CostCenterView)
+async def enable_managed_cost_center_group(
+    request: Request, auth: Admin, cost_center_id: str
+) -> CostCenterView:
+    return await _cost_centers(request).enable_managed_group(_actor(auth), cost_center_id)
+
+
 @cost_centers_router.patch("/cost-centers/{cost_center_id}", response_model=CostCenterView)
 async def update_cost_center(
     request: Request, auth: Admin, cost_center_id: str, payload: CostCenterUpdate

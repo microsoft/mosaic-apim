@@ -23,6 +23,7 @@ import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
+import { DirectoryGroupVerification } from '../components/DirectoryGroupVerification'
 import { DirectoryPrincipalPicker } from '../components/DirectoryPrincipalPicker'
 import { IdentityAvatar } from '../components/IdentityAvatar'
 import { PageHeader } from '../components/PageHeader'
@@ -40,6 +41,7 @@ import {
 import { useWorkbenchLocation } from '../components/useWorkbenchLocation'
 import { completeWorkspaceNavigation } from '../components/WorkspaceLeaveGuard'
 import { PRINCIPAL_KIND_LABELS } from '../labels'
+import { invalidateCostCenterMembership } from '../cost-centers'
 import type { DirectorySearchKind, Principal, PrincipalKind } from '../types'
 import styles from './IdentityPage.module.css'
 
@@ -52,7 +54,7 @@ const IDENTITY_SECTIONS = [
   { value: 'agents', label: 'Agents', icon: <BotRegular />, description: 'Microsoft Entra agent identities and their paired agent users. MOSAIC records references, not new agents.' },
   { value: 'applications', label: 'Applications & managed identities', icon: <AppsRegular />, description: 'Application service principals and Azure managed identities from Microsoft Entra. Registration in MOSAIC does not grant an Entra application role.' },
   { value: 'security-groups', label: 'Entra security groups', icon: <ShieldRegular />, description: 'Security-enabled groups whose membership is managed in Microsoft Entra. Group grants use validated token claims, not MOSAIC-local membership.' },
-  { value: 'groups', label: 'MOSAIC groups', icon: <PeopleRegular />, description: 'Local collections of registered principals. Creating a MOSAIC group does not create or change an Entra group; these grants remain desired state only.' },
+  { value: 'groups', label: 'MOSAIC groups', icon: <PeopleRegular />, description: 'Local collections and managed cost-center rosters. Creating a MOSAIC group does not create or change an Entra group or grant model access.' },
 ] as const
 
 function principalTabForKind(kind: PrincipalKind): PrincipalTab {
@@ -147,6 +149,7 @@ type ConfirmationState =
       groupName: string
       principalId: string
       principalName: string
+      managedCostCenter?: boolean
     }
   | null
 
@@ -184,17 +187,18 @@ function formatTimestamp(value: string) {
 }
 
 function IdentityWorkbench<T>({
-  editing, dirty, pending, onBack, editorTitle, children, ...workbench
+  editing, dirty, pending, onBack, editorTitle, editorCancelLabel, children, ...workbench
 }: Omit<ResourceWorkbenchProps<T>, 'renderDetail'> & {
   editing: boolean
   dirty: boolean
   pending: boolean
   onBack: () => void
   editorTitle: string
+  editorCancelLabel?: string
   children: (requestCancel: () => void) => ReactNode
 }) {
   return editing
-    ? <WorkspaceEditorFrame title={editorTitle} onBack={onBack} onCancel={onBack}
+    ? <WorkspaceEditorFrame title={editorTitle} onBack={onBack} onCancel={onBack} cancelLabel={editorCancelLabel}
         dirty={dirty} pending={pending}>
         {(requestLeave) => children(() => requestLeave(onBack))}
       </WorkspaceEditorFrame>
@@ -414,19 +418,28 @@ export function IdentityPage() {
   const addMembership = useMutation({
     mutationFn: ({ groupId, principalId }: { groupId: string; principalId: string }) =>
       api.addMembership(groupId, principalId),
-    onSuccess: async () => {
+    onSuccess: async (_, { groupId }) => {
       setPrincipalToAdd('')
-      await queryClient.invalidateQueries({ queryKey: ['memberships', selectedGroupId] })
+      await refreshMembership(groupId)
     },
   })
 
   const removeMembership = useMutation({
     mutationFn: ({ groupId, principalId }: { groupId: string; principalId: string }) =>
       api.removeMembership(groupId, principalId),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['memberships', selectedGroupId] })
+    onSuccess: async (_, { groupId }) => {
+      await refreshMembership(groupId)
     },
   })
+
+  async function refreshMembership(groupId: string) {
+    const group = groups.data?.find((item) => item.id === groupId)
+    if (group?.purpose === 'costCenter') {
+      await invalidateCostCenterMembership(queryClient, groupId)
+    } else {
+      await queryClient.invalidateQueries({ queryKey: ['memberships', groupId] })
+    }
+  }
 
   const normalizedSearch = searchQuery.trim().toLowerCase()
   const principalsByTab = useMemo(() => {
@@ -466,6 +479,9 @@ export function IdentityPage() {
     principal.id === selectedPrincipalId && principalTabForKind(principal.kind) === principalTab,
   )
   const selectedGroup = groups.data?.find((group) => group.id === selectedGroupId)
+  const managedGroup = selectedGroup?.purpose === 'costCenter'
+  const owningCostCenterId = managedGroup ? selectedGroup?.costCenterId : null
+  const groupEditing = detailEditing && (!managedGroup || Boolean(owningCostCenterId))
   const selectedPrincipalMembers = useQuery({
     queryKey: ['principals', selectedPrincipal?.id, 'members'],
     queryFn: () => api.listPrincipalMembers(selectedPrincipal?.id ?? ''),
@@ -494,13 +510,13 @@ export function IdentityPage() {
   const availablePrincipals = useMemo(
     () =>
       [...(principals.data ?? [])]
-        .filter((principal) => principal.kind !== 'securityGroup' && !memberIds.has(principal.id))
+        .filter((principal) => (managedGroup || principal.kind !== 'securityGroup') && !memberIds.has(principal.id))
         .sort((left, right) =>
           getPrincipalName(left).localeCompare(getPrincipalName(right), undefined, {
             sensitivity: 'base',
           }),
         ),
-    [memberIds, principals.data],
+    [managedGroup, memberIds, principals.data],
   )
   const mcpServersByModelCaller = useMemo(() => {
     const map = new Map<string, string[]>()
@@ -559,6 +575,7 @@ export function IdentityPage() {
       principalDraftDefaultCostCenterId !== (selectedPrincipal.defaultCostCenterId ?? ''))
 
   const groupDetailHasChanges =
+    !managedGroup &&
     selectedGroup !== undefined &&
     groupDraftDescription.trim() !== (selectedGroup.description ?? '')
 
@@ -752,8 +769,9 @@ export function IdentityPage() {
               This group may be filtered out or no longer available.
               <Button onClick={() => { setSearchQuery(''); workbench.select(null) }}>Clear selection and filter</Button>
             </EmptyState>}
-            editing={detailEditing}
-            editorTitle={`Edit ${selectedGroup?.name ?? 'group'}`}
+            editing={groupEditing}
+            editorTitle={`${managedGroup ? 'Manage members for' : 'Edit'} ${selectedGroup?.name ?? 'group'}`}
+            editorCancelLabel={managedGroup ? 'Done' : undefined}
             dirty={!saveCommitted && (groupDetailHasChanges || Boolean(principalToAdd))}
             pending={!saveCommitted && (updateGroup.isPending || deleteGroup.isPending || addMembership.isPending || removeMembership.isPending)}
             onBack={cancelEditing}>
@@ -766,17 +784,24 @@ export function IdentityPage() {
                       <IdentityAvatar name={selectedGroup.name} kind="securityGroup" size={48} />
                       <Title3 as="h3">{selectedGroup.name}</Title3>
                       <Text className={styles.muted}>
-                        Organize identities in MOSAIC. The gateway doesn&apos;t enforce these
-                        groups; to control access for a group, add an Entra security group and grant it.
+                        {managedGroup
+                          ? "This group shares its cost center's explicit roster. Membership permits charging that cost center; it does not grant model access."
+                          : <>Organize identities in MOSAIC. The gateway doesn&apos;t enforce these
+                            groups; to control access for a group, add an Entra security group and grant it.</>}
                       </Text>
                       <div className={styles.badgeRow}>
-                        <Badge appearance="tint" className={styles.groupBadge}>
-                          {memberships.data?.length ?? 0} member{memberships.data?.length === 1 ? '' : 's'}
-                        </Badge>
+                        {managedGroup && <Badge appearance="tint" color="brand">Managed cost-center group</Badge>}
+                        {memberships.data && <Badge appearance="tint" className={styles.groupBadge}>
+                          {memberships.data.length} {managedGroup ? 'explicit reference' : 'member'}{memberships.data.length === 1 ? '' : 's'}
+                        </Badge>}
                       </div>
-                      {!detailEditing && <Button ref={editButtonRef} appearance="secondary" onClick={() => { setSaveCommitted(false); workbench.open('edit') }}>Edit group</Button>}
+                      {owningCostCenterId && <Button appearance="secondary"
+                        onClick={() => navigate(`/cost-centers/${encodeURIComponent(owningCostCenterId)}?tab=members`)}>
+                        Open owning cost center
+                      </Button>}
+                      {!detailEditing && (!managedGroup || selectedGroup.costCenterId) && <Button ref={editButtonRef} appearance="secondary" onClick={() => { setSaveCommitted(false); workbench.open('edit') }}>{managedGroup ? 'Edit members' : 'Edit group'}</Button>}
                     </div>
-                    <Button
+                    {!managedGroup && <Button
                       appearance="subtle"
                       className={styles.dangerButton}
                       disabled={
@@ -796,8 +821,16 @@ export function IdentityPage() {
                       }
                     >
                       Delete group
-                    </Button>
+                    </Button>}
                   </div>
+
+                  {managedGroup && !selectedGroup.costCenterId && <MessageBar intent="error">
+                    <MessageBarBody>
+                      <MessageBarTitle>Cost-center ownership unavailable</MessageBarTitle>
+                      Refresh the group before editing its members.
+                      <Button onClick={() => void groups.refetch()} disabled={groups.isFetching}>Refresh groups</Button>
+                    </MessageBarBody>
+                  </MessageBar>}
 
                   {groupDetailError && (
                     <MessageBar intent="error">
@@ -812,18 +845,20 @@ export function IdentityPage() {
                     <div className={styles.readOnlyPanel}>
                       <Text className={styles.readOnlyLabel}>Authoritative source</Text>
                       <Text block className={styles.muted}>
-                        MOSAIC stores desired-state access groups only. Entra groups remain unchanged.
+                        {managedGroup
+                          ? 'The owning cost center is authoritative for the name and description. Both membership views share one explicit roster; personal and tenant defaults are not group members.'
+                          : 'MOSAIC stores desired-state access groups only. Entra groups remain unchanged.'}
                       </Text>
                     </div>
 
-                    {detailEditing ? <Field label="Description">
+                    {groupEditing && !managedGroup ? <Field label="Description">
                       <Textarea
                         value={groupDraftDescription}
                         onChange={(_, data) => setGroupDraftDescription(data.value)}
                       />
                     </Field> : <Text>{selectedGroup.description || 'No description'}</Text>}
 
-                    {detailEditing && <div className={styles.formActions}>
+                    {groupEditing && !managedGroup && <div className={styles.formActions}>
                       <Text className={styles.helperText}>
                         Group names are set at creation time. Delete is disabled while members remain.
                       </Text>
@@ -841,11 +876,14 @@ export function IdentityPage() {
                   <div className={styles.detailSection}>
                     <Title3 as="h3">Memberships</Title3>
 
-                    {detailEditing && <form className={styles.inlineForm} onSubmit={submitAddMembership}>
+                    {groupEditing && managedGroup && <Text className={styles.helperText}>
+                      Member changes are saved as you add or remove them.
+                    </Text>}
+                    {groupEditing && <form className={styles.inlineForm} onSubmit={submitAddMembership}>
                       <Field className={styles.memberField} label="Add principal">
                         <Select
                           value={principalToAdd}
-                          disabled={!availablePrincipals.length}
+                          disabled={!availablePrincipals.length || addMembership.isPending || removeMembership.isPending}
                           onChange={(event) => setPrincipalToAdd(event.target.value)}
                         >
                           <option value="">Select a principal</option>
@@ -860,7 +898,7 @@ export function IdentityPage() {
                         className={styles.addMemberButton}
                         appearance="primary"
                         type="submit"
-                        disabled={!principalToAdd || addMembership.isPending}
+                        disabled={!principalToAdd || addMembership.isPending || removeMembership.isPending}
                       >
                         Add member
                       </Button>
@@ -903,9 +941,10 @@ export function IdentityPage() {
                                   {principal?.objectId ?? membership.principalId}
                                 </code>
                               </div>
-                              {detailEditing && <Button
+                              {groupEditing && <Button
                                 appearance="subtle"
                                 className={styles.dangerButton}
+                                disabled={addMembership.isPending || removeMembership.isPending}
                                 onClick={() =>
                                   setConfirmation({
                                     type: 'membership',
@@ -913,6 +952,7 @@ export function IdentityPage() {
                                     groupName: selectedGroup.name,
                                     principalId: membership.principalId,
                                     principalName,
+                                    managedCostCenter: managedGroup,
                                   })
                                 }
                               >
@@ -928,6 +968,10 @@ export function IdentityPage() {
                       </EmptyState>
                     )}
                   </div>
+
+                  {groupEditing && managedGroup && <div className={styles.actionRow}>
+                    <Button onClick={requestCancel} disabled={addMembership.isPending || removeMembership.isPending}>Done</Button>
+                  </div>}
 
                   <div className={styles.metadataGrid}>
                     <div className={styles.readOnlyPanel}>
@@ -1155,6 +1199,12 @@ export function IdentityPage() {
                 </div>
 
                 {selectedPrincipal.kind === 'securityGroup' && (
+                  <DirectoryGroupVerification
+                    key={selectedPrincipal.id}
+                    groupObjectId={selectedPrincipal.objectId}
+                  />
+                )}
+                {selectedPrincipal.kind === 'securityGroup' && (
                   <div className={styles.detailSection}>
                     <Title3 as="h3">Security group members</Title3>
                     <Text className={styles.helperText}>
@@ -1173,8 +1223,9 @@ export function IdentityPage() {
                         {selectedPrincipalMembers.data.truncated && (
                           <MessageBar intent="warning">
                             <MessageBarBody>
-                              The member list is truncated. Refine access by adding direct grants
-                              where needed.
+                              This bounded member preview is truncated, not complete membership
+                              evidence. Use the explicit complete-read check above to verify
+                              Graph readability.
                             </MessageBarBody>
                           </MessageBar>
                         )}
@@ -1428,6 +1479,11 @@ export function IdentityPage() {
                   <strong>{confirmation.groupName}</strong>?
                 </Text>
               )}
+              {confirmation?.type === 'membership' && confirmation.managedCostCenter && <Text block>
+                This also removes the reference from the owning cost center. Grants that depended
+                on it are revoked unless their subjects can still charge that center another way.
+                The next apply deletes affected keys; personal defaults are rechecked.
+              </Text>}
             </DialogContent>
             <DialogActions>
               <Button appearance="secondary" onClick={() => setConfirmation(null)}>

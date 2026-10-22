@@ -76,14 +76,17 @@ vi.mock('../api', async (importOriginal) => {
 
 function renderRoute(initial = '/cost-centers') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const router = createMemoryRouter([
+    { path: '/cost-centers', element: <><CostCentersPage /><LocationProbe /></> },
+    { path: '/cost-centers/:costCenterId', element: <><CostCenterDetailPage /><LocationProbe /></> },
+    { path: '/identity', element: <LocationProbe /> },
+  ], { initialEntries: [initial] })
   render(
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={createMemoryRouter([
-        { path: '/cost-centers', element: <><CostCentersPage /><LocationProbe /></> },
-        { path: '/cost-centers/:costCenterId', element: <><CostCenterDetailPage /><LocationProbe /></> },
-      ], { initialEntries: [initial] })} />
+      <RouterProvider router={router} />
     </QueryClientProvider>,
   )
+  return { queryClient, router }
 }
 
 function LocationProbe() {
@@ -108,6 +111,37 @@ describe('Cost centers pages', () => {
     api.updateCostCenterLimits.mockResolvedValue(general)
     api.getBudgets.mockResolvedValue(emptyBudgetOverviewFixture)
     api.getCostCenterBudget.mockResolvedValue(null)
+  })
+
+  it('links an owned membership group without offering inherited model access', async () => {
+    const user = userEvent.setup()
+    api.getCostCenter.mockResolvedValue({ ...general, groupId: 'managed/group', membershipRevision: 3 })
+    const { router } = renderRoute('/cost-centers/cc-general?tab=members')
+    expect(await screen.findByText(/share one explicit roster/)).toBeVisible()
+    expect(screen.getByText(/Adding a member does not grant model access/)).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'View membership group' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/identity'))
+    expect(new URLSearchParams(router.state.location.search).get('selected')).toBe('managed/group')
+    expect(new URLSearchParams(router.state.location.search).get('tab')).toBe('groups')
+  })
+
+  it('invalidates the managed-group projection when editing the cost-center roster', async () => {
+    const user = userEvent.setup()
+    api.getCostCenter.mockResolvedValue({ ...general, groupId: 'managed-group' })
+    const { queryClient } = renderRoute('/cost-centers/cc-general?tab=members')
+    queryClient.setQueryData(['memberships', 'managed-group'], [])
+    queryClient.setQueryData(['groups'], [])
+    await user.selectOptions(await screen.findByRole('combobox', { name: 'Add member' }), principal.id)
+    await user.click(screen.getByRole('button', { name: 'Add member' }))
+    await waitFor(() => expect(api.addCostCenterMember).toHaveBeenCalledWith('cc-general', principal.id))
+    await waitFor(() => expect(queryClient.getQueryState(['memberships', 'managed-group'])?.isInvalidated).toBe(true))
+    expect(queryClient.getQueryState(['groups'])?.isInvalidated).toBe(true)
+  })
+
+  it('does not show managed-group controls for legacy centers', async () => {
+    renderRoute('/cost-centers/cc-general?tab=members')
+    await screen.findByRole('table', { name: 'Cost center members' })
+    expect(screen.queryByRole('button', { name: 'View membership group' })).not.toBeInTheDocument()
   })
 
   it('sets a budget that blocks at 100%, emailing the owners and anyone else', async () => {

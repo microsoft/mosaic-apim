@@ -35,6 +35,7 @@ import { WorkspaceEditorFrame } from '../components/WorkspaceEditorFrame'
 import { WorkspaceLeaveGuard, completeWorkspaceNavigation } from '../components/WorkspaceLeaveGuard'
 import { useWorkbenchLocation } from '../components/useWorkbenchLocation'
 import { PRINCIPAL_KIND_LABELS } from '../labels'
+import { invalidateCostCenterMembership } from '../cost-centers'
 import type { BudgetUpdate, CostCenter, CostCenterLimit, QuotaPeriod } from '../types'
 import styles from './CostCentersPage.module.css'
 
@@ -443,6 +444,7 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
   const mcpServers = useQuery({ queryKey: ['mcp-servers'], queryFn: () => api.listMcpServers() })
   const modelPools = useQuery({ queryKey: ['model-pools', 'list'], queryFn: () => api.listModelPools() })
   const data = costCenter.data
+  const managedGroupId = data?.groupId
 
   const resources = useMemo<LimitResourceOption[]>(
     () => [
@@ -493,6 +495,7 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['cost-centers'] }),
         queryClient.invalidateQueries({ queryKey: ['cost-centers', costCenterId] }),
+        ...(data?.groupId ? [queryClient.invalidateQueries({ queryKey: ['groups'] })] : []),
       ])
       completeWorkspaceNavigation(() => workbench.close(embedded ? costCenterId : undefined))
     },
@@ -501,14 +504,14 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
     mutationFn: () => api.addCostCenterMember(costCenterId, memberId),
     onSuccess: async () => {
       setMemberId('')
-      await queryClient.invalidateQueries({ queryKey: ['cost-centers', costCenterId] })
+      await invalidateCostCenterMembership(queryClient, data?.groupId)
     },
   })
   const remove = useMutation({
     mutationFn: (principalId: string) => api.removeCostCenterMember(costCenterId, principalId),
     onSuccess: async () => {
       setRemoveMember(null)
-      await queryClient.invalidateQueries({ queryKey: ['cost-centers'] })
+      await invalidateCostCenterMembership(queryClient, data?.groupId)
     },
   })
   const saveLimits = useMutation({
@@ -524,6 +527,10 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
     mutationFn: () => api.deleteCostCenter(costCenterId),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['cost-centers'] })
+      if (data?.groupId) {
+        await queryClient.invalidateQueries({ queryKey: ['groups'] })
+        queryClient.removeQueries({ queryKey: ['memberships', data.groupId] })
+      }
       completeWorkspaceNavigation(() => embedded ? workbench.close(null) : navigate('/cost-centers'))
     },
   })
@@ -696,6 +703,8 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
             <div><dt>Owners</dt><dd>{ownerText(data)}</dd></div>
             <div><dt>Defaults</dt><dd>{data.defaultFor} principal{data.defaultFor === 1 ? '' : 's'}</dd></div>
             <div><dt>Members</dt><dd>{data.isTenantDefault ? 'Everyone may charge this cost center' : `${data.memberDetails.length} listed or default members`}</dd></div>
+            {managedGroupId && <div><dt>Managed group</dt><dd><Button appearance="subtle" size="small"
+              onClick={() => navigate(`/identity?tab=groups&selected=${encodeURIComponent(managedGroupId)}`)}>View membership group</Button></dd></div>}
             <div><dt>Resource limits</dt><dd>{data.limits.length} configured</dd></div>
           </dl>
           {budget.isPending && <Loading label="Loading budget" />}
@@ -759,6 +768,11 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
       {(section === 'members' || section === 'limits') && <div className={styles.stack}>
         {section === 'members' && <div className={styles.card}>
           <Title3 as="h2">Members</Title3>
+          {managedGroupId && <>
+            <Text className={styles.muted}>This cost center and its managed MOSAIC group share one explicit roster. Adding a member does not grant model access.</Text>
+            <div className={styles.rowActions}><Button
+              onClick={() => navigate(`/identity?tab=groups&selected=${encodeURIComponent(managedGroupId)}`)}>View membership group</Button></div>
+          </>}
           <Text className={styles.muted}>Removing a member revokes their grants under this cost center, unless they may still charge it another way, such as through a listed security group. The next apply deletes their keys. Removing a security group revokes the grants that relied on it.</Text>
           <form className={styles.addMember} onSubmit={(event) => { event.preventDefault(); if (memberId) addMember.mutate() }}>
             <Field label="Add member">

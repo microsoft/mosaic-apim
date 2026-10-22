@@ -426,7 +426,7 @@ export function EntitlementsPage() {
           principalKind: principal.kind,
         }
       }),
-      ...(groups.data ?? []).map<SubjectOption>((group) => ({
+      ...(groups.data ?? []).filter((group) => group.purpose !== 'costCenter').map<SubjectOption>((group) => ({
         id: group.id,
         kind: 'group',
         label: `${group.name} (MOSAIC group)`,

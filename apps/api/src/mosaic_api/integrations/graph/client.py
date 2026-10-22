@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 import jwt
 import structlog
+from azure.core.credentials import AccessToken
 from azure.core.credentials_async import AsyncTokenCredential
 from azure.core.exceptions import AzureError
 
@@ -20,12 +21,19 @@ from mosaic_api.domain import (
     DirectoryObject,
     DirectorySearchKind,
     PrincipalKind,
+    utc_now,
 )
 from mosaic_api.errors import (
     DirectoryError,
     DirectoryForbiddenError,
     DirectoryThrottledError,
     ValidationError,
+)
+from mosaic_api.integrations.graph.membership import (
+    GroupMembershipEvidence,
+    parse_object_id,
+    validate_verification_timeout,
+    verification_scope,
 )
 from mosaic_api.integrations.graph.photos import PHOTO_MAX_BYTES, DirectoryPhoto, validate_photo
 
@@ -79,6 +87,10 @@ class GraphDirectoryLookup:
             await self._client.aclose()
 
     async def application_permissions(self) -> frozenset[str]:
+        _, permissions = await self._application_token()
+        return permissions
+
+    async def _application_token(self) -> tuple[AccessToken, frozenset[str]]:
         try:
             token = await self._credential.get_token(
                 self._scope, tenant_id=self._tenant_id
@@ -99,15 +111,15 @@ class GraphDirectoryLookup:
             roles = []
         if (
             (self._tenant_id and tenant_id != self._tenant_id)
-            or claims.get("scp")
-            or claims.get("idtyp") not in {None, "app"}
+            or "scp" in claims
+            or claims.get("idtyp") not in (None, "app")
             or not isinstance(roles, list)
             or not all(isinstance(role, str) and role for role in roles)
         ):
             raise DirectoryForbiddenError(
                 "Directory lookup requires the API identity's app-only Microsoft Graph token"
             )
-        return frozenset(roles)
+        return token, frozenset(roles)
 
     async def user_photo(self, tenant_id: str, object_id: str) -> DirectoryPhoto | None:
         if not self._tenant_id or tenant_id.casefold() != self._tenant_id:
@@ -204,7 +216,7 @@ class GraphDirectoryLookup:
                 timeout=10,
             ) as response:
                 if response.status_code in {429, 503} and attempt == 0:
-                    await self._sleep(min(_photo_retry_after(response), 5))
+                    await self._sleep(min(_graph_retry_after(response), 5))
                     continue
                 if response.status_code != 200:
                     _log_graph_status(operation, response)
@@ -217,7 +229,7 @@ class GraphDirectoryLookup:
                 if response.status_code == 429:
                     raise DirectoryThrottledError(
                         "Microsoft Graph throttled the photo read",
-                        retry_after=_photo_retry_after(response),
+                        retry_after=_graph_retry_after(response),
                     )
                 if response.status_code != 200:
                     raise DirectoryError("Microsoft Graph photo read failed")
@@ -362,15 +374,20 @@ class GraphDirectoryLookup:
         capped_limit = max(limit, 0)
         members: list[DirectoryObject] = []
         truncated = False
-        next_url: str | None = (
+        collection_url = (
             f"{self._endpoint}/v1.0/groups/{group_object_id.lower()}/transitiveMembers"
         )
+        next_url: str | None = collection_url
         params: dict[str, str | int] | None = {
             "$select": "id,displayName,userPrincipalName,mail,appId,servicePrincipalType,"
             "securityEnabled",
             "$top": min(max(capped_limit, 1), 999),
         }
+        seen: set[str] = set()
         while next_url and len(members) < capped_limit:
+            if next_url in seen:
+                raise DirectoryError("Microsoft Graph repeated a membership paging URL")
+            seen.add(next_url)
             data = await self._json(
                 "group_members",
                 "GET",
@@ -385,16 +402,96 @@ class GraphDirectoryLookup:
                     members.append(member)
                     if len(members) >= capped_limit:
                         break
-            raw_next = data.get("@odata.nextLink")
-            next_url = str(raw_next) if raw_next else None
-            if next_url and not next_url.startswith(self._endpoint):
-                raise DirectoryError("Microsoft Graph returned an unexpected paging URL")
+            next_url = _membership_next_url(data, collection_url)
             truncated = bool(next_url and len(members) >= capped_limit)
         return DirectoryMemberPage(
             group_object_id=group_object_id.lower(),
             members=members,
             truncated=truncated,
         )
+
+    async def verify_group_members(
+        self,
+        group_object_id: str,
+        candidate_object_ids: Sequence[str],
+        *,
+        timeout_seconds: float = 60,
+    ) -> GroupMembershipEvidence:
+        group_id, candidates = verification_scope(group_object_id, candidate_object_ids)
+        validate_verification_timeout(timeout_seconds)
+        if not self._tenant_id:
+            raise DirectoryForbiddenError("Membership verification requires a configured tenant")
+        checked_at = utc_now()
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                members = await self._verified_group_members(group_id, candidates, deadline)
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise TimeoutError
+        except _GraphNotFound as exc:
+            raise DirectoryError(
+                "Microsoft Graph could not read the referenced security group"
+            ) from exc
+        except TimeoutError as exc:
+            raise DirectoryError(
+                "Microsoft Graph complete membership verification timed out"
+            ) from exc
+        return GroupMembershipEvidence(
+            tenant_id=self._tenant_id,
+            group_object_id=group_id,
+            candidate_object_ids=candidates,
+            member_object_ids=members,
+            checked_at=checked_at,
+        )
+
+    async def _verified_group_members(
+        self, group_id: str, candidates: frozenset[str], deadline: float
+    ) -> frozenset[str]:
+        if asyncio.get_running_loop().time() >= deadline:
+            raise TimeoutError
+        group = await self._json(
+            "verify_security_group",
+            "GET",
+            f"/groups/{group_id}",
+            permission="GroupMember.Read.All",
+            params={"$select": "id,securityEnabled"},
+            not_found_none=False,
+            app_only=True,
+        )
+        if parse_object_id(group.get("id")) != group_id or group.get("securityEnabled") is not True:
+            raise DirectoryError("Microsoft Graph did not verify the referenced security group")
+        collection_url = f"{self._endpoint}/v1.0/groups/{group_id}/transitiveMembers"
+        next_url: str | None = collection_url
+        params: dict[str, Any] | None = {"$select": "id", "$top": 999}
+        seen: set[str] = set()
+        members: set[str] = set()
+        while next_url:
+            if asyncio.get_running_loop().time() >= deadline:
+                raise TimeoutError
+            if next_url in seen:
+                raise DirectoryError("Microsoft Graph repeated a membership paging URL")
+            seen.add(next_url)
+            data = await self._json(
+                "verify_group_members",
+                "GET",
+                next_url,
+                permission="GroupMember.Read.All",
+                params=params,
+                not_found_none=False,
+                app_only=True,
+            )
+            params = None
+            values = data.get("value")
+            if not isinstance(values, list) or len(values) > 999:
+                raise DirectoryError("Microsoft Graph returned an invalid membership page")
+            for value in values:
+                member_id = parse_object_id(value.get("id")) if isinstance(value, dict) else None
+                if member_id is None:
+                    raise DirectoryError("Microsoft Graph returned an invalid member object ID")
+                if member_id in candidates:
+                    members.add(member_id)
+            next_url = _membership_next_url(data, collection_url)
+        return frozenset(members)
 
     async def _search_users(self, query: str, limit: int) -> list[DirectoryObject]:
         data = await self._search_collection(
@@ -538,8 +635,8 @@ class GraphDirectoryLookup:
             )
             return any(str(item.get("id", "")).casefold() == object_id for item in _items(data))
         except DirectoryError:
-            page = await self.group_members(group_id, limit=5000)
-            return any(member.object_id.casefold() == object_id for member in page.members)
+            evidence = await self.verify_group_members(group_id, [object_id])
+            return object_id in evidence.member_object_ids
 
     async def _json(
         self,
@@ -553,9 +650,13 @@ class GraphDirectoryLookup:
         json: dict[str, Any] | None = None,
         not_found_none: bool = True,
         fallback_on_bad_request: bool = False,
+        app_only: bool = False,
     ) -> dict[str, Any]:
         request_headers = dict(headers or {})
-        token = await self._credential.get_token(self._scope)
+        if app_only:
+            token, _ = await self._application_token()
+        else:
+            token = await self._credential.get_token(self._scope)
         request_headers["Authorization"] = f"Bearer {token.token}"
         request_url = url if url.startswith("https://") else f"{self._endpoint}/v1.0{url}"
         for attempt in range(2):
@@ -566,11 +667,19 @@ class GraphDirectoryLookup:
                     params=params,
                     headers=request_headers,
                     json=json,
+                    follow_redirects=False,
                 )
             except httpx.HTTPError as exc:
                 raise DirectoryError("Microsoft Graph could not be reached") from exc
+            if response.status_code == 429 and app_only:
+                _log_graph_status(operation, response)
+                raise DirectoryThrottledError(
+                    "Microsoft Graph membership verification is throttled",
+                    retry_after=_graph_retry_after(response),
+                )
             if response.status_code in {429, 503} and attempt == 0:
-                await self._sleep(_retry_after(response))
+                delay = min(_graph_retry_after(response), 5) if app_only else _retry_after(response)
+                await self._sleep(delay)
                 continue
             if response.status_code in {401, 403}:
                 _log_graph_status(operation, response)
@@ -585,7 +694,7 @@ class GraphDirectoryLookup:
             if response.status_code == 400 and fallback_on_bad_request:
                 _log_graph_status(operation, response)
                 raise DirectoryError("Microsoft Graph did not accept the optimized directory read")
-            if response.is_error:
+            if response.status_code != 200:
                 _log_graph_status(operation, response)
                 raise DirectoryError("Microsoft Graph directory read failed")
             try:
@@ -601,6 +710,30 @@ class GraphDirectoryLookup:
 
 def _is_guid(value: str) -> bool:
     return bool(_GUID_RE.match(value.strip()))
+
+
+def _membership_next_url(data: dict[str, Any], collection_url: str) -> str | None:
+    if "@odata.nextLink" not in data:
+        return None
+    raw = data["@odata.nextLink"]
+    if not isinstance(raw, str) or not raw or raw.strip() != raw:
+        raise DirectoryError("Microsoft Graph returned an invalid membership paging URL")
+    try:
+        candidate = httpx.URL(raw)
+    except httpx.InvalidURL as exc:
+        raise DirectoryError("Microsoft Graph returned an invalid membership paging URL") from exc
+    expected = httpx.URL(collection_url)
+    if (
+        candidate.scheme != "https"
+        or candidate.host != expected.host
+        or candidate.port != expected.port
+        or candidate.path != expected.path
+        or candidate.username
+        or candidate.password
+        or candidate.fragment
+    ):
+        raise DirectoryError("Microsoft Graph returned an unexpected paging URL")
+    return str(candidate)
 
 
 def _text(value: Any) -> str | None:
@@ -739,7 +872,7 @@ def _retry_after(response: httpx.Response) -> float:
         return 0.0
 
 
-def _photo_retry_after(response: httpx.Response) -> int:
+def _graph_retry_after(response: httpx.Response) -> int:
     raw = response.headers.get("Retry-After", "1")
     try:
         seconds = float(raw)

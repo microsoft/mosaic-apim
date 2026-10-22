@@ -27,16 +27,19 @@ GROUP_ID = "44444444-4444-4444-4444-444444444444"
 
 
 class FakeCredential:
-    def __init__(self, claims: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self, claims: dict[str, Any] | None = None, *, endpoint: str = "https://graph.microsoft.com"
+    ) -> None:
         self.claims = claims or {
             "tid": "tenant-test",
             "idtyp": "app",
             "roles": ["ProfilePhoto.Read.All"],
         }
+        self.scope = f"{endpoint.rstrip('/')}/.default"
         self.tenants: list[str | None] = []
 
     async def get_token(self, *scopes: str, **_kwargs: Any) -> AccessToken:
-        assert scopes == ("https://graph.microsoft.com/.default",)
+        assert scopes == (self.scope,)
         self.tenants.append(_kwargs.get("tenant_id"))
         token = jwt.encode(
             self.claims, "test-only-key-that-is-at-least-32-bytes", algorithm="HS256"

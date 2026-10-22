@@ -11,6 +11,7 @@ import {
 import { useQuery } from '@tanstack/react-query'
 import { useMosaicApi } from '../api'
 import { ErrorState, Loading } from './AsyncState'
+import { DirectoryGroupVerification } from './DirectoryGroupVerification'
 
 export function DirectoryConfiguration() {
   const api = useMosaicApi()
@@ -161,6 +162,7 @@ export function DirectoryConfiguration() {
       >
         {status.isFetching ? 'Refreshing permission status' : 'Refresh permission status'}
       </Button>
+      {status.data && !status.isError && <DirectoryGroupVerification />}
     </section>
   )
 }

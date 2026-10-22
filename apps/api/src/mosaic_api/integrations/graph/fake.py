@@ -1,12 +1,20 @@
 from collections.abc import Mapping, Sequence
+from time import monotonic
 
 from mosaic_api.domain import (
     DirectoryMemberPage,
     DirectoryObject,
     DirectorySearchKind,
     PrincipalKind,
+    utc_now,
 )
 from mosaic_api.errors import DirectoryError, DirectoryForbiddenError
+from mosaic_api.integrations.graph.membership import (
+    GroupMembershipEvidence,
+    parse_object_id,
+    validate_verification_timeout,
+    verification_scope,
+)
 from mosaic_api.integrations.graph.photos import DirectoryPhoto, validate_photo
 
 
@@ -101,6 +109,60 @@ class FakeDirectoryLookup:
 
     async def close(self) -> None:
         self.closed = True
+
+    async def verify_group_members(
+        self,
+        group_object_id: str,
+        candidate_object_ids: Sequence[str],
+        *,
+        timeout_seconds: float = 60,
+    ) -> GroupMembershipEvidence:
+        group_id, candidates = verification_scope(group_object_id, candidate_object_ids)
+        validate_verification_timeout(timeout_seconds)
+        self._raise_if_configured()
+        if not self._tenant_id:
+            raise DirectoryForbiddenError("Membership verification requires a configured tenant")
+        checked_at = utc_now()
+        deadline = monotonic() + timeout_seconds
+        group = self._objects.get(group_id)
+        if group is None or group.kind != PrincipalKind.SECURITY_GROUP:
+            raise DirectoryError("Microsoft Graph did not verify the referenced security group")
+        pending = [group_id]
+        seen: set[str] = set()
+        members: set[str] = set()
+        while pending:
+            if monotonic() >= deadline:
+                raise DirectoryError("Microsoft Graph complete membership verification timed out")
+            current = pending.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            for value in self._members.get(current, []):
+                if monotonic() >= deadline:
+                    raise DirectoryError(
+                        "Microsoft Graph complete membership verification timed out"
+                    )
+                member_id = parse_object_id(value)
+                if member_id is None:
+                    raise DirectoryError("Microsoft Graph returned an invalid member object ID")
+                if member_id in candidates:
+                    members.add(member_id)
+                item = self._objects.get(member_id)
+                if member_id in self._members and (
+                    item is None or item.kind != PrincipalKind.SECURITY_GROUP
+                ):
+                    raise DirectoryError("Microsoft Graph could not verify a nested security group")
+                if item and item.kind == PrincipalKind.SECURITY_GROUP:
+                    pending.append(member_id)
+        if monotonic() >= deadline:
+            raise DirectoryError("Microsoft Graph complete membership verification timed out")
+        return GroupMembershipEvidence(
+            tenant_id=self._tenant_id.casefold(),
+            group_object_id=group_id,
+            candidate_object_ids=candidates,
+            member_object_ids=frozenset(members),
+            checked_at=checked_at,
+        )
 
     def _contains(self, group_id: str, target: str, *, seen: set[str]) -> bool:
         if group_id in seen:

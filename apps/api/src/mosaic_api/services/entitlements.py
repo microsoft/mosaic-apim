@@ -51,6 +51,7 @@ from mosaic_api.domain import (
     GrantOverlapReport,
     GrantPath,
     GrantRevocation,
+    GroupPurpose,
     McpPublication,
     McpServer,
     ModelApi,
@@ -435,10 +436,21 @@ class EntitlementService:
 
     async def _validate_subject(self, actor: Actor, subject: EntitlementSubject) -> None:
         if subject.kind == "group":
-            if not await self._directory.get_group(actor.tenant_id, subject.id):
+            group = await self._directory.get_group(actor.tenant_id, subject.id)
+            if group is None:
                 raise ValidationError(
                     "The group named by this entitlement does not exist",
                     details={"subjectId": subject.id},
+                )
+            if group.purpose == GroupPurpose.COST_CENTER:
+                raise ValidationError(
+                    "Managed cost-center groups are membership containers, not model grants. "
+                    "Automatic model access is not available yet; use existing direct or Entra "
+                    "security-group grants.",
+                    details={
+                        "reason": "managedCostCenterAccessUnavailable",
+                        "costCenterId": group.cost_center_id,
+                    },
                 )
             return
         principal = await self._directory.get_principal(actor.tenant_id, subject.id)

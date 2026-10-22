@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from typing import Protocol
 
 from mosaic_api.domain import DirectoryMemberPage, DirectoryObject, DirectorySearchKind
+from mosaic_api.integrations.graph.membership import GroupMembershipEvidence
 from mosaic_api.integrations.graph.photos import DirectoryPhoto
 
 
@@ -54,10 +55,32 @@ class DirectoryLookup(Protocol):
         """The group's direct and nested members, up to ``limit``."""
         ...
 
+    async def verify_group_members(
+        self,
+        group_object_id: str,
+        candidate_object_ids: Sequence[str],
+        *,
+        timeout_seconds: float = 60,
+    ) -> GroupMembershipEvidence:
+        """Verify candidates against every transitive page with the app-only tenant identity.
+
+        Return no evidence on a partial/failed enumeration. The immutable result covers only
+        the requested cohort; its freshness starts before the first read. It is not a cached
+        directory preview or an atomic snapshot of concurrent Entra changes. The whole read
+        has a finite deadline of at most 60 seconds, including authentication and retries.
+        """
+        ...
+
     async def close(self) -> None: ...
 
 
 from mosaic_api.integrations.graph.client import GraphDirectoryLookup  # noqa: E402
 from mosaic_api.integrations.graph.fake import FakeDirectoryLookup  # noqa: E402
 
-__all__ = ["DirectoryLookup", "DirectoryPhoto", "FakeDirectoryLookup", "GraphDirectoryLookup"]
+__all__ = [
+    "DirectoryLookup",
+    "DirectoryPhoto",
+    "FakeDirectoryLookup",
+    "GraphDirectoryLookup",
+    "GroupMembershipEvidence",
+]

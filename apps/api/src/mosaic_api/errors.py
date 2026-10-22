@@ -118,7 +118,7 @@ class DirectoryError(DomainError):
 
 
 class DirectoryThrottledError(DirectoryError):
-    """Microsoft Graph asked the optional photo reader to wait."""
+    """Microsoft Graph asked a directory reader to wait."""
 
     status_code = 429
     code = "directory_throttled"

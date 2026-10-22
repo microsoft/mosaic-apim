@@ -66,8 +66,12 @@ class Container:
                 body = arguments[0]
                 item_id = body["id"]
                 status = 409 if (partition_key, item_id) in staged else 201
-            elif kind == "replace":
-                item_id, body = arguments
+            elif kind in {"replace", "delete"}:
+                if kind == "replace":
+                    item_id, body = arguments
+                else:
+                    item_id = arguments[0]
+                    body = {"id": item_id, "tenantId": partition_key}
                 current = staged.get((partition_key, item_id))
                 expected = options.get("if_match_etag")
                 if current is None:
@@ -91,7 +95,10 @@ class Container:
                     operation_responses=responses,
                 )
             generation += 1
-            staged[(partition_key, item_id)] = {**deepcopy(body), "_etag": f"etag-{generation}"}
+            if kind == "delete":
+                del staged[(partition_key, item_id)]
+            else:
+                staged[(partition_key, item_id)] = {**deepcopy(body), "_etag": f"etag-{generation}"}
         self.items, self.generation = staged, generation
         return [{"statusCode": 200} for _ in batch_operations]
 

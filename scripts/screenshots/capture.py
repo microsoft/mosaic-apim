@@ -943,7 +943,7 @@ SHOTS: list[Shot] = [
         "light",
         "Customer Insights",
         actions=(click_button("Customer Insights"),),
-        height=1050,
+        height=1350,
     ),
     Shot(
         "console-cost-center-detail",
@@ -956,7 +956,20 @@ SHOTS: list[Shot] = [
             click_tab("Members"),
             wait_for_text("Membership"),
         ),
-        height=1400,
+        height=1560,
+    ),
+    Shot(
+        "console-cost-center-group",
+        "console",
+        "/identity?tab=groups",
+        "light",
+        "MOSAIC groups",
+        actions=(
+            click_button(re.compile(r"^Cost center: Customer Insights")),
+            wait_for_text("Managed cost-center group"),
+            wait_for_text("4 explicit references"),
+        ),
+        height=1700,
     ),
     Shot(
         "console-mcp-publish",
@@ -1144,6 +1157,22 @@ SHOTS: list[Shot] = [
         "/settings?tab=runtime",
         "light",
         "Directory lookup is enabled with Entra authentication",
+        height=1700,
+    ),
+    Shot(
+        "console-directory-verification",
+        "console",
+        "/identity?tab=security-groups",
+        "light",
+        "Entra security groups",
+        actions=(
+            fill_text("Filter by label, detail, object ID, or kind", "AI Model Users"),
+            click_button("AI Model Users"),
+            wait_for_text("Complete group-read verification"),
+            click_button("Verify complete group read"),
+            wait_for_text("Every transitive-members page was read successfully"),
+            scroll_to_text("Complete group-read verification", margin=110),
+        ),
         height=1200,
     ),
     Shot(

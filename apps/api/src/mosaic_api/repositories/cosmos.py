@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from mosaic_api.domain import AuditEvent, Group, GroupMembership, Principal
 from mosaic_api.errors import ConflictError
+from mosaic_api.managed_cost_center_groups import require_unmanaged_group
 from mosaic_api.repositories.observation_writes import merge_observation
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -312,6 +313,8 @@ class CosmosDirectoryRepository(CosmosRepositoryBase):
         return items[0] if items else None
 
     async def save_group(self, group: Group, audit_event: AuditEvent) -> Group:
+        require_unmanaged_group(group)
+        require_unmanaged_group(await self.get_group(group.tenant_id, group.id))
         await self._mutate(
             group,
             None,
@@ -322,6 +325,7 @@ class CosmosDirectoryRepository(CosmosRepositoryBase):
         return group
 
     async def create_group(self, group: Group, audit_event: AuditEvent) -> Group:
+        require_unmanaged_group(group)
         await self._mutate(
             group,
             None,
@@ -332,6 +336,8 @@ class CosmosDirectoryRepository(CosmosRepositoryBase):
         return group
 
     async def delete_group(self, group: Group, audit_event: AuditEvent) -> None:
+        require_unmanaged_group(group)
+        require_unmanaged_group(await self.get_group(group.tenant_id, group.id))
         await self._mutate(
             group,
             group.id,
@@ -366,6 +372,8 @@ class CosmosDirectoryRepository(CosmosRepositoryBase):
         principal: Principal,
         audit_event: AuditEvent,
     ) -> GroupMembership:
+        require_unmanaged_group(group)
+        require_unmanaged_group(await self.get_group(membership.tenant_id, membership.group_id))
         await self._execute_batch(
             [
                 self._replace_operation(group),
@@ -381,6 +389,7 @@ class CosmosDirectoryRepository(CosmosRepositoryBase):
         return membership
 
     async def delete_membership(self, membership: GroupMembership, audit_event: AuditEvent) -> None:
+        require_unmanaged_group(await self.get_group(membership.tenant_id, membership.group_id))
         await self._mutate(
             membership,
             membership.id,

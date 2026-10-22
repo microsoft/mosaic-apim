@@ -255,6 +255,8 @@ class CostCenter(Entity):
     limits: list[CostCenterLimit] = Field(default_factory=list)
     # General, which every tenant has. It can be renamed and recoded, never deleted.
     built_in: bool = False
+    group_id: str | None = None
+    membership_revision: int = Field(default=0, ge=0)
     # Grants to check again after a change that may have stopped their subjects charging it.
     pending_rechecks: list[PendingRecheck] = Field(default_factory=list)
 

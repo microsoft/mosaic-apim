@@ -771,6 +771,8 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         directory_lookup=lookup,
         group_claims_enabled=settings.entra_group_claims,
         cost_center_repository=state.cost_center_repository,
+        cost_center_checks=state.entitlement_service,
+        cost_center_memberships=state.cost_center_service,
     )
 
     # Built as create_app builds them, with only the Azure-facing clients swapped for fakes.
@@ -3083,6 +3085,8 @@ def build_settings(cors_origins: list[str]) -> Settings:
         api_client_id=None,
         model_runtime_client_id=MODEL_RUNTIME_CLIENT_ID,
         model_client_id=MODEL_CLIENT_ID,
+        # Only the fictional estate opts into record ownership, not inherited model access.
+        managed_cost_center_groups=True,
         managed_identity_principal_id=MOSAIC_PRINCIPAL_ID,
         entra_group_claims=True,
         applicationinsights_connection_string=None,
@@ -3124,7 +3128,7 @@ def build_demo_app(console_port: int, portal_port: int) -> FastAPI:
                 demo_app.state.demo_estate = estate
                 print(
                     "MOSAIC demo estate ready: "
-                    f"{len(estate.principals)} principals, {len(estate.groups)} groups, "
+                    f"{len(estate.principals)} principals, {len(estate.groups)} generic groups, "
                     f"{len(estate.publications)} publications, "
                     f"{len(estate.pools)} model pools, "
                     f"{len(estate.model_apis)} model APIs, {len(estate.mcp_servers)} MCP servers, "

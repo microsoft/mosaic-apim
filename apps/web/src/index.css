@@ -832,6 +832,7 @@ tbody tr:focus-within {
 
   .global-search {
     width: min(100%, 320px);
+    min-width: 0;
   }
 
   .content-inner {
