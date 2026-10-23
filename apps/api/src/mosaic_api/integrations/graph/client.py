@@ -80,6 +80,9 @@ class GraphDirectoryLookup:
         ] = OrderedDict()
         # Fixed striped locks coalesce identical requests and cap concurrent Graph photo reads.
         self._photo_locks = tuple(asyncio.Lock() for _ in range(4))
+        self.token_object_id: str | None = None
+        self.token_app_id: str | None = None
+        self.token_display_name: str | None = None
 
     async def close(self) -> None:
         self._photo_cache.clear()
@@ -119,6 +122,19 @@ class GraphDirectoryLookup:
             raise DirectoryForbiddenError(
                 "Directory lookup requires the API identity's app-only Microsoft Graph token"
             )
+        raw_oid = claims.get("oid")
+        self.token_object_id = (
+            raw_oid.strip().lower()
+            if isinstance(raw_oid, str) and _is_guid(raw_oid)
+            else None
+        )
+        raw_app_id = claims.get("appid") or claims.get("azp")
+        self.token_app_id = (
+            raw_app_id.strip().lower()
+            if isinstance(raw_app_id, str) and _is_guid(raw_app_id)
+            else None
+        )
+        self.token_display_name = _text(claims.get("app_displayname"))
         return token, frozenset(roles)
 
     async def user_photo(self, tenant_id: str, object_id: str) -> DirectoryPhoto | None:
@@ -266,6 +282,8 @@ class GraphDirectoryLookup:
             item = await self.get_object(term)
             if item and _matches_search_kind(kind, item.kind):
                 return [item]
+            if kind == DirectorySearchKind.AGENT:
+                return (await self._search_agent_identities(term, limit))[:limit]
             return []
         if kind == DirectorySearchKind.USER:
             users, agent_users = await asyncio.gather(
@@ -501,17 +519,26 @@ class GraphDirectoryLookup:
             limit,
             permission="User.ReadBasic.All",
             select="id,displayName,userPrincipalName,mail",
+            search_properties=("displayName", "userPrincipalName", "mail"),
         )
         return [_object_from_user(item, agent_user=False) for item in _items(data)]
 
     async def _search_agent_users(self, query: str, limit: int) -> list[DirectoryObject]:
-        data = await self._search_collection(
+        escaped = _filter_literal(query)
+        data = await self._json(
             "search_agent_users",
+            "GET",
             "/users/microsoft.graph.agentUser",
-            query,
-            limit,
             permission="User.ReadBasic.All",
-            select="id,displayName,userPrincipalName,mail,identityParentId",
+            params={
+                "$filter": (
+                    f"startswith(displayName,'{escaped}') "
+                    f"or startswith(userPrincipalName,'{escaped}') "
+                    f"or startswith(mail,'{escaped}')"
+                ),
+                "$select": "id,displayName,userPrincipalName,mail,identityParentId",
+                "$top": limit,
+            },
         )
         return [_object_from_user(item, agent_user=True) for item in _items(data)]
 
@@ -523,6 +550,7 @@ class GraphDirectoryLookup:
             limit,
             permission="GroupMember.Read.All",
             select="id,displayName,mailNickname,description,securityEnabled",
+            search_properties=("displayName", "mailNickname", "mail"),
             extra={"$filter": "securityEnabled eq true"},
         )
         return [
@@ -532,13 +560,21 @@ class GraphDirectoryLookup:
         ]
 
     async def _search_agent_identities(self, query: str, limit: int) -> list[DirectoryObject]:
-        data = await self._search_collection(
+        if _is_guid(query):
+            expression = f"appId eq '{query.lower()}'"
+        else:
+            escaped = _filter_literal(query)
+            expression = f"startswith(displayName,'{escaped}')"
+        data = await self._json(
             "search_agent_identities",
+            "GET",
             "/servicePrincipals/microsoft.graph.agentIdentity",
-            query,
-            limit,
             permission="AgentIdentity.Read.All",
-            select="id,displayName,appId,agentIdentityBlueprintId",
+            params={
+                "$filter": expression,
+                "$select": "id,displayName,appId,agentIdentityBlueprintId",
+                "$top": limit,
+            },
         )
         return [_object_from_agent_identity(item) for item in _items(data)]
 
@@ -551,10 +587,11 @@ class GraphDirectoryLookup:
         *,
         permission: str,
         select: str,
+        search_properties: tuple[str, ...],
         extra: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         params: dict[str, str | int | bool] = {
-            "$search": _search_expression(query),
+            "$search": _search_expression(query, search_properties),
             "$count": "true",
             "$top": limit,
             "$select": select,
@@ -750,12 +787,13 @@ def _items(data: dict[str, Any]) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)]
 
 
-def _search_expression(query: str) -> str:
+def _search_expression(query: str, properties: tuple[str, ...]) -> str:
     escaped = query.replace("\\", " ").replace('"', " ").strip()
-    return (
-        f'"displayName:{escaped}" OR "userPrincipalName:{escaped}" OR "mail:{escaped}" '
-        f'OR "appId:{escaped}"'
-    )
+    return " OR ".join(f'"{name}:{escaped}"' for name in properties)
+
+
+def _filter_literal(query: str) -> str:
+    return query.replace("\\", " ").replace('"', " ").strip().replace("'", "''")
 
 
 def _matches_search_kind(kind: DirectorySearchKind, object_kind: PrincipalKind) -> bool:

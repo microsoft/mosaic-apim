@@ -451,11 +451,12 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/screenshots/console-runtime-configuration.png" alt="Runtime configuration with read-only deployment details, Graph consent, and separate complete-group-read diagnostic status">
-      <p><b>Runtime configuration.</b> Read-only deployment details separate Graph permission consent
-      from complete-group-read verification; the demo's Graph states are simulated.
-      Refresh status, open consent remediation, or choose an Entra
-      group in Identity for an explicit check.</p>
+      <img src="docs/images/screenshots/console-runtime-configuration.png" alt="Runtime configuration with read-only deployment details, Entra identity and app-registration references, Graph consent with role IDs, and separate complete-group-read diagnostic status">
+      <p><b>Runtime configuration.</b> Read-only deployment details show the API managed identity,
+      Entra app registrations, and Graph permission role IDs while keeping consent separate from
+      complete-group-read verification; the demo's Graph states are simulated. Refresh status, open
+      Portal and CLI consent remediation, or choose an Entra group in Identity for an explicit
+      check.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-notification-readiness.png" alt="Notification readiness checks with evidence and remediation for storage, always-on hosting, email, public message links, and disabled workers">

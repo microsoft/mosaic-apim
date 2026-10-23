@@ -1157,7 +1157,7 @@ SHOTS: list[Shot] = [
         "/settings?tab=runtime",
         "light",
         "Directory lookup is enabled with Entra authentication",
-        height=1700,
+        height=1900,
     ),
     Shot(
         "console-directory-verification",

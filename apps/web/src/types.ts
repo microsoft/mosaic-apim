@@ -2228,9 +2228,26 @@ export interface DirectoryMemberPage {
   truncated: boolean
 }
 
+export interface DirectoryApiIdentity {
+  displayName?: string | null
+  objectId?: string | null
+  appId?: string | null
+}
+
+export interface DirectoryEntraApplication {
+  role: 'api' | 'spa' | 'modelRuntime' | 'modelClient'
+  label: string
+  displayName?: string | null
+  clientId: string
+  groupClaimsTarget?: boolean
+}
+
 export interface DirectoryStatus {
   lookupEnabled: boolean
   groupClaimsEnabled: boolean
+  graphAppId?: string
+  apiIdentity?: DirectoryApiIdentity | null
+  entraApplications?: DirectoryEntraApplication[]
   permissions: DirectoryPermissionStatus[]
   permissionStatusMessage?: string | null
   message?: string | null
@@ -2260,6 +2277,7 @@ export interface DirectoryVerificationStatus {
 
 export interface DirectoryPermissionStatus {
   permission: string
+  appRoleId?: string | null
   capability: string
   required: boolean
   granted?: boolean | null

@@ -2975,9 +2975,28 @@ class DirectoryPermissionStatus(MosaicModel):
     """Whether the API identity's current Graph token includes one application permission."""
 
     permission: str
+    app_role_id: str | None = None
     capability: str
     required: bool
     granted: bool | None = None
+
+
+class DirectoryApiIdentity(MosaicModel):
+    """The Microsoft Entra service principal or managed identity that calls Microsoft Graph."""
+
+    display_name: str | None = None
+    object_id: str | None = None
+    app_id: str | None = None
+
+
+class DirectoryEntraApplication(MosaicModel):
+    """A Microsoft Entra application registration configured for this MOSAIC deployment."""
+
+    role: Literal["api", "spa", "modelRuntime", "modelClient"]
+    label: str
+    display_name: str | None = None
+    client_id: str
+    group_claims_target: bool = False
 
 
 class DirectoryVerificationState(StrEnum):
@@ -3032,6 +3051,9 @@ class DirectoryStatus(MosaicModel):
 
     lookup_enabled: bool
     group_claims_enabled: bool
+    graph_app_id: str = "00000003-0000-0000-c000-000000000000"
+    api_identity: DirectoryApiIdentity | None = None
+    entra_applications: list[DirectoryEntraApplication] = Field(default_factory=list)
     permissions: list[DirectoryPermissionStatus] = Field(default_factory=list)
     permission_status_message: str | None = None
     message: str | None = None

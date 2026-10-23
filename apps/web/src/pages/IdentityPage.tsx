@@ -729,7 +729,24 @@ export function IdentityPage() {
           <MessageBarBody>
             <MessageBarTitle>Security-group grants are not enforceable yet</MessageBarTitle>
             MOSAIC can record security-group grants, but the gateway cannot enforce them until
-            Entra group claims are configured for the model-runtime app.
+            Entra group claims are configured for the model-runtime app
+            {(() => {
+              const runtimeApp = directoryStatus.data?.entraApplications?.find(
+                (item) => item.role === 'modelRuntime',
+              )
+              return runtimeApp ? (
+                <>
+                  {' '}(
+                  {runtimeApp.displayName && (
+                    <>
+                      <code>{runtimeApp.displayName}</code>,{' '}
+                    </>
+                  )}
+                  client ID <code>{runtimeApp.clientId}</code>)
+                </>
+              ) : null
+            })()}
+            . <a href="/settings?tab=runtime">Review Entra configuration</a>
           </MessageBarBody>
         </MessageBar>
       )}
