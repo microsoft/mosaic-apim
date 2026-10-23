@@ -1,4 +1,5 @@
 import asyncio
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
@@ -74,6 +75,9 @@ async def test_application_permissions_reads_the_api_identity_graph_token() -> N
         {
             "tid": "tenant-test",
             "idtyp": "app",
+            "oid": "17c920d8-0101-4b4a-93ae-0b83fde78d35",
+            "appid": "ad77390e-03dd-42a0-8b2a-8e977c97c618",
+            "app_displayname": "mosaic-dev-api-42b6sg",
             "roles": ["User.ReadBasic.All", "GroupMember.Read.All"],
         }
     )
@@ -85,6 +89,9 @@ async def test_application_permissions_reads_the_api_identity_graph_token() -> N
     assert await client.application_permissions() == frozenset(
         {"User.ReadBasic.All", "GroupMember.Read.All"}
     )
+    assert client.token_object_id == "17c920d8-0101-4b4a-93ae-0b83fde78d35"
+    assert client.token_app_id == "ad77390e-03dd-42a0-8b2a-8e977c97c618"
+    assert client.token_display_name == "mosaic-dev-api-42b6sg"
     assert credential.tenants == ["tenant-test"]
 
 
@@ -139,6 +146,122 @@ async def test_application_permissions_rejects_a_delegated_graph_token() -> None
 
     with pytest.raises(DirectoryForbiddenError, match="app-only"):
         await client.application_permissions()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "expected_search", "expected_filter"),
+    [
+        (
+            DirectorySearchKind.USER,
+            {"/v1.0/users": {"displayName", "userPrincipalName", "mail"}},
+            {
+                "/v1.0/users/microsoft.graph.agentUser": (
+                    "startswith(displayName,'Kestrel') "
+                    "or startswith(userPrincipalName,'Kestrel') "
+                    "or startswith(mail,'Kestrel')"
+                )
+            },
+        ),
+        (
+            DirectorySearchKind.GROUP,
+            {"/v1.0/groups": {"displayName", "mailNickname", "mail"}},
+            {},
+        ),
+        (
+            DirectorySearchKind.AGENT,
+            {},
+            {
+                "/v1.0/servicePrincipals/microsoft.graph.agentIdentity": (
+                    "startswith(displayName,'Kestrel')"
+                ),
+                "/v1.0/users/microsoft.graph.agentUser": (
+                    "startswith(displayName,'Kestrel') "
+                    "or startswith(userPrincipalName,'Kestrel') "
+                    "or startswith(mail,'Kestrel')"
+                ),
+            },
+        ),
+    ],
+)
+async def test_directory_search_uses_valid_queries_and_avoids_search_on_derived_collections(
+    kind: DirectorySearchKind,
+    expected_search: dict[str, set[str]],
+    expected_filter: dict[str, str],
+) -> None:
+    seen: set[str] = set()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        seen.add(path)
+        if path in {
+            "/v1.0/users/microsoft.graph.agentUser",
+            "/v1.0/servicePrincipals/microsoft.graph.agentIdentity",
+        } and "$search" in request.url.params:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "code": "Request_UnsupportedQuery",
+                        "message": (
+                            "Property 'displayName' does not exist as a declared property "
+                            "or extension property."
+                        ),
+                    }
+                },
+            )
+        if path in expected_search:
+            assert set(re.findall(r'"([A-Za-z]+):', request.url.params["$search"])) == (
+                expected_search[path]
+            )
+            assert request.headers["ConsistencyLevel"] == "eventual"
+            assert request.url.params["$count"] == "true"
+            assert request.url.params["$top"] == "20"
+            return httpx.Response(200, json={"value": []})
+        if path in expected_filter:
+            assert "$search" not in request.url.params
+            assert request.url.params["$filter"] == expected_filter[path]
+            assert request.url.params["$top"] == "20"
+            return httpx.Response(200, json={"value": []})
+        raise AssertionError(f"unexpected path {path}")
+
+    assert await _client(handler).search(kind, "Kestrel") == []
+    assert seen == set(expected_search) | set(expected_filter)
+
+
+@pytest.mark.asyncio
+async def test_agent_guid_search_falls_back_to_agent_identity_app_id() -> None:
+    app_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path in {
+            f"/v1.0/users/{app_id}",
+            f"/v1.0/groups/{app_id}",
+            f"/v1.0/servicePrincipals/{app_id}/microsoft.graph.agentIdentity",
+        }:
+            return httpx.Response(404)
+        assert request.url.path == "/v1.0/servicePrincipals/microsoft.graph.agentIdentity"
+        assert request.url.params["$filter"] == f"appId eq '{app_id}'"
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": AGENT_ID,
+                        "displayName": "Agent by AppId",
+                        "appId": app_id,
+                        "agentIdentityBlueprintId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                    }
+                ]
+            },
+        )
+
+    result = await _client(handler).search(DirectorySearchKind.AGENT, app_id.upper(), limit=20)
+    assert len(result) == 1
+    assert result[0].object_id == AGENT_ID
+    assert result[0].app_id == app_id
 
 
 @pytest.mark.asyncio

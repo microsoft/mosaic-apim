@@ -348,7 +348,7 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-environments` | Console | `/settings` | Light | Environments |
 | `console-azure-connections` | Console | `/settings?tab=connections`, commercial host identity and fictional Government service principal | Dark | Azure connections |
 | `console-environment-findings` | Console | `/settings?tab=findings` | Dark | Environment findings |
-| `console-runtime-configuration` | Console | `/settings?tab=runtime`, read-only deployment details, directory availability, granted/missing Graph consent, and separate complete-group-read status; local demo authentication with a fictional directory double | Light | Runtime configuration |
+| `console-runtime-configuration` | Console | `/settings?tab=runtime`, read-only deployment details, Entra identity and app-registration references, directory availability, granted/missing Graph consent with role IDs, and separate complete-group-read status; local demo authentication with a fictional directory double | Light | Runtime configuration |
 | `console-email-settings` | Console | `/settings?tab=notifications&notificationView=email`, saved Graph mailbox, read-only access checks and last explicit test | Light | Email setup |
 | `console-teams-shared` | Console | `/settings?tab=notifications&notificationView=teams`, selected fictional Workflow with denied vault access, correction guidance and saved test | Light | Shared Teams access |
 | `console-teams-private` | Console | `/settings?tab=notifications&notificationView=personalTeams`, saved bot registration, caller-scoped runtime access check, installation, opt-in and test | Dark | Private Teams access |

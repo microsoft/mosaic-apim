@@ -75,6 +75,12 @@ def install_directory_lookup(app: FastAPI, lookup: DirectoryLookup) -> None:
         entitlement_repository=app.state.entitlement_repository,
         directory_lookup=lookup,
         group_claims_enabled=app.state.settings.entra_group_claims,
+        managed_identity_principal_id=app.state.settings.managed_identity_principal_id,
+        apim_service_name=app.state.settings.apim_service_name,
+        api_client_id=app.state.settings.api_client_id,
+        spa_client_id=app.state.settings.spa_client_id,
+        model_runtime_client_id=app.state.settings.model_runtime_client_id,
+        model_client_id=app.state.settings.model_client_id,
     )
     # The portal services hold this same instance, so swap its lookup rather than rebuild it.
     app.state.entitlement_service._directory_lookup = lookup

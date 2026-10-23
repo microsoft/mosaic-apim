@@ -253,10 +253,92 @@ def test_directory_status_reports_granted_and_missing_graph_permissions(
         item["permission"]: item for item in response.json()["permissions"]
     }
     assert permissions["User.ReadBasic.All"]["granted"] is True
+    assert (
+        permissions["User.ReadBasic.All"]["appRoleId"] == "97235f07-e226-4f63-ace3-39588e11d3a1"
+    )
+    assert (
+        permissions["GroupMember.Read.All"]["appRoleId"]
+        == "98830695-27a2-44f7-8c18-0c3ebc9698f6"
+    )
+    assert (
+        permissions["AgentIdentity.Read.All"]["appRoleId"]
+        == "b2b8f011-2898-4234-9092-5059f6c1ebfa"
+    )
     assert permissions["ProfilePhoto.Read.All"]["granted"] is True
+    assert (
+        permissions["ProfilePhoto.Read.All"]["appRoleId"]
+        == "e24d31aa-e1ab-4c80-85fe-23018690335d"
+    )
     assert permissions["Application.Read.All"]["granted"] is False
     assert permissions["Application.Read.All"]["required"] is False
+    assert (
+        permissions["Application.Read.All"]["appRoleId"]
+        == "9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30"
+    )
+    assert response.json()["graphAppId"] == "00000003-0000-0000-c000-000000000000"
     assert response.json()["permissionStatusMessage"] is None
+
+
+def test_directory_status_surfaces_api_identity_and_entra_app_registrations() -> None:
+    settings = Settings(
+        _env_file=None,
+        environment=Environment.TEST,
+        auth_mode=AuthMode.LOCAL,
+        repository_backend=RepositoryBackend.MEMORY,
+        tenant_id="tenant-test",
+        apim_service_name="apim-mosaic-dev-42b6sg",
+        managed_identity_principal_id="17c920d8-0101-4b4a-93ae-0b83fde78d35",
+        api_client_id="1dbbd7cb-8f7e-4676-8acf-54f9ccabaceb",
+        spa_client_id="c26991ad-07e7-4248-abe7-1ea699a2ebe7",
+        model_runtime_client_id="9bad20a7-f9ec-46e8-a32c-0082d12a3682",
+        model_client_id="ce53632b-ccca-4ad3-af8f-4d48064759c5",
+    )
+    with TestClient(create_app(settings)) as app_client:
+        lookup = FakeDirectoryLookup([])
+        lookup.token_object_id = "17c920d8-0101-4b4a-93ae-0b83fde78d35"  # type: ignore[attr-defined]
+        lookup.token_app_id = "ad77390e-03dd-42a0-8b2a-8e977c97c618"  # type: ignore[attr-defined]
+        install_directory_lookup(app_client.app, lookup)
+
+        response = app_client.get(
+            "/api/v1/directory/status", params={"includePermissions": "true"}
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["apiIdentity"] == {
+        "displayName": "mosaic-dev-api-42b6sg",
+        "objectId": "17c920d8-0101-4b4a-93ae-0b83fde78d35",
+        "appId": "ad77390e-03dd-42a0-8b2a-8e977c97c618",
+    }
+    apps_by_role = {item["role"]: item for item in body["entraApplications"]}
+    assert apps_by_role["api"] == {
+        "role": "api",
+        "label": "Control-plane API app registration",
+        "displayName": "mosaic-dev-api",
+        "clientId": "1dbbd7cb-8f7e-4676-8acf-54f9ccabaceb",
+        "groupClaimsTarget": True,
+    }
+    assert apps_by_role["spa"] == {
+        "role": "spa",
+        "label": "Administrator console SPA app registration",
+        "displayName": "mosaic-dev-spa",
+        "clientId": "c26991ad-07e7-4248-abe7-1ea699a2ebe7",
+        "groupClaimsTarget": False,
+    }
+    assert apps_by_role["modelRuntime"] == {
+        "role": "modelRuntime",
+        "label": "Model-runtime API app registration",
+        "displayName": "mosaic-dev-model-runtime",
+        "clientId": "9bad20a7-f9ec-46e8-a32c-0082d12a3682",
+        "groupClaimsTarget": True,
+    }
+    assert apps_by_role["modelClient"] == {
+        "role": "modelClient",
+        "label": "Model public-client app registration",
+        "displayName": "mosaic-dev-model-client",
+        "clientId": "ce53632b-ccca-4ad3-af8f-4d48064759c5",
+        "groupClaimsTarget": False,
+    }
 
 
 def test_directory_status_keeps_permissions_visible_when_the_probe_fails(

@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     )
     tenant_id: str
     api_client_id: str | None = None
+    spa_client_id: str | None = None
     model_runtime_client_id: str | None = None
     model_client_id: str | None = None
     entra_issuer: AnyHttpUrl | None = None

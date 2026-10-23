@@ -1,10 +1,12 @@
 import asyncio
+import os
+import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from math import ceil
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID
 
 from mosaic_api.cost_centers import (
@@ -15,6 +17,8 @@ from mosaic_api.cost_centers import (
 )
 from mosaic_api.domain import (
     AuditEvent,
+    DirectoryApiIdentity,
+    DirectoryEntraApplication,
     DirectoryMemberPage,
     DirectoryObject,
     DirectoryPermissionStatus,
@@ -114,6 +118,30 @@ def _moves_default(principal: Principal, request: PrincipalUpdate) -> bool:
     return "kind" in fields and request.kind == PrincipalKind.SECURITY_GROUP
 
 
+_API_SITE_PATTERN = re.compile(r"^mosaic-(?P<env>.+)-api-(?P<suffix>[a-z0-9]{6})$")
+_APIM_SERVICE_PATTERN = re.compile(r"^apim-mosaic-(?P<env>.+)-(?P<suffix>[a-z0-9]{6})$")
+
+
+def _resolve_deployment_names(
+    api_identity_name: str | None, apim_service_name: str | None
+) -> tuple[str | None, str | None]:
+    site_name = (api_identity_name or os.environ.get("WEBSITE_SITE_NAME") or "").strip() or None
+    env_label: str | None = None
+    if site_name and (site_match := _API_SITE_PATTERN.fullmatch(site_name)):
+        env_label = site_match.group("env")
+    if apim_service_name and (
+        apim_match := _APIM_SERVICE_PATTERN.fullmatch(apim_service_name.strip())
+    ):
+        env_label = env_label or apim_match.group("env")
+        if site_name is None:
+            site_name = f"mosaic-{apim_match.group('env')}-api-{apim_match.group('suffix')}"
+    return site_name, env_label
+
+
+def _clean_id(value: str | None) -> str | None:
+    return value.strip() if value and value.strip() else None
+
+
 class DirectoryService:
     def __init__(
         self,
@@ -123,6 +151,13 @@ class DirectoryService:
         entitlement_repository: EntitlementRepository | None = None,
         directory_lookup: DirectoryLookup | None = None,
         group_claims_enabled: bool = True,
+        managed_identity_principal_id: str | None = None,
+        api_identity_name: str | None = None,
+        apim_service_name: str | None = None,
+        api_client_id: str | None = None,
+        spa_client_id: str | None = None,
+        model_runtime_client_id: str | None = None,
+        model_client_id: str | None = None,
         cost_center_repository: CostCenterRepository | None = None,
         cost_center_checks: CostCenterChecks | None = None,
         cost_center_memberships: CostCenterMemberships | None = None,
@@ -133,6 +168,18 @@ class DirectoryService:
         self._entitlements = entitlement_repository
         self._directory = directory_lookup
         self._group_claims_enabled = group_claims_enabled
+        self._managed_identity_principal_id = (
+            managed_identity_principal_id.strip().lower()
+            if managed_identity_principal_id and managed_identity_principal_id.strip()
+            else None
+        )
+        self._api_identity_name, self._env_label = _resolve_deployment_names(
+            api_identity_name, apim_service_name
+        )
+        self._api_client_id = _clean_id(api_client_id)
+        self._spa_client_id = _clean_id(spa_client_id)
+        self._model_runtime_client_id = _clean_id(model_runtime_client_id)
+        self._model_client_id = _clean_id(model_client_id)
         self._cost_centers = cost_center_repository
         # The EntitlementService, which revokes a principal's grants under a former default
         # cost center it may no longer charge.
@@ -226,24 +273,108 @@ class DirectoryService:
             message = None
         permission_status_message = None
         granted_permissions: frozenset[str] | None = None
+        token_object_id: str | None = None
+        token_app_id: str | None = None
+        token_display_name: str | None = None
         if self._directory and include_permissions:
             try:
                 granted_permissions = await self._directory.application_permissions()
+                token_object_id = getattr(self._directory, "token_object_id", None)
+                token_app_id = getattr(self._directory, "token_app_id", None)
+                token_display_name = getattr(self._directory, "token_display_name", None)
             except (DirectoryError, DirectoryForbiddenError) as exc:
                 permission_status_message = str(exc)
         permission_definitions = (
-            ("User.ReadBasic.All", "People and agent users", True),
-            ("GroupMember.Read.All", "Entra security groups and members", True),
-            ("AgentIdentity.Read.All", "Entra agent identities", True),
-            ("Application.Read.All", "Applications and managed identities", False),
-            ("ProfilePhoto.Read.All", "People and administrator photos", False),
+            (
+                "User.ReadBasic.All",
+                "97235f07-e226-4f63-ace3-39588e11d3a1",
+                "People and agent users",
+                True,
+            ),
+            (
+                "GroupMember.Read.All",
+                "98830695-27a2-44f7-8c18-0c3ebc9698f6",
+                "Entra security groups and members",
+                True,
+            ),
+            (
+                "AgentIdentity.Read.All",
+                "b2b8f011-2898-4234-9092-5059f6c1ebfa",
+                "Entra agent identities",
+                True,
+            ),
+            (
+                "Application.Read.All",
+                "9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30",
+                "Applications and managed identities",
+                False,
+            ),
+            (
+                "ProfilePhoto.Read.All",
+                "e24d31aa-e1ab-4c80-85fe-23018690335d",
+                "People and administrator photos",
+                False,
+            ),
         )
+        identity_object_id = token_object_id or self._managed_identity_principal_id
+        identity_app_id = token_app_id
+        identity_display_name = token_display_name or self._api_identity_name
+        api_identity = (
+            DirectoryApiIdentity(
+                display_name=identity_display_name,
+                object_id=identity_object_id,
+                app_id=identity_app_id,
+            )
+            if any((identity_display_name, identity_object_id, identity_app_id))
+            else None
+        )
+        app_specs: tuple[
+            tuple[Literal["api", "spa", "modelRuntime", "modelClient"], str, str, str | None, bool],
+            ...,
+        ] = (
+            ("api", "Control-plane API app registration", "api", self._api_client_id, True),
+            (
+                "spa",
+                "Administrator console SPA app registration",
+                "spa",
+                self._spa_client_id,
+                False,
+            ),
+            (
+                "modelRuntime",
+                "Model-runtime API app registration",
+                "model-runtime",
+                self._model_runtime_client_id,
+                True,
+            ),
+            (
+                "modelClient",
+                "Model public-client app registration",
+                "model-client",
+                self._model_client_id,
+                False,
+            ),
+        )
+        entra_applications = [
+            DirectoryEntraApplication(
+                role=role,
+                label=label,
+                display_name=f"mosaic-{self._env_label}-{suffix}" if self._env_label else None,
+                client_id=client_id,
+                group_claims_target=group_claims_target,
+            )
+            for role, label, suffix, client_id, group_claims_target in app_specs
+            if client_id
+        ]
         return DirectoryStatus(
             lookup_enabled=self._directory is not None,
             group_claims_enabled=self._group_claims_enabled,
+            api_identity=api_identity,
+            entra_applications=entra_applications,
             permissions=[
                 DirectoryPermissionStatus(
                     permission=permission,
+                    app_role_id=app_role_id,
                     capability=capability,
                     required=required,
                     granted=(
@@ -252,7 +383,7 @@ class DirectoryService:
                         else None
                     ),
                 )
-                for permission, capability, required in permission_definitions
+                for permission, app_role_id, capability, required in permission_definitions
             ],
             permission_status_message=permission_status_message,
             message=message,

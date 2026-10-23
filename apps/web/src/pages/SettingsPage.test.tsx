@@ -229,6 +229,79 @@ describe('SettingsPage', () => {
     expect(await screen.findByText(/Directory lookup is enabled with Entra authentication/)).toBeVisible()
   })
 
+  it('shows API managed identity, Entra app registrations, and Portal and CLI grant instructions with GUIDs', async () => {
+    const user = userEvent.setup()
+    api.getDirectoryStatus.mockResolvedValue({
+      lookupEnabled: true,
+      groupClaimsEnabled: false,
+      graphAppId: '00000003-0000-0000-c000-000000000000',
+      apiIdentity: {
+        displayName: 'mosaic-dev-api-42b6sg',
+        objectId: '17c920d8-0101-4b4a-93ae-0b83fde78d35',
+        appId: 'ad77390e-03dd-42a0-8b2a-8e977c97c618',
+      },
+      entraApplications: [
+        {
+          role: 'api',
+          label: 'Control-plane API app registration',
+          displayName: 'mosaic-dev-api',
+          clientId: '1dbbd7cb-8f7e-4676-8acf-54f9ccabaceb',
+          groupClaimsTarget: true,
+        },
+        {
+          role: 'modelRuntime',
+          label: 'Model-runtime API app registration',
+          displayName: 'mosaic-dev-model-runtime',
+          clientId: '9bad20a7-f9ec-46e8-a32c-0082d12a3682',
+          groupClaimsTarget: true,
+        },
+      ],
+      permissions: [
+        {
+          permission: 'User.ReadBasic.All',
+          appRoleId: '97235f07-e226-4f63-ace3-39588e11d3a1',
+          capability: 'People and agent users',
+          required: true,
+          granted: false,
+        },
+        {
+          permission: 'GroupMember.Read.All',
+          appRoleId: '98830695-27a2-44f7-8c18-0c3ebc9698f6',
+          capability: 'Entra security groups and members',
+          required: true,
+          granted: true,
+        },
+        {
+          permission: 'Application.Read.All',
+          appRoleId: '9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30',
+          capability: 'Applications and managed identities',
+          required: false,
+          granted: false,
+        },
+      ],
+    })
+    renderSettings('runtime')
+
+    expect(await screen.findByText('API managed identity (Enterprise application)')).toBeVisible()
+    expect(screen.getAllByText('mosaic-dev-api-42b6sg')[0]).toBeVisible()
+    expect(screen.getAllByText('17c920d8-0101-4b4a-93ae-0b83fde78d35')[0]).toBeVisible()
+    expect(screen.getAllByText('ad77390e-03dd-42a0-8b2a-8e977c97c618')[0]).toBeVisible()
+    expect(screen.getAllByText('Control-plane API app registration')[0]).toBeVisible()
+    expect(screen.getAllByText('Model-runtime API app registration')[0]).toBeVisible()
+    expect(screen.getAllByText('97235f07-e226-4f63-ace3-39588e11d3a1')[0]).toBeVisible()
+
+    await user.click(screen.getByText('How to grant missing permissions'))
+    expect(screen.getByText(/Target identity to authorize in Microsoft Entra/)).toBeVisible()
+    expect(screen.getByText(/Find and inspect in the Azure Portal/i)).toBeVisible()
+    const cliBlock = screen.getByLabelText('Azure CLI commands to grant missing Graph permissions')
+    expect(cliBlock).toHaveTextContent('PRINCIPAL_ID="17c920d8-0101-4b4a-93ae-0b83fde78d35"')
+    expect(cliBlock).toHaveTextContent('97235f07-e226-4f63-ace3-39588e11d3a1')
+    expect(cliBlock).toHaveTextContent('9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30')
+
+    await user.click(screen.getByText(/How to enable Entra security-group claims/))
+    expect(screen.getByText(/Manage > Token configuration > Add groups claim/i)).toBeVisible()
+  })
+
   it('validates create keys before calling the API', async () => {
     const user = userEvent.setup()
     renderSettings()
