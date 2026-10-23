@@ -26,7 +26,7 @@ from typing import Literal
 
 import httpx
 from PIL import Image, ImageFilter
-from playwright.sync_api import Locator, Page, sync_playwright
+from playwright.sync_api import Locator, Page, Route, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from scripts.screenshots.demo_api import (
@@ -1936,6 +1936,38 @@ def _check_identity_workspace(page: Page) -> None:
         page.set_viewport_size({"width": width, "height": 900})
         if page.evaluate("document.documentElement.scrollWidth > window.innerWidth + 1"):
             raise CaptureError(f"console: identity workspace overflows at {width}px")
+    identity_nav = page.get_by_role("navigation", name="Identity sections", exact=True)
+    nav_box = identity_nav.bounding_box()
+    content_box = identity_nav.locator("..").locator("> div").last.bounding_box()
+    if nav_box is None or content_box is None or nav_box["x"] + nav_box["width"] > content_box["x"]:
+        raise CaptureError("console: identity section navigation overlaps section content")
+    for button in identity_nav.get_by_role("button").all():
+        button_box = button.bounding_box()
+        if (
+            button_box is None
+            or button_box["x"] < nav_box["x"] - 1
+            or button_box["x"] + button_box["width"] > nav_box["x"] + nav_box["width"] + 1
+        ):
+            raise CaptureError("console: identity section button overflows navigation container")
+
+    def _without_group_claims(route: Route) -> None:
+        response = route.fetch()
+        payload = response.json()
+        payload["groupClaimsEnabled"] = False
+        route.fulfill(response=response, json=payload)
+
+    page.route("**/api/v1/directory/status", _without_group_claims)
+    try:
+        page.goto(origin + "/identity?tab=users")
+        _settle(page)
+        page.get_by_text("Security-group grants are not enforceable yet", exact=True).wait_for()
+        for width in (1440, 768):
+            page.set_viewport_size({"width": width, "height": 900})
+            _assert_no_document_overflow(
+                page, f"console: identity group-claims warning at {width}px", expected_width=width
+            )
+    finally:
+        page.unroute("**/api/v1/directory/status", _without_group_claims)
 
     for section, name, edit, field_label in (
         ("users", "Megan Bowen", "Edit local metadata", "Local label"),

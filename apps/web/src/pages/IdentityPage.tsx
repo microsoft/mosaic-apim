@@ -725,7 +725,7 @@ export function IdentityPage() {
       />
 
       {directoryStatus.data?.groupClaimsEnabled === false && (
-        <MessageBar intent="warning">
+        <MessageBar intent="warning" layout="multiline">
           <MessageBarBody>
             <MessageBarTitle>Security-group grants are not enforceable yet</MessageBarTitle>
             MOSAIC can record security-group grants, but the gateway cannot enforce them until
@@ -1294,7 +1294,7 @@ export function IdentityPage() {
             <WorkspaceDialogBody>
               <WorkspaceDialogContent className={styles.dialogForm}>
                 <Text className={styles.muted}>{principalCreateHint}</Text>
-                {!directoryStatus.isPending && !directoryLookupEnabled && <MessageBar intent={directoryStatus.isError ? 'error' : 'warning'}>
+                {!directoryStatus.isPending && !directoryLookupEnabled && <MessageBar intent={directoryStatus.isError ? 'error' : 'warning'} layout="multiline">
                   <MessageBarBody>
                     {directoryStatus.isError ? 'Could not check directory availability.' : 'Directory lookup requires Entra authentication. Manual entries are recorded without directory verification.'}
                     {' '}<a href="/settings?tab=runtime">Check directory configuration</a>

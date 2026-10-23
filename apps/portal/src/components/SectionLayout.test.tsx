@@ -47,4 +47,14 @@ describe('SectionLayout', () => {
     await user.selectOptions(screen.getByRole('combobox', { name: 'Usage section' }), 'resources')
     expect(onSelect).toHaveBeenCalledWith('resources')
   })
+
+  it('reserves active label width on expanded section labels', () => {
+    render(
+      <SectionLayout label="Usage" sections={sections} active="overview" onSelect={() => undefined}>
+        <p>Usage report</p>
+      </SectionLayout>,
+    )
+    const button = screen.getByRole('button', { name: 'Resources & limits' })
+    expect(button.querySelector('[data-label="Resources & limits"]')).not.toBeNull()
+  })
 })
