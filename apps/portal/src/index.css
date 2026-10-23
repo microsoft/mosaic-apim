@@ -1,7 +1,7 @@
 :root {
   font-family: "Segoe UI", Aptos, Calibri, -apple-system, BlinkMacSystemFont, sans-serif;
   color: #1a1c1c;
-  background: #f3f6fa;
+  background: var(--mosaic-bg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   color-scheme: light;
@@ -347,6 +347,17 @@ textarea { font: inherit; }
 
 .fui-Button,
 .fui-Badge { white-space: nowrap; }
+
+.fui-MessageBar {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.fui-MessageBarBody {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 
 .access-list,
 .request-list {

@@ -1,12 +1,13 @@
-.layout { display: grid; grid-template-columns: 252px minmax(0, 1fr); gap: 24px; align-items: start; }
-.navigation { position: sticky; top: 84px; display: grid; gap: 6px; padding: 10px; border: 1px solid var(--mosaic-border-soft); border-radius: 16px; background: var(--mosaic-surface); }
-.navigation > button { display: flex; align-items: center; gap: 10px; text-align: left; min-height: 40px; padding: 10px 12px; border: 0; border-radius: 9px; background: transparent; color: var(--mosaic-text-muted); cursor: pointer; font-weight: 500; }
+.layout { display: grid; grid-template-columns: minmax(252px, max-content) minmax(0, 1fr); gap: 24px; align-items: start; min-width: 0; }
+.navigation { position: sticky; top: 84px; display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; max-width: 360px; gap: 6px; padding: 10px; border: 1px solid var(--mosaic-border-soft); border-radius: 16px; background: var(--mosaic-surface); }
+.navigation > button { display: flex; align-items: center; gap: 10px; min-width: 0; text-align: left; min-height: 40px; padding: 10px 12px; border: 0; border-radius: 9px; background: transparent; color: var(--mosaic-text-muted); cursor: pointer; font-weight: 500; }
 .navigation > button:hover { background: var(--mosaic-surface-subtle); color: var(--mosaic-text); }
 .navigation > button:focus-visible { outline: 2px solid var(--mosaic-primary); outline-offset: 2px; }
 .navigation > button.active { background: var(--mosaic-primary-soft); color: var(--mosaic-primary); font-weight: 600; }
 .icon { display: inline-flex; flex: 0 0 20px; align-items: center; justify-content: center; }
 .icon svg { width: 20px; height: 20px; }
-.label { min-width: 0; line-height: 1.4; white-space: nowrap; }
+.label { min-width: 0; line-height: 1.4; white-space: normal; overflow-wrap: break-word; }
+.label::after { content: attr(data-label); display: block; height: 0; overflow: hidden; visibility: hidden; font-weight: 600; pointer-events: none; user-select: none; }
 .collapsed { grid-template-columns: 64px minmax(0, 1fr); }
 .collapsed .navigation { padding: 8px; }
 .collapsed .navigation > button { justify-content: center; padding: 10px; }
@@ -14,7 +15,7 @@
 .description { margin: 0; max-width: 75ch; color: var(--mosaic-text-muted); line-height: 1.6; }
 .compact { display: none; }
 .horizontal { grid-template-columns: minmax(0, 1fr); gap: 20px; }
-.horizontal .navigation { position: static; display: flex; flex-wrap: wrap; gap: 6px; padding: 6px; }
+.horizontal .navigation { position: static; display: flex; flex-wrap: wrap; max-width: none; gap: 6px; padding: 6px; }
 .horizontal .navigation > button { border-radius: 9px; padding: 10px 14px; }
 @supports (backdrop-filter: blur(16px)) {
   .navigation { background: var(--mosaic-glass); backdrop-filter: blur(16px) saturate(140%); }

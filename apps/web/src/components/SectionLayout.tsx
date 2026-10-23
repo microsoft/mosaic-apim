@@ -66,7 +66,7 @@ export function SectionLayout({
             aria-current={active === section.value ? 'page' : undefined}
             title={section.label} aria-label={section.label} onClick={() => onSelect(section.value)}>
             <span className={styles.icon} aria-hidden="true">{section.icon ?? <GridRegular />}</span>
-            <span className={collapsed && orientation === 'vertical' ? 'sr-only' : styles.label}>{section.label}</span>
+            <span className={collapsed && orientation === 'vertical' ? 'sr-only' : styles.label} data-label={section.label}>{section.label}</span>
           </button>
           </Tooltip>
         ))}

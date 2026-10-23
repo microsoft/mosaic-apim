@@ -43,4 +43,15 @@ describe('SectionLayout', () => {
     expect(screen.getByRole('button', { name: 'Model endpoints' })).toHaveTextContent('Model endpoints')
     expect(screen.queryByRole('button', { name: 'Expand Test models sections' })).not.toBeInTheDocument()
   })
+  it('reserves active label width for longer menu verbiage when expanded', () => {
+    const longSections = [
+      { value: 'users', label: 'People' },
+      { value: 'applications', label: 'Applications & managed identities' },
+    ]
+    render(<SectionLayout label="Identity" sections={longSections} active="users" onSelect={() => undefined}>
+      Content
+    </SectionLayout>)
+    const button = screen.getByRole('button', { name: 'Applications & managed identities' })
+    expect(button.querySelector('[data-label="Applications & managed identities"]')).not.toBeNull()
+  })
 })
