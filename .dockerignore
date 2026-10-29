@@ -4,6 +4,7 @@
 .env.*
 **/.env
 **/.env.*
+**/*.local.json
 !.env.example
 !**/.env.example
 .venv
@@ -16,5 +17,11 @@
 **/.mypy_cache
 **/.ruff_cache
 infra/main.json
-# No image uses the e2e harness, and its local targets and test results hold tenant details.
-e2e
+# Exclude tenant-bearing harness artifacts; the federal image reuses only these three helpers.
+e2e/**
+!e2e/mcp-servers/
+!e2e/mcp-servers/m-agent/
+!e2e/mcp-servers/m-agent/m_agent/
+!e2e/mcp-servers/m-agent/m_agent/__init__.py
+!e2e/mcp-servers/m-agent/m_agent/gateway.py
+!e2e/mcp-servers/m-agent/m_agent/logs.py

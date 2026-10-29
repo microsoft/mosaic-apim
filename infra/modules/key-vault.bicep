@@ -10,6 +10,7 @@ resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   properties: {
     enablePurgeProtection: true
     enableRbacAuthorization: true
+    // Explicit public intent; inherited modify policies may still override the effective setting.
     publicNetworkAccess: 'Enabled'
     sku: {
       family: 'A'

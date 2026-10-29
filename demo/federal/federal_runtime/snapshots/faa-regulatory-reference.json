@@ -1,0 +1,72 @@
+{
+  "profile": "faa-regulatory-reference",
+  "provenance": {
+    "mode": "snapshot",
+    "release": "eCFR Title 14 as of 2026-10-27; FAA curated page",
+    "retrieved_at": "2026-10-29",
+    "snapshot_generated_at": "2026-10-29T00:34:31.966592+00:00",
+    "sources": [
+      {
+        "url": "https://www.ecfr.gov/api/versioner/v1/full/2026-10-27/title-14.xml?part=107&section=107.19",
+        "excerpt_sha256": "e790df192f39a3e508d5b6f08dae58fa3eb80c8e14fc1151e934c10c97047b43",
+        "retrieved_at": "2026-10-29",
+        "capture_note": "Selected XML elements transcribed from the dated public eCFR API response retrieved through web_fetch. Direct urllib API access returned HTTP 406 in the capture environment; no automatic fallback."
+      },
+      {
+        "url": "https://www.ecfr.gov/api/versioner/v1/full/2026-10-27/title-14.xml?part=107&section=107.31",
+        "excerpt_sha256": "6fc1ca82fd3b44e110bc7685c7b6f9af5e05769b9c8377028de7e88d4cbb62d2",
+        "retrieved_at": "2026-10-29",
+        "capture_note": "Selected XML elements transcribed from the dated public eCFR API response retrieved through web_fetch. Direct urllib API access returned HTTP 406 in the capture environment; no automatic fallback."
+      },
+      {
+        "url": "https://www.ecfr.gov/api/versioner/v1/full/2026-10-27/title-14.xml?part=107&section=107.39",
+        "excerpt_sha256": "55df54dbad4271c8e6637be23f94ac7df5cc2bc58db7c4b7aed5119c71571af1",
+        "retrieved_at": "2026-10-29",
+        "capture_note": "Selected XML elements transcribed from the dated public eCFR API response retrieved through web_fetch. Direct urllib API access returned HTTP 406 in the capture environment; no automatic fallback."
+      },
+      {
+        "url": "https://www.faa.gov/uas/commercial_operators/part_107_waivers",
+        "sha256": "ead17fde5e9f159a4dddfcebdeaca817af08bd2e7917848299994979bfdb934f",
+        "retrieved_at": "2026-10-29T00:34:31.946577+00:00"
+      }
+    ],
+    "selection": "Small selected public-data subset, not a complete agency inventory."
+  },
+  "records": [
+    {
+      "id": "107.19",
+      "kind": "regulation",
+      "citation": "14 CFR 107.19",
+      "title": "§ 107.19 Remote pilot in command.",
+      "text": "(a) A remote pilot in command must be designated before or during the flight of the small unmanned aircraft. (b) The remote pilot in command is directly responsible for and is the final authority as to the operation of the small unmanned aircraft system. (c) The remote pilot in command must ensure that the small unmanned aircraft will pose no undue hazard to other people, other aircraft, or other property in the event of a loss of control of the small unmanned aircraft for any reason. (d) The remote pilot in command must ensure that the small UAS operation complies with all applicable regulations of this chapter. (e) The remote pilot in command must have the ability to direct the small unmanned aircraft to ensure compliance with the applicable provisions of this chapter.",
+      "as_of": "2026-10-27",
+      "source_url": "https://www.ecfr.gov/api/versioner/v1/full/2026-10-27/title-14.xml?part=107&section=107.19"
+    },
+    {
+      "id": "107.31",
+      "kind": "regulation",
+      "citation": "14 CFR 107.31",
+      "title": "§ 107.31 Visual line of sight aircraft operation.",
+      "text": "(a) With vision that is unaided by any device other than corrective lenses, the remote pilot in command, the visual observer (if one is used), and the person manipulating the flight control of the small unmanned aircraft system must be able to see the unmanned aircraft throughout the entire flight in order to: (1) Know the unmanned aircraft's location; (2) Determine the unmanned aircraft's attitude, altitude, and direction of flight; (3) Observe the airspace for other air traffic or hazards; and (4) Determine that the unmanned aircraft does not endanger the life or property of another. (b) Throughout the entire flight of the small unmanned aircraft, the ability described in paragraph (a) of this section must be exercised by either: (1) The remote pilot in command and the person manipulating the flight controls of the small unmanned aircraft system; or (2) A visual observer.",
+      "as_of": "2026-10-27",
+      "source_url": "https://www.ecfr.gov/api/versioner/v1/full/2026-10-27/title-14.xml?part=107&section=107.31"
+    },
+    {
+      "id": "107.39",
+      "kind": "regulation",
+      "citation": "14 CFR 107.39",
+      "title": "§ 107.39 Operation over human beings.",
+      "text": "No person may operate a small unmanned aircraft over a human being unless— (a) That human being is directly participating in the operation of the small unmanned aircraft; (b) That human being is located under a covered structure or inside a stationary vehicle that can provide reasonable protection from a falling small unmanned aircraft; or (c) The operation meets the requirements of at least one of the operational categories specified in subpart D of this part.",
+      "as_of": "2026-10-27",
+      "source_url": "https://www.ecfr.gov/api/versioner/v1/full/2026-10-27/title-14.xml?part=107&section=107.39"
+    },
+    {
+      "id": "part107-waivers",
+      "title": "Part 107 Waivers | Federal Aviation AdministrationLockUnited States Department of Transportation",
+      "description": "Waivers allow drone pilots to deviate from certain rules under part 107 by demonstrating they can still fly safely using alternative methods. You can request to fly specific drone operations not allowed under part 107 by requesting an operational waiver.",
+      "source_url": "https://www.faa.gov/uas/commercial_operators/part_107_waivers",
+      "version": "Web page captured at provenance.retrieved_at; no publication date asserted.",
+      "kind": "guidance"
+    }
+  ]
+}

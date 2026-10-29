@@ -3,14 +3,29 @@ targetScope = 'resourceGroup'
 @description('The azd environment name.')
 param environmentName string
 
-@description('The Azure region for all resources.')
+@description('The default Azure region for resources. App Service hosting can be overridden separately.')
 param location string = 'eastus2'
+
+@description('The region for only the App Service plan and API, web and portal sites. Defaults to location.')
+param appServiceLocation string = location
 
 @description('The App Service Plan SKU.')
 param appServicePlanSku string = 'B1'
 
 @description('The API Management SKU in Name_Capacity format.')
 param apimSkuName string = 'Developer_1'
+
+@description('Create the normal co-located gateway. False is for a core shared by separately deployed gateways.')
+param deployApim bool = true
+
+@description('When deployApim is false, the resource ID of the separately deployed bootstrap gateway. No permissions or diagnostics are written to it here.')
+param externalBootstrapApimResourceId string = ''
+
+@description('Additional tags for newly owned resources.')
+param additionalTags object = {}
+
+@description('Reviewed existing tag values to preserve only on Cosmos and the backend/management vaults. Any approved exception expiry must be supplied unchanged; this template never creates or renews an expiry.')
+param coreBackingResourceTags object = {}
 
 @description('The publisher name surfaced by API Management.')
 param apimPublisherName string
@@ -56,6 +71,11 @@ param localhostOrigins array = [
 
 @description('The API health check path.')
 param apiHealthCheckPath string = '/readyz'
+
+@description('Read timeout in seconds for MCP discovery, including scale-to-zero cold starts.')
+@minValue(1)
+@maxValue(120)
+param mcpDiscoveryTimeoutSeconds int = 20
 
 @description('The web health check path.')
 param webHealthCheckPath string = '/healthz'
@@ -103,12 +123,13 @@ var normalizedEnv = toLower(replace(replace(environmentName, '_', '-'), '.', '-'
 var envLabel = startsWith(normalizedEnv, 'mosaic-') ? substring(normalizedEnv, 7) : normalizedEnv
 var envToken = toLower(replace(envLabel, '-', ''))
 var suffix = substring(uniqueString(subscription().subscriptionId, resourceGroup().id, normalizedEnv), 0, 6)
-var sharedTags = {
+var sharedTags = union({
   'azd-env-name': environmentName
   'managed-by': 'azd'
   'mosaic-environment': environmentName
   product: 'MOSAIC'
-}
+}, additionalTags)
+var backingResourceTags = union(sharedTags, coreBackingResourceTags)
 var planName = take('asp-mosaic-${envLabel}-${suffix}', 40)
 var acrName = toLower(take('mosaic${envToken}${suffix}acr', 50))
 var apiWebAppName = take('mosaic-${envLabel}-api-${suffix}', 60)
@@ -120,13 +141,17 @@ var managementKeyVaultName = toLower(take('kvmgmt${envToken}${suffix}', 24))
 var logAnalyticsName = take('log-mosaic-${envLabel}-${suffix}', 63)
 var appInsightsName = take('appi-mosaic-${envLabel}-${suffix}', 260)
 var apimName = take('apim-mosaic-${envLabel}-${suffix}', 50)
+var bootstrapApimParts = split(externalBootstrapApimResourceId, '/')
+var bootstrapApimName = deployApim ? apimName : (empty(externalBootstrapApimResourceId) ? '' : last(bootstrapApimParts))
+var bootstrapApimSubscriptionId = deployApim || empty(externalBootstrapApimResourceId) ? subscription().subscriptionId : bootstrapApimParts[2]
+var bootstrapApimResourceGroup = deployApim || empty(externalBootstrapApimResourceId) ? resourceGroup().name : bootstrapApimParts[4]
 var apimSkuParts = split(apimSkuName, '_')
 var apimSkuTier = apimSkuParts[0]
 var apimSkuCapacity = int(apimSkuParts[1])
 var apiUrl = 'https://${apiWebAppName}.azurewebsites.net'
 var webUrl = 'https://${webWebAppName}.azurewebsites.net'
 var portalUrl = 'https://${portalWebAppName}.azurewebsites.net'
-var apimGatewayUrl = 'https://${apimName}.azure-api.net'
+var apimGatewayUrl = empty(bootstrapApimName) ? '' : 'https://${bootstrapApimName}.azure-api.net'
 var authorityUrl = uri(environment().authentication.loginEndpoint, tenantId)
 // Where MOSAIC queries gateway logs for usage. Each sovereign cloud has its own query endpoint.
 var logAnalyticsQueryEndpoints = {
@@ -140,8 +165,12 @@ var apiCorsAllowedOrigins = concat(localhostOrigins, [
 ])
 var apiAppSettings = [
   {
+    name: 'MOSAIC_MCP_DISCOVERY_TIMEOUT_SECONDS'
+    value: string(mcpDiscoveryTimeoutSeconds)
+  }
+  {
     name: 'MOSAIC_TEAMS_WORKFLOW_ALLOWED_HOSTS'
-    value: teamsWorkflowAllowedHosts
+    value: json(teamsWorkflowAllowedHosts)
   }
   {
     name: 'MOSAIC_TEAMS_BOT_AUTH_MODE'
@@ -237,7 +266,7 @@ var apiAppSettings = [
   }
   {
     name: 'MOSAIC_CORS_ORIGINS'
-    value: string(apiCorsAllowedOrigins)
+    value: apiCorsAllowedOrigins
   }
   {
     name: 'MOSAIC_APPLICATIONINSIGHTS_CONNECTION_STRING'
@@ -245,15 +274,15 @@ var apiAppSettings = [
   }
   {
     name: 'MOSAIC_APIM_SUBSCRIPTION_ID'
-    value: subscription().subscriptionId
+    value: bootstrapApimSubscriptionId
   }
   {
     name: 'MOSAIC_APIM_RESOURCE_GROUP'
-    value: resourceGroup().name
+    value: bootstrapApimResourceGroup
   }
   {
     name: 'MOSAIC_APIM_SERVICE_NAME'
-    value: apimName
+    value: bootstrapApimName
   }
   {
     name: 'MOSAIC_COSMOS_OBSERVED_STATE_CONTAINER'
@@ -339,7 +368,7 @@ module acr './modules/container-registry.bicep' = {
 module plan './modules/app-service-plan.bicep' = {
   name: 'appServicePlan'
   params: {
-    location: location
+    location: appServiceLocation
     name: planName
     skuName: appServicePlanSku
     tags: sharedTags
@@ -351,7 +380,7 @@ module cosmos './modules/cosmosdb.bicep' = {
   params: {
     location: location
     name: cosmosName
-    tags: sharedTags
+    tags: backingResourceTags
   }
 }
 
@@ -360,7 +389,7 @@ module keyVault './modules/key-vault.bicep' = {
   params: {
     location: location
     name: keyVaultName
-    tags: sharedTags
+    tags: backingResourceTags
     tenantId: tenantId
   }
 }
@@ -370,7 +399,7 @@ module managementKeyVault './modules/key-vault.bicep' = {
   params: {
     location: location
     name: managementKeyVaultName
-    tags: sharedTags
+    tags: backingResourceTags
     tenantId: tenantId
   }
 }
@@ -385,7 +414,7 @@ module apiApp './modules/web-app.bicep' = {
     containerPort: apiContainerPort
     corsAllowedOrigins: apiCorsAllowedOrigins
     healthCheckPath: apiHealthCheckPath
-    location: location
+    location: appServiceLocation
     name: apiWebAppName
     serverFarmId: plan.outputs.id
     tags: sharedTags
@@ -401,7 +430,7 @@ module webApp './modules/web-app.bicep' = {
     containerPort: webContainerPort
     corsAllowedOrigins: []
     healthCheckPath: webHealthCheckPath
-    location: location
+    location: appServiceLocation
     name: webWebAppName
     serverFarmId: plan.outputs.id
     tags: sharedTags
@@ -417,14 +446,14 @@ module portalApp './modules/web-app.bicep' = {
     containerPort: portalContainerPort
     corsAllowedOrigins: []
     healthCheckPath: webHealthCheckPath
-    location: location
+    location: appServiceLocation
     name: portalWebAppName
     serverFarmId: plan.outputs.id
     tags: sharedTags
   }
 }
 
-module apim './modules/apim.bicep' = {
+module apim './modules/apim.bicep' = if (deployApim) {
   name: 'apim'
   params: {
     appInsightsConnectionString: monitoring.outputs.connectionString
@@ -531,16 +560,15 @@ resource apiKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04
 // An endpoint MOSAIC reaches with an API key keeps that key in Key Vault, and API Management reads
 // it there itself, through a Key Vault-backed named value, with its system-assigned identity. See
 // ADR 0018. MOSAIC stores only the secret's identifier.
-resource apimKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource apimKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployApim) {
   name: guid(keyVaultName, apimName, 'KeyVaultSecretsUser')
   scope: keyVaultResource
   properties: {
-    principalId: apimResource.identity.principalId
+    principalId: apim!.outputs.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
   }
   dependsOn: [
-    apim
     #disable-next-line no-unnecessary-dependson
     keyVault
   ]
@@ -602,7 +630,7 @@ resource apiManagementVaultSecretsOfficer 'Microsoft.Authorization/roleAssignmen
 // Publishing a model creates APIs, backends, policy fragments, products and subscriptions in this
 // service, so read access is no longer sufficient. See ADR 0010, which also records that this
 // built-in role carries subscriptions/listSecrets and that MOSAIC never calls it.
-resource apiApimContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource apiApimContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployApim) {
   name: guid(apimName, apiWebAppName, 'ApiManagementServiceContributor')
   scope: apimResource
   properties: {
@@ -645,7 +673,7 @@ resource apiMonitoringReader 'Microsoft.Authorization/roleAssignments@2022-04-01
 
 // Usage comes from the gateway's own logs, queried in the context of the API Management service,
 // which needs read access to the service's logs and diagnostic settings. See ADR 0019.
-resource apiApimMonitoringReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource apiApimMonitoringReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployApim) {
   name: guid(apimName, apiWebAppName, 'MonitoringReader')
   scope: apimResource
   properties: {
@@ -744,7 +772,7 @@ resource keyVaultDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-p
   ]
 }
 
-resource apimDiagnosticsSettings 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+resource apimDiagnosticsSettings 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (deployApim) {
   name: 'to-log-analytics'
   scope: apimResource
   properties: {
@@ -873,21 +901,29 @@ output WEB_APP_PRINCIPAL_ID string = webApp.outputs.principalId
 output PORTAL_APP_NAME string = portalApp.outputs.name
 output PORTAL_APP_URL string = portalUrl
 output PORTAL_APP_PRINCIPAL_ID string = portalApp.outputs.principalId
-output APIM_NAME string = apim.outputs.name
+output APIM_NAME string = bootstrapApimName
 output APIM_GATEWAY_URL string = apimGatewayUrl
-output APIM_RESOURCE_ID string = apim.outputs.id
-output APIM_PRINCIPAL_ID string = apimResource.identity.principalId
+output APIM_RESOURCE_ID string = deployApim ? apim!.outputs.id : externalBootstrapApimResourceId
+output APIM_PRINCIPAL_ID string = deployApim ? apim!.outputs.principalId : ''
+output API_APP_RESOURCE_ID string = apiSiteResource.id
+output WEB_APP_RESOURCE_ID string = webSiteResource.id
+output PORTAL_APP_RESOURCE_ID string = portalSiteResource.id
+output MANAGEMENT_KEY_VAULT_NAME string = managementKeyVault.outputs.name
+output MANAGEMENT_KEY_VAULT_RESOURCE_ID string = managementKeyVault.outputs.id
 output MANAGEMENT_KEY_VAULT_URI string = managementKeyVault.outputs.vaultUri
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = acr.outputs.loginServer
 output AZURE_CONTAINER_REGISTRY_NAME string = acr.outputs.name
+output AZURE_CONTAINER_REGISTRY_RESOURCE_ID string = acrResource.id
 output COSMOSDB_ACCOUNT_NAME string = cosmos.outputs.name
 output COSMOSDB_ENDPOINT string = cosmos.outputs.endpoint
 output KEY_VAULT_NAME string = keyVault.outputs.name
 output KEY_VAULT_URI string = keyVault.outputs.vaultUri
+output KEY_VAULT_RESOURCE_ID string = keyVault.outputs.id
 output LOG_ANALYTICS_WORKSPACE_NAME string = monitoring.outputs.workspaceName
 output LOG_ANALYTICS_WORKSPACE_ID string = monitoring.outputs.workspaceId
 output APPLICATION_INSIGHTS_NAME string = monitoring.outputs.appInsightsName
 output APPLICATION_INSIGHTS_RESOURCE_ID string = monitoring.outputs.appInsightsId
+output APPLICATION_INSIGHTS_CONNECTION_STRING string = monitoring.outputs.connectionString
 output MOSAIC_TENANT_ID string = tenantId
 output MOSAIC_API_CLIENT_ID string = apiAppClientId
 output MOSAIC_MODEL_RUNTIME_CLIENT_ID string = modelRuntimeClientId

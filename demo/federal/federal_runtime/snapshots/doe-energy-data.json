@@ -1,0 +1,159 @@
+{
+  "profile": "doe-energy-data",
+  "provenance": {
+    "mode": "snapshot",
+    "release": "EIA State Electricity Profiles 2024, Table 5",
+    "retrieved_at": "2026-10-29T00:19:09.025894+00:00",
+    "sources": [
+      {
+        "url": "https://www.eia.gov/electricity/state/xls/SEP%20Tables%20for%20AL.xlsx",
+        "sha256": "411c9ad8595ba6b1af05d97c56a23135450d93c46d10fca200bc36fc18ddd3c3"
+      },
+      {
+        "url": "https://www.eia.gov/electricity/state/xls/SEP%20Tables%20for%20CA.xlsx",
+        "sha256": "289324548906ace2264ddb13ece61981f1a92fa75f9c344ec078a60bdee794e7"
+      },
+      {
+        "url": "https://www.eia.gov/electricity/state/xls/SEP%20Tables%20for%20TX.xlsx",
+        "sha256": "df96b0d5622d8b521afa40d078d3f8ccdf8e202acc579c3fd0fb022e1b052100"
+      }
+    ],
+    "selection": "Small selected public-data subset, not a complete agency inventory."
+  },
+  "records": [
+    {
+      "id": "AL-2024",
+      "state": "AL",
+      "year": 2024,
+      "generation_mwh": 142921216,
+      "mix_mwh": {
+        "Battery": 0,
+        "Coal": 20936166,
+        "Hydroelectric": 8357262,
+        "Natural gas": 64598751,
+        "Nuclear": 44487194,
+        "Other": 7077,
+        "Other biomass": 36789,
+        "Other gas": 5,
+        "Petroleum": 12436,
+        "Solar": 1255147,
+        "Wood": 3230389
+      },
+      "source_url": "https://www.eia.gov/electricity/state/xls/SEP%20Tables%20for%20AL.xlsx",
+      "note": "Table 5 total electric industry; excludes nested fuel subcategories. Null is unavailable, not zero; independent rounding may affect totals."
+    },
+    {
+      "id": "AL-2023",
+      "state": "AL",
+      "year": 2023,
+      "generation_mwh": 139435010,
+      "mix_mwh": {
+        "Battery": -93,
+        "Coal": 19181958,
+        "Hydroelectric": 8429721,
+        "Natural gas": 61848366,
+        "Nuclear": 45579039,
+        "Other": 0,
+        "Other biomass": 41362,
+        "Other gas": 32,
+        "Petroleum": 24540,
+        "Solar": 1200722,
+        "Wood": 3129363
+      },
+      "source_url": "https://www.eia.gov/electricity/state/xls/SEP%20Tables%20for%20AL.xlsx",
+      "note": "Table 5 total electric industry; excludes nested fuel subcategories. Null is unavailable, not zero; independent rounding may affect totals."
+    },
+    {
+      "id": "CA-2024",
+      "state": "CA",
+      "year": 2024,
+      "generation_mwh": 214191383,
+      "mix_mwh": {
+        "Battery": -1394584,
+        "Coal": 245554,
+        "Geothermal": 10524488,
+        "Hydroelectric": 29453931,
+        "Natural gas": 86655675,
+        "Nuclear": 18378835,
+        "Other": 281882,
+        "Other biomass": 2273647,
+        "Other gas": 1208861,
+        "Petroleum": 56586,
+        "Pumped storage": -45688,
+        "Solar": 48427600,
+        "Wind": 15648353,
+        "Wood": 2476245
+      },
+      "source_url": "https://www.eia.gov/electricity/state/xls/SEP%20Tables%20for%20CA.xlsx",
+      "note": "Table 5 total electric industry; excludes nested fuel subcategories. Null is unavailable, not zero; independent rounding may affect totals."
+    },
+    {
+      "id": "CA-2023",
+      "state": "CA",
+      "year": 2023,
+      "generation_mwh": 216628794,
+      "mix_mwh": {
+        "Battery": -861839,
+        "Coal": 208862,
+        "Geothermal": 11265933,
+        "Hydroelectric": 32381318,
+        "Natural gas": 94390153,
+        "Nuclear": 17718368,
+        "Other": 379426,
+        "Other biomass": 2340688,
+        "Other gas": 1381893,
+        "Petroleum": 75041,
+        "Pumped storage": -392677,
+        "Solar": 41000969,
+        "Wind": 14019194,
+        "Wood": 2721464
+      },
+      "source_url": "https://www.eia.gov/electricity/state/xls/SEP%20Tables%20for%20CA.xlsx",
+      "note": "Table 5 total electric industry; excludes nested fuel subcategories. Null is unavailable, not zero; independent rounding may affect totals."
+    },
+    {
+      "id": "TX-2024",
+      "state": "TX",
+      "year": 2024,
+      "generation_mwh": 566502688,
+      "mix_mwh": {
+        "Battery": -394554,
+        "Coal": 65545244,
+        "Hydroelectric": 776742,
+        "Natural gas": 293193469,
+        "Nuclear": 38613118,
+        "Other": 254531,
+        "Other biomass": 200582,
+        "Other gas": 2531717,
+        "Petroleum": 229506,
+        "Solar": 40558964,
+        "Wind": 124277504,
+        "Wood": 715864
+      },
+      "source_url": "https://www.eia.gov/electricity/state/xls/SEP%20Tables%20for%20TX.xlsx",
+      "note": "Table 5 total electric industry; excludes nested fuel subcategories. Null is unavailable, not zero; independent rounding may affect totals."
+    },
+    {
+      "id": "TX-2023",
+      "state": "TX",
+      "year": 2023,
+      "generation_mwh": 547294552,
+      "mix_mwh": {
+        "Battery": -176215,
+        "Coal": 71614790,
+        "Hydroelectric": 758033,
+        "Natural gas": 282158676,
+        "Nuclear": 40679870,
+        "Other": 411716,
+        "Other biomass": 177484,
+        "Other gas": 2327350,
+        "Petroleum": 235069,
+        "Solar": 28149665,
+        "Wind": 119855132,
+        "Wood": 1102982
+      },
+      "source_url": "https://www.eia.gov/electricity/state/xls/SEP%20Tables%20for%20TX.xlsx",
+      "note": "Table 5 total electric industry; excludes nested fuel subcategories. Null is unavailable, not zero; independent rounding may affect totals."
+    }
+  ]
+}

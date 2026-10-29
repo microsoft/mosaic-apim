@@ -1,0 +1,17 @@
+# This Dockerfile deliberately reuses only three public-source helper files from E2E.
+# Override the root ignore, which excludes all E2E paths and cannot supply these COPYs.
+**
+!demo
+!demo/federal
+!demo/federal/requirements.txt
+!demo/federal/federal_runtime
+!demo/federal/federal_runtime/**
+!e2e
+!e2e/mcp-servers
+!e2e/mcp-servers/m-agent
+!e2e/mcp-servers/m-agent/m_agent
+!e2e/mcp-servers/m-agent/m_agent/__init__.py
+!e2e/mcp-servers/m-agent/m_agent/gateway.py
+!e2e/mcp-servers/m-agent/m_agent/logs.py
+**/__pycache__
+**/*.pyc

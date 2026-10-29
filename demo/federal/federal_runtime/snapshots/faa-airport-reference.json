@@ -1,0 +1,68 @@
+{
+  "profile": "faa-airport-reference",
+  "provenance": {
+    "mode": "snapshot",
+    "release": "FAA NASR 28-day subscription effective 2026-10-01, APT_BASE.csv",
+    "retrieved_at": "2026-10-29T00:19:13.240129+00:00",
+    "sources": [
+      {
+        "url": "https://nfdc.faa.gov/webContent/28DaySub/extra/01_Oct_2026_APT_CSV.zip",
+        "sha256": "aba48ea877f249d9b8cd63988b14b3432a6a09ad1fbe9561a5e6443c99c03dd0"
+      }
+    ],
+    "selection": "Small selected public-data subset, not a complete agency inventory.",
+    "expires": "2026-10-29; historical reference only, never current operational data"
+  },
+  "records": [
+    {
+      "id": "SFO",
+      "icao": "KSFO",
+      "name": "SAN FRANCISCO INTL",
+      "city": "SAN FRANCISCO",
+      "state": "CA",
+      "effective_date": "2026-10-01",
+      "elevation_ft": 13.1,
+      "source_url": "https://nfdc.faa.gov/webContent/28DaySub/extra/01_Oct_2026_APT_CSV.zip"
+    },
+    {
+      "id": "DEN",
+      "icao": "KDEN",
+      "name": "DENVER INTL",
+      "city": "DENVER",
+      "state": "CO",
+      "effective_date": "2026-10-01",
+      "elevation_ft": 5433.8,
+      "source_url": "https://nfdc.faa.gov/webContent/28DaySub/extra/01_Oct_2026_APT_CSV.zip"
+    },
+    {
+      "id": "IAD",
+      "icao": "KIAD",
+      "name": "WASHINGTON DULLES INTL",
+      "city": "WASHINGTON",
+      "state": "DC",
+      "effective_date": "2026-10-01",
+      "elevation_ft": 312.3,
+      "source_url": "https://nfdc.faa.gov/webContent/28DaySub/extra/01_Oct_2026_APT_CSV.zip"
+    },
+    {
+      "id": "JFK",
+      "icao": "KJFK",
+      "name": "JOHN F KENNEDY INTL",
+      "city": "NEW YORK",
+      "state": "NY",
+      "effective_date": "2026-10-01",
+      "elevation_ft": 13.0,
+      "source_url": "https://nfdc.faa.gov/webContent/28DaySub/extra/01_Oct_2026_APT_CSV.zip"
+    },
+    {
+      "id": "DFW",
+      "icao": "KDFW",
+      "name": "DALLAS-FORT WORTH INTL",
+      "city": "DALLAS-FORT WORTH",
+      "state": "TX",
+      "effective_date": "2026-10-01",
+      "elevation_ft": 606.4,
+      "source_url": "https://nfdc.faa.gov/webContent/28DaySub/extra/01_Oct_2026_APT_CSV.zip"
+    }
+  ]
+}

@@ -980,11 +980,18 @@ Set-Location ..
 
 az bicep build --file infra\main.bicep
 uv run python -m unittest discover -s scripts/tests -t .
+uv run ruff check scripts/federal_demo scripts/tests/test_federal_demo.py scripts/tests/test_federal_model_verifier.py
+az bicep build --file infra\federal-demo\main.bicep
+az bicep build --file infra\federal-demo\runtime-only.bicep
+az bicep build --file infra\federal-demo\inference-only.bicep
+python -m unittest discover -s infra\federal-demo\tests -v
 ```
 
 [CI](.github/workflows/ci.yml) runs these checks on every pull request to `main` and every push to
 it. The E2E browser checks use mocked traffic and temporary contexts, not live fixtures or
 persona profiles; CI installs Chromium's Linux system dependencies as well.
+The [federal demo runtime](demo/federal/README.md#run-and-validate) has its own pinned environment
+and CI job for its MCP profiles, manual workloads, lint, and formatting.
 
 ### Merging into `main`
 
@@ -1004,6 +1011,11 @@ CodeQL scans `main` on every push and weekly, and also scans pull requests opene
 this repository. It doesn't gate merging, because it doesn't scan pull requests from forks.
 
 ## Deploy with `azd`
+
+For the opt-in, multi-environment federal demonstration estate, see
+[Federal demonstration estate](docs/federal-demo.md). It keeps one control plane with three
+Developer-SKU gateways and uses explicit, target-bound operator setup rather than treating the
+demo's Production classification as a production SLA.
 
 Sign in and create the normal development environment:
 

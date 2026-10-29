@@ -1,0 +1,47 @@
+{
+  "profile": "nasa-mission-archive",
+  "provenance": {
+    "mode": "snapshot",
+    "release": "NASA Images API v1.1 Artemis I metadata",
+    "retrieved_at": "2026-10-29T00:19:17.590763+00:00",
+    "sources": [
+      {
+        "url": "https://images-api.nasa.gov/search?q=Artemis%20I%20Orion&media_type=image&page_size=3",
+        "sha256": "478474e6cd7d22d66203b4e81cbe086953528884f49f8eb79d84984a80b2996e"
+      }
+    ],
+    "selection": "Small selected public-data subset, not a complete agency inventory."
+  },
+  "records": [
+    {
+      "id": "Artemis I FD 17 Orion and a Crescent Moon",
+      "title": "Artemis I FD 17 Orion and a Crescent Moon",
+      "date_created": "2022-12-03T00:00:00Z",
+      "center": "JSC",
+      "media_type": "image",
+      "description": "art001e001939 (Dec. 2, 2022) A camera mounted on one of Orion’s four solar arrays captured this image of the Moon on flight day 17 of the 25.5-day Artemis I mission from a distance of more than 222,000 miles. Orion has exited the distant lunar orbit and is heading for a Dec. 11 splashdown in the Pacific Ocean.",
+      "source_url": "https://images-assets.nasa.gov/image/Artemis I FD 17 Orion and a Crescent Moon/collection.json",
+      "note": "Public media metadata, not a mission-status feed. Media not rehosted."
+    },
+    {
+      "id": "KSC-20210120-PH-KLS01_0034",
+      "title": "Artemis I Orion featuring NASA Meatball Decal",
+      "date_created": "2021-01-20T00:00:00Z",
+      "center": "KSC",
+      "media_type": "image",
+      "description": "Kennedy Space Center Director Bob Cabana gives a thumbs up inside the Multi-Payload Processing Facility at the center on Jan. 20, 2021. Behind him is the Artemis I Orion spacecraft with NASA’s famous “meatball” insignia is affixed to the Artemis I Orion spacecraft adapter jettison fairings, which protect the European built service module. Shown inside its servicing stand, ground processing begins on Orion, with the Exploration Ground Systems and Jacobs teams performing checkouts and fueling the spacecraft with commodities as part of preparations ahead of the Artemis I mission.",
+      "source_url": "https://images-assets.nasa.gov/image/KSC-20210120-PH-KLS01_0034/collection.json",
+      "note": "Public media metadata, not a mission-status feed. Media not rehosted."
+    },
+    {
+      "id": "KSC-20211022-PH-KLS01_0002",
+      "title": "Artemis I Orion Lift and Mate - Fully Stacked",
+      "date_created": "2021-10-22T00:00:00Z",
+      "center": "KSC",
+      "media_type": "image",
+      "description": "Artemis I Orion Lift and Mate - Fully Stacked",
+      "source_url": "https://images-assets.nasa.gov/image/KSC-20211022-PH-KLS01_0002/collection.json",
+      "note": "Public media metadata, not a mission-status feed. Media not rehosted."
+    }
+  ]
+}
