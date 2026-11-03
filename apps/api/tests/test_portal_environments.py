@@ -32,8 +32,8 @@ from mosaic_api.services import EntitlementService, PortalService
 from mosaic_api.services.directory import Actor
 
 TENANT = "tenant-test"
-USER = "user-object"
-OTHER = "other-object"
+USER = "11111111-1111-4111-8111-111111111111"
+OTHER = "22222222-2222-4222-8222-222222222222"
 ADMIN = Actor(object_id="admin-object", tenant_id=TENANT)
 ACTOR = Actor(object_id=USER, tenant_id=TENANT)
 OTHER_ACTOR = Actor(object_id=OTHER, tenant_id=TENANT)
