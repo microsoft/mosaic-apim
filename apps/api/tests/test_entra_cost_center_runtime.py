@@ -384,6 +384,51 @@ async def test_automatic_grants_scale_with_exact_resources_not_members(estate: E
     assert estate.apim.payloads == before_writes
 
 
+async def test_automatic_access_reuses_canonical_legacy_group_identity(estate: Estate) -> None:
+    await estate.center()
+    legacy = Principal(
+        id="legacy-center-group",
+        tenant_id=TENANT,
+        object_id=f"{{{GROUP}}}",
+        kind="securityGroup",
+    )
+    await estate.directory.create_principal(legacy, audit())
+
+    grants = await estate.grants.sync_cost_center_access(ACTOR, CENTER)
+
+    assert len(grants) == 3
+    assert all(grant.subject.id == legacy.id for grant in grants)
+    matches = [
+        item
+        for item in await estate.directory.list_principals(TENANT)
+        if item.kind == PrincipalKind.SECURITY_GROUP
+    ]
+    assert [item.id for item in matches] == [legacy.id]
+
+
+@pytest.mark.parametrize("kind", [PrincipalKind.USER, PrincipalKind.SECURITY_GROUP])
+async def test_automatic_access_refuses_ambiguous_group_metadata(
+    estate: Estate, kind: PrincipalKind
+) -> None:
+    await estate.center()
+    for principal_id, object_id, principal_kind in (
+        ("legacy-center-group", GROUP, PrincipalKind.SECURITY_GROUP),
+        ("legacy-duplicate", f"{{{GROUP}}}", kind),
+    ):
+        await estate.directory.create_principal(
+            Principal(
+                id=principal_id, tenant_id=TENANT, object_id=object_id, kind=principal_kind
+            ),
+            audit(),
+        )
+    with pytest.raises(ConflictError, match="Multiple principals"):
+        await estate.grants.sync_cost_center_access(ACTOR, CENTER)
+    assert not any(
+        grant.managed_by == "costCenterAutomatic"
+        for grant in await estate.entitlements.list_entitlements(TENANT)
+    )
+
+
 async def test_sync_owns_only_marked_grants_and_disables_retired_automatic_access(
     estate: Estate,
 ) -> None:

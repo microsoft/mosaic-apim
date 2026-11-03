@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal, Self
 from urllib.parse import urlsplit, urlunsplit
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from pydantic import (
     AnyHttpUrl,
@@ -619,6 +619,22 @@ class PrincipalKind(StrEnum):
     AGENT_IDENTITY = "agentIdentity"
     AGENT_USER = "agentUser"
     SECURITY_GROUP = "securityGroup"
+
+
+def canonical_object_id(value: str) -> str:
+    try:
+        return str(UUID(value.strip()))
+    except ValueError as exc:
+        raise ValueError("objectId must be a GUID") from exc
+
+
+def principal_object_id_key(value: str) -> str:
+    """Compare canonical GUIDs while keeping legacy non-GUID registrations readable."""
+
+    try:
+        return canonical_object_id(value)
+    except ValueError:
+        return value.casefold()
 
 
 class Principal(Entity):
@@ -2935,6 +2951,11 @@ class PrincipalCreate(MosaicModel):
     # The cost center this principal's calls are charged to when they name none. Omitted, it's
     # the tenant's default. Ignored for a security group.
     default_cost_center_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @field_validator("object_id")
+    @classmethod
+    def normalize_object_id(cls, value: str) -> str:
+        return canonical_object_id(value)
 
 
 class PrincipalUpdate(MosaicModel):

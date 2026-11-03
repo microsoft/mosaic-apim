@@ -229,7 +229,11 @@ def test_no_header_or_body_is_recorded(telemetry: Telemetry) -> None:
                 "api-key": key,
                 "X-Correlation-ID": correlation,
             },
-            json={"objectId": "principal-in-this-test", "kind": "servicePrincipal", "label": label},
+            json={
+                "objectId": "11111111-1111-1111-1111-111111111111",
+                "kind": "servicePrincipal",
+                "label": label,
+            },
         )
     assert created.status_code == 201
     assert created.headers["X-Correlation-ID"] == correlation
