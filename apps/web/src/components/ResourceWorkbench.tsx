@@ -25,6 +25,8 @@ export interface ResourceWorkbenchProps<T> {
   pager?: ReactNode
   listLabel?: string
   detailLabel?: string
+  /** Keep long lists locally scrollable without bounding the detail workspace. */
+  boundedList?: boolean
   /** Override the default pathname/tab/list-label scroll scope when needed. */
   scrollKey?: string
   className?: string
@@ -33,7 +35,7 @@ export interface ResourceWorkbenchProps<T> {
 export function ResourceWorkbench<T>({
   title, description, actions, toolbar, items, getId, selectedId, onSelect,
   renderListItem, renderDetail, emptyList, emptySelection, missingSelection,
-  pager, listLabel = 'Resources', detailLabel = 'Selected resource', scrollKey, className,
+  pager, listLabel = 'Resources', detailLabel = 'Selected resource', boundedList = false, scrollKey, className,
 }: ResourceWorkbenchProps<T>) {
   const locationContext = useContext(UNSAFE_LocationContext)
   const location = locationContext?.location
@@ -84,7 +86,8 @@ export function ResourceWorkbench<T>({
       </header>
       {toolbar && <div className={styles.toolbar}>{toolbar}</div>}
       <div className={`${styles.body} ${selectedId !== null ? styles.hasSelection : ''}`}>
-        <div className={styles.listPane} ref={listRef} role="region" aria-label={listLabel} tabIndex={-1}>
+        <div className={[styles.listPane, boundedList && styles.boundedList].filter(Boolean).join(' ')}
+          ref={listRef} role="region" aria-label={listLabel} tabIndex={-1}>
           {items.length ? (
             <ul className={styles.list} aria-label={listLabel}>
               {items.map((item) => {

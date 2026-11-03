@@ -3,7 +3,7 @@
 This guide is for administrators who run MOSAIC. It explains where MOSAIC's prices come from, how
 it finds the price of each deployment, how to add and correct prices, how provisioned throughput is
 charged, and how to refresh the prices MOSAIC ships. The README's
-[Usage and analytics](../README.md#usage-and-analytics) section lists the views and routes,
+[Usage and analytics](analytics-reference.md#usage-and-analytics) section lists the views and routes,
 [Usage analytics](usage-analytics.md) explains the usage that's priced, and
 [ADR 0020](adr/0020-price-list.md) records the design.
 
@@ -113,7 +113,7 @@ A model API's calls are priced by the deployment its publication fronts. A grant
 by the model API it grants. An API MOSAIC adopted rather than published doesn't say which deployment
 it calls, so its calls have no price. MCP servers carry no tokens and have no cost.
 
-A [model pool](../README.md#model-pools)'s API fronts many deployments, so MOSAIC prices each of its
+A [model pool](model-pools.md)'s API fronts many deployments, so MOSAIC prices each of its
 calls at the member that served it. It places a call on a member by the backend the gateway logged,
 or by the host and deployment that backend calls. A provisioned member's cost is shared among the
 pool's callers like any other's, from the day MOSAIC first saw it behind the pool, and a member

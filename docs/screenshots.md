@@ -1,7 +1,8 @@
-# README screenshots
+# Documentation screenshots
 
-The [Screenshots](../README.md#screenshots) section of the README shows the administrator console
-and the end-user portal. The images are generated, not taken by hand. `scripts/screenshots` runs
+The [full gallery](gallery.md) shows the administrator console and the end-user portal; the
+README's [Screenshots](../README.md#screenshots) section keeps a small selection. The images are
+generated, not taken by hand. `scripts/screenshots` runs
 the real MOSAIC API and both apps against a fictional Contoso estate, drives them in Chromium with
 Playwright, and blurs anything that looks like an endpoint, identifier, address, or secret before
 it saves the PNGs to `docs/images/screenshots/`.
@@ -12,26 +13,31 @@ and complete-group-read results are simulated, not evidence of live Graph connec
 This is a screenshot-only fixture arrangement: normal local-authentication deployments disable
 Graph lookup and complete group checks.
 
-The fictional estate also explicitly enables managed cost-center record ownership. Its linked
-MOSAIC groups share the existing explicit rosters; this does not enable inherited model access,
-gateway synchronization, or new keys. Normal deployments keep that experimental setting off.
+The fictional estate uses one shared fake Graph directory for lookup, group creation, verification,
+and direct membership operations. Custom cost centers get dedicated verified Entra groups through
+the normal services, not MOSAIC-local shadow rosters. The fixture explicitly simulates group-create
+and member-write consent; no real permissions are granted. Customer Insights has Automatic
+embeddings and Docs Search MCP access, while its other offerings are Request-only. Its managed
+group grants remain resource-scaled rather than member-scaled. A pending creation request and an
+approved, setup-required center illustrate that approval, membership, and gateway apply are
+separate outcomes.
 
 ## When to update them
 
-Regenerate the affected shots, and reread their README descriptions, in the same change as any of
+Regenerate the affected shots, and reread their gallery and any README descriptions, in the same change as any of
 these:
 
 - A pictured page changes its layout, wording, navigation, or the data it shows. The
   [inventory](#shot-inventory) lists the pictured pages.
-- A new capability deserves a place in the README.
+- A new capability deserves a place in the gallery or README.
 - A pictured page is renamed, moved, or removed.
 
-Each README description is one or two sentences: what the view is, and what it lets someone see or
+Each gallery/README description is one or two sentences: what the view is, and what it lets someone see or
 do. Describe what the image shows today, not what a later release will add.
 
 ## Regenerate the screenshots
 
-You need the same tools as for [local development](../README.md#local-development), plus the
+You need the same tools as for [local development](development.md#local-development), plus the
 portal's packages:
 
 ```powershell
@@ -113,6 +119,22 @@ The demo API keeps its state in memory. If a shot's actions submit anything, res
 get the original estate back. Before committing, refresh every affected shot without
 `--reuse-servers`; changes to shared navigation require the full gallery.
 
+Browser contexts isolate each shot's UI state, not the shared demo API. Keep
+`console-model-change-review` last in `SHOTS`: it saves unapplied access intent that would
+otherwise make later connection shots show pending changes instead of the applied baseline.
+
+### Focused cost-center layout regressions
+
+After the capture command has installed Chromium, exercise nested offering selection, bounded
+list scrolling, filtering, keyboard focus, and return navigation at desktop and narrow widths:
+
+```powershell
+uv run --with "playwright>=1.58,<2" python -m pytest apps\web\tests\test_cost_center_offerings_browser.py
+```
+
+These checks start and stop their own fictional API and console. They write redacted verification
+captures into an ignored test cache, not the gallery; they do not prove live Entra connectivity.
+
 ### Browse the demo estate
 
 To find a view worth capturing, run the demo API on its default ports and start each app with
@@ -137,7 +159,8 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
   the gateways' generated logs, a day at a time.
 - The same estate includes a fictional Government management connection in a separate fake
   credentials vault, a Government gateway and Azure OpenAI backend, and Government GPT-4o mini
-  and MCP offerings under the same Customer Insights cost center. Both cloud labels and environment
+  and MCP offerings under the exempt General cost center, outside the new Entra-backed workflow.
+  Both cloud labels and environment
   classification come from real resource contracts; all Government authority/ARM traffic remains
   on mock transports. This illustrates the UI, not live Government service availability.
 - `demo_api.py` runs the production FastAPI app with in-memory repositories and swaps its
@@ -219,7 +242,7 @@ survives to be read back.
 
 - `SENSITIVE_LITERALS` in `demo_api.py`: the demo tenant, client, and object IDs.
 - `RESOURCE_NAMES` in `capture.py`: the demo's gateway, resource group, account, vault, MCP, and
-  local-group names, including their hyphenated aliases wherever they appear in an API path.
+  Entra and MOSAIC group names, including their hyphenated aliases wherever they appear in an API path.
 - The shared MCP metadata API, readable MOSAIC-owned APIM resource names and account-derived
   API paths, product names, and fictional person/workload/gateway names and directory aliases are
   redacted too.
@@ -262,13 +285,13 @@ rather than editing the image by hand. Then capture the shot again and check it.
      `scroll_to_text`.
    - `height` and `width` are the viewport dimensions in pixels, defaulting to 900 and 1440.
 3. Capture it with `--only`, open the PNG, and check that everything identifying is blurred.
-4. Embed it in the README with a one- or two-sentence description, and add it to the
-   [inventory](#shot-inventory).
+4. Embed it in [the gallery](gallery.md) with a one- or two-sentence description, and add it to the
+   [inventory](#shot-inventory). Update the README too if the shot belongs in its selection.
 
-To remove a shot, delete its `Shot`, its PNG, its README entry, and its inventory row. After a run,
+To remove a shot, delete its `Shot`, its PNG, its gallery entry, any README entry, and its inventory row. After a run,
 the script warns about any PNG in the output folder that no `Shot` produces.
 
-The README's **Light and dark** table shows one view in both themes, side by side. The galleries
+The README and gallery's **Light and dark** tables show selected views in both themes, side by side. The full galleries
 are two-column tables with light shots on the left and dark ones on the right, so each gallery
 shows both themes. Keep new shots in that pattern.
 
@@ -288,11 +311,14 @@ shows both themes. Keep new shots in that pattern.
 
 ## Shot inventory
 
+Every shot below appears in [the gallery](gallery.md). The README selection is the console overview
+and portal catalog, each in light and dark; keep those shared images and descriptions in step.
+
 The portal shots use the console's cool light/dark palette and glass navigation, with opaque
 resource lists, forms, and connection drawers. The Usage & cost overview uses a taller viewport
 to include both the daily trend and the complete last-24-hours chart.
 
-| Shot | App | Route and state | Theme | README entry |
+| Shot | App | Route and state | Theme | Gallery entry |
 | --- | --- | --- | --- | --- |
 | `console-dashboard-light`, `console-dashboard-dark` | Console | `/dashboard` | Both | Light and dark: console overview |
 | `portal-catalog-light`, `portal-catalog-dark` | Portal | `/catalog`, full-width model-grouped rows with filters, blue-tinted glass navigation, and appearance controls | Both | Light and dark: portal catalog |
@@ -323,9 +349,11 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-model-access-settings` | Console | `/entitlements?tab=settings`, GPT-4o selected | Dark | Model access settings |
 | `console-overlapping-grants` | Console | `/entitlements?tab=effective`, **Overlapping grants** | Dark | Overlapping grants |
 | `console-cost-centers` | Console | `/cost-centers`, selected detail beside the compact list | Light | Cost centers |
-| `console-new-cost-center` | Console | `/cost-centers`, **New cost center** workspace, never saved | Dark | New cost center |
-| `console-cost-center-detail` | Console | Customer Insights detail, **Members** section | Dark | Cost center members |
-| `console-cost-center-group` | Console | `/identity?tab=groups`, managed Customer Insights group selected, explicit roster and owning-center navigation | Light | Managed cost-center group |
+| `console-new-cost-center` | Console | `/cost-centers?mode=new`, **Create with MOSAIC** preview and optional directory permissions, never saved | Dark | New cost center |
+| `console-cost-center-detail` | Console | Customer Insights detail, **Members** section with actual paginated Entra members and durable directory operations | Dark | Cost center members |
+| `console-cost-center-access` | Console | Customer Insights detail, **Resource access**, exact Automatic embeddings offering selected | Light | Cost-center resource access |
+| `console-cost-center-setup` | Console | Knowledge Engineering, **Finish group setup** editor, approved but still Setup required, never saved | Dark | Finish group setup |
+| `console-cost-center-request-review` | Console | `/entitlements?tab=requests`, pending Responsible AI evaluation request in full-workspace review, never approved | Light | Review a cost-center request |
 | `console-mcp-publish` | Console | `/mcps`, full-workspace **Review changes** for the published Docs MCP server, intended changes and impact with collapsed execution, never applied | Light | MCP publish review |
 | `console-model-change-review` | Console | `/entitlements?tab=settings`, GPT-4o key setting saved but never applied, current edit separated from an earlier pending grant | Light | Model change review |
 | `console-unpublish-review` | Console | `/models`, GPT-4o selected, detail **More actions > Unpublish**, recorded removals, impact and callers losing access, never confirmed | Light | Unpublish review |
@@ -356,10 +384,13 @@ to include both the daily trend and the complete last-24-hours chart.
 | `portal-access` | Portal | `/access`, grouped model rows and an exact grant's **Connection details** open in a drawer | Light | My access |
 | `portal-connection-cost-center` | Portal | `/access`, the GPT-4o grant under General with **Connection details** open, scrolled to **Cost center header** | Light | Choosing a cost center |
 | `portal-pool-connection` | Portal | `/access`, Claude Sonnet 4.5 selected, **Connection details** drawer scrolled to **Authentication** and the shared-key note | Dark | Models that share a key |
-| `portal-mcp-connection` | Portal | `/access`, with an enforced MCP grant's **Connection details** open | Dark | MCP connection |
-| `portal-government-connection` | Portal | `/access`, exact AzGov GPT-4o mini direct grant under Customer Insights, **Connection details** open | Light | Government key access |
-| `portal-government-mcp-connection` | Portal | `/access`, exact AzGov MCP direct grant under Customer Insights, custom-header **Connection details** open | Dark | Government MCP connection |
-| `portal-requests` | Portal | `/requests`, model-first cards with offering and version context | Dark | My requests |
+| `portal-mcp-connection` | Portal | `/access`, Automatic Customer Insights MCP access with token-only **Connection details** open | Dark | MCP connection |
+| `portal-government-connection` | Portal | `/access`, exact AzGov GPT-4o mini direct grant under General, **Connection details** open | Light | Government key access |
+| `portal-government-mcp-connection` | Portal | `/access`, exact AzGov MCP direct grant under General, custom-header **Connection details** open | Dark | Government MCP connection |
+| `portal-requests` | Portal | `/requests?status=pending`, mixed resource and cost-center creation requests | Dark | My requests |
+| `portal-cost-center-request` | Portal | `/requests/new-cost-center`, completed proposal and optional group suggestion, never submitted | Light | Request a cost center |
+| `portal-cost-center-request-status` | Portal | `/requests?kind=costCenter&status=completed`, approved Knowledge Engineering with setup still required | Dark | Track incomplete setup |
+| `portal-automatic-access` | Portal | `/access`, exact Customer Insights MCP offering's inherited-access drawer | Light | Automatic access |
 | `portal-usage` | Portal | `/usage`, the default portal landing page with icon-based, collapsible section navigation | Light | Usage & cost |
 | `portal-usage-resources` | Portal | `/usage?tab=resources`, **By resource** with exact offering context | Dark | Usage by resource |
 | `portal-usage-breakdowns` | Portal | `/usage?tab=breakdowns`, **Cost centers** and pooled quotas | Light | Usage breakdowns |

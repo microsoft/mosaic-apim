@@ -1,10 +1,19 @@
 import { FluentProvider, webLightTheme } from '@fluentui/react-components'
-import { act, render, screen } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import { StrictMode } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { DetailPanel } from './DetailPanel'
 
 afterEach(() => vi.restoreAllMocks())
+
+it('labels the dialog with its heading, not the heading actions', () => {
+  render(<FluentProvider theme={webLightTheme}>
+    <DetailPanel title="Access to model" onClose={vi.fn()}>Grant details</DetailPanel>
+  </FluentProvider>)
+  const dialog = screen.getByRole('dialog', { name: 'Access to model' })
+  expect(dialog).toHaveAttribute('aria-labelledby', within(dialog).getByRole('heading', { name: 'Access to model' }).id)
+  expect(dialog).toHaveAccessibleName('Access to model')
+})
 
 it('cancels StrictMode restoration while mounted and restores the opener on unmount', () => {
   const frames = new Map<number, FrameRequestCallback>()

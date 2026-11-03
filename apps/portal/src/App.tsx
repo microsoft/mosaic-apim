@@ -33,6 +33,7 @@ import { initialsFor } from './initials'
 import { CatalogPage } from './pages/CatalogPage'
 import { MyAccessPage } from './pages/MyAccessPage'
 import { MyRequestsPage } from './pages/MyRequestsPage'
+import { RequestCostCenterPage } from './pages/RequestCostCenterPage'
 import { UsagePage } from './pages/UsagePage'
 import { runtimeConfig } from './runtime-config'
 import { MosaicThemeProvider } from './theme'
@@ -42,6 +43,7 @@ import { useNavigationDrawer } from './components/useNavigationDrawer'
 import { NotificationBell } from './components/NotificationBell'
 import { NotificationsPage } from './pages/NotificationsPage'
 import { NotificationPreferencesPage } from './pages/NotificationPreferencesPage'
+import { requestCountsKey } from './request-queries'
 import './index.css'
 
 interface NavigationItem {
@@ -81,10 +83,12 @@ function PortalShell() {
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('mosaic.portal.primary.collapsed') === 'true')
   const profile = useQuery({ queryKey: ['portal', 'profile'], queryFn: api.getProfile })
+  const counts = useQuery({ queryKey: requestCountsKey, queryFn: api.getRequestCounts, enabled: profile.isSuccess })
   const accountName = profile.data?.displayLabel ?? accounts[0]?.name ?? 'MOSAIC user'
   const initials = useMemo(() => initialsFor(accountName), [accountName])
   const grants = formatCount(profile.data?.entitlementCount ?? 0, 'grant')
-  const pendingRequests = formatCount(profile.data?.pendingRequestCount ?? 0, 'pending request')
+  const pendingRequests = counts.data ? formatCount(counts.data.pendingCount, 'pending request') : null
+  const requestSummary = pendingRequests ?? (counts.isError ? 'Pending requests unavailable' : 'Checking request counts')
   const closeNavigation = useCallback(() => setMobileNavigationOpen(false), [])
   const navigationRef = useNavigationDrawer(mobileNavigationOpen, closeNavigation)
   const signOut = () => void instance.logoutRedirect()
@@ -166,14 +170,17 @@ function PortalShell() {
         <div className="signed-in-summary">
           <span>
             <strong>Your workspace</strong>
-            <small>{profile.isLoading ? 'Checking access' : `${grants} · ${pendingRequests}`}</small>
+            <small>{profile.isLoading ? 'Checking access' : `${grants} · ${requestSummary}`}</small>
           </span>
         </div>
         <div className="topbar-actions">
           <NotificationBell enabled={profile.isSuccess} />
           {profile.isLoading && <Loading label="Loading profile" />}
-          {profile.isSuccess && profile.data.pendingRequestCount > 0 &&
-            <NavLink className="pending-link" to="/requests"><Badge appearance="tint">{pendingRequests}</Badge></NavLink>}
+          {profile.isSuccess && counts.data && counts.data.pendingCount > 0 &&
+            <NavLink className="pending-link" to="/requests?status=pending"
+              aria-label={`${pendingRequests}: ${formatCount(counts.data.pendingResourceCount, 'resource request')}, ${formatCount(counts.data.pendingCostCenterCount, 'cost-center request')}`}>
+              <Badge appearance="tint">{pendingRequests}</Badge>
+            </NavLink>}
         </div>
       </header>
       <main id="main-content" className="content" inert={mobileNavigationOpen}>
@@ -196,6 +203,7 @@ export default function App() {
             <Route path="/usage" element={<UsagePage />} />
             <Route path="/catalog" element={<CatalogPage />} />
             <Route path="/requests" element={<MyRequestsPage />} />
+            <Route path="/requests/new-cost-center" element={<RequestCostCenterPage />} />
             <Route path="/notifications" element={<NotificationsPage />} />
             <Route path="/notification-preferences" element={<NotificationPreferencesPage />} />
             <Route path="*" element={<Navigate to="/usage" replace />} />

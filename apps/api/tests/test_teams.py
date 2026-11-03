@@ -52,6 +52,7 @@ from mosaic_api.notifications import (
     NotificationDelivery,
     NotificationEvent,
     NotificationEventType,
+    NotificationPersona,
     NotificationSubject,
     PersonalTeamsSettingsInput,
     TeamsDestinationInput,
@@ -867,6 +868,44 @@ async def test_dispatcher_contract_and_safe_deep_links(harness: Harness) -> None
     checks = await harness.service.capability_checks(TENANT, user_object_id=USER)
     assert all(check.state != "verified" for check in checks)
     assert all(check.feature != "teamsChannel" for check in checks)
+
+
+@pytest.mark.parametrize(
+    "persona,prefix",
+    [
+        ("admin", "https://console.example.invalid/entitlements?tab=requests&selected="),
+        ("portal", "https://portal.example.invalid/requests?request="),
+    ],
+)
+@pytest.mark.parametrize(
+    "subject,suffix",
+    [
+        (NotificationSubject(request_id="request/id&other=value"), ""),
+        (
+            NotificationSubject(request_id="request/id&other=value", request_kind="resource"),
+            "",
+        ),
+        (
+            NotificationSubject(request_id="request/id&other=value", request_kind="costCenter"),
+            "&requestKind=costCenter",
+        ),
+    ],
+    ids=["legacy-resource", "resource", "cost-center"],
+)
+def test_request_cards_preserve_kind_and_encode_request_ids(
+    harness: Harness,
+    persona: NotificationPersona,
+    prefix: str,
+    subject: NotificationSubject,
+    suffix: str,
+) -> None:
+    source = event().model_copy(update={"subject": subject})
+    card = harness.service.card([source], persona=persona)
+    assert card["actions"][0] == {
+        "type": "Action.OpenUrl",
+        "title": "Open in MOSAIC",
+        "url": prefix + "request%2Fid%26other%3Dvalue" + suffix,
+    }
 
 
 @pytest.mark.parametrize(

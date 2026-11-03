@@ -25,6 +25,8 @@ from mosaic_api.azure_connections import (
 from mosaic_api.azure_connections_api import azure_connections_router
 from mosaic_api.budgets_api import budgets_router, portal_budgets_router
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings, get_settings
+from mosaic_api.cost_center_directory import directory_object_id
+from mosaic_api.cost_center_requests_api import cost_center_requests_router
 from mosaic_api.cost_centers_api import cost_centers_router, portal_cost_centers_router
 from mosaic_api.directory_api import directory_router
 from mosaic_api.domain import Entitlement, KeyVaultSecretId, utc_now
@@ -44,7 +46,12 @@ from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient, ApimKeyManager
 from mosaic_api.integrations.azure_connections import AzureClientRegistry
 from mosaic_api.integrations.email import GraphEmailClient
-from mosaic_api.integrations.graph import DirectoryLookup, GraphDirectoryLookup
+from mosaic_api.integrations.graph import (
+    DirectoryLookup,
+    GraphDirectoryLookup,
+    GraphGroupManagement,
+    GroupManagement,
+)
 from mosaic_api.integrations.graph.notifications import GraphNotificationDirectory
 from mosaic_api.integrations.key_vault import KeyVaultSecretWriter
 from mosaic_api.integrations.loganalytics import LogAnalyticsClient
@@ -128,6 +135,7 @@ from mosaic_api.services.budget_gate import BlockedListGate
 from mosaic_api.services.budget_notification_bridge import BudgetNotificationBridge
 from mosaic_api.services.budgets import BudgetService
 from mosaic_api.services.capability_notification_sources import CapabilityNotificationSource
+from mosaic_api.services.cost_center_requests import CostCenterRequestService
 from mosaic_api.services.cost_centers import CostCenterService
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.environment_notification_sources import EnvironmentNotificationSource
@@ -194,8 +202,15 @@ async def _resume_automatic_keys(
         await asyncio.sleep(interval_seconds)
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    directory_lookup: DirectoryLookup | None = None,
+    group_management: GroupManagement | None = None,
+) -> FastAPI:
     app_settings = settings or get_settings()
+    injected_directory_lookup = directory_lookup
+    injected_group_management = group_management
     configure_logging(app_settings)
     configure_telemetry(app_settings)
 
@@ -236,9 +251,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             rollup_repository = InMemoryUsageRollupRepository()
             pricing_repository = InMemoryPricingRepository()
-            cost_center_repository = InMemoryCostCenterRepository(
-                repository, managed_groups_enabled=app_settings.managed_cost_center_groups
-            )
+            cost_center_repository = InMemoryCostCenterRepository(repository)
             budget_repository = InMemoryBudgetRepository()
             notification_repository = InMemoryNotificationRepository(
                 events=notification_events,
@@ -333,7 +346,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app_settings.cosmos_desired_state_container,
                 app_settings.cosmos_audit_events_container,
                 owns_client=False,
-                managed_groups_enabled=app_settings.managed_cost_center_groups,
             )
             budget_repository = CosmosBudgetRepository(
                 cosmos_client,
@@ -371,7 +383,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if app_settings.auth_mode is AuthMode.LOCAL
             else EntraAuthenticator(app_settings)
         )
-        directory_lookup: DirectoryLookup | None = (
+        directory_lookup: DirectoryLookup | None = injected_directory_lookup or (
             GraphDirectoryLookup(
                 credential,
                 endpoint=str(app_settings.graph_endpoint),
@@ -380,6 +392,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if app_settings.auth_mode is AuthMode.ENTRA
             else None
         )
+        commercial_directory = (
+            str(app_settings.graph_endpoint).rstrip("/").casefold() == "https://graph.microsoft.com"
+        )
+        try:
+            management_tenant_id = directory_object_id(app_settings.tenant_id)
+        except ValueError:
+            management_tenant_id = None
+        group_management: GroupManagement | None = None
+        if commercial_directory:
+            group_management = injected_group_management or (
+                GraphGroupManagement(
+                    credential,
+                    endpoint=str(app_settings.graph_endpoint),
+                    tenant_id=management_tenant_id,
+                )
+                if app_settings.auth_mode is AuthMode.ENTRA and management_tenant_id is not None
+                else None
+            )
         arm_client = ArmClient(credential)
         uses_rollups = app_settings.uses_usage_rollups
         log_client = (
@@ -548,6 +578,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         app.state.repository = repository
         app.state.directory_lookup = directory_lookup
+        app.state.group_management = group_management
         app.state.gateway_repository = gateway_repository
         app.state.model_endpoint_repository = endpoint_repository
         app.state.entitlement_repository = entitlement_repository
@@ -562,6 +593,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             directory_lookup=directory_lookup,
             cost_center_repository=cost_center_repository,
             environment_repository=environment_repository,
+            entra_group_claims_enabled=app_settings.entra_group_claims,
         )
         cost_center_service = CostCenterService(
             cost_center_repository,
@@ -569,7 +601,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             entitlement_repository=entitlement_repository,
             gateway_repository=gateway_repository,
             entitlements=entitlement_service,
-            managed_groups_enabled=app_settings.managed_cost_center_groups,
+            directory_lookup=directory_lookup,
+            group_management=group_management,
+            directory_tenant_id=app_settings.tenant_id,
+            group_management_unavailable_reason=(
+                "Government directories are outside the Entra-backed cost-center MVP."
+                if not commercial_directory
+                else (
+                    "Cost-center group management requires a configured Entra tenant GUID."
+                    if management_tenant_id is None
+                    else None
+                )
+            ),
         )
         app.state.directory_service = DirectoryService(
             repository,
@@ -585,7 +628,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             model_client_id=app_settings.model_client_id,
             cost_center_repository=cost_center_repository,
             cost_center_checks=entitlement_service,
-            cost_center_memberships=cost_center_service,
         )
         app.state.gateway_service = gateway_service
         app.state.model_endpoint_service = model_endpoint_service
@@ -596,6 +638,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.mcp_endpoint_service = mcp_endpoint_service
         app.state.entitlement_service = entitlement_service
         app.state.cost_center_service = cost_center_service
+        app.state.cost_center_request_service = CostCenterRequestService(
+            entitlement_repository,
+            cost_center_repository,
+            cost_center_service,
+            validate_access=entitlement_service.validate_cost_center_access,
+        )
         environment_service = EnvironmentService(
             environment_repository,
             gateway_repository=gateway_repository,
@@ -1176,6 +1224,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await mcp_endpoint_service.aclose()
             if directory_lookup:
                 await directory_lookup.close()
+            if group_management:
+                await group_management.close()
             await authenticator.close()
             await azure_clients.close()
             await arm_client.close()
@@ -1320,6 +1370,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(pricing_router)
     app.include_router(cost_centers_router)
     app.include_router(portal_cost_centers_router)
+    app.include_router(cost_center_requests_router)
     app.include_router(budgets_router)
     app.include_router(portal_budgets_router)
     app.include_router(portal_router)

@@ -31,6 +31,14 @@
 }
 
 .listPane { min-width: 0; border-right: 1px solid var(--mosaic-border-soft); }
+.boundedList {
+  min-height: 0;
+  max-height: min(60vh, 560px);
+  max-height: min(60dvh, 560px);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+}
 .list { list-style: none; padding: 8px; margin: 0; }
 .list li + li { margin-top: 4px; }
 .row, .selected {
@@ -60,8 +68,8 @@
   .body { grid-template-columns: minmax(0, 1fr); }
   .listPane { border-right: 0; }
   .detail { display: none; padding: 16px; }
-  .hasSelection .listPane { display: none; }
-  .hasSelection .detail { display: block; }
+  .hasSelection > .listPane { display: none; }
+  .hasSelection > .detail { display: block; }
   .back { display: inline-flex !important; margin-bottom: 16px; }
 }
 

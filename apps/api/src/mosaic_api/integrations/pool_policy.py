@@ -69,6 +69,7 @@ from mosaic_api.integrations.access_policy import (
     _match,
     _pool_limits,
     _reject,
+    _requires_token_group_claims,
     _select_grant,
     _split_match,
     _token_groups_overage,
@@ -81,6 +82,7 @@ from mosaic_api.integrations.access_policy import (
     append_grant_attribution_trace,
     classify_traces,
     cost_center_details,
+    cost_center_group_details,
     describe_limit_facet,
     describe_on_behalf_removal,
     grant_counter_identity,
@@ -1126,7 +1128,7 @@ def _governed_fragment(
                 )
         # The refusals below apply to every model alike, so none can tell a model the pool
         # doesn't serve from one the caller doesn't hold, or which models have group grants.
-        if any(grant.is_group_grant for grant in grants):
+        if _requires_token_group_claims(grants):
             _reject(
                 token,
                 _token_groups_overage(),
@@ -1301,6 +1303,8 @@ def _governed_facets(
             ]
         )
         attributes["security-group-grants"] = str(group_grants)
+    if settings.entra_enabled:
+        details.extend(cost_center_group_details(enabled))
     details.extend(cost_center_details())
     attributes["cost-centers"] = str(len({grant.cost_center_id for grant in enabled}))
     summary = f"Requires {' or '.join(methods)}." if methods else "All model access is denied."

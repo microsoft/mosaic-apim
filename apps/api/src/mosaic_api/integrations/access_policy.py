@@ -119,7 +119,8 @@ _STATUS_REASONS = {401: "Unauthorized", 403: "Forbidden", 503: "Service Unavaila
 _DENIED = "Model access denied."
 _GROUPS_OVERAGE_DENIED = (
     "Model access denied. Your token doesn't list your groups because you belong to too many; "
-    "ask an administrator for a direct grant."
+    "ask an administrator to resolve group-claim overage. Direct token grants for custom cost "
+    "centers still require cost-center membership."
 )
 COST_CENTER_DENIED = (
     "Access denied. You hold no grant under the cost center the x-mosaic-cost-center header "
@@ -174,6 +175,7 @@ class AccessPolicyGrant(Protocol):
     enforcement: EntitlementEnforcement | None
     cost_center_id: str
     cost_center_code: str
+    required_cost_center_group_id: str | None
     default_cost_center: bool
     granted_at: datetime | None
 
@@ -934,6 +936,12 @@ def validate_cloud_access(
         )
 
 
+def _requires_token_group_claims(grants: Sequence[AccessPolicyGrant]) -> bool:
+    return any(
+        grant.is_group_grant or grant.required_cost_center_group_id is not None for grant in grants
+    )
+
+
 def _token_lookup(
     publication: AccessPolicyPublication,
     grants: Sequence[AccessPolicyGrant],
@@ -957,6 +965,18 @@ def _token_lookup(
         (grant for grant in grants if grant.is_group_grant),
         key=lambda grant: grant_precedence_key(grant.enforcement, grant.entitlement_id),
     )
+    center_memberships = {
+        group_id: f"costCenterMember{index}"
+        for index, group_id in enumerate(
+            sorted(
+                {
+                    grant.required_cost_center_group_id.casefold()
+                    for grant in grants
+                    if grant.required_cost_center_group_id is not None
+                }
+            )
+        )
+    }
     selected = _cost_center_filter()
     lines = [
         'var jwt = context.Variables.ContainsKey("mosaic-validated-token")'
@@ -969,25 +989,45 @@ def _token_lookup(
         f"var cc = {_SELECTED_COST_CENTER};" if filter_cost_center else 'var cc = "";',
         *_token_kind_lines(application_role, delegated_scope),
     ]
+    if center_memberships:
+        lines.append('var groups = jwt.Claims.ContainsKey("groups") ? jwt.Claims["groups"] : null;')
+        lines.extend(f"var {member} = false;" for member in center_memberships.values())
+        lines.extend(["if (groups != null) {", "    foreach (var centerGroup in groups) {"])
+        for group_id, member in center_memberships.items():
+            lines.append(
+                f"        if (String.Equals(centerGroup, {_literal(group_id)}, "
+                f"StringComparison.OrdinalIgnoreCase)) {{ {member} = true; }}"
+            )
+        lines.extend(["    }", "}"])
     for grant in direct_grants:
         kind = "delegated" if grant.subject.kind == EntitlementSubjectKind.USER else "application"
+        membership = (
+            f"{center_memberships[grant.required_cost_center_group_id.casefold()]} && "
+            if grant.required_cost_center_group_id is not None
+            else ""
+        )
         lines.append(
-            f"if ({kind} && String.Equals(oid, {_literal(grant.object_id)}, "
+            f"if ({kind} && {membership}String.Equals(oid, {_literal(grant.object_id)}, "
             f"StringComparison.OrdinalIgnoreCase) && {selected}{_literal(_code(grant))})) "
             f"{{ return {_literal(_match(publication, grant))}; }}"
         )
     if group_grants:
-        lines.extend(
-            [
-                'var groups = jwt.Claims.ContainsKey("groups") ? jwt.Claims["groups"] : null;',
-                "if ((delegated || application) && groups != null) {",
-            ]
-        )
+        if not center_memberships:
+            lines.append(
+                'var groups = jwt.Claims.ContainsKey("groups") ? jwt.Claims["groups"] : null;'
+            )
+        lines.append("if ((delegated || application) && groups != null) {")
         for grant in group_grants:
+            membership = (
+                f"{center_memberships[grant.required_cost_center_group_id.casefold()]} && "
+                if grant.required_cost_center_group_id is not None
+                else ""
+            )
             lines.extend(
                 [
                     "    foreach (var group in groups) {",
-                    f"        if (String.Equals(group, {_literal(grant.object_id.lower())}, "
+                    f"        if ({membership}String.Equals(group, "
+                    f"{_literal(grant.object_id.lower())}, "
                     f"StringComparison.OrdinalIgnoreCase) && {selected}"
                     f"{_literal(_code(grant))})) "
                     f"{{ return {_literal(_match(publication, grant))}; }}",
@@ -1225,7 +1265,7 @@ def _resolve_token_grant(
     )
     _split_match(parent, "mosaic-token-match", "mosaic-token-grant", "mosaic-token-cost-center")
     _variable(parent, "mosaic-member", _token_member_lookup(publication, grants))
-    if any(grant.is_group_grant for grant in grants):
+    if _requires_token_group_claims(grants):
         _reject(
             parent,
             _token_groups_overage(),
@@ -1542,6 +1582,19 @@ _COUNTER_NAMESPACES = (
 )
 
 
+def cost_center_group_details(grants: Sequence[AccessPolicyGrant]) -> list[str]:
+    if not any(
+        grant.enabled and grant.required_cost_center_group_id is not None for grant in grants
+    ):
+        return []
+    return [
+        "Token access also requires the cost center's security-group ID in the validated "
+        "groups claim, including for individual user and application grants.",
+        "Membership changes do not invalidate already-issued tokens. No directory lookup "
+        "is performed during a call.",
+    ]
+
+
 def cost_center_details() -> list[str]:
     """How the policy picks a call's cost center, for the authorization facet."""
 
@@ -1707,6 +1760,8 @@ def _facets(
             ]
         )
         auth_attributes["security-group-grants"] = str(enabled_group_grants)
+    if snapshot.settings.entra_enabled:
+        auth_details.extend(cost_center_group_details(snapshot.grants))
     auth_details.extend(cost_center_details())
     cost_centers = {grant.cost_center_id for grant in snapshot.grants if grant.enabled}
     auth_attributes["cost-centers"] = str(len(cost_centers))

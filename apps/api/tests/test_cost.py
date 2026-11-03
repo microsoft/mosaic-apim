@@ -50,7 +50,7 @@ from mosaic_api.services.pricing import PricingService
 from mosaic_api.services.usage import RollupUsageSource, UsageService
 from mosaic_api.services.usage_rollup import UsageRollupService
 
-TENANT = "tenant-test"
+TENANT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 NOW = datetime(2026, 3, 18, 15, 30, tzinfo=UTC)
 TODAY = NOW.date()
 GATEWAY = "gateway-prod"
@@ -63,7 +63,7 @@ ALICE = "alice-oid"
 BOB = "bob-oid"
 CAROL = "carol-oid"
 BOT = "bot-oid"
-ANALYSTS = "analysts-oid"
+ANALYSTS = "44444444-4444-4444-4444-444444444444"
 CHAT = f"{ENDPOINT}/chat"
 RESERVED = f"{ENDPOINT}/reserved"
 MYSTERY = f"{ENDPOINT}/mystery"

@@ -5,6 +5,11 @@ from typing import Protocol
 from mosaic_api.budget_notifications import BudgetNotificationOutbox
 from mosaic_api.budgets import Budget, BudgetState, EmailSettings, GateState
 from mosaic_api.clouds import AzureCloud
+from mosaic_api.cost_center_directory import (
+    CostCenterDirectoryOperation,
+    CostCenterGroupReservation,
+)
+from mosaic_api.cost_center_requests import CostCenterRequest
 from mosaic_api.cost_centers import CostCenter, CostCenterSettings
 from mosaic_api.domain import (
     AccessRequest,
@@ -30,6 +35,7 @@ from mosaic_api.domain import (
 from mosaic_api.environments import EnvironmentCatalog, EnvironmentUsage
 from mosaic_api.model_deployments import ModelDeploymentPlan, ModelDeploymentRun
 from mosaic_api.model_pools import ModelPool
+from mosaic_api.notifications import NotificationEvent
 from mosaic_api.observed import ObservedEndpointEntity, ObservedEntity
 from mosaic_api.pricing import EndpointPricing, PriceVersion
 from mosaic_api.usage_telemetry import (
@@ -538,6 +544,34 @@ class EntitlementRepository(Protocol):
         self, access_request: AccessRequest, audit_event: AuditEvent
     ) -> AccessRequest: ...
 
+    async def list_cost_center_requests(
+        self,
+        tenant_id: str,
+        *,
+        requester_object_id: str | None = None,
+        state: str | None = None,
+    ) -> list[CostCenterRequest]: ...
+
+    async def get_cost_center_request(
+        self, tenant_id: str, request_id: str
+    ) -> CostCenterRequest | None: ...
+
+    async def create_cost_center_request(
+        self,
+        request: CostCenterRequest,
+        audit_event: AuditEvent,
+        events: Sequence[NotificationEvent],
+    ) -> CostCenterRequest: ...
+
+    async def save_cost_center_request(
+        self,
+        request: CostCenterRequest,
+        audit_event: AuditEvent,
+        events: Sequence[NotificationEvent],
+    ) -> CostCenterRequest:
+        """Conditionally commit the request, audit, and lifecycle events in one partition."""
+        ...
+
     async def approve_access_request(
         self,
         access_request: AccessRequest,
@@ -697,6 +731,62 @@ class CostCenterRepository(Protocol):
         self, cost_center: CostCenter, audit_event: AuditEvent
     ) -> CostCenter:
         """Replace the version that was read; raises ``ConflictError`` if it changed since."""
+        ...
+
+    async def get_group_reservation(
+        self, tenant_id: str, directory_tenant_id: str, group_object_id: str
+    ) -> CostCenterGroupReservation | None: ...
+
+    async def reserve_group(
+        self, reservation: CostCenterGroupReservation, audit_event: AuditEvent
+    ) -> CostCenterGroupReservation:
+        """Conditionally reserve an exact directory/group for one center.
+
+        A repeat by the same center returns its existing reservation. Another owner conflicts.
+        Binding saves atomically create/check this reservation too, without list scans or leases.
+        Reservations do not expire and deletion of a center does not release them.
+        """
+        ...
+
+    async def get_directory_operation(
+        self, tenant_id: str, operation_id: str
+    ) -> CostCenterDirectoryOperation | None: ...
+
+    async def list_directory_operations(
+        self,
+        tenant_id: str,
+        cost_center_id: str,
+        *,
+        limit: int = 50,
+        member_object_id: str | None = None,
+        unsettled_only: bool = False,
+    ) -> list[CostCenterDirectoryOperation]:
+        """Bounded recent operations; optional filters run before the limit.
+
+        Exact-member unsettled lookup prevents a new idempotency key from replaying an
+        uncertain write even when that operation is older than the visible history.
+        """
+        ...
+
+    async def create_directory_operation(
+        self, operation: CostCenterDirectoryOperation, audit_event: AuditEvent
+    ) -> CostCenterDirectoryOperation:
+        """Commit pending intent and audit before external I/O, conditional on the saved center.
+
+        Only a successful create admits a Graph call. Duplicate IDs raise ConflictError: read
+        the recorded outcome instead of replaying the write. Provisioning has one ID per center.
+        """
+        ...
+
+    async def save_directory_operation(
+        self, operation: CostCenterDirectoryOperation, audit_event: AuditEvent
+    ) -> CostCenterDirectoryOperation:
+        """Conditionally persist a result, or explicitly retry a definite failed intent.
+
+        Repeated identical results are safe. Failed -> pending requires the current ETag and
+        rechecks the center; unknown -> pending and changed intent/targets are forbidden.
+        Graph is always called outside repository methods and cost-center scope leases.
+        """
         ...
 
     async def member_removal_recorded(

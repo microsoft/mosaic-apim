@@ -19,6 +19,7 @@ import { PageHeader } from '../components/PageHeader'
 import { DetailPanel } from '../components/DetailPanel'
 import { ResourceRow } from '../components/ResourceRow'
 import { CloudBadge } from '../components/CloudBadge'
+import { CostCenterAccessNotice } from '../components/CostCenterAccessNotice'
 import { cloudLabel } from '../cloud-label'
 import { grantTitle, groupResources, modelGroupKey, uniqueValues } from '../model-presentation'
 import {
@@ -32,6 +33,7 @@ import {
   withResourceKind,
 } from '../entitlement-format'
 import { environmentLabel, usePortalEnvironments } from '../environments'
+import { accessOriginLabel, isAutomaticAccess } from '../portal-access'
 import type { ResolvedEntitlement } from '../types'
 
 function costCenterText(resolved: ResolvedEntitlement) {
@@ -106,10 +108,18 @@ export function MyAccessPage() {
           <MessageBarBody>
             <MessageBarTitle>Group access may be missing</MessageBarTitle>
             You belong to too many groups for your sign-in token to list them, so access granted to
-            your groups can&apos;t be applied. Ask an administrator for a direct grant.
+            your groups can&apos;t be proven by that token. Ask an administrator to review group-claim support.
+            A direct grant does not bypass a custom cost center&apos;s membership requirement.
           </MessageBarBody>
         </MessageBar>
       )}
+      {profile.data?.defaultCostCenter && profile.data.defaultCostCenterEligible === false && <MessageBar intent="warning" className="access-overage-notice">
+        <MessageBarBody>
+          <MessageBarTitle>Your default cost center is not eligible</MessageBarTitle>
+          {profile.data.defaultCostCenter.name} is still your preference, not permission to use it.
+          Choose an eligible cost center for each resource in the <Link to="/catalog">catalog</Link>; access is not redirected to General.
+        </MessageBarBody>
+      </MessageBar>}
       {entitlements.isLoading && <Loading label="Loading your access" />}
       {entitlements.isError && <ErrorState error={entitlements.error} />}
       {entitlements.isSuccess && params.has('grant') && !selected && (
@@ -158,7 +168,7 @@ export function MyAccessPage() {
                 const statuses = uniqueValues(group.items.map((resolved) => describeRuntime(resolved.entitlement)))
                 const unavailable = group.items.filter((resolved) => resolved.resourceSummary?.available === false).length
                 return <ResourceRow key={group.key} title={group.title}
-                  subtitle={<>{group.items.length} {group.items.length === 1 ? 'grant' : 'grants'} · {uniqueValues(group.items.map(costCenterText)).join(', ')}</>}
+                  subtitle={<>{uniqueValues(group.items.map(accessOriginLabel)).join(' · ')} · {uniqueValues(group.items.map(costCenterText)).join(', ')}</>}
                   environments={<>{uniqueValues(group.items.map((resolved) => resolved.resourceSummary?.azureCloud ?? 'commercial')).map((cloud) =>
                     <CloudBadge key={cloud} cloud={cloud} />)}{uniqueValues(group.items.map((resolved) => resolved.resourceSummary?.environment ?? null)).map((key) =>
                     <EnvironmentBadge key={key ?? 'unclassified'} environment={key} environments={environments.data} />)}</>}
@@ -187,19 +197,21 @@ export function MyAccessPage() {
                   {costCenterText(resolved)} · {cloudLabel(resolved.resourceSummary?.azureCloud)} · {environmentLabel(environments.data, resolved.resourceSummary?.environment ?? null)}
                   {` · ${resolved.resourceDisplayName ?? resolved.resourceSummary?.displayName ?? grantTitle(resolved)}`}
                   {resolved.model?.version && ` · ${resolved.model.version}`}
-                  {` · ${describeAttribution(resolved)} · ${describeRuntime(resolved.entitlement)}`}
+                  {` · ${accessOriginLabel(resolved)} · ${describeAttribution(resolved)} · ${describeRuntime(resolved.entitlement)}`}
                 </option>)}
               </select>
             </label>}
             {selected ? <div key={selected.entitlement.id} className="drawer-content">
               <div className="badge-row">
                 <Badge appearance="tint">{costCenterText(selected)}</Badge>
+                <Badge appearance="outline">{accessOriginLabel(selected)}</Badge>
                 <EnvironmentBadge azureCloud={selected.resourceSummary?.azureCloud ?? 'commercial'} environment={selected.resourceSummary?.environment ?? null} environments={environments.data} />
                 <Badge appearance="outline">{describeRuntime(selected.entitlement)}</Badge>
               </div>
               <Text>{withResourceKind(selected.entitlement.resource, selected.resourceDisplayName,
                 describeAttribution(selected), selected.resourceSummary)}</Text>
               <p>{runtimeGuidance(selected)}</p>
+              <CostCenterAccessNotice resolved={selected} />
               <div className="access-card-grid">
                 <section>
                   <h3>Configured grant limits</h3>
@@ -212,6 +224,7 @@ export function MyAccessPage() {
                     {selected.entitlement.resource.kind === 'poolModel' ? 'Model' : 'Publication'} and
                     gateway limits may also apply. Pending changes are not yet enforced by the gateway.
                     {isSecurityGroupGrant(selected) && ' Group access limits apply to each person individually.'}
+                    {isAutomaticAccess(selected) && ' The group entitlement is shared; it does not create per-person grant records.'}
                   </Text>
                 </section>
                 <section>

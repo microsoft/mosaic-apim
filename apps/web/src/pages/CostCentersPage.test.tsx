@@ -10,7 +10,8 @@ import {
   organizationBudgetFixture,
   researchBudgetFixture,
 } from '../test/budget-fixtures'
-import { anthropicPool, draftPool } from '../test/pool-fixtures'
+import { memberOperation, readyCostCenter } from '../test/cost-center-fixtures'
+import { anthropicPool, draftPool, governedAnthropicPool } from '../test/pool-fixtures'
 import type { CostCenter, Principal } from '../types'
 import { CostCenterDetailPage, CostCentersPage } from './CostCentersPage'
 
@@ -22,6 +23,8 @@ const general: CostCenter = {
   code: 'general',
   description: null,
   owners: ['owner@example.com'],
+  setupState: 'exempt',
+  resourceAccess: [],
   members: [],
   keysAllowed: true,
   limits: [],
@@ -61,6 +64,14 @@ const api = {
   listModelApis: vi.fn(),
   listMcpServers: vi.fn(),
   listModelPools: vi.fn(),
+  listPublications: vi.fn(),
+  listMcpPublications: vi.fn(),
+  listEntitlements: vi.fn(),
+  listGateways: vi.fn(),
+  getCostCenterGroupCapabilities: vi.fn(),
+  listCostCenterDirectoryOperations: vi.fn(),
+  retryCostCenterDirectoryOperation: vi.fn(),
+  recoverCostCenterDirectoryOperation: vi.fn(),
   getBudgets: vi.fn(),
   getCostCenterBudget: vi.fn(),
   setCostCenterBudget: vi.fn(),
@@ -104,6 +115,12 @@ describe('Cost centers pages', () => {
     api.listModelApis.mockResolvedValue([{ id: 'model-1', displayName: 'Chat' }])
     api.listMcpServers.mockResolvedValue([{ id: 'mcp-1', displayName: 'Ticket tools' }])
     api.listModelPools.mockResolvedValue([])
+    api.listPublications.mockResolvedValue([])
+    api.listMcpPublications.mockResolvedValue([])
+    api.listEntitlements.mockResolvedValue([])
+    api.listGateways.mockResolvedValue([])
+    api.listCostCenterDirectoryOperations.mockResolvedValue([])
+    api.getCostCenterGroupCapabilities.mockResolvedValue({ available: false, canReadGroups: false, canCreateGroups: false })
     api.createCostCenter.mockResolvedValue(general)
     api.updateCostCenterSettings.mockResolvedValue({ id: 'settings', tenantId: 'tenant', defaultCostCenterId: general.id })
     api.addCostCenterMember.mockResolvedValue(general)
@@ -113,35 +130,97 @@ describe('Cost centers pages', () => {
     api.getCostCenterBudget.mockResolvedValue(null)
   })
 
-  it('links an owned membership group without offering inherited model access', async () => {
-    const user = userEvent.setup()
+  it('does not expose legacy MOSAIC groups as an editable Entra roster', async () => {
     api.getCostCenter.mockResolvedValue({ ...general, groupId: 'managed/group', membershipRevision: 3 })
-    const { router } = renderRoute('/cost-centers/cc-general?tab=members')
-    expect(await screen.findByText(/share one explicit roster/)).toBeVisible()
-    expect(screen.getByText(/Adding a member does not grant model access/)).toBeVisible()
-    await user.click(screen.getByRole('button', { name: 'View membership group' }))
-    await waitFor(() => expect(router.state.location.pathname).toBe('/identity'))
-    expect(new URLSearchParams(router.state.location.search).get('selected')).toBe('managed/group')
-    expect(new URLSearchParams(router.state.location.search).get('tab')).toBe('groups')
+    renderRoute('/cost-centers/cc-general?tab=members')
+    expect(await screen.findByText(/does not offer a local shadow roster/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'View membership group' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: 'Add member' })).not.toBeInTheDocument()
   })
 
-  it('invalidates the managed-group projection when editing the cost-center roster', async () => {
-    const user = userEvent.setup()
-    api.getCostCenter.mockResolvedValue({ ...general, groupId: 'managed-group' })
-    const { queryClient } = renderRoute('/cost-centers/cc-general?tab=members')
-    queryClient.setQueryData(['memberships', 'managed-group'], [])
-    queryClient.setQueryData(['groups'], [])
-    await user.selectOptions(await screen.findByRole('combobox', { name: 'Add member' }), principal.id)
-    await user.click(screen.getByRole('button', { name: 'Add member' }))
-    await waitFor(() => expect(api.addCostCenterMember).toHaveBeenCalledWith('cc-general', principal.id))
-    await waitFor(() => expect(queryClient.getQueryState(['memberships', 'managed-group'])?.isInvalidated).toBe(true))
-    expect(queryClient.getQueryState(['groups'])?.isInvalidated).toBe(true)
+  it('requires setup for a custom center even if it is named General or flagged built in', async () => {
+    api.getCostCenter.mockResolvedValue({ ...general, setupState: 'setupRequired', groupId: 'managed-group' })
+    renderRoute('/cost-centers/cc-general?tab=members')
+    expect(await screen.findByRole('button', { name: 'Finish group setup' })).toBeVisible()
+    expect(api.addCostCenterMember).not.toHaveBeenCalled()
+    expect(api.removeCostCenterMember).not.toHaveBeenCalled()
   })
 
   it('does not show managed-group controls for legacy centers', async () => {
     renderRoute('/cost-centers/cc-general?tab=members')
-    await screen.findByRole('table', { name: 'Cost center members' })
+    await screen.findByText(/does not offer a local shadow roster/)
     expect(screen.queryByRole('button', { name: 'View membership group' })).not.toBeInTheDocument()
+  })
+
+  it.each([
+    { action: 'retry', state: 'failed' as const, button: 'Retry recorded failed operation' },
+    { action: 'recovery', state: 'unknown' as const, button: 'Recover without repeating write' },
+  ])('refreshes the mounted list and default eligibility after successful group-creation $action', async ({ action, state, button }) => {
+    const user = userEvent.setup()
+    const incomplete = { ...readyCostCenter, setupState: 'setupRequired' as const, entraBinding: null }
+    const completed = { ...memberOperation, kind: 'createGroup' as const, memberObjectId: null, memberKind: null }
+    const recorded = { ...completed, state, directoryUpdated: false, canRetry: action === 'retry' }
+    api.listCostCenters.mockResolvedValue([general, incomplete])
+    api.getCostCenter.mockResolvedValue(incomplete)
+    api.listCostCenterDirectoryOperations.mockResolvedValue([recorded])
+    const reconcile = action === 'retry' ? api.retryCostCenterDirectoryOperation : api.recoverCostCenterDirectoryOperation
+    reconcile.mockImplementation(async () => {
+      api.listCostCenters.mockResolvedValue([general, readyCostCenter])
+      api.getCostCenter.mockResolvedValue(readyCostCenter)
+      api.listCostCenterDirectoryOperations.mockResolvedValue([completed])
+      return completed
+    })
+    renderRoute()
+    const centers = await screen.findByRole('list', { name: 'Cost centers' })
+    expect(within(within(centers).getByRole('button', { name: /Research/ })).getByText('Setup required')).toBeVisible()
+    await user.click(screen.getByText('Tenant default', { selector: 'summary' }))
+    expect(screen.getByRole('option', { name: /Research \(research\)/ })).toBeDisabled()
+    await user.click(within(centers).getByRole('button', { name: /Research/ }))
+    await user.click(await screen.findByRole('button', { name: button }))
+    await waitFor(() => expect(reconcile).toHaveBeenCalledWith(readyCostCenter.id, recorded.id))
+    const detail = screen.getByRole('region', { name: 'Selected cost center' })
+    expect(await within(detail).findByText('Group ready')).toBeVisible()
+    await waitFor(() => expect(within(within(centers).getByRole('button', { name: /Research/ })).getByText('Group ready')).toBeVisible())
+    expect(screen.getByRole('option', { name: 'Research (research)' })).toBeEnabled()
+    expect(api.listCostCenters).toHaveBeenCalledTimes(2)
+    expect(api.getCostCenter).toHaveBeenCalledTimes(2)
+    expect(api.createCostCenter).not.toHaveBeenCalled()
+  })
+
+  it('opens exact read-only offerings inside a selected center without losing the center or pool scope', async () => {
+    const user = userEvent.setup()
+    const first = { ...governedAnthropicPool, id: 'pool-one', displayName: 'First pool' }
+    const second = { ...governedAnthropicPool, id: 'pool-two', displayName: 'Second pool' }
+    const center: CostCenter = {
+      ...readyCostCenter, name: 'Customer Insights',
+      resourceAccess: [
+        { resource: { kind: 'poolModel', id: first.models[0].id, scopeId: first.id }, mode: 'automatic' },
+        { resource: { kind: 'poolModel', id: second.models[0].id, scopeId: second.id }, mode: 'requestOnly' },
+      ],
+    }
+    api.listCostCenters.mockResolvedValue([general, center])
+    api.getCostCenter.mockResolvedValue(center)
+    api.listModelPools.mockResolvedValue([first, second])
+    api.listModelApis.mockResolvedValue([])
+    api.listMcpServers.mockResolvedValue([])
+    const { router } = renderRoute()
+    const centers = await screen.findByRole('list', { name: 'Cost centers' })
+    await user.click(within(centers).getByRole('button', { name: /Customer Insights/ }))
+    await user.click(await screen.findByRole('button', { name: 'Resource access' }))
+    const offerings = await screen.findByRole('list', { name: 'Exact resource offerings' })
+    await user.click(within(offerings).getByRole('button', { name: /Second pool/ }))
+    const detail = screen.getByRole('region', { name: 'Selected resource access' })
+    expect(within(detail).getByRole('combobox', { name: /Access mode for/ })).toHaveValue('requestOnly')
+    expect(within(detail).getByRole('combobox', { name: /Access mode for/ })).toBeDisabled()
+    expect(within(detail).getByText('pool-two')).toBeVisible()
+    expect(within(detail).queryByText('pool-one')).not.toBeInTheDocument()
+    expect(new URLSearchParams(router.state.location.search).get('selected')).toBe(center.id)
+    await user.click(within(detail).getByText('Back to list'))
+    expect(within(offerings).getByRole('button', { name: /Second pool/ })).toHaveFocus()
+    await user.click(within(offerings).getByRole('button', { name: /First pool/ }))
+    expect(within(detail).getByRole('combobox', { name: /Access mode for/ })).toHaveValue('automatic')
+    expect(within(detail).getByText('pool-one')).toBeVisible()
+    expect(api.updateCostCenter).not.toHaveBeenCalled()
   })
 
   it('sets a budget that blocks at 100%, emailing the owners and anyone else', async () => {
@@ -273,6 +352,7 @@ describe('Cost centers pages', () => {
     await waitFor(() => expect(api.createCostCenter).toHaveBeenCalledWith({
       name: 'Support', code: 'support', description: 'Support billing',
       owners: ['owner-one@example.com', 'owner-two@example.com'], keysAllowed: false,
+      resourceAccess: [],
     }))
     expect(await screen.findByRole('button', { name: /Support/, pressed: true })).toBeVisible()
     expect(screen.getByLabelText('Cost center query')).toHaveTextContent('selected=cc-support')
@@ -302,7 +382,7 @@ describe('Cost centers pages', () => {
     await waitFor(() => expect(api.listCostCenters.mock.calls.length).toBeGreaterThan(listed))
   })
 
-  it('adds members, removes with confirmation copy, saves limits, and shows delete refusal messages', async () => {
+  it('keeps existing cost-center limits independent of directory membership', async () => {
     const user = userEvent.setup()
     api.getCostCenter.mockResolvedValue({
       ...general,
@@ -312,15 +392,6 @@ describe('Cost centers pages', () => {
     renderRoute('/cost-centers/cc-general')
 
     expect(await screen.findByRole('heading', { name: 'General' })).toBeVisible()
-    await user.click(screen.getByRole('button', { name: 'Members' }))
-    expect(screen.getByText(/revokes their grants under this cost center/i)).toBeVisible()
-    expect(screen.getByText(principal.objectId)).not.toBeVisible()
-    await user.click(screen.getByText('Object ID', { selector: 'summary' }))
-    expect(screen.getByText(principal.objectId)).toBeVisible()
-    await user.click(screen.getByRole('button', { name: 'Remove' }))
-    expect(screen.getAllByText(/the next apply deletes their keys/i).length).toBeGreaterThan(0)
-    await user.click(screen.getByRole('button', { name: 'Cancel' }))
-    await waitFor(() => expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument())
     await user.click(await screen.findByRole('button', { name: 'Limits' }))
     await user.selectOptions(screen.getByLabelText('Resource'), 'modelApi:model-1')
     await user.type(screen.getByLabelText('Tokens per minute'), '1000')
@@ -383,6 +454,7 @@ describe('Cost centers pages', () => {
     await user.click(screen.getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(api.updateCostCenter).toHaveBeenCalledWith('cc-general', {
       name: 'General', code: 'general', description: 'Support billing', owners: ['finance@example.com'], keysAllowed: false,
+      resourceAccess: [],
     }))
     expect(await screen.findByRole('list', { name: 'Cost centers' })).toBeVisible()
     expect(screen.getByLabelText('Cost center query')).toHaveTextContent('scope=kept')
@@ -414,7 +486,7 @@ describe('Cost centers pages', () => {
     renderRoute('/cost-centers?tab=centers&selected=cc-general&scope=kept')
     expect(await screen.findByRole('heading', { name: 'General' })).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Members' }))
-    expect(await screen.findByRole('table', { name: 'Cost center members' })).toBeVisible()
+    expect(await screen.findByText(/does not offer a local shadow roster/)).toBeVisible()
     expect(screen.getByLabelText('Cost center query')).toHaveTextContent('selected=cc-general')
     expect(screen.getByLabelText('Cost center query')).toHaveTextContent('tab=centers')
     expect(screen.getByLabelText('Cost center query')).toHaveTextContent('centerTab=members')

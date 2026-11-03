@@ -1,899 +1,1054 @@
-"""The experimental group foundation shares the existing roster and never enables access."""
+"""Real directory intent, recovery, membership and local-group isolation (fictional only)."""
 
-from collections.abc import AsyncIterator, Iterator
+import asyncio
 from copy import deepcopy
+from dataclasses import replace
 from datetime import timedelta
-from typing import Any, cast
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
+import httpx
 import pytest
-from azure.cosmos.aio import CosmosClient
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-from mosaic_api.auth import LocalAuthenticator
-from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
+from cost_center_management_double import (
+    ADMIN,
+    ALL_WRITES,
+    BASELINE,
+    GROUP,
+    OTHER_GROUP,
+    TENANT,
+    USER,
+    WORKLOAD,
+    Management,
+    audit,
+    management,
+)
+from mosaic_api.cost_center_directory import (
+    AttachCostCenterGroup,
+    CostCenterDirectoryOperation,
+    CreateCostCenterGroup,
+    cost_center_member_operation_id,
+    cost_center_provisioning_operation_id,
+)
 from mosaic_api.cost_centers import (
     CostCenter,
-    CostCenterBook,
+    CostCenterCreate,
     CostCenterMember,
-    CostCenterView,
-    PendingRecheck,
+    CostCenterResourceAccess,
+    CostCenterUpdate,
 )
 from mosaic_api.domain import (
-    AuditEvent,
-    Entitlement,
+    DirectoryObject,
     EntitlementResource,
-    EntitlementSubject,
     Group,
-    GroupPurpose,
-    ModelApi,
     Principal,
+    PrincipalKind,
     general_cost_center_id,
-    new_id,
     utc_now,
 )
-from mosaic_api.errors import ConflictError, ValidationError
-from mosaic_api.main import create_app
-from mosaic_api.managed_cost_center_groups import (
-    cost_center_group_id,
-    group_membership,
-    linked_cost_center,
+from mosaic_api.errors import (
+    ChangeNotRecordedError,
+    ConflictError,
+    DirectoryError,
+    DirectoryForbiddenError,
+    ValidationError,
 )
-from mosaic_api.repositories import (
-    CostCenterRepository,
-    DirectoryRepository,
-    InMemoryCostCenterRepository,
-    InMemoryDirectoryRepository,
+from mosaic_api.integrations.graph import (
+    GraphGroup,
+    GraphGroupManagement,
+    GroupFailureKind,
+    GroupManagementError,
+    GroupWriteOutcome,
 )
-from mosaic_api.repositories.cosmos import CosmosDirectoryRepository
-from mosaic_api.repositories.cosmos_cost_centers import CosmosCostCenterRepository
-from mosaic_api.services.model_access import cost_center_intent, entitlement_intent_digest
-from test_model_access_repositories import Container, Cosmos
-
-TENANT = "tenant-managed-groups"
+from mosaic_api.services.directory import Actor, DirectoryService
+from test_graph_client import FakeCredential
 
 
-def audit() -> AuditEvent:
-    return AuditEvent(
-        id=new_id("audit"),
-        tenant_id=TENANT,
-        actor_object_id="local-admin",
-        action="test.managedGroup",
-        resource_type="costCenter",
-        resource_id="center",
-    )
+@pytest.fixture(params=["memory", "cosmos"])
+def estate(request: pytest.FixtureRequest) -> Management:
+    return management(request.param)
 
 
-def center(**updates: Any) -> CostCenter:
-    return CostCenter(
-        id="costCenter_example", tenant_id=TENANT, name="Research", code="RND", **updates
-    )
-
-
-@pytest.fixture
-def client() -> Iterator[TestClient]:
-    settings = Settings(
-        _env_file=None,
-        environment=Environment.TEST,
-        auth_mode=AuthMode.LOCAL,
-        repository_backend=RepositoryBackend.MEMORY,
-        tenant_id=TENANT,
-        managed_cost_center_groups=True,
-    )
-    with TestClient(create_app(settings)) as test_client:
-        yield test_client
-
-
-def create_center(client: TestClient) -> dict[str, Any]:
-    response = client.post("/api/v1/cost-centers", json={"name": "Research", "code": "RND"})
-    assert response.status_code == 201, response.text
-    return cast(dict[str, Any], response.json())
-
-
-def principal(client: TestClient, kind: str = "user") -> str:
-    response = client.post(
-        "/api/v1/principals", json={"objectId": str(uuid4()), "kind": kind, "label": kind}
-    )
-    assert response.status_code == 201, response.text
-    return cast(str, response.json()["id"])
-
-
-async def seed_model(client: TestClient) -> str:
-    model = ModelApi(
-        id="modelApi_managed",
-        tenant_id=TENANT,
-        gateway_id="gateway_seed",
-        api_name="chat",
-        display_name="Chat completions",
-        path="chat",
-        imported_from_snapshot_id="snapshot-1",
-    )
-    await client.app.state.gateway_repository.save_model_api(model, audit())
-    return model.id
-
-
-async def grant(
-    client: TestClient, principal_id: str, cost_center_id: str, kind: str = "user"
-) -> str:
-    resource_id = await seed_model(client)
-    response = client.post(
-        "/api/v1/entitlements",
-        json={
-            "subject": {"kind": kind, "id": principal_id},
-            "resource": {"kind": "modelApi", "id": resource_id},
-            "costCenterId": cost_center_id,
-        },
-    )
-    assert response.status_code == 201, response.text
-    return cast(str, response.json()["id"])
-
-
-def repositories(backend: str) -> tuple[DirectoryRepository, CostCenterRepository]:
-    if backend == "memory":
-        directory = InMemoryDirectoryRepository()
-        return directory, InMemoryCostCenterRepository(directory, managed_groups_enabled=True)
-    cosmos = Cosmos()
-    return (
-        CosmosDirectoryRepository(cast(CosmosClient, cosmos), "mosaic", "desired", "audit"),
-        CosmosCostCenterRepository(
-            cast(CosmosClient, cosmos),
-            "mosaic",
-            "desired",
-            "audit",
-            managed_groups_enabled=True,
-        ),
-    )
-
-
-def test_new_center_has_a_stable_owned_group_without_grants_or_native_keys(
-    client: TestClient,
-) -> None:
-    created = create_center(client)
-    group = client.get(f"/api/v1/groups/{created['groupId']}").json()
-    assert group["purpose"] == "costCenter"
-    assert group["costCenterId"] == created["id"]
-    assert created["groupId"] == cost_center_group_id(TENANT, created["id"])
-    assert created["membershipRevision"] == 1
-    assert client.get("/api/v1/entitlements").json() == []
-    assert client.get(f"/api/v1/groups/{created['groupId']}/members").json() == []
-
-
-def test_both_membership_routes_share_one_roster_and_accept_entra_references(
-    client: TestClient,
-) -> None:
-    created = create_center(client)
-    user, security_group = principal(client), principal(client, "securityGroup")
-    center_url = f"/api/v1/cost-centers/{created['id']}"
-    group_url = f"/api/v1/groups/{created['groupId']}"
-    added = client.put(f"{group_url}/members/{security_group}")
-    assert added.status_code == 201, added.text
-    assert client.put(f"{center_url}/members/{user}").status_code == 200
-    view = client.get(center_url).json()
-    assert {item["principalId"] for item in view["members"]} == {user, security_group}
-    assert {item["principalId"] for item in client.get(f"{group_url}/members").json()} == {
-        user,
-        security_group,
-    }
-    revision = view["membershipRevision"]
-    repeated = client.put(f"{group_url}/members/{security_group}")
-    assert repeated.status_code == 200
-    assert repeated.json() == added.json()
-    assert client.get(center_url).json()["membershipRevision"] == revision
-    assert client.delete(f"{group_url}/members/{security_group}").status_code == 204
-    assert [item["principalId"] for item in client.get(center_url).json()["members"]] == [user]
-    assert client.delete(f"{center_url}/members/{user}").status_code == 200
-    assert client.get(f"{group_url}/members").json() == []
-    directory: InMemoryDirectoryRepository = client.app.state.repository
-    assert directory.memberships == {}
-
-
-def test_implicit_default_charge_eligibility_is_not_managed_group_membership(
-    client: TestClient,
-) -> None:
-    created = create_center(client)
-    user = principal(client)
-    response = client.patch(
-        f"/api/v1/principals/{user}", json={"defaultCostCenterId": created["id"]}
-    )
-    assert response.status_code == 200, response.text
-    assert client.get(f"/api/v1/cost-centers/{created['id']}").json()["memberDetails"]
-    assert client.get(f"/api/v1/groups/{created['groupId']}/members").json() == []
-
-
-@pytest.mark.parametrize("removed_before", [False, True])
-@pytest.mark.parametrize("with_pending", [False, True])
-async def test_removing_an_absent_group_member_preserves_default_only_eligibility(
-    client: TestClient, removed_before: bool, with_pending: bool
-) -> None:
-    app = cast(FastAPI, client.app)
-    created, user = create_center(client), principal(client)
-    center_url = f"/api/v1/cost-centers/{created['id']}"
-    member_url = f"/api/v1/groups/{created['groupId']}/members/{user}"
-    if removed_before:
-        assert client.put(member_url).status_code == 201
-        assert client.delete(member_url).status_code == 204
-    assert client.patch(
-        f"/api/v1/principals/{user}", json={"defaultCostCenterId": created["id"]}
-    ).status_code == 200
-    grant_id = await grant(client, user, created["id"])
-    repository: InMemoryCostCenterRepository = app.state.cost_center_repository
-    if with_pending:
-        stored = await repository.get_cost_center(TENANT, created["id"])
-        assert stored is not None
-        await repository.save_cost_center(
-            stored.model_copy(
-                update={"pending_rechecks": [PendingRecheck(reason="memberRemoved")]}, deep=True
+async def attach(
+    estate: Management, center_id: str = "center", group_id: str = GROUP
+) -> CostCenter:
+    return await estate.service.create(
+        ADMIN,
+        CostCenterCreate(
+            name=center_id,
+            code=center_id,
+            group_setup=AttachCostCenterGroup(
+                group_object_id=group_id, acknowledge_membership_changes=True
             ),
-            audit(),
-        )
-    directory: InMemoryDirectoryRepository = app.state.repository
-    grants = app.state.entitlement_repository
-    state = (
-        repository.cost_centers,
-        repository.audit_events,
-        directory.principals,
-        directory.groups,
-        directory.memberships,
-        directory.audit_events,
-        grants.entitlements,
-        grants.audit_events,
-    )
-    before = deepcopy(state)
-
-    refused = client.delete(member_url)
-
-    assert refused.status_code == 404, refused.text
-    assert state == before
-    assert client.get(f"/api/v1/groups/{created['groupId']}/members").json() == []
-
-    # The cost-center route still supports removing default-only charge eligibility.
-    removed = client.delete(f"{center_url}/members/{user}")
-    assert removed.status_code == 200, removed.text
-    assert client.get(f"/api/v1/principals/{user}").json()["defaultCostCenterId"] is None
-    assert client.get(f"/api/v1/entitlements/{grant_id}").json()["enabled"] is False
-
-
-def test_only_owner_can_rename_or_delete_managed_group(client: TestClient) -> None:
-    created = create_center(client)
-    group_url = f"/api/v1/groups/{created['groupId']}"
-    changed = client.patch(group_url, json={"description": "Independent change"})
-    assert changed.status_code == 409, changed.text
-    assert changed.json()["details"]["costCenterId"] == created["id"]
-    assert client.delete(group_url).status_code == 409
-    renamed = client.patch(
-        f"/api/v1/cost-centers/{created['id']}", json={"name": "New research name"}
-    )
-    assert renamed.status_code == 200, renamed.text
-    assert renamed.json()["groupId"] == created["groupId"]
-    assert renamed.json()["membershipRevision"] == created["membershipRevision"]
-    assert client.get(group_url).json()["name"] == "Cost center: New research name"
-    assert client.delete(f"/api/v1/cost-centers/{created['id']}").status_code == 204
-    assert client.get(group_url).status_code == 404
-
-
-def test_generic_groups_still_reject_security_groups(client: TestClient) -> None:
-    created = client.post("/api/v1/groups", json={"name": "Unmanaged"}).json()
-    security_group = principal(client, "securityGroup")
-    response = client.put(f"/api/v1/groups/{created['id']}/members/{security_group}")
-    assert response.status_code == 422, response.text
-    assert client.get(f"/api/v1/groups/{created['id']}").json()["purpose"] == "local"
-
-
-async def test_legacy_linkage_is_idempotent_and_preserves_roster_and_attribution(
-    client: TestClient,
-) -> None:
-    repository: InMemoryCostCenterRepository = client.app.state.cost_center_repository
-    original = center(
-        members=[CostCenterMember(principal_id="principal_legacy", added_by="original-admin")]
-    )
-    repository.cost_centers[(TENANT, original.id)] = original.model_copy(
-        update={"etag": "legacy-etag"}, deep=True
-    )
-    before = deepcopy(repository.cost_centers[(TENANT, original.id)])
-    first = client.post(f"/api/v1/cost-centers/{original.id}/group")
-    assert first.status_code == 200, first.text
-    count = len(repository.audit_events)
-    repeated = client.post(f"/api/v1/cost-centers/{original.id}/group")
-    assert repeated.status_code == 200, repeated.text
-    assert repeated.json()["groupId"] == first.json()["groupId"]
-    assert len(repository.audit_events) == count
-    stored = await repository.get_cost_center(TENANT, original.id)
-    assert stored is not None
-    assert stored.members == before.members
-    assert stored.created_at == before.created_at
-    assert stored.keys_allowed == before.keys_allowed
-    assert stored.pending_rechecks == before.pending_rechecks
-
-
-async def test_current_500_reference_boundary_applies_to_both_membership_routes(
-    client: TestClient,
-) -> None:
-    created = create_center(client)
-    repository: InMemoryCostCenterRepository = client.app.state.cost_center_repository
-    stored = await repository.get_cost_center(TENANT, created["id"])
-    assert stored is not None
-    await repository.save_cost_center(
-        stored.model_copy(
-            update={"members": [CostCenterMember(principal_id=f"p-{i}") for i in range(499)]},
-            deep=True,
         ),
-        audit(),
+        cost_center_id=center_id,
     )
-    last, extra = principal(client), principal(client)
-    assert client.put(f"/api/v1/groups/{created['groupId']}/members/{last}").status_code == 201
-    assert client.put(f"/api/v1/groups/{created['groupId']}/members/{extra}").status_code == 422
-    assert client.put(f"/api/v1/cost-centers/{created['id']}/members/{extra}").status_code == 422
-    members = client.get(f"/api/v1/groups/{created['groupId']}/members").json()
-    assert len(members) == 500
-    assert client.delete(f"/api/v1/cost-centers/{created['id']}/members/{last}").status_code == 200
-    assert client.put(f"/api/v1/cost-centers/{created['id']}/members/{last}").status_code == 200
-    assert len(client.get(f"/api/v1/groups/{created['groupId']}/members").json()) == 500
 
 
-async def test_memory_collision_or_stale_save_changes_neither_roster_nor_audit() -> None:
-    directory = InMemoryDirectoryRepository()
-    repository = InMemoryCostCenterRepository(directory, managed_groups_enabled=True)
-    identifier = cost_center_group_id(TENANT, center().id)
-    directory.groups[identifier] = Group(id=identifier, tenant_id=TENANT, name="Unrelated")
-    event = audit()
-    with pytest.raises(ConflictError):
-        await repository.create_cost_center(center(), event)
-    assert repository.cost_centers == {}
-    assert event.id not in repository.audit_events
-    assert directory.groups[identifier].purpose == GroupPurpose.LOCAL
-    del directory.groups[identifier]
-    saved = await repository.create_cost_center(center(), audit())
-    await repository.save_cost_center(saved.model_copy(update={"name": "Renamed"}), audit())
-    event = audit()
-    with pytest.raises(ConflictError):
-        await repository.save_cost_center(saved, event)
-    assert directory.groups[identifier].name == "Cost center: Renamed"
-    assert event.id not in repository.audit_events
+def failure(
+    kind: GroupFailureKind = GroupFailureKind.FORBIDDEN,
+    outcome: GroupWriteOutcome = GroupWriteOutcome.NOT_APPLIED,
+) -> GroupManagementError:
+    return GroupManagementError("Fictional Graph failure", kind=kind, outcome=outcome)
+
+
+async def test_attach_reserves_and_verifies_without_creating_a_group_or_local_roster(
+    estate: Management,
+) -> None:
+    created = await attach(estate)
+    assert created.setup_state == "ready"
+    assert created.entra_binding is not None
+    assert created.entra_binding.provenance == "attached"
+    assert created.verified_group_object_id == GROUP
+    reservation = await estate.repository.get_group_reservation(TENANT, TENANT, GROUP)
+    assert reservation is not None and reservation.cost_center_id == created.id
+    assert created.members == [] and created.group_id is None
+    assert estate.graph.writes == []
+    assert estate.local_directory.groups == {} and estate.local_directory.memberships == {}
+    assert estate.checks.synced == [created.id]
+
+
+async def test_read_only_consent_does_not_make_a_verified_group_unconfigured() -> None:
+    estate = management(permissions=BASELINE)
+    created = await attach(estate)
+    capabilities = await estate.service.group_capabilities(ADMIN)
+    assert capabilities.available and capabilities.advisory and capabilities.can_read_groups
+    assert not capabilities.can_create_groups and not capabilities.can_add_users
+    assert not capabilities.can_add_service_principals and not capabilities.can_remove_members
+    assert "preview" in capabilities.member_listing_notice
+    operation = await estate.service.add_directory_member(
+        ADMIN, created.id, USER, PrincipalKind.USER, idempotency_key="user-write"
+    )
+    assert operation.state == "failed" and operation.error_code == "forbidden"
+    assert not operation.directory_updated
+    assert (await estate.service.get_cost_center(ADMIN, created.id)).setup_state == "ready"
+    assert estate.graph.writes == []
 
 
 @pytest.mark.parametrize(
-    ("backend", "outbox"), [("memory", False), ("cosmos", False), ("cosmos", True)]
+    "group",
+    [
+        GraphGroup(TENANT, GROUP, security_enabled=False),
+        GraphGroup(TENANT, GROUP, mail_enabled=True),
+        GraphGroup(TENANT, GROUP, group_types=("DynamicMembership",)),
+        GraphGroup(TENANT, GROUP, is_assignable_to_role=True),
+        GraphGroup(TENANT, GROUP, on_premises_sync_enabled=True),
+        GraphGroup(TENANT, GROUP, on_premises_security_identifier="fictional-old-sync"),
+    ],
 )
-async def test_recorded_removal_requires_a_matching_explicit_audit_event(
-    backend: str, outbox: bool, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _, repository = repositories(backend)
-    now = utc_now()
-    recorded = audit().model_copy(
-        update={
-            "action": "costCenter.memberRemoved",
-            "resource_id": center().id,
-            "details": {"principalId": "principal_test", "listed": True},
-            "created_at": now,
-        },
-        deep=True,
-    )
-    if isinstance(repository, CosmosCostCenterRepository):
-        for container in (repository._desired, repository._audit):
-            stored = cast(Container, container)
+async def test_unsupported_groups_remain_saved_but_setup_required(group: GraphGroup) -> None:
+    estate = management(groups=(group,))
+    created = await attach(estate)
+    assert created.setup_state == "setupRequired"
+    assert created.entra_binding is not None
+    assert created.entra_binding.verification_state == "failed"
+    assert created.entra_binding.verification_error
+    assert not estate.checks.synced and not estate.graph.writes
 
-            async def query_items(
-                *,
-                query: str,
-                parameters: list[dict[str, Any]],
-                partition_key: str,
-                stored: Container = stored,
-            ) -> AsyncIterator[dict[str, Any]]:
-                if stored.failure:
-                    raise stored.failure
-                assert all(
-                    clause in query
-                    for clause in (
-                        "SELECT TOP 1",
-                        "c.tenantId = @tenantId",
-                        "c.entityType = 'auditEvent'",
-                        "c.action = 'costCenter.memberRemoved'",
-                        "c.resourceType = 'costCenter'",
-                        "c.resourceId = @costCenterId",
-                        "c.details.principalId = @principalId",
-                        "c.details.listed = true",
-                        "ORDER BY c.createdAt DESC",
-                    )
+
+async def test_attach_validation_failure_can_recover_only_the_same_reserved_group(
+    estate: Management,
+) -> None:
+    estate.graph.failures["get_group"] = failure()
+    created = await attach(estate)
+    assert created.setup_state == "setupRequired"
+    assert created.entra_binding is not None and created.entra_binding.verification_error
+    with pytest.raises(ConflictError):
+        await estate.service.update_cost_center(
+            ADMIN,
+            created.id,
+            CostCenterUpdate(
+                group_setup=AttachCostCenterGroup(
+                    group_object_id=OTHER_GROUP, acknowledge_membership_changes=True
                 )
-                values = {item["name"]: item["value"] for item in parameters}
-                assert values["@tenantId"] == partition_key
-                matches = [
-                    item
-                    for item in stored.items.values()
-                    if item["tenantId"] == partition_key
-                    and item["entityType"] == "auditEvent"
-                    and item["action"] == "costCenter.memberRemoved"
-                    and item["resourceType"] == "costCenter"
-                    and item["resourceId"] == values["@costCenterId"]
-                    and item["details"].get("principalId") == values["@principalId"]
-                    and item["details"].get("listed") is True
-                ]
-                for item in sorted(matches, key=lambda item: item["createdAt"], reverse=True)[:1]:
-                    yield item
-
-            monkeypatch.setattr(stored, "query_items", query_items, raising=False)
-
-    async def save_event(event: AuditEvent) -> None:
-        if isinstance(repository, InMemoryCostCenterRepository):
-            repository.audit_events[event.id] = event
-        else:
-            assert isinstance(repository, CosmosCostCenterRepository)
-            container = repository._desired if outbox else repository._audit
-            await container.create_item(event.model_dump(mode="json", by_alias=True))
-
-    for changes in (
-        {"tenant_id": "another-tenant"},
-        {"action": "costCenter.memberAdded"},
-        {"resource_type": "principal"},
-        {"resource_id": "another-center"},
-        {"details": {"principalId": "another-principal", "listed": True}},
-        {"details": {"principalId": "principal_test", "listed": False}},
-    ):
-        await save_event(recorded.model_copy(update={**changes, "id": new_id("audit")}))
-    assert not await repository.member_removal_recorded(TENANT, center().id, "principal_test")
-    await save_event(recorded)
-    assert await repository.member_removal_recorded(
-        TENANT, center().id, "principal_test", not_before=now
-    )
-    assert not await repository.member_removal_recorded(
-        TENANT, center().id, "principal_test", not_before=now + timedelta(microseconds=1)
-    )
-    if isinstance(repository, CosmosCostCenterRepository) and outbox:
-        cast(Container, repository._audit).failure = AssertionError("Projection is unavailable")
-        assert await repository.member_removal_recorded(
-            TENANT, center().id, "principal_test", not_before=now
+            ),
         )
-
-
-async def test_cosmos_owns_one_atomic_group_center_audit_batch_even_at_500_members() -> None:
-    cosmos = Cosmos()
-    repository = CosmosCostCenterRepository(
-        cast(CosmosClient, cosmos), "mosaic", "desired", "audit", managed_groups_enabled=True
+    del estate.graph.failures["get_group"]
+    recovered = await estate.service.update_cost_center(
+        ADMIN,
+        created.id,
+        CostCenterUpdate(
+            group_setup=AttachCostCenterGroup(
+                group_object_id=GROUP, acknowledge_membership_changes=True
+            )
+        ),
     )
-    original = center(members=[CostCenterMember(principal_id=f"p-{i}") for i in range(500)])
-    saved = await repository.create_cost_center(original, audit())
-    container = cosmos.containers["desired"]
-    assert len(container.batches[0][1]) == 3
-    assert saved.group_id is not None
-    stored = await repository.get_cost_center(TENANT, saved.id)
-    assert stored is not None
-    await repository.save_cost_center(
-        stored.model_copy(update={"members": stored.members[:-1]}, deep=True), audit()
-    )
-    assert len(container.batches[-1][1]) == 3
-    latest = await repository.get_cost_center(TENANT, saved.id)
-    assert latest is not None
-    assert latest.membership_revision == 2
-    before = deepcopy(container.items)
-    event = audit()
-    with pytest.raises(ConflictError):
-        await repository.save_cost_center(stored, event)
-    assert container.items == before
+    assert recovered.setup_state == "ready"
+    assert recovered.verified_group_object_id == GROUP
+    assert estate.graph.writes == []
 
 
-async def test_cosmos_collision_rolls_back_center_and_audit_without_adoption() -> None:
-    cosmos = Cosmos()
-    repository = CosmosCostCenterRepository(
-        cast(CosmosClient, cosmos), "mosaic", "desired", "audit", managed_groups_enabled=True
-    )
-    identifier = cost_center_group_id(TENANT, center().id)
-    container = cosmos.containers["desired"]
-    await container.create_item(
-        Group(id=identifier, tenant_id=TENANT, name="Unrelated").model_dump(
-            mode="json", by_alias=True
+async def test_group_create_persists_intent_and_actual_id_before_verification(
+    estate: Management, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = estate.graph.validate_group
+
+    async def verify(group_id: str) -> GraphGroup:
+        operation = await estate.repository.get_directory_operation(
+            TENANT, cost_center_provisioning_operation_id(TENANT, "created")
         )
+        assert operation is not None and operation.state == "succeeded"
+        assert operation.group_object_id == group_id
+        current = await estate.repository.get_cost_center(TENANT, "created")
+        assert current is not None and current.entra_binding is not None
+        assert current.entra_binding.provenance == "created"
+        return await original(group_id)
+
+    monkeypatch.setattr(estate.graph, "validate_group", verify)
+    created = await estate.service.create(
+        ADMIN,
+        CostCenterCreate(
+            name="Research",
+            code="created",
+            owners=["contact@example.test"],
+            group_setup=CreateCostCenterGroup(),
+        ),
+        cost_center_id="created",
     )
-    before = deepcopy(container.items)
+    assert created.setup_state == "ready"
+    assert len(estate.graph.writes) == 1
+    assert estate.graph.writes[0].operation == "create_group"
+    assert created.members == []
+    assert created.verified_group_object_id is not None
+    assert estate.lookup.state.group_members[created.verified_group_object_id] == []
+    assert estate.graph.owners[created.verified_group_object_id] == (
+        "00000000-0000-0000-0000-000000000101",
+    )
+
+
+async def test_missing_create_consent_keeps_center_and_explicit_retry_uses_the_same_intent(
+    estate: Management,
+) -> None:
+    estate.graph.failures["create_group"] = failure()
+    request = CostCenterCreate(name="Draft", code="draft", group_setup=CreateCostCenterGroup())
+    first = await estate.service.create(ADMIN, request, cost_center_id="draft")
+    [operation] = first.directory_operations
+    assert first.setup_state == "setupRequired" and first.entra_binding is None
+    assert operation.state == "failed" and operation.can_retry
+    assert operation.error_code == "forbidden"
+    repeated = await estate.service.create(ADMIN, request, cost_center_id="draft")
+    assert repeated.id == first.id and repeated.directory_operations[0].id == operation.id
+    del estate.graph.failures["create_group"]
+    retried = await estate.service.retry_directory_operation(ADMIN, first.id, operation.id)
+    assert retried.state == "succeeded"
+    assert (await estate.service.get_cost_center(ADMIN, first.id)).setup_state == "ready"
+    assert len(estate.graph.writes) == 1
+
+
+async def test_known_created_object_with_replication_failure_is_verified_not_created_again(
+    estate: Management,
+) -> None:
+    estate.graph.failures["get_group"] = failure(GroupFailureKind.REPLICATION_PENDING)
+    created = await estate.service.create(
+        ADMIN,
+        CostCenterCreate(name="Draft", code="draft", group_setup=CreateCostCenterGroup()),
+        cost_center_id="draft",
+    )
+    [operation] = created.directory_operations
+    assert operation.state == "succeeded"
+    assert created.setup_state == "setupRequired"
+    observed_id = operation.group_object_id
+    del estate.graph.failures["get_group"]
+    await estate.service.recover_directory_operation(ADMIN, created.id, operation.id)
+    recovered = await estate.service.get_cost_center(ADMIN, created.id)
+    assert recovered.verified_group_object_id == observed_id and recovered.setup_state == "ready"
+    assert len(estate.graph.writes) == 1
+
+
+async def test_uncertain_create_and_pending_create_never_admit_a_second_post(
+    estate: Management,
+) -> None:
+    estate.graph.failures["create_group"] = failure(
+        GroupFailureKind.UNKNOWN_OUTCOME, GroupWriteOutcome.UNKNOWN
+    )
+    request = CostCenterCreate(name="Draft", code="draft", group_setup=CreateCostCenterGroup())
+    first = await estate.service.create(ADMIN, request, cost_center_id="unknown")
+    [operation] = first.directory_operations
+    assert operation.state == "unknown" and not operation.can_retry
+    estate.graph.failures.clear()
+    # A same-name existing object is deliberately not adopted.
+    estate.graph._groups[OTHER_GROUP] = GraphGroup(TENANT, OTHER_GROUP, "Draft")
+    for _ in range(2):
+        again = await estate.service.create(ADMIN, request, cost_center_id="unknown")
+        assert again.setup_state == "setupRequired" and again.entra_binding is None
+        recovered = await estate.service.recover_directory_operation(ADMIN, first.id, operation.id)
+        assert recovered.state == "unknown" and recovered.group_object_id is None
+        assert "display-name" in (recovered.recovery_notice or "")
+    with pytest.raises(ConflictError, match="definitive failed"):
+        await estate.service.retry_directory_operation(ADMIN, first.id, operation.id)
     with pytest.raises(ConflictError):
-        await repository.create_cost_center(center(), audit())
-    assert container.items == before
-
-
-async def test_cosmos_managed_deletion_is_etag_guarded_for_both_entities(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cosmos = Cosmos()
-    repository = CosmosCostCenterRepository(
-        cast(CosmosClient, cosmos), "mosaic", "desired", "audit", managed_groups_enabled=True
-    )
-    await repository.create_cost_center(center(), audit())
-    stored = await repository.get_cost_center(TENANT, center().id)
-    assert stored is not None
-    execute = AsyncMock(wraps=repository._execute_batch)
-    monkeypatch.setattr(repository, "_execute_batch", execute)
-    await repository.delete_cost_center(stored, audit())
-    operations = execute.call_args.args[0]
-    assert [operation[0] for operation in operations] == ["delete", "delete", "create"]
-    assert operations[0][2]["if_match_etag"] == stored.etag
-    assert operations[1][2]["if_match_etag"]
-    assert await repository.get_cost_center(TENANT, stored.id) is None
-    assert cosmos.containers["desired"].items == {}
-
-
-def test_feature_is_default_off_and_legacy_center_has_no_automatic_access(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("MOSAIC_MANAGED_COST_CENTER_GROUPS", raising=False)
-    settings = Settings(
-        _env_file=None,
-        environment=Environment.TEST,
-        auth_mode=AuthMode.LOCAL,
-        repository_backend=RepositoryBackend.MEMORY,
+        await estate.service.update_cost_center(
+            ADMIN,
+            first.id,
+            CostCenterUpdate(
+                group_setup=AttachCostCenterGroup(
+                    group_object_id=OTHER_GROUP, acknowledge_membership_changes=True
+                )
+            ),
+        )
+    assert estate.graph.writes == []
+    pending = CostCenterDirectoryOperation(
+        id=cost_center_provisioning_operation_id(TENANT, "pending"),
         tenant_id=TENANT,
+        cost_center_id="pending",
+        kind="createGroup",
+        directory_tenant_id=TENANT,
+        requested_by=ADMIN.object_id,
+        display_name="Pending",
     )
-    assert settings.managed_cost_center_groups is False
-    with TestClient(create_app(settings)) as client:
-        created = create_center(client)
-        assert created["groupId"] is None
-        assert client.post(f"/api/v1/cost-centers/{created['id']}/group").status_code == 422
-        assert client.get("/api/v1/groups").json() == []
+    await estate.service.create(
+        ADMIN, CostCenterCreate(name="Pending", code="pending"), cost_center_id="pending"
+    )
+    await estate.repository.create_directory_operation(pending, audit())
+    await estate.service.update_cost_center(
+        ADMIN, "pending", CostCenterUpdate(group_setup=CreateCostCenterGroup())
+    )
+    assert estate.graph.writes == []
 
 
-def test_experimental_flag_can_be_enabled_with_its_documented_environment_variable(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_forced_center_id_retry_cannot_overwrite_a_different_center(
+    estate: Management,
 ) -> None:
-    monkeypatch.setenv("MOSAIC_MANAGED_COST_CENTER_GROUPS", "true")
-    settings = Settings(
-        _env_file=None,
-        environment=Environment.TEST,
-        auth_mode=AuthMode.LOCAL,
-        repository_backend=RepositoryBackend.MEMORY,
-        tenant_id=TENANT,
-    )
-    assert settings.managed_cost_center_groups is True
-
-
-@pytest.mark.parametrize("backend", ["memory", "cosmos"])
-async def test_directory_repository_cannot_edit_managed_metadata_or_create_a_second_roster(
-    backend: str,
-) -> None:
-    directory, centers = repositories(backend)
-    created = await centers.create_cost_center(center(), audit())
-    assert created.group_id is not None
-    group = await directory.get_group(TENANT, created.group_id)
-    assert group is not None
-    forged = Group(id=group.id, tenant_id=TENANT, name="Independent", etag=group.etag)
-    user = Principal(id="principal_test", tenant_id=TENANT, object_id=str(uuid4()), kind="user")
-    membership = group_membership(group, CostCenterMember(principal_id=user.id))
-    operations = [
-        lambda: directory.save_group(forged, audit()),
-        lambda: directory.delete_group(forged, audit()),
-        lambda: directory.create_group(group, audit()),
-        lambda: directory.create_membership(membership, forged, user, audit()),
-        lambda: directory.delete_membership(membership, audit()),
-    ]
-    for operation in operations:
-        with pytest.raises(ConflictError):
-            await operation()
-    assert await directory.get_group(TENANT, group.id) == group
-    if isinstance(directory, InMemoryDirectoryRepository):
-        assert directory.memberships == {}
-    else:
-        assert isinstance(directory, CosmosDirectoryRepository)
-        container = cast(Container, directory._desired)
-        assert all(item["entityType"] != "groupMembership" for item in container.items.values())
-    assert await centers.get_cost_center("another-tenant", created.id) is None
-    assert await directory.get_group("another-tenant", group.id) is None
-
-
-@pytest.mark.parametrize("backend", ["memory", "cosmos"])
-async def test_missing_group_does_not_silently_reappear_on_a_save(backend: str) -> None:
-    directory, centers = repositories(backend)
-    created = await centers.create_cost_center(center(), audit())
-    stored = await centers.get_cost_center(TENANT, created.id)
-    assert stored is not None and stored.group_id is not None
-    if isinstance(directory, InMemoryDirectoryRepository):
-        del directory.groups[stored.group_id]
-    else:
-        assert isinstance(directory, CosmosDirectoryRepository)
-        await directory._desired.delete_item(item=stored.group_id, partition_key=TENANT)
-    with pytest.raises(ConflictError, match="missing"):
-        await centers.save_cost_center(stored.model_copy(update={"name": "Updated"}), audit())
-    assert await centers.get_cost_center(TENANT, stored.id) == stored
-    assert await directory.get_group(TENANT, stored.group_id) is None
-
-
-@pytest.mark.parametrize("backend", ["memory", "cosmos"])
-async def test_link_cannot_be_replaced_or_removed_even_with_a_current_etag(backend: str) -> None:
-    directory, centers = repositories(backend)
-    created = await centers.create_cost_center(center(), audit())
-    stored = await centers.get_cost_center(TENANT, created.id)
-    assert stored is not None and stored.group_id is not None
-    unlinked = stored.model_copy(update={"group_id": None})
-    with pytest.raises(ConflictError):
-        await centers.save_cost_center(unlinked, audit())
-    with pytest.raises(ConflictError):
-        await centers.delete_cost_center(unlinked, audit())
-    assert await centers.get_cost_center(TENANT, stored.id) == stored
-    assert await directory.get_group(TENANT, stored.group_id) is not None
-
-
-async def test_cosmos_legacy_linkage_keeps_500_references_in_one_three_operation_batch() -> None:
-    cosmos = Cosmos()
-    legacy = CosmosCostCenterRepository(cast(CosmosClient, cosmos), "mosaic", "desired", "audit")
-    original = center(members=[CostCenterMember(principal_id=f"p-{i}") for i in range(500)])
-    await legacy.create_cost_center(original, audit())
-    stored = await legacy.get_cost_center(TENANT, original.id)
-    assert stored is not None
-    managed = CosmosCostCenterRepository(
-        cast(CosmosClient, cosmos), "mosaic", "desired", "audit", managed_groups_enabled=True
-    )
-    await managed.save_cost_center(linked_cost_center(stored), audit())
-    latest = await managed.get_cost_center(TENANT, original.id)
-    assert latest is not None
-    assert latest.members == stored.members
-    assert latest.membership_revision == 1
-    assert len(cosmos.containers["desired"].batches[-1][1]) == 3
-
-
-async def test_cosmos_concurrent_group_update_rolls_back_center_and_audit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cosmos = Cosmos()
-    repository = CosmosCostCenterRepository(
-        cast(CosmosClient, cosmos), "mosaic", "desired", "audit", managed_groups_enabled=True
-    )
-    await repository.create_cost_center(center(), audit())
-    stored = await repository.get_cost_center(TENANT, center().id)
-    assert stored is not None and stored.group_id is not None
-    container = cosmos.containers["desired"]
-    execute = container.execute_item_batch
-
-    async def concurrent_group_write(**kwargs: Any) -> list[dict[str, Any]]:
-        container.items[(TENANT, stored.group_id)]["_etag"] = "concurrent-group-etag"
-        return await execute(**kwargs)
-
-    monkeypatch.setattr(container, "execute_item_batch", concurrent_group_write)
-    event = audit()
-    with pytest.raises(ConflictError):
-        await repository.save_cost_center(stored.model_copy(update={"name": "Updated"}), event)
-    assert await repository.get_cost_center(TENANT, stored.id) == stored
-    assert (TENANT, event.id) not in container.items
-    assert (TENANT, event.id) not in cosmos.containers["audit"].items
-
-
-def test_legacy_linkage_does_not_change_existing_grant_intent() -> None:
-    original = center()
-    person = Principal(id="p", tenant_id=TENANT, object_id=str(uuid4()), kind="user")
-    grant = Entitlement(
-        id="entitlement_test",
-        tenant_id=TENANT,
-        subject=EntitlementSubject(kind="user", id=person.id),
-        resource=EntitlementResource(kind="modelApi", id="modelApi_test"),
-        cost_center_id=original.id,
-    )
-    before = CostCenterBook(TENANT, [original], None)
-    after = CostCenterBook(TENANT, [linked_cost_center(original)], None)
-    assert entitlement_intent_digest(
-        grant, person, cost_center_intent(grant, person, before)
-    ) == entitlement_intent_digest(grant, person, cost_center_intent(grant, person, after))
-
-
-def test_matching_display_name_is_never_adopted(client: TestClient) -> None:
-    unrelated = client.post("/api/v1/groups", json={"name": "Cost center: Research"}).json()
-    created = create_center(client)
-    assert created["groupId"] != unrelated["id"]
-    assert client.get(f"/api/v1/groups/{unrelated['id']}").json()["purpose"] == "local"
-    assert len(client.get("/api/v1/groups").json()) == 2
-
-
-async def test_group_removal_preserves_charge_rechecks_and_resets_the_personal_default(
-    client: TestClient,
-) -> None:
-    created, user = create_center(client), principal(client)
-    resource_id = await seed_model(client)
-    center_url = f"/api/v1/cost-centers/{created['id']}"
-    assert client.put(f"{center_url}/members/{user}").status_code == 200
+    request = CostCenterCreate(name="Original", code="original")
+    original = await estate.service.create(ADMIN, request, cost_center_id="reserved")
     assert (
-        client.patch(
-            f"/api/v1/principals/{user}", json={"defaultCostCenterId": created["id"]}
-        ).status_code
-        == 200
-    )
-    granted = client.post(
-        "/api/v1/entitlements",
-        json={
-            "subject": {"kind": "user", "id": user},
-            "resource": {"kind": "modelApi", "id": resource_id},
-            "costCenterId": created["id"],
-        },
-    )
-    assert granted.status_code == 201, granted.text
-    assert client.delete(f"/api/v1/groups/{created['groupId']}/members/{user}").status_code == 204
-    revoked = client.get(f"/api/v1/entitlements/{granted.json()['id']}").json()
-    assert revoked["enabled"] is False
-    assert revoked["revocation"]["costCenterId"] == created["id"]
-    assert client.get(f"/api/v1/principals/{user}").json()["defaultCostCenterId"] is None
-
-
-@pytest.mark.parametrize("kind", ["user", "securityGroup"])
-async def test_group_removal_retry_finishes_its_pending_recheck(
-    client: TestClient, kind: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    app = cast(FastAPI, client.app)
-    created, member = create_center(client), principal(client, kind)
-    center_url = f"/api/v1/cost-centers/{created['id']}"
-    member_url = f"/api/v1/groups/{created['groupId']}/members/{member}"
-    assert client.put(member_url).status_code == 201
-    grant_id = await grant(client, member, created["id"], kind)
-    with monkeypatch.context() as patch:
-        patch.setattr(
-            app.state.entitlement_service,
-            "revoke_for_cost_center",
-            AsyncMock(side_effect=ConflictError("The model is busy")),
+        await estate.service.create(ADMIN, request, cost_center_id="reserved")
+    ).id == original.id
+    with pytest.raises(ConflictError, match="different"):
+        await estate.service.create(
+            ADMIN, CostCenterCreate(name="Other", code="other"), cost_center_id="reserved"
         )
-        removed = client.delete(member_url)
-    assert removed.status_code == 204, removed.text
-    view = client.get(center_url).json()
-    assert view["members"] == []
-    [pending] = view["pendingRechecks"]
-    assert pending["subjectId"] == (None if kind == "securityGroup" else member)
-    assert pending["entitlementIds"] == [grant_id]
-    assert client.get(f"/api/v1/entitlements/{grant_id}").json()["enabled"] is True
-
-    repeated = client.delete(member_url)
-
-    assert repeated.status_code == 204, repeated.text
-    updated = client.get(center_url).json()
-    assert updated["pendingRechecks"] == []
-    assert updated["membershipRevision"] == view["membershipRevision"]
-    assert client.get(f"/api/v1/entitlements/{grant_id}").json()["enabled"] is False
+    found = await estate.service.get_cost_center(ADMIN, original.id)
+    assert found.name == "Original" and found.code == "original"
+    assert not estate.graph.writes
 
 
-@pytest.mark.parametrize("tenant_default", [False, True])
-@pytest.mark.parametrize("stale_retry", [False, True])
-async def test_group_removal_retry_completes_a_failed_default_reset(
-    client: TestClient,
-    tenant_default: bool,
-    stale_retry: bool,
+@pytest.mark.parametrize("with_access", [False, True])
+async def test_nil_group_setup_reserved_create_is_local_only_even_with_write_consent(
+    estate: Management,
+    with_access: bool,
+) -> None:
+    center = await estate.service.create(
+        ADMIN,
+        CostCenterCreate(
+            name="Approval draft",
+            code="approval",
+            resource_access=[
+                {"resource": {"kind": "modelApi", "id": "modelApi_seed"}, "mode": "automatic"}
+            ]
+            if with_access
+            else [],
+        ),
+        cost_center_id="approval",
+    )
+    assert center.setup_state == "setupRequired" and center.entra_binding is None
+    assert center.directory_operations == []
+    assert estate.lookup.reads == 0 and not estate.graph.writes
+    assert not estate.local_directory.groups and not estate.checks.synced
+
+
+async def test_concurrent_provisioning_retries_share_one_pending_create(
+    estate: Management, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = estate.graph.create_group
+
+    async def delayed(*args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        await asyncio.wait_for(release.wait(), timeout=10)
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(estate.graph, "create_group", delayed)
+    request = CostCenterCreate(name="Concurrent", code="race", group_setup=CreateCostCenterGroup())
+    first = asyncio.create_task(estate.service.create(ADMIN, request, cost_center_id="race"))
+    await asyncio.wait_for(entered.wait(), timeout=10)
+    try:
+        duplicate = await estate.service.create(ADMIN, request, cost_center_id="race")
+        assert duplicate.setup_state == "setupRequired"
+        assert duplicate.directory_operations[0].state == "pending"
+        assert not estate.gateways.scope_leases
+    finally:
+        release.set()
+    result = await first
+    assert result.setup_state == "ready" and len(estate.graph.writes) == 1
+
+
+async def test_concurrent_group_bindings_have_only_one_owner(estate: Management) -> None:
+    results = await asyncio.gather(
+        attach(estate, "one"), attach(estate, "two"), return_exceptions=True
+    )
+    assert sum(isinstance(item, ConflictError) for item in results) == 1
+    reservation = await estate.repository.get_group_reservation(TENANT, TENANT, GROUP)
+    assert reservation is not None
+    centers = await estate.repository.list_cost_centers(TENANT)
+    assert [item.id for item in centers if item.verified_group_object_id] == [
+        reservation.cost_center_id
+    ]
+    assert len(centers) == 2  # Losing setup never loses its saved center.
+
+
+@pytest.mark.parametrize("committed", [False, True])
+async def test_lost_create_result_persistence_never_duplicates_and_retains_observed_identity(
+    estate: Management, monkeypatch: pytest.MonkeyPatch, committed: bool
+) -> None:
+    original = estate.repository.save_directory_operation
+    lost = False
+
+    async def save(operation: CostCenterDirectoryOperation, event: Any) -> Any:
+        nonlocal lost
+        if operation.kind == "createGroup" and operation.state == "succeeded" and not lost:
+            lost = True
+            if committed:
+                await original(operation, event)
+            raise RuntimeError("Fictional lost persistence response")
+        return await original(operation, event)
+
+    monkeypatch.setattr(estate.repository, "save_directory_operation", save)
+    request = CostCenterCreate(name="Recover", code="recover", group_setup=CreateCostCenterGroup())
+    if committed:
+        result = await estate.service.create(ADMIN, request, cost_center_id="recover")
+        assert result.setup_state == "ready"
+    else:
+        with pytest.raises(ChangeNotRecordedError):
+            await estate.service.create(ADMIN, request, cost_center_id="recover")
+        operation_id = cost_center_provisioning_operation_id(TENANT, "recover")
+        operation = await estate.repository.get_directory_operation(TENANT, operation_id)
+        assert operation is not None and operation.state == "unknown"
+        assert operation.group_object_id == estate.graph.writes[0].group_object_id
+        await estate.service.recover_directory_operation(ADMIN, "recover", operation_id)
+    result = await estate.service.get_cost_center(ADMIN, "recover")
+    assert result.setup_state == "ready"
+    assert result.verified_group_object_id == estate.graph.writes[0].group_object_id
+    assert len(estate.graph.writes) == 1
+
+
+async def test_crash_after_success_record_before_binding_recovers_exact_created_object(
+    estate: Management, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = estate.repository.save_cost_center
+    fail = True
+
+    async def save(center: CostCenter, event: Any) -> CostCenter:
+        nonlocal fail
+        if center.entra_binding is not None and fail:
+            fail = False
+            raise RuntimeError("Fictional crash before binding")
+        return await original(center, event)
+
+    monkeypatch.setattr(estate.repository, "save_cost_center", save)
+    with pytest.raises(ChangeNotRecordedError, match="setup could not finish"):
+        await estate.service.create(
+            ADMIN,
+            CostCenterCreate(name="Crash", code="crash", group_setup=CreateCostCenterGroup()),
+            cost_center_id="crash",
+        )
+    [operation] = await estate.service.list_directory_operations(ADMIN, "crash")
+    assert operation.state == "succeeded" and operation.group_object_id
+    await estate.service.recover_directory_operation(ADMIN, "crash", operation.id)
+    result = await estate.service.get_cost_center(ADMIN, "crash")
+    assert result.verified_group_object_id == operation.group_object_id
+    assert len(estate.graph.writes) == 1
+
+
+async def test_lost_intent_acknowledgment_does_not_execute_or_replay_a_create(
+    estate: Management,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app = cast(FastAPI, client.app)
-    created, user = create_center(client), principal(client)
-    center_url = f"/api/v1/cost-centers/{created['id']}"
-    member_url = f"/api/v1/groups/{created['groupId']}/members/{user}"
-    assert client.put(member_url).status_code == 201
-    assert client.patch(
-        f"/api/v1/principals/{user}", json={"defaultCostCenterId": created["id"]}
-    ).status_code == 200
-    if tenant_default:
-        assert client.put(
-            "/api/v1/cost-center-settings", json={"defaultCostCenterId": created["id"]}
-        ).status_code == 200
-    grant_id = await grant(client, user, created["id"])
-    with monkeypatch.context() as patch:
-        patch.setattr(
-            app.state.repository,
-            "save_principal",
-            AsyncMock(side_effect=ConflictError("The default reset was interrupted")),
-        )
-        interrupted = client.delete(member_url)
-    assert interrupted.status_code == 409, interrupted.text
-    view = client.get(center_url).json()
-    assert view["members"] == []
-    assert client.get(f"/api/v1/principals/{user}").json()["defaultCostCenterId"] == created["id"]
-    assert client.get(f"/api/v1/entitlements/{grant_id}").json()["enabled"] is True
+    original = estate.repository.create_directory_operation
 
-    if stale_retry:
-        repository: InMemoryCostCenterRepository = app.state.cost_center_repository
-        save = repository.save_cost_center
+    async def lost(operation: CostCenterDirectoryOperation, event: Any) -> Any:
+        await original(operation, event)
+        raise RuntimeError("Fictional intent acknowledgement lost")
 
-        async def changed_meanwhile(
-            cost_center: CostCenter, audit_event: AuditEvent
-        ) -> CostCenter:
-            await save(cost_center.model_copy(update={"description": "Concurrent change"}), audit())
-            return await save(cost_center, audit_event)
-
-        with monkeypatch.context() as patch:
-            patch.setattr(repository, "save_cost_center", changed_meanwhile)
-            conflicted = client.delete(member_url)
-        assert conflicted.status_code == 409, conflicted.text
-        assert (
-            client.get(f"/api/v1/principals/{user}").json()["defaultCostCenterId"]
-            == created["id"]
-        )
-        assert client.get(f"/api/v1/entitlements/{grant_id}").json()["enabled"] is True
-
-    repeated = client.delete(member_url)
-
-    assert repeated.status_code == 204, repeated.text
-    updated = client.get(center_url).json()
-    assert updated["membershipRevision"] == view["membershipRevision"]
-    assert updated["pendingRechecks"] == []
-    assert client.get(f"/api/v1/principals/{user}").json()["defaultCostCenterId"] is None
-    assert client.get(f"/api/v1/entitlements/{grant_id}").json()["enabled"] is tenant_default
+    monkeypatch.setattr(estate.repository, "create_directory_operation", lost)
+    request = CostCenterCreate(name="Intent", code="intent", group_setup=CreateCostCenterGroup())
+    with pytest.raises(ChangeNotRecordedError, match="cost center is saved") as error:
+        await estate.service.create(ADMIN, request, cost_center_id="intent")
+    assert error.value.details["savedCostCenterId"] == "intent"
+    repeated = await estate.service.create(ADMIN, request, cost_center_id="intent")
+    assert repeated.directory_operations[0].state == "pending"
+    assert estate.graph.writes == [] and estate.lookup.reads == 0
 
 
-async def test_group_subject_grants_under_another_center_prevent_owner_deletion(
-    client: TestClient,
+async def test_permanent_persistence_outage_leaves_pending_and_blocks_recreation(
+    estate: Management, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    created = create_center(client)
-    resource_id = await seed_model(client)
-    grant = Entitlement(
-        id="entitlement_previous_binding",
-        tenant_id=TENANT,
-        subject=EntitlementSubject(kind="group", id=created["groupId"]),
-        resource=EntitlementResource(kind="modelApi", id=resource_id),
-        cost_center_id=general_cost_center_id(TENANT),
-    )
-    await client.app.state.entitlement_repository.create_entitlement(grant, audit())
-    response = client.delete(f"/api/v1/cost-centers/{created['id']}")
-    assert response.status_code == 409, response.text
-    assert response.json()["details"]["reason"] == "groupHasGrants"
-    assert client.get(f"/api/v1/groups/{created['groupId']}").status_code == 200
-
-
-async def test_managed_group_is_not_a_backdoor_to_legacy_group_grant_resolution(
-    client: TestClient,
-) -> None:
-    created = create_center(client)
-    resource_id = await seed_model(client)
-    response = client.post(
-        "/api/v1/entitlements",
-        json={
-            "subject": {"kind": "group", "id": created["groupId"]},
-            "resource": {"kind": "modelApi", "id": resource_id},
-        },
-    )
-    assert response.status_code == 422, response.text
-    assert response.json()["details"]["reason"] == "managedCostCenterAccessUnavailable"
-    assert client.get("/api/v1/entitlements").json() == []
-
-
-def test_linkage_and_group_membership_remain_admin_only(client: TestClient) -> None:
-    created, user = create_center(client), principal(client)
-    client.app.state.authenticator = LocalAuthenticator(TENANT, ["User"])
-    assert client.post(f"/api/v1/cost-centers/{created['id']}/group").status_code == 403
-    assert client.put(f"/api/v1/groups/{created['groupId']}/members/{user}").status_code == 403
-
-
-def test_idempotent_linkage_reports_missing_metadata_instead_of_claiming_success(
-    client: TestClient,
-) -> None:
-    created = create_center(client)
-    del client.app.state.repository.groups[created["groupId"]]
-    response = client.post(f"/api/v1/cost-centers/{created['id']}/group")
-    assert response.status_code == 409, response.text
-
-
-def test_generic_orphan_memberships_keep_the_existing_lookup_and_removal_behavior(
-    client: TestClient,
-) -> None:
-    group = client.post("/api/v1/groups", json={"name": "Legacy group"}).json()
-    user = principal(client)
-    url = f"/api/v1/groups/{group['id']}/members"
-    assert client.put(f"{url}/{user}").status_code == 201
-    del client.app.state.repository.groups[group["id"]]
-    listed = client.get(url)
-    assert listed.status_code == 404
-    assert client.delete(f"{url}/{user}").status_code == 204
-    assert client.app.state.repository.memberships == {}
-
-
-def test_concurrent_removal_is_a_conflict_not_a_missing_member_server_error(
-    client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    created, user = create_center(client), principal(client)
-    after_removal = CostCenterView.model_validate(created)
+    original = estate.repository.save_directory_operation
     monkeypatch.setattr(
-        client.app.state.cost_center_service,
-        "add_member_with_status",
-        AsyncMock(return_value=(after_removal, True)),
+        estate.repository,
+        "save_directory_operation",
+        AsyncMock(side_effect=RuntimeError("Fictional persistence outage")),
     )
-    response = client.put(f"/api/v1/groups/{created['groupId']}/members/{user}")
-    assert response.status_code == 409, response.text
-    assert response.json()["details"]["principalId"] == user
+    request = CostCenterCreate(name="Outage", code="outage", group_setup=CreateCostCenterGroup())
+    with pytest.raises(ChangeNotRecordedError):
+        await estate.service.create(ADMIN, request, cost_center_id="outage")
+    monkeypatch.setattr(estate.repository, "save_directory_operation", original)
+    retried = await estate.service.create(ADMIN, request, cost_center_id="outage")
+    assert retried.setup_state == "setupRequired"
+    assert retried.directory_operations[0].state == "pending"
+    assert len(estate.graph.writes) == 1
 
 
-@pytest.mark.parametrize("duplicate", [False, True])
-def test_legacy_linkage_rejects_oversized_or_duplicate_references(duplicate: bool) -> None:
-    invalid = center(
-        members=[
-            CostCenterMember(principal_id="duplicate" if duplicate else f"p-{i}")
-            for i in range(2 if duplicate else 501)
-        ]
+async def test_untyped_domain_error_after_create_cannot_admit_another_post(
+    estate: Management,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = estate.graph.create_group
+
+    async def lost(*args: Any, **kwargs: Any) -> Any:
+        await original(*args, **kwargs)
+        raise DirectoryError("Fictional unclassified post-write failure")
+
+    monkeypatch.setattr(estate.graph, "create_group", lost)
+    request = CostCenterCreate(
+        name="Unclassified",
+        code="unclassified",
+        group_setup=CreateCostCenterGroup(),
     )
-    with pytest.raises(ConflictError if duplicate else ValidationError):
-        linked_cost_center(invalid)
+    center = await estate.service.create(ADMIN, request, cost_center_id="unclassified")
+    [operation] = center.directory_operations
+    assert operation.state == "unknown" and not operation.can_retry
+    assert not operation.directory_updated
+    await estate.service.create(ADMIN, request, cost_center_id="unclassified")
+    with pytest.raises(ConflictError, match="definitive failed"):
+        await estate.service.retry_directory_operation(ADMIN, center.id, operation.id)
+    assert len(estate.graph.writes) == 1
+
+
+async def test_direct_paging_includes_workloads_and_nested_reference_not_transitive_roster(
+    estate: Management,
+) -> None:
+    center = await attach(estate)
+    people = [str(UUID(int=1000 + index)) for index in range(1500)]
+    for index, object_id in enumerate(people):
+        estate.lookup.state.objects[object_id] = DirectoryObject(
+            object_id=object_id, kind="user", display_name=f"Fictional person {index}"
+        )
+    estate.lookup.state.group_members[GROUP] = [*people, WORKLOAD, OTHER_GROUP]
+    estate.lookup.state.group_members[OTHER_GROUP] = [USER]
+    first = await estate.service.list_directory_members(ADMIN, center.id, page_size=137)
+    assert first.api_version == "beta" and "not supported for production" in first.preview_notice
+    cursor, members = first.next_cursor, list(first.members)
+    while cursor is not None:
+        page = await estate.service.list_directory_members(
+            ADMIN, center.id, page_size=137, cursor=cursor
+        )
+        members.extend(page.members)
+        cursor = page.next_cursor
+    assert len(members) == 1502
+    assert {item.object_id for item in members} == {*people, WORKLOAD, OTHER_GROUP}
+    assert all(item.membership_type == "direct" for item in members)
+    assert next(item for item in members if item.object_id == WORKLOAD).kind == "servicePrincipal"
+    calls = estate.lookup.reads
+    await estate.service.list_cost_centers(ADMIN)
+    detail = await estate.service.get_cost_center(ADMIN, center.id)
+    assert estate.lookup.reads == calls and detail.members == [] and detail.member_details == []
+
+
+async def test_member_writes_are_real_idempotent_and_do_not_sync_automatic_grants(
+    estate: Management,
+) -> None:
+    center = await attach(estate)
+    for object_id, kind in [
+        (USER, PrincipalKind.USER),
+        (WORKLOAD, PrincipalKind.SERVICE_PRINCIPAL),
+    ]:
+        operation = await estate.service.add_directory_member(
+            ADMIN, center.id, object_id, kind, idempotency_key=object_id
+        )
+        repeated = await estate.service.add_directory_member(
+            ADMIN, center.id, object_id, kind, idempotency_key=object_id
+        )
+        assert operation.state == repeated.state == "succeeded"
+        assert operation.id == repeated.id and operation.directory_updated
+        assert operation.propagation_notice and operation.key_revocation_notice is None
+    assert len(estate.graph.writes) == 2
+    assert estate.lookup.state.group_members[GROUP] == [USER, WORKLOAD]
+    assert estate.local_directory.principals == {}  # No forced onboarding.
+    assert estate.local_directory.groups == {} and estate.entitlements.entitlements == {}
+    assert estate.checks.synced == [center.id]
+    removed = await estate.service.remove_directory_member(
+        ADMIN, center.id, USER, idempotency_key="remove-user"
+    )
+    assert removed.state == "succeeded" and removed.key_revocation_notice
+    assert estate.lookup.state.group_members[GROUP] == [WORKLOAD]
+    assert estate.checks.removed == [(center.id, USER, PrincipalKind.USER)]
+    assert estate.checks.synced == [center.id]
+    stored = await estate.repository.get_cost_center(TENANT, center.id)
+    assert stored is not None and stored.members == [] and stored.membership_revision == 0
+
+
+async def test_member_idempotency_key_cannot_change_target_or_kind(estate: Management) -> None:
+    center = await attach(estate)
+    await estate.service.add_directory_member(
+        ADMIN, center.id, USER, PrincipalKind.USER, idempotency_key="one"
+    )
+    with pytest.raises(ConflictError, match="different membership"):
+        await estate.service.add_directory_member(
+            ADMIN, center.id, WORKLOAD, PrincipalKind.SERVICE_PRINCIPAL, idempotency_key="one"
+        )
+    with pytest.raises(ConflictError, match="different membership"):
+        await estate.service.remove_directory_member(ADMIN, center.id, USER, idempotency_key="one")
+    assert len(estate.graph.writes) == 1
+
+
+async def test_member_kind_is_checked_server_side_not_trusted_from_input(
+    estate: Management,
+) -> None:
+    center = await attach(estate)
+    operation = await estate.service.add_directory_member(
+        ADMIN, center.id, WORKLOAD, PrincipalKind.USER, idempotency_key="spoof-kind"
+    )
+    assert operation.state == "failed" and operation.error_code == "validation_error"
+    assert estate.graph.writes == []
+
+
+async def test_workload_write_consent_is_separate_from_user_write_consent() -> None:
+    estate = management(permissions=(*BASELINE, "GroupMember.ReadWrite.All"))
+    center = await attach(estate)
+    caps = await estate.service.group_capabilities(ADMIN)
+    assert caps.can_add_users and not caps.can_add_service_principals
+    operation = await estate.service.add_directory_member(
+        ADMIN, center.id, WORKLOAD, PrincipalKind.SERVICE_PRINCIPAL, idempotency_key="workload"
+    )
+    assert operation.state == "failed" and operation.error_code == "forbidden"
+    assert "Application.ReadWrite.All" in (operation.error_message or "")
+    assert estate.graph.writes == []
+
+
+@pytest.mark.parametrize("kind", [GroupFailureKind.FORBIDDEN, GroupFailureKind.NOT_FOUND])
+async def test_definitive_no_effect_removal_does_not_claim_success_or_schedule_rechecks(
+    estate: Management, kind: GroupFailureKind
+) -> None:
+    center = await attach(estate)
+    estate.graph.failures["remove_member"] = failure(kind)
+    operation = await estate.service.remove_directory_member(
+        ADMIN, center.id, USER, idempotency_key="denied-remove"
+    )
+    assert operation.state == "failed" and not operation.directory_updated
+    assert operation.key_revocation_notice is None and operation.propagation_notice is None
+    assert estate.checks.removed == [] and estate.graph.writes == []
+
+
+async def test_uncertain_removal_schedules_individual_rechecks_and_recovers_without_replay(
+    estate: Management,
+) -> None:
+    center = await attach(estate)
+    estate.lookup.state.group_members[GROUP] = [USER]
+    estate.graph.failures["remove_member"] = failure(
+        GroupFailureKind.UNKNOWN_OUTCOME, GroupWriteOutcome.UNKNOWN
+    )
+    operation = await estate.service.remove_directory_member(
+        ADMIN, center.id, USER, idempotency_key="uncertain-remove"
+    )
+    assert operation.state == "unknown" and not operation.directory_updated
+    assert operation.key_revocation_notice and operation.propagation_notice
+    assert estate.checks.removed == [(center.id, USER, PrincipalKind.USER)]
+    with pytest.raises(ConflictError, match="uncertain"):
+        await estate.service.remove_directory_member(
+            ADMIN, center.id, USER, idempotency_key="another-key"
+        )
+    estate.graph.failures.clear()
+    # An administrator observes/finishes the external relationship change.
+    estate.lookup.state.group_members[GROUP] = []
+    recovered = await estate.service.recover_directory_operation(ADMIN, center.id, operation.id)
+    assert recovered.state == "succeeded" and recovered.directory_updated
+    assert estate.graph.writes == []
+
+
+async def test_untyped_post_remove_error_still_schedules_individual_access_rechecks(
+    estate: Management,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    center = await attach(estate)
+    estate.lookup.state.group_members[GROUP] = [USER]
+    original = estate.graph.remove_member
+
+    async def lost(*args: Any, **kwargs: Any) -> Any:
+        await original(*args, **kwargs)
+        raise DirectoryError("Fictional unclassified removal result")
+
+    monkeypatch.setattr(estate.graph, "remove_member", lost)
+    operation = await estate.service.remove_directory_member(
+        ADMIN,
+        center.id,
+        USER,
+        idempotency_key="unclassified-remove",
+    )
+    assert operation.state == "unknown" and not operation.can_retry
+    assert not operation.directory_updated
+    assert estate.checks.removed == [(center.id, USER, PrincipalKind.USER)]
+    assert len(estate.graph.writes) == 1
+    recovered = await estate.service.recover_directory_operation(
+        ADMIN,
+        center.id,
+        operation.id,
+    )
+    assert recovered.state == "succeeded" and len(estate.graph.writes) == 1
+
+
+async def test_old_unknown_member_intent_cannot_hide_behind_visible_history(
+    estate: Management,
+) -> None:
+    center = await attach(estate)
+    estate.graph.failures["add_member"] = failure(
+        GroupFailureKind.UNKNOWN_OUTCOME, GroupWriteOutcome.UNKNOWN
+    )
+    uncertain = await estate.service.add_directory_member(
+        ADMIN, center.id, USER, PrincipalKind.USER, idempotency_key="old"
+    )
+    for index in range(205):
+        operation = CostCenterDirectoryOperation(
+            id=cost_center_member_operation_id(TENANT, center.id, f"history-{index}"),
+            tenant_id=TENANT,
+            cost_center_id=center.id,
+            kind="addMember",
+            directory_tenant_id=TENANT,
+            group_object_id=GROUP,
+            member_object_id=WORKLOAD,
+            member_kind="servicePrincipal",
+            requested_by=ADMIN.object_id,
+            updated_at=utc_now() + timedelta(seconds=index),
+        )
+        operation = await estate.repository.create_directory_operation(operation, audit())
+        await estate.repository.save_directory_operation(
+            operation.model_copy(update={"state": "failed", "error_code": "forbidden"}), audit()
+        )
+    with pytest.raises(ConflictError) as error:
+        await estate.service.add_directory_member(
+            ADMIN, center.id, USER, PrincipalKind.USER, idempotency_key="new-key"
+        )
+    assert error.value.details["operationId"] == uncertain.id
+    assert len(await estate.service.list_directory_operations(ADMIN, center.id, limit=200)) == 200
+
+
+async def test_post_remove_persistence_failure_still_schedules_individual_recheck(
+    estate: Management, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    center = await attach(estate)
+    estate.lookup.state.group_members[GROUP] = [USER]
+    original = estate.repository.save_directory_operation
+    monkeypatch.setattr(
+        estate.repository,
+        "save_directory_operation",
+        AsyncMock(side_effect=RuntimeError("Fictional persistence outage")),
+    )
+    with pytest.raises(ChangeNotRecordedError):
+        await estate.service.remove_directory_member(
+            ADMIN, center.id, USER, idempotency_key="lost-remove-result"
+        )
+    assert estate.checks.removed == [(center.id, USER, PrincipalKind.USER)]
+    assert estate.lookup.state.group_members[GROUP] == []
+    monkeypatch.setattr(estate.repository, "save_directory_operation", original)
+    repeated = await estate.service.remove_directory_member(
+        ADMIN, center.id, USER, idempotency_key="lost-remove-result"
+    )
+    assert repeated.state == "pending" and not repeated.directory_updated
+    assert len(estate.graph.writes) == 1
+
+
+async def test_removal_recheck_hook_can_resume_after_directory_success(
+    estate: Management,
+) -> None:
+    center = await attach(estate)
+    estate.lookup.state.group_members[GROUP] = [USER]
+    estate.checks.removal_error = RuntimeError("Fictional recheck outage")
+    with pytest.raises(ChangeNotRecordedError, match="rechecks"):
+        await estate.service.remove_directory_member(
+            ADMIN, center.id, USER, idempotency_key="remove-hook"
+        )
+    estate.checks.removal_error = None
+    repeated = await estate.service.remove_directory_member(
+        ADMIN, center.id, USER, idempotency_key="remove-hook"
+    )
+    assert repeated.state == "succeeded" and estate.checks.removed
+    assert len(estate.graph.writes) == 1
+
+
+async def test_member_editor_rejects_changed_group_type_without_deconfiguring_binding(
+    estate: Management,
+) -> None:
+    center = await attach(estate)
+    estate.graph._groups[GROUP] = replace(estate.graph._groups[GROUP], is_assignable_to_role=True)
+    operation = await estate.service.add_directory_member(
+        ADMIN, center.id, USER, PrincipalKind.USER, idempotency_key="unsupported"
+    )
+    assert operation.state == "failed" and operation.error_code == "unsupported_group"
+    assert (await estate.service.get_cost_center(ADMIN, center.id)).setup_state == "ready"
+    assert estate.graph.writes == []
+
+
+async def test_actor_tenant_and_operation_scope_cannot_select_an_arbitrary_group(
+    estate: Management,
+) -> None:
+    center = await attach(estate)
+    other = await attach(estate, "other", OTHER_GROUP)
+    before = estate.lookup.reads
+    with pytest.raises(DirectoryForbiddenError):
+        await estate.service.add_directory_member(
+            Actor(object_id="foreign-admin", tenant_id=str(uuid4())),
+            center.id,
+            USER,
+            PrincipalKind.USER,
+            idempotency_key="wrong-tenant",
+        )
+    assert estate.lookup.reads == before and not estate.graph.writes
+    operation = await estate.service.add_directory_member(
+        ADMIN, center.id, USER, PrincipalKind.USER, idempotency_key="correct"
+    )
+    with pytest.raises(Exception, match="not found"):
+        await estate.service.recover_directory_operation(ADMIN, other.id, operation.id)
+
+
+async def test_resource_modes_validate_before_save_and_sync_after_save_outside_leases(
+    estate: Management,
+) -> None:
+    center = await attach(estate)
+    access = [
+        CostCenterResourceAccess(
+            resource=EntitlementResource(kind="poolModel", id="same", scope_id="pool-one"),
+            mode="requestOnly",
+        ),
+        CostCenterResourceAccess(
+            resource=EntitlementResource(kind="poolModel", id="same", scope_id="pool-two"),
+            mode="notAvailable",
+        ),
+    ]
+    estate.checks.validation_error = ValidationError("Fictional token capability failure")
+    with pytest.raises(ValidationError):
+        await estate.service.update_cost_center(
+            ADMIN, center.id, CostCenterUpdate(resource_access=access)
+        )
+    unchanged = await estate.repository.get_cost_center(TENANT, center.id)
+    assert unchanged is not None and unchanged.resource_access == []
+    estate.checks.validation_error = None
+    updated = await estate.service.update_cost_center(
+        ADMIN, center.id, CostCenterUpdate(resource_access=access)
+    )
+    assert updated.resource_access == access
+    assert estate.checks.validated[-1].resource_access == access
+    assert estate.checks.synced == [center.id, center.id]
+    assert estate.graph.writes == []
+
+
+async def test_deleting_center_keeps_directory_group_and_exclusive_reservation(
+    estate: Management,
+) -> None:
+    center = await attach(estate)
+    await estate.service.delete_cost_center(ADMIN, center.id)
+    assert (await estate.graph.get_group(GROUP)).object_id == GROUP
+    reservation = await estate.repository.get_group_reservation(TENANT, TENANT, GROUP)
+    assert reservation is not None and reservation.cost_center_id == center.id
+    with pytest.raises(ConflictError):
+        await attach(estate, "cannot-reparent", GROUP)
+    assert estate.graph.writes == []
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "list_publications",
+        "list_mcp_publications",
+        "list_model_pools",
+    ],
+)
+async def test_applied_grants_prevent_deletion_even_after_desired_grants_disappear(
+    estate: Management,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+) -> None:
+    center = await attach(estate)
+    applied = SimpleNamespace(
+        id="publication",
+        applied_access=SimpleNamespace(grants=[SimpleNamespace(cost_center_id=center.id)]),
+    )
+    monkeypatch.setattr(estate.gateways, method, AsyncMock(return_value=[applied]))
+    with pytest.raises(ConflictError, match="Revoke and apply") as error:
+        await estate.service.delete_cost_center(ADMIN, center.id)
+    assert error.value.details["reason"] == "hasAppliedGrants"
+    assert await estate.repository.get_cost_center(TENANT, center.id) is not None
+    reservation = await estate.repository.get_group_reservation(TENANT, TENANT, GROUP)
+    assert reservation is not None and reservation.cost_center_id == center.id
+
+
+async def test_unsettled_directory_operation_prevents_deletion(estate: Management) -> None:
+    estate.graph.failures["create_group"] = failure(
+        GroupFailureKind.UNKNOWN_OUTCOME, GroupWriteOutcome.UNKNOWN
+    )
+    center = await estate.service.create(
+        ADMIN, CostCenterCreate(name="Unknown", code="unknown", group_setup=CreateCostCenterGroup())
+    )
+    with pytest.raises(ConflictError, match="pending or unknown"):
+        await estate.service.delete_cost_center(ADMIN, center.id)
+
+
+async def test_general_exemption_is_stable_and_never_admits_setup_or_member_writes(
+    estate: Management,
+) -> None:
+    general_id = general_cost_center_id(TENANT)
+    renamed = await estate.service.update_cost_center(
+        ADMIN, general_id, CostCenterUpdate(name="Shared", code="shared")
+    )
+    assert renamed.setup_state == "exempt"
+    for setup in [
+        CreateCostCenterGroup(),
+        AttachCostCenterGroup(group_object_id=GROUP, acknowledge_membership_changes=True),
+    ]:
+        with pytest.raises(ValidationError, match="General"):
+            await estate.service.update_cost_center(
+                ADMIN, general_id, CostCenterUpdate(group_setup=setup)
+            )
+    with pytest.raises(ValidationError, match="General"):
+        await estate.service.add_directory_member(
+            ADMIN, general_id, USER, PrincipalKind.USER, idempotency_key="general"
+        )
+    assert not estate.graph.writes and not estate.lookup.reads
+
+
+async def test_legacy_local_groups_are_preserved_but_cannot_be_a_hidden_graph_editor(
+    estate: Management,
+) -> None:
+    legacy = CostCenter(
+        id="legacy",
+        tenant_id=TENANT,
+        name="Legacy",
+        code="legacy",
+        group_id="old-local",
+        members=[CostCenterMember(principal_id="old-principal")],
+    )
+    await estate.repository.create_cost_center(legacy, audit())
+    group = Group(
+        id="old-local",
+        tenant_id=TENANT,
+        name="Old projection",
+        purpose="costCenter",
+        cost_center_id="legacy",
+    )
+    estate.local_directory.groups[group.id] = group
+    directory = DirectoryService(estate.local_directory, directory_lookup=estate.lookup)
+    for operation in [
+        directory.add_membership(ADMIN, group.id, "old-principal"),
+        directory.remove_membership(ADMIN, group.id, "old-principal"),
+        directory.list_memberships(ADMIN, group.id),
+    ]:
+        with pytest.raises(ConflictError):
+            await operation
+    with pytest.raises(ConflictError, match="legacy local"):
+        await estate.service.update_cost_center(
+            ADMIN, legacy.id, CostCenterUpdate(group_setup=CreateCostCenterGroup())
+        )
+    before = deepcopy(estate.local_directory.groups)
+    await estate.service.update_cost_center(ADMIN, legacy.id, CostCenterUpdate(name="New label"))
+    await estate.service.delete_cost_center(ADMIN, legacy.id)
+    assert estate.local_directory.groups == before
+    assert estate.lookup.reads == 0 and not estate.graph.writes
+
+
+async def test_legacy_principal_wrappers_never_report_unknown_or_failed_local_success(
+    estate: Management,
+) -> None:
+    center = await attach(estate)
+    person = Principal(id="person", tenant_id=TENANT, object_id=USER, kind="user")
+    await estate.local_directory.create_principal(person, audit())
+    estate.graph.failures["add_member"] = failure(
+        GroupFailureKind.UNKNOWN_OUTCOME, GroupWriteOutcome.UNKNOWN
+    )
+    with pytest.raises(DirectoryError, match="Fictional"):
+        await estate.service.add_member_with_status(ADMIN, center.id, person.id)
+    current = await estate.repository.get_cost_center(TENANT, center.id)
+    assert current is not None and current.members == []
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_state", "attempts"),
+    [(403, "failed", 1), (429, "failed", 2), (503, "unknown", 1), (0, "unknown", 1)],
+)
+async def test_http_create_failures_are_tracked_and_unknown_is_not_replayed(
+    status_code: int, expected_state: str, attempts: int
+) -> None:
+    estate = management()
+    requests: list[httpx.Request] = []
+
+    async def no_sleep(_delay: float) -> None:
+        return None
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        estate.lookup.outside_lease()
+        requests.append(request)
+        assert request.method == "POST" and request.url.path == "/v1.0/groups"
+        if status_code == 0:
+            raise httpx.ReadTimeout("Fictional timeout", request=request)
+        return httpx.Response(
+            status_code,
+            json={"error": {"code": "FictionalFailure", "message": "Fictional"}},
+            headers={"Retry-After": "0"},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        graph = GraphGroupManagement(
+            FakeCredential(
+                {"tid": TENANT, "idtyp": "app", "oid": OTHER_GROUP, "roles": list(ALL_WRITES)}
+            ),
+            endpoint="https://graph.microsoft.com",
+            tenant_id=TENANT,
+            client=client,
+            sleep=no_sleep,
+        )
+        estate.service._directory_groups._management = graph
+        request = CostCenterCreate(name="HTTP", code="http", group_setup=CreateCostCenterGroup())
+        created = await estate.service.create(ADMIN, request, cost_center_id="http")
+        assert created.setup_state == "setupRequired" and created.entra_binding is None
+        assert created.directory_operations[0].state == expected_state
+        error_details = created.directory_operations[0].error_details
+        assert error_details is not None
+        assert error_details.http_status == (status_code or None)
+        if status_code:
+            assert error_details.graph_code == "FictionalFailure"
+            assert f"HTTP {status_code}" in (created.directory_operations[0].error_message or "")
+        await estate.service.create(ADMIN, request, cost_center_id="http")
+        assert len(requests) == attempts
+
+
+async def test_http_remove_deletes_only_the_membership_ref_never_the_directory_object() -> None:
+    estate = management()
+    center = await attach(estate)
+    deletes: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        estate.lookup.outside_lease()
+        if request.method == "GET":
+            assert request.url.path == f"/v1.0/groups/{GROUP}"
+            return httpx.Response(
+                200,
+                json={
+                    "id": GROUP,
+                    "displayName": "Fictional group",
+                    "securityEnabled": True,
+                    "mailEnabled": False,
+                    "groupTypes": [],
+                    "isAssignableToRole": False,
+                    "onPremisesSyncEnabled": None,
+                    "onPremisesSecurityIdentifier": None,
+                    "membershipRule": None,
+                },
+            )
+        assert request.method == "DELETE"
+        deletes.append(request.url.path)
+        assert request.url.path == f"/v1.0/groups/{GROUP}/members/{USER}/$ref"
+        return httpx.Response(204)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        graph = GraphGroupManagement(
+            FakeCredential(
+                {"tid": TENANT, "idtyp": "app", "oid": OTHER_GROUP, "roles": list(ALL_WRITES)}
+            ),
+            endpoint="https://graph.microsoft.com",
+            tenant_id=TENANT,
+            client=client,
+        )
+        estate.service._directory_groups._management = graph
+        operation = await estate.service.remove_directory_member(
+            ADMIN, center.id, USER, idempotency_key="ref-only"
+        )
+    assert operation.state == "succeeded" and len(deletes) == 1

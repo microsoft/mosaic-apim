@@ -17,9 +17,10 @@ Microsoft Graph requires separately administrator-consented **application**
 `ProfilePhoto.Read.All` for user photos. The existing `User.ReadBasic.All` permission verifies
 the user object but is not sufficient for app-only photos. See Microsoft's
 [Get profilePhoto documentation](https://learn.microsoft.com/en-us/graph/api/profilephoto-get?view=graph-rest-1.0).
-Granting this permission is a separate tenant-administrator decision; MOSAIC never grants it,
-changes permissions, writes to Graph or changes the tenant. No additional group or application
-read permission is needed for this photo path.
+Granting this permission is a separate tenant-administrator decision; the photo path never grants
+it, changes permissions, or writes to Graph. No additional group or application read permission
+is needed for photos. Separately consented [cost-center group management](deployment.md#optional-cost-center-group-management)
+is a different API capability, not a write permission implied by photo consent.
 
 Missing photo consent does not disable directory search, verification or onboarding.
 Application and managed-identity registrations remain reference-only.

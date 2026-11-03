@@ -3,17 +3,32 @@ from datetime import datetime
 from azure.cosmos import exceptions
 from azure.cosmos.aio import CosmosClient
 
-from mosaic_api.cost_centers import CostCenter, CostCenterSettings, cost_center_settings_id
-from mosaic_api.domain import AuditEvent, Group
-from mosaic_api.errors import ConflictError
-from mosaic_api.managed_cost_center_groups import (
-    linked_cost_center,
-    managed_group,
-    membership_changed,
+from mosaic_api.cost_center_directory import (
+    CostCenterDirectoryOperation,
+    CostCenterGroupReservation,
+    DirectoryOperationState,
+    cost_center_group_reservation_id,
+    cost_center_provisioning_operation_id,
 )
-from mosaic_api.repositories.cosmos import CosmosRepositoryBase
+from mosaic_api.cost_centers import CostCenter, CostCenterSettings, cost_center_settings_id
+from mosaic_api.domain import AuditEvent
+from mosaic_api.errors import ConflictError
+from mosaic_api.repositories.cosmos import BatchOperation, CosmosRepositoryBase
+from mosaic_api.repositories.cost_center_writes import (
+    COST_CENTER_CHANGED,
+    OPERATION_CHANGED,
+    directory_operation_limit,
+    group_reservation,
+    operation_result_replayed,
+    require_binding_change,
+    require_operation_start,
+    require_operation_update,
+    require_reservation_owner,
+    validate_audit_tenant,
+    validated_cost_center,
+    validated_operation,
+)
 
-COST_CENTER_CHANGED = "The cost center changed; reload it and try again"
 SETTINGS_CHANGED = "The cost center settings changed; reload them and try again"
 
 
@@ -32,13 +47,14 @@ class CosmosCostCenterRepository(CosmosRepositoryBase):
         audit_events_container: str,
         *,
         owns_client: bool = True,
-        managed_groups_enabled: bool = False,
     ) -> None:
         super().__init__(
-            client, database_name, desired_state_container, audit_events_container,
+            client,
+            database_name,
+            desired_state_container,
+            audit_events_container,
             owns_client=owns_client,
         )
-        self._managed_groups_enabled = managed_groups_enabled
 
     async def list_cost_centers(self, tenant_id: str) -> list[CostCenter]:
         items = await self._query(CostCenter, tenant_id, "costCenter")
@@ -50,20 +66,23 @@ class CosmosCostCenterRepository(CosmosRepositoryBase):
     async def create_cost_center(
         self, cost_center: CostCenter, audit_event: AuditEvent
     ) -> CostCenter:
-        if self._managed_groups_enabled:
-            cost_center = linked_cost_center(cost_center)
-        if cost_center.group_id is not None:
-            group = managed_group(cost_center)
+        cost_center = validated_cost_center(cost_center)
+        validate_audit_tenant(cost_center, audit_event)
+        reservation_operations = await self._binding_operations(None, cost_center)
+        if reservation_operations:
             await self._execute_batch(
                 [
                     ("create", (self._document(cost_center),)),
-                    ("create", (self._document(group),)),
+                    *reservation_operations,
                     ("create", (self._document(audit_event),)),
                 ],
                 audit_event,
-                conflict_message="The cost center or its managed group already exists",
+                conflict_message="The cost center or Entra group reservation already exists",
             )
-            return cost_center
+            stored = await self.get_cost_center(cost_center.tenant_id, cost_center.id)
+            if stored is None:
+                raise ConflictError(COST_CENTER_CHANGED)
+            return stored
         await self._mutate(
             cost_center,
             None,
@@ -76,35 +95,185 @@ class CosmosCostCenterRepository(CosmosRepositoryBase):
     async def save_cost_center(
         self, cost_center: CostCenter, audit_event: AuditEvent
     ) -> CostCenter:
+        cost_center = validated_cost_center(cost_center)
+        validate_audit_tenant(cost_center, audit_event)
         if not cost_center.etag:
             raise ConflictError(COST_CENTER_CHANGED)
         current = await self.get_cost_center(cost_center.tenant_id, cost_center.id)
         if current is None or current.etag != cost_center.etag:
             raise ConflictError(COST_CENTER_CHANGED)
-        cost_center = membership_changed(current, cost_center)
-        if cost_center.group_id is not None:
-            previous = await self._read(Group, cost_center.tenant_id, cost_center.group_id)
-            if current.group_id is not None and previous is None:
-                raise ConflictError("The cost center's managed group is missing")
-            if current.group_id is None and previous is not None:
-                raise ConflictError("The managed-group identifier is already in use")
-            group = managed_group(cost_center, previous)
+        reservation_operations = await self._binding_operations(current, cost_center)
+        if reservation_operations:
             await self._execute_batch(
                 [
                     self._replace_operation(cost_center),
-                    self._replace_operation(group)
-                    if previous is not None
-                    else ("create", (self._document(group),)),
+                    *reservation_operations,
                     ("create", (self._document(audit_event),)),
                 ],
                 audit_event,
-                conflict_message=COST_CENTER_CHANGED,
+                conflict_message="The cost center or Entra group reservation changed",
             )
-            return cost_center
+            stored = await self.get_cost_center(cost_center.tenant_id, cost_center.id)
+            if stored is None:
+                raise ConflictError(COST_CENTER_CHANGED)
+            return stored
         await self._mutate(
             cost_center, None, audit_event, "replace", conflict_message=COST_CENTER_CHANGED
         )
         return cost_center
+
+    async def _binding_operations(
+        self, previous: CostCenter | None, updated: CostCenter
+    ) -> list[BatchOperation]:
+        if updated.entra_binding is None and (previous is None or previous.entra_binding is None):
+            return []
+        provisioning = None
+        if previous is None or previous.entra_binding is None:
+            provisioning = await self.get_directory_operation(
+                updated.tenant_id,
+                cost_center_provisioning_operation_id(updated.tenant_id, updated.id),
+            )
+        require_binding_change(previous, updated, provisioning)
+        if updated.entra_binding is None:
+            return []
+        requested = group_reservation(updated)
+        current = await self.get_group_reservation(
+            requested.tenant_id, requested.directory_tenant_id, requested.group_object_id
+        )
+        if current is None:
+            return [("create", (self._document(requested),))]
+        require_reservation_owner(requested, current)
+        return [self._replace_operation(current)]
+
+    async def get_group_reservation(
+        self, tenant_id: str, directory_tenant_id: str, group_object_id: str
+    ) -> CostCenterGroupReservation | None:
+        return await self._read(
+            CostCenterGroupReservation,
+            tenant_id,
+            cost_center_group_reservation_id(tenant_id, directory_tenant_id, group_object_id),
+        )
+
+    async def reserve_group(
+        self, reservation: CostCenterGroupReservation, audit_event: AuditEvent
+    ) -> CostCenterGroupReservation:
+        reservation = CostCenterGroupReservation.model_validate(
+            {**reservation.model_dump(by_alias=False), "etag": reservation.etag}
+        )
+        validate_audit_tenant(reservation, audit_event)
+        try:
+            await self._mutate(
+                reservation,
+                None,
+                audit_event,
+                "create",
+                conflict_message="The Entra group reservation already exists",
+            )
+        except ConflictError:
+            current = await self.get_group_reservation(
+                reservation.tenant_id,
+                reservation.directory_tenant_id,
+                reservation.group_object_id,
+            )
+            if current is None:
+                raise
+            require_reservation_owner(reservation, current)
+            return current
+        stored = await self.get_group_reservation(
+            reservation.tenant_id, reservation.directory_tenant_id, reservation.group_object_id
+        )
+        if stored is None:
+            raise ConflictError("The Entra group reservation was not found after saving")
+        return stored
+
+    async def get_directory_operation(
+        self, tenant_id: str, operation_id: str
+    ) -> CostCenterDirectoryOperation | None:
+        return await self._read(CostCenterDirectoryOperation, tenant_id, operation_id)
+
+    async def list_directory_operations(
+        self,
+        tenant_id: str,
+        cost_center_id: str,
+        *,
+        limit: int = 50,
+        member_object_id: str | None = None,
+        unsettled_only: bool = False,
+    ) -> list[CostCenterDirectoryOperation]:
+        directory_operation_limit(limit)
+        filters = ""
+        parameters: list[dict[str, object]] = [
+            {"name": "@tenantId", "value": tenant_id},
+            {"name": "@entityType", "value": "costCenterDirectoryOperation"},
+            {"name": "@costCenterId", "value": cost_center_id},
+            {"name": "@limit", "value": limit},
+        ]
+        if member_object_id is not None:
+            filters += "AND c.memberObjectId = @memberObjectId "
+            parameters.append({"name": "@memberObjectId", "value": member_object_id})
+        if unsettled_only:
+            filters += "AND c.state IN ('pending', 'unknown') "
+        items = self._desired.query_items(
+            query=(
+                "SELECT TOP @limit * FROM c WHERE c.tenantId = @tenantId "
+                "AND c.entityType = @entityType AND c.costCenterId = @costCenterId "
+                f"{filters}ORDER BY c.updatedAt DESC"
+            ),
+            parameters=parameters,
+            partition_key=tenant_id,
+        )
+        return [self._model(CostCenterDirectoryOperation, item) async for item in items]
+
+    async def create_directory_operation(
+        self, operation: CostCenterDirectoryOperation, audit_event: AuditEvent
+    ) -> CostCenterDirectoryOperation:
+        operation = validated_operation(operation)
+        validate_audit_tenant(operation, audit_event)
+        current = await self.get_cost_center(operation.tenant_id, operation.cost_center_id)
+        require_operation_start(operation, current)
+        if current is None:
+            raise ConflictError(COST_CENTER_CHANGED)
+        await self._execute_batch(
+            [
+                self._replace_operation(current),
+                ("create", (self._document(operation),)),
+                ("create", (self._document(audit_event),)),
+            ],
+            audit_event,
+            conflict_message=(
+                "The directory intent already exists or its cost center changed; "
+                "read the recorded outcome before retrying"
+            ),
+        )
+        stored = await self.get_directory_operation(operation.tenant_id, operation.id)
+        if stored is None:
+            raise ConflictError(OPERATION_CHANGED)
+        return stored
+
+    async def save_directory_operation(
+        self, operation: CostCenterDirectoryOperation, audit_event: AuditEvent
+    ) -> CostCenterDirectoryOperation:
+        operation = validated_operation(operation)
+        validate_audit_tenant(operation, audit_event)
+        current = await self.get_directory_operation(operation.tenant_id, operation.id)
+        if current is not None and operation_result_replayed(current, operation):
+            return current
+        if current is None or not operation.etag or current.etag != operation.etag:
+            raise ConflictError(OPERATION_CHANGED)
+        require_operation_update(current, operation)
+        operations: list[BatchOperation] = [self._replace_operation(operation)]
+        if operation.state == DirectoryOperationState.PENDING:
+            center = await self.get_cost_center(operation.tenant_id, operation.cost_center_id)
+            require_operation_start(operation, center)
+            if center is None:
+                raise ConflictError(COST_CENTER_CHANGED)
+            operations.append(self._replace_operation(center))
+        operations.append(("create", (self._document(audit_event),)))
+        await self._execute_batch(operations, audit_event, conflict_message=OPERATION_CHANGED)
+        stored = await self.get_directory_operation(operation.tenant_id, operation.id)
+        if stored is None:
+            raise ConflictError(OPERATION_CHANGED)
+        return stored
 
     async def member_removal_recorded(
         self,
@@ -137,6 +306,7 @@ class CosmosCostCenterRepository(CosmosRepositoryBase):
         return False
 
     async def delete_cost_center(self, cost_center: CostCenter, audit_event: AuditEvent) -> None:
+        validate_audit_tenant(cost_center, audit_event)
         current = await self.get_cost_center(cost_center.tenant_id, cost_center.id)
         if (
             not cost_center.etag
@@ -145,21 +315,6 @@ class CosmosCostCenterRepository(CosmosRepositoryBase):
             or current.group_id != cost_center.group_id
         ):
             raise ConflictError(COST_CENTER_CHANGED)
-        if cost_center.group_id is not None:
-            group = await self._read(Group, cost_center.tenant_id, cost_center.group_id)
-            if group is None:
-                raise ConflictError("The cost center's managed group is missing")
-            managed_group(cost_center, group)
-            await self._execute_batch(
-                [
-                    self._delete_operation(cost_center.id, cost_center),
-                    self._delete_operation(group.id, group),
-                    ("create", (self._document(audit_event),)),
-                ],
-                audit_event,
-                conflict_message=COST_CENTER_CHANGED,
-            )
-            return
         await self._mutate(
             cost_center,
             cost_center.id,

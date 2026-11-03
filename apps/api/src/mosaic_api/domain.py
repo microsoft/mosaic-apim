@@ -1894,6 +1894,8 @@ class EntitlementRuntime(MosaicModel):
     # Whether the grant's key exists in API Management. Keys are created on request, by the
     # grant's holder or an administrator, never by an apply. See ADR 0022.
     key_exists: bool = False
+    eligibility_recheck_pending: bool = False
+    key_revocation_pending: bool = False
     applied_at: datetime | None = None
     error: str | None = Field(
         default=None,
@@ -1965,6 +1967,8 @@ class Entitlement(Entity):
     notes: str | None = None
     revocation: GrantRevocation | None = None
     runtime: EntitlementRuntime | None = None
+    # Only cost-center synchronization authors this marker; ordinary grants are never adopted.
+    managed_by: Literal["costCenterAutomatic"] | None = None
 
     @model_validator(mode="after")
     def fill_cost_center(self) -> Self:
@@ -2225,6 +2229,15 @@ class PortalModel(MosaicModel):
     version: str | None = None
 
 
+class CatalogCostCenterAccess(MosaicModel):
+    """An eligible center's mode for this exact catalog offering."""
+
+    cost_center: CostCenterRef
+    mode: Literal["automatic", "requestOnly"]
+    is_default: bool = False
+    keys_allowed: bool = True
+
+
 class CatalogEntry(MosaicModel):
     """One governed resource as an end user sees it.
 
@@ -2251,6 +2264,7 @@ class CatalogEntry(MosaicModel):
     # A person can still ask for the resource under another of their cost centers.
     entitled_cost_center_ids: list[str] = Field(default_factory=list)
     requested_cost_center_ids: list[str] = Field(default_factory=list)
+    cost_center_access: list[CatalogCostCenterAccess] = Field(default_factory=list)
     # Whether the gateway enforces grants on this resource. Reported for MCP servers only: True
     # when MOSAIC publishes the server and has applied its access, False for an adopted server or
     # a published one whose latest apply didn't finish. None for other kinds.
@@ -2273,6 +2287,9 @@ class PortalResolvedEntitlement(ResolvedEntitlement):
 
     resource_display_name: str | None = None
     model: PortalModel | None = None
+    access_origin: Literal["automaticCostCenter", "approvedIndividual", "group"] = (
+        "approvedIndividual"
+    )
 
 
 class PortalAccessRequest(AccessRequest):
@@ -2312,6 +2329,7 @@ class PortalProfile(MosaicModel):
     groups_overage: bool = False
     # The cost center the caller's calls are charged to when they name none.
     default_cost_center: CostCenterRef | None = None
+    default_cost_center_eligible: bool = True
 
 
 class ConsoleAccess(MosaicModel):
@@ -2425,6 +2443,9 @@ class AppliedCostCenterPool(MosaicModel):
         return self
 
 
+_DIRECTORY_GROUP_ID_PATTERN = r"^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$"
+
+
 class ModelAccessGrant(MosaicModel):
     entitlement_id: str
     subject: EntitlementSubject
@@ -2442,6 +2463,9 @@ class ModelAccessGrant(MosaicModel):
     # The cost center the grant charges, and its code as the cost-center header names it.
     cost_center_id: str = ""
     cost_center_code: str = ""
+    required_cost_center_group_id: str | None = Field(
+        default=None, pattern=_DIRECTORY_GROUP_ID_PATTERN, exclude_if=_unset
+    )
     # Whether this is a direct grant under its subject's default cost center. A call that names no
     # cost center uses it before the subject's other grants, which go oldest first.
     default_cost_center: bool = False
@@ -2516,6 +2540,9 @@ class McpAccessGrant(MosaicModel):
     # selects, and whether it's the subject's default.
     cost_center_id: str = ""
     cost_center_code: str = ""
+    required_cost_center_group_id: str | None = Field(
+        default=None, pattern=_DIRECTORY_GROUP_ID_PATTERN, exclude_if=_unset
+    )
     default_cost_center: bool = False
     granted_at: datetime | None = None
 
@@ -2588,6 +2615,9 @@ class PoolAccessGrant(MosaicModel):
     intent_digest: str
     cost_center_id: str = ""
     cost_center_code: str = ""
+    required_cost_center_group_id: str | None = Field(
+        default=None, pattern=_DIRECTORY_GROUP_ID_PATTERN, exclude_if=_unset
+    )
     # Whether this is a direct grant under its subject's default cost center. A call that names no
     # cost center uses it before the subject's other grants for the model, which go oldest first.
     default_cost_center: bool = False

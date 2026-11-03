@@ -2,6 +2,11 @@
 
 **Status:** Accepted
 
+**Amended by [ADR 0030](0030-entra-backed-cost-centers.md):** Custom-center token grants require
+their dedicated center group, including individual grants. Directory lookup remains read-only;
+optional group creation/member management is a separate API-identity capability. General is
+exempt from the mandatory group; Government is excluded from that new workflow.
+
 **Update:** Security-group grants can now be linked to usage. A group grant has no APIM
 subscription, so its calls couldn't be told apart in the logs. The gateway now tags each call a
 group grant authorizes with the grant and the caller's validated `oid`, and the grant's binding
@@ -31,12 +36,14 @@ MOSAIC records.
 `agentIdentity` map to `application`; `securityGroup` maps to `securityGroup`. MOSAIC-local groups
 remain the existing desired-state-only `group` subject kind.
 
-**MOSAIC reads Microsoft Graph through its managed identity, read-only.** The API managed identity
+**Directory lookup reads Microsoft Graph through the API identity, read-only.** The API managed identity
 uses application permissions `User.ReadBasic.All`, `GroupMember.Read.All` and
 `AgentIdentity.Read.All`. MOSAIC uses Graph to search directory objects, verify a principal when it
 is added, list security-group members, resolve administrator-entered IDs, explain group access in
-the console and detect overlapping grants. It never writes to Entra, and the API Management gateway
-never calls Graph. Directory lookup is always available with Entra authentication, without a
+the console and detect overlapping grants. This lookup adapter does not write to Entra. A separate
+optionally consented adapter manages verified cost-center groups and their direct membership under
+ADR 0030. The API Management gateway needs no Graph permission and never calls Graph for runtime
+authorization. Directory lookup is always available with Entra authentication, without a
 deployment switch, and still requires tenant-administrator consent for its Graph permissions.
 Local authentication has no live directory lookup; administrators type object IDs and MOSAIC
 records unverified principals.
@@ -87,8 +94,10 @@ runtime access and do not participate in APIM authorization.
 
 **Overage fails closed at the gateway.** Microsoft Entra omits `groups` from JWT access tokens when
 the subject is in more than 200 groups and emits overage markers such as `_claim_names` /
-`_claim_sources`, or `hasgroups` for implicit-flow tokens. APIM cannot call Graph, so a group grant
-cannot match such a token. The remedy is a direct grant for that user, service principal or agent.
+`_claim_sources`, or `hasgroups` for implicit-flow tokens. APIM does not call Graph, so a group grant
+cannot match such a token. A direct token grant can avoid an optional resource-group check only
+under General. It cannot bypass the mandatory group claim of a custom center. Resolve claim
+eligibility or review a separately allowed individual-key path; never silently redirect to General.
 
 **Overlaps are visible before apply.** The console reports overlapping grants, the winner and the
 reason. Plan review also warns when direct and group grants, or multiple group grants, reach the
@@ -107,8 +116,12 @@ recorded governance intent because MOSAIC does not own their gateway policy.
 ## Consequences
 
 - A token-claim check is not live directory state. Removing a user, service principal or agent from
-  a group takes effect when their runtime token expires, usually within about an hour.
-- A caller in too many groups needs a direct grant because APIM receives no usable group list.
+  a group does not invalidate already-issued JWTs. Human tokens normally last 60-90 minutes from
+  issuance; actual remaining `exp`, policy, and directory propagation matter. Managed-identity
+  token/authorization caching can last around 24 hours per resource. This is not immediate
+  revocation, a universal 90-minute bound, or a CAE promise.
+- A caller with group overage cannot prove a custom center's mandatory group claim. An individual
+  token grant is not a bypass, and APIM has no Graph fallback.
 - Granting the Graph application permissions requires a privileged administrator.
 - Security-group grants have no key path and no APIM subscription, so clients that require a
   subscription key need a direct grant.
@@ -136,9 +149,35 @@ grant still wins over a group grant, and the most generous group grant over the 
 among grants under the same cost center. Grants under different cost centers don't compete; a
 caller picks one with the `x-mosaic-cost-center` header. Without it, the gateway tries the caller's
 direct grant under their default cost center, then their other direct grants, oldest first, then
-their security-group grants in the order above. A security group may charge only the tenant's
-default cost center or one that lists it, and a member of a listed group may charge that cost
-center too.
+their security-group grants in the order above. The original default/listed-roster charge eligibility
+is superseded by the Entra-backed membership requirement below; selection never creates eligibility.
+
+## Amendment 2026-11-03: Entra-backed center membership and stable grants
+
+[ADR 0030](0030-entra-backed-cost-centers.md) makes one exclusively bound Entra security group
+authoritative for every custom center's membership. The center defines charging and exact-resource
+policy; an entitlement still authorizes only one resource under that center. Automatic uses one
+managed group grant per exact model, pool-model offering, or MCP resource. Adding a member
+creates no per-member automatic entitlement and makes no APIM management write.
+
+Every custom-center **token** path requires the center group claim, including individual grants
+and reviewed quota exceptions. Direct-grant precedence does not bypass this requirement.
+General's stable built-in identity is exempt. Keys remain explicit individual credentials where
+resource and center allow them, with current eligibility required for creation/reveal. Membership
+removal does not revoke a copied key; recheck and revoke/apply are separate work. Out-of-band
+changes require an explicit eligibility recheck; there is no directory watcher.
+
+The read-only permission baseline is unchanged. Optional `Group.Create` creates a group with the
+API service principal explicitly named as owner; optional `GroupMember.ReadWrite.All` enables user
+membership edits. Adding service principals additionally needs separately consented
+`Application.ReadWrite.All`. A MOSAIC Admin role is not that consent, and ordinary resource
+approval neither assigns invocation roles nor silently changes membership. All these are API
+control-plane permissions, not APIM permissions.
+
+The center editor's direct member list uses Graph beta as the documented workaround for v1.0
+omitting service principals. That listing API is preview and not production-supported, distinct
+from APIM's stable JWT group-grant path. Fictional adapter/contract tests establish no live
+directory or gateway interoperability. See ADR 0030's evidence boundary.
 
 ## References
 
@@ -153,3 +192,7 @@ center too.
 - [Add app roles and get them from a token](https://learn.microsoft.com/entra/identity-platform/howto-add-app-roles-in-apps)
 - [Access token claims reference](https://learn.microsoft.com/entra/identity-platform/access-token-claims-reference)
 - [Configure group claims and app roles in tokens](https://learn.microsoft.com/security/zero-trust/develop/configure-tokens-group-claims-app-roles)
+- [Group creation and owner permissions](https://learn.microsoft.com/en-us/graph/api/group-post-groups?view=graph-rest-1.0)
+- [Member-write permissions](https://learn.microsoft.com/en-us/graph/api/group-post-members?view=graph-rest-1.0)
+- [Access-token lifetimes](https://learn.microsoft.com/en-us/entra/identity-platform/access-tokens#token-lifetime)
+- [Managed-identity token caching](https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/managed-identities-faq#are-managed-identities-tokens-cached)

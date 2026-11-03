@@ -8,10 +8,13 @@ from azure.core.credentials_async import AsyncTokenCredential
 from fastapi.testclient import TestClient
 from mosaic_api.azure_connections import AzureConnectionSecret
 from mosaic_api.clouds import AzureResourceContext, cloud_profile
+from mosaic_api.config import Settings
 from mosaic_api.domain import McpAuthMode, McpEndpoint
 from mosaic_api.errors import NotFoundError, ValidationError
 from mosaic_api.integrations.apim.client import ArmClient
 from mosaic_api.integrations.azure_connections import AzureClientRegistry
+from mosaic_api.integrations.graph.fake import FakeDirectoryLookup
+from mosaic_api.main import create_app
 from pydantic import SecretStr
 from test_azure_connections import ACTOR, SECRET, build, request
 
@@ -132,30 +135,36 @@ def test_main_wires_selected_discovery_without_changing_commercial_defaults(
 
 
 async def test_demo_discovery_uses_only_government_fakes_for_selected_connection(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+    settings: Settings, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The pytest console entrypoint does not put the repository root on sys.path.
     monkeypatch.syspath_prepend(str(REPO_ROOT))
     from scripts.screenshots.demo_api import install_demo_services
 
-    services = install_demo_services(client.app, [])
-    try:
-        created = await services.connections.create(ACTOR, request())
-        suggestions = await services.endpoints.suggestions(
-            ACTOR, azure_cloud="government", azure_connection_id=created.id
-        )
-        assert suggestions.suggestions
-        assert all(
-            suggestion.azure_cloud == "government"
-            and suggestion.azure_connection_id == created.id
-            and ".openai.azure.us" in str(suggestion.endpoint)
-            for suggestion in suggestions.suggestions
-        )
-        target = endpoint(created.id)
-        assert target.resource_audience is not None
-        token = await services.mcp_endpoints._connection_token_resolver(
-            target, target.resource_audience
-        )
-        assert token == "demo-management-token-not-real"
-    finally:
-        await services.aclose()
+    lookup = FakeDirectoryLookup([], tenant_id=settings.tenant_id)
+    app = create_app(
+        settings,
+        directory_lookup=lookup,
+    )
+    with TestClient(app) as client:
+        services = install_demo_services(client.app, [])
+        try:
+            created = await services.connections.create(ACTOR, request())
+            suggestions = await services.endpoints.suggestions(
+                ACTOR, azure_cloud="government", azure_connection_id=created.id
+            )
+            assert suggestions.suggestions
+            assert all(
+                suggestion.azure_cloud == "government"
+                and suggestion.azure_connection_id == created.id
+                and ".openai.azure.us" in str(suggestion.endpoint)
+                for suggestion in suggestions.suggestions
+            )
+            target = endpoint(created.id)
+            assert target.resource_audience is not None
+            token = await services.mcp_endpoints._connection_token_resolver(
+                target, target.resource_audience
+            )
+            assert token == "demo-management-token-not-real"
+        finally:
+            await services.aclose()
