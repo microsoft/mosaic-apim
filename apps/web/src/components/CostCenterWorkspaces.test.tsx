@@ -1,6 +1,6 @@
 import { FluentProvider, webLightTheme } from '@fluentui/react-components'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState, type ReactNode } from 'react'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
@@ -9,7 +9,7 @@ import { ApiError } from '../api'
 import { centerCapabilities, centerGroupObjectId, costCenterCreationRequest, directoryMemberPage, memberObjectId, memberOperation, readyCostCenter } from '../test/cost-center-fixtures'
 import { modelPublication, publishedModelApi } from '../test/model-access'
 import { governedAnthropicPool } from '../test/pool-fixtures'
-import type { AdminCostCenterRequest, CostCenterResourceAccess } from '../types'
+import type { AdminCostCenterRequest, CostCenterResourceAccess, DirectoryObject } from '../types'
 import { CostCenterDirectoryMembers } from './CostCenterDirectoryMembers'
 import { CostCenterDirectoryOperations } from './CostCenterDirectoryOperations'
 import { CostCenterEditor } from './CostCenterSetupForm'
@@ -38,8 +38,8 @@ function mount(children: ReactNode) {
   return client
 }
 
-const group = { objectId: centerGroupObjectId, kind: 'securityGroup', displayName: 'Fictional Research', detail: 'Dedicated security group' }
-const person = { objectId: memberObjectId, kind: 'user', displayName: 'Fictional analyst' }
+const group: DirectoryObject = { objectId: centerGroupObjectId, kind: 'securityGroup', displayName: 'Fictional Research', detail: 'Dedicated security group' }
+const person: DirectoryObject = { objectId: memberObjectId, kind: 'user', displayName: 'Fictional analyst' }
 const published = { ...modelPublication, resources: [{ kind: 'api', name: modelPublication.apiName, resourceId: 'fictional-api', createdByMosaic: true, appliedAt: '2026-11-01T10:00:00Z' }] }
 
 beforeEach(() => {
@@ -70,6 +70,13 @@ beforeEach(() => {
 async function enterCenter(user: ReturnType<typeof userEvent.setup>) {
   await user.type(await screen.findByLabelText('Name'), 'Research')
   await user.type(screen.getByLabelText('Code'), 'research')
+}
+
+async function verifyIdentity(user: ReturnType<typeof userEvent.setup>, label: 'Group object ID' | 'Member object ID', id: string) {
+  await user.click(screen.getByText('Use an object ID'))
+  await user.type(screen.getByLabelText(label), id)
+  await user.click(screen.getByRole('button', { name: 'Verify directory identity' }))
+  expect(api.getDirectoryObject).toHaveBeenCalledWith(id)
 }
 
 describe('shared cost-center setup', () => {
@@ -107,6 +114,29 @@ describe('shared cost-center setup', () => {
       groupSetup: { mode: 'attach', groupObjectId: centerGroupObjectId, acknowledgeMembershipChanges: true },
     })))
     expect(api.addCostCenterMember).not.toHaveBeenCalled()
+  })
+
+  it('ignores stale group verification after a replacement object ID is verified', async () => {
+    const user = userEvent.setup()
+    let finish!: (value: DirectoryObject) => void
+    const pending = new Promise<DirectoryObject>((resolve) => { finish = resolve })
+    const replacement = { ...group, objectId: '77777777-7777-4777-8777-777777777777', displayName: 'Replacement fictional group' }
+    api.getDirectoryObject.mockReturnValueOnce(pending).mockResolvedValueOnce(replacement)
+    mount(<CostCenterEditor onCancel={vi.fn()} onSaved={vi.fn()} />)
+    await enterCenter(user)
+    await user.click(screen.getByRole('radio', { name: 'Attach existing group' }))
+    await verifyIdentity(user, 'Group object ID', group.objectId)
+    await user.clear(screen.getByLabelText('Group object ID'))
+    await user.type(screen.getByLabelText('Group object ID'), replacement.objectId)
+    await user.click(screen.getByRole('button', { name: 'Verify directory identity' }))
+    expect(await screen.findByText(replacement.displayName)).toBeVisible()
+    await act(async () => { finish(group); await pending })
+    expect(screen.getByText(/Selected:/)).toHaveTextContent(replacement.displayName)
+    await user.click(screen.getByRole('checkbox', { name: /I acknowledge that membership edits change this real Entra group/ }))
+    await user.click(screen.getByRole('button', { name: 'Create cost center' }))
+    await waitFor(() => expect(api.createCostCenter).toHaveBeenCalledWith(expect.objectContaining({
+      groupSetup: { mode: 'attach', groupObjectId: replacement.objectId, acknowledgeMembershipChanges: true },
+    })))
   })
 
   it('previews ordinary group creation only after a read-only capability check', async () => {
@@ -206,6 +236,59 @@ describe('shared cost-center setup', () => {
 })
 
 describe('directory members and durable operations', () => {
+  it.each(['object ID', 'search text', 'identity type'].flatMap((input) =>
+    ['success', 'unsupported', 'error'].map((outcome) => ({ input, outcome })),
+  ))('ignores stale member verification $outcome after editing the $input', async ({ input, outcome }) => {
+    const user = userEvent.setup()
+    let finish!: (value: DirectoryObject) => void
+    let fail!: (reason: Error) => void
+    const pending = new Promise<DirectoryObject>((resolve, reject) => { finish = resolve; fail = reject })
+    api.getDirectoryObject.mockReturnValueOnce(pending)
+    mount(<CostCenterDirectoryMembers costCenter={readyCostCenter} onSetup={vi.fn()} />)
+    await waitFor(() => expect(screen.getByLabelText('Find directory member')).toBeEnabled())
+    await verifyIdentity(user, 'Member object ID', person.objectId)
+    if (input === 'object ID') await user.type(screen.getByLabelText('Member object ID'), '0')
+    else if (input === 'search text') await user.type(screen.getByLabelText('Find directory member'), 'Other')
+    else await user.selectOptions(screen.getByLabelText('Directory identity type'), 'application')
+    await act(async () => {
+      if (outcome === 'error') fail(new Error('Earlier verification failed'))
+      else finish(outcome === 'unsupported' ? group : person)
+      await pending.catch(() => undefined)
+    })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Verify directory identity' })).toBeEnabled())
+    expect(screen.queryByText(/Selected:/)).not.toBeInTheDocument()
+    expect(screen.queryByText('Identity verification failed')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Unsupported identity type/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add to Entra group' })).toBeDisabled()
+    expect(api.addCostCenterDirectoryMember).not.toHaveBeenCalled()
+  })
+
+  it.each(['success', 'unsupported', 'error'] as const)('ignores a stale verification %s after selecting another member', async (outcome) => {
+    const user = userEvent.setup()
+    let finish!: (value: DirectoryObject) => void
+    let fail!: (reason: Error) => void
+    const pending = new Promise<DirectoryObject>((resolve, reject) => { finish = resolve; fail = reject })
+    const previous = { ...person, objectId: '77777777-7777-4777-8777-777777777777', displayName: 'Earlier fictional analyst' }
+    api.getDirectoryObject.mockReturnValueOnce(pending)
+    mount(<CostCenterDirectoryMembers costCenter={readyCostCenter} onSetup={vi.fn()} />)
+    const search = screen.getByLabelText('Find directory member')
+    await waitFor(() => expect(search).toBeEnabled())
+    await verifyIdentity(user, 'Member object ID', previous.objectId)
+    await user.type(search, 'Analyst')
+    await user.click(within(await screen.findByRole('list', { name: 'Directory member results' })).getByRole('button'))
+    await act(async () => {
+      if (outcome === 'error') fail(new Error('Earlier verification failed'))
+      else finish(outcome === 'unsupported' ? group : previous)
+      await pending.catch(() => undefined)
+    })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Verify directory identity' })).toBeEnabled())
+    expect(screen.getByText(/Selected:/)).toHaveTextContent('Fictional analyst')
+    expect(screen.queryByText('Identity verification failed')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Unsupported identity type/)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Add to Entra group' }))
+    await waitFor(() => expect(api.addCostCenterDirectoryMember).toHaveBeenCalledWith(readyCostCenter.id, memberObjectId, 'user', expect.any(String)))
+  })
+
   it('pages direct users and workloads without a local roster, and restarts paging explicitly on refresh', async () => {
     const user = userEvent.setup()
     api.listCostCenterDirectoryMembers.mockImplementation(async (_id, options) => options.cursor

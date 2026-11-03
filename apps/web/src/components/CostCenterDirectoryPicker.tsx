@@ -1,6 +1,6 @@
 import { Badge, Button, Field, Input, Select, Text } from '@fluentui/react-components'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMosaicApi } from '../api'
 import { PRINCIPAL_KIND_LABELS } from '../labels'
 import type { DirectoryObject, DirectorySearchKind } from '../types'
@@ -18,6 +18,7 @@ export function CostCenterDirectoryPicker({ group = false, selected, onSelect, d
   const [query, setQuery] = useState('')
   const [searchText, setSearchText] = useState('')
   const [objectId, setObjectId] = useState('')
+  const lookupRevision = useRef(0)
   useEffect(() => {
     const timer = window.setTimeout(() => setSearchText(query.trim()), 300)
     return () => window.clearTimeout(timer)
@@ -29,19 +30,30 @@ export function CostCenterDirectoryPicker({ group = false, selected, onSelect, d
     retry: false,
   })
   const lookup = useMutation({
-    mutationFn: (id: string) => api.getDirectoryObject(id),
-    onSuccess: (value) => {
+    mutationFn: ({ id }: { id: string; revision: number }) => api.getDirectoryObject(id),
+    onSuccess: (value, { revision }) => {
+      if (revision !== lookupRevision.current) return
       if (group ? value.kind === 'securityGroup' : value.kind !== 'securityGroup') onSelect(value)
     },
     retry: false,
   })
+  const { reset: resetLookup } = lookup
+  useEffect(() => {
+    resetLookup()
+    return () => { lookupRevision.current += 1 }
+  }, [disabled, group, selected, resetLookup])
+  function select(value: DirectoryObject | null) {
+    lookupRevision.current += 1
+    resetLookup()
+    onSelect(value)
+  }
   const current = query.trim() === searchText && searchText.length >= 2
   const wrongKind = lookup.data && (group ? lookup.data.kind !== 'securityGroup' : lookup.data.kind === 'securityGroup')
   return <div className={styles.stack}>
     <div className={styles.grid}>
       {!group && <Field label="Directory identity type">
         <Select value={kind} aria-label="Directory identity type" disabled={disabled}
-          onChange={(_, data) => { setKind(data.value as DirectorySearchKind); onSelect(null) }}>
+          onChange={(_, data) => { setKind(data.value as DirectorySearchKind); select(null) }}>
           <option value="user">People</option>
           <option value="application">Applications &amp; managed identities</option>
           <option value="agent">Agents</option>
@@ -49,7 +61,7 @@ export function CostCenterDirectoryPicker({ group = false, selected, onSelect, d
       </Field>}
       <Field label={group ? 'Find Entra security group' : 'Find directory member'} hint="Enter at least 2 characters. Search is bounded to 20 results.">
         <Input aria-label={group ? 'Find Entra security group' : 'Find directory member'} value={query} disabled={disabled}
-          onChange={(_, data) => { setQuery(data.value); onSelect(null) }}
+          onChange={(_, data) => { setQuery(data.value); select(null) }}
           onKeyDown={(event) => { if (event.key === 'Enter') event.preventDefault() }} />
       </Field>
     </div>
@@ -65,7 +77,7 @@ export function CostCenterDirectoryPicker({ group = false, selected, onSelect, d
         return <li key={`${value.kind}:${value.objectId}`}>
           <button type="button" className={styles.choice} disabled={disabled || !supported}
             aria-pressed={selected?.objectId === value.objectId}
-            onClick={() => onSelect(value)}>
+            onClick={() => select(value)}>
             <strong>{value.displayName || 'Unnamed directory identity'}</strong>
             <span>{PRINCIPAL_KIND_LABELS[value.kind]}{value.detail ? ` · ${value.detail}` : ''}</span>
             <span className={styles.technical}>Object ID: {value.objectId}</span>
@@ -79,10 +91,10 @@ export function CostCenterDirectoryPicker({ group = false, selected, onSelect, d
       <div className={styles.stack}>
         <Field label={group ? 'Group object ID' : 'Member object ID'}>
           <Input aria-label={group ? 'Group object ID' : 'Member object ID'} value={objectId} disabled={disabled}
-            onChange={(_, data) => { setObjectId(data.value); lookup.reset(); onSelect(null) }} />
+            onChange={(_, data) => { setObjectId(data.value); select(null) }} />
         </Field>
         <Button type="button" disabled={disabled || !objectId.trim() || lookup.isPending}
-          onClick={() => lookup.mutate(objectId.trim())}>Verify directory identity</Button>
+          onClick={() => lookup.mutate({ id: objectId.trim(), revision: ++lookupRevision.current })}>Verify directory identity</Button>
         {lookup.isError && <ErrorState title="Identity verification failed" error={lookup.error} />}
         {wrongKind && <Text>Unsupported identity type. {group ? 'Choose an Entra security group.' : 'Choose a person or workload identity; nested groups are not supported here.'}</Text>}
       </div>

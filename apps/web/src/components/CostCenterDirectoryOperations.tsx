@@ -30,7 +30,7 @@ function DirectoryOperation({ value }: { value: CostCenterDirectoryOperationView
       queryClient.setQueryData<CostCenterDirectoryOperationView[]>(['cost-centers', value.costCenterId, 'directory-operations'],
         (current) => current?.map((item) => item.id === operation.id ? operation : item))
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['cost-centers', value.costCenterId] }),
+        queryClient.invalidateQueries({ queryKey: ['cost-centers'] }),
         queryClient.invalidateQueries({ queryKey: ['cost-center-requests'] }),
         ...(operation.state === 'succeeded' && operation.directoryUpdated
           ? [queryClient.invalidateQueries({ queryKey: ['entitlements'] })] : []),

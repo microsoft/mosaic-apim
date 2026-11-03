@@ -10,7 +10,7 @@ import {
   organizationBudgetFixture,
   researchBudgetFixture,
 } from '../test/budget-fixtures'
-import { readyCostCenter } from '../test/cost-center-fixtures'
+import { memberOperation, readyCostCenter } from '../test/cost-center-fixtures'
 import { anthropicPool, draftPool, governedAnthropicPool } from '../test/pool-fixtures'
 import type { CostCenter, Principal } from '../types'
 import { CostCenterDetailPage, CostCentersPage } from './CostCentersPage'
@@ -70,6 +70,8 @@ const api = {
   listGateways: vi.fn(),
   getCostCenterGroupCapabilities: vi.fn(),
   listCostCenterDirectoryOperations: vi.fn(),
+  retryCostCenterDirectoryOperation: vi.fn(),
+  recoverCostCenterDirectoryOperation: vi.fn(),
   getBudgets: vi.fn(),
   getCostCenterBudget: vi.fn(),
   setCostCenterBudget: vi.fn(),
@@ -148,6 +150,41 @@ describe('Cost centers pages', () => {
     renderRoute('/cost-centers/cc-general?tab=members')
     await screen.findByText(/does not offer a local shadow roster/)
     expect(screen.queryByRole('button', { name: 'View membership group' })).not.toBeInTheDocument()
+  })
+
+  it.each([
+    { action: 'retry', state: 'failed' as const, button: 'Retry recorded failed operation' },
+    { action: 'recovery', state: 'unknown' as const, button: 'Recover without repeating write' },
+  ])('refreshes the mounted list and default eligibility after successful group-creation $action', async ({ action, state, button }) => {
+    const user = userEvent.setup()
+    const incomplete = { ...readyCostCenter, setupState: 'setupRequired' as const, entraBinding: null }
+    const completed = { ...memberOperation, kind: 'createGroup' as const, memberObjectId: null, memberKind: null }
+    const recorded = { ...completed, state, directoryUpdated: false, canRetry: action === 'retry' }
+    api.listCostCenters.mockResolvedValue([general, incomplete])
+    api.getCostCenter.mockResolvedValue(incomplete)
+    api.listCostCenterDirectoryOperations.mockResolvedValue([recorded])
+    const reconcile = action === 'retry' ? api.retryCostCenterDirectoryOperation : api.recoverCostCenterDirectoryOperation
+    reconcile.mockImplementation(async () => {
+      api.listCostCenters.mockResolvedValue([general, readyCostCenter])
+      api.getCostCenter.mockResolvedValue(readyCostCenter)
+      api.listCostCenterDirectoryOperations.mockResolvedValue([completed])
+      return completed
+    })
+    renderRoute()
+    const centers = await screen.findByRole('list', { name: 'Cost centers' })
+    expect(within(within(centers).getByRole('button', { name: /Research/ })).getByText('Setup required')).toBeVisible()
+    await user.click(screen.getByText('Tenant default', { selector: 'summary' }))
+    expect(screen.getByRole('option', { name: /Research \(research\)/ })).toBeDisabled()
+    await user.click(within(centers).getByRole('button', { name: /Research/ }))
+    await user.click(await screen.findByRole('button', { name: button }))
+    await waitFor(() => expect(reconcile).toHaveBeenCalledWith(readyCostCenter.id, recorded.id))
+    const detail = screen.getByRole('region', { name: 'Selected cost center' })
+    expect(await within(detail).findByText('Group ready')).toBeVisible()
+    await waitFor(() => expect(within(within(centers).getByRole('button', { name: /Research/ })).getByText('Group ready')).toBeVisible())
+    expect(screen.getByRole('option', { name: 'Research (research)' })).toBeEnabled()
+    expect(api.listCostCenters).toHaveBeenCalledTimes(2)
+    expect(api.getCostCenter).toHaveBeenCalledTimes(2)
+    expect(api.createCostCenter).not.toHaveBeenCalled()
   })
 
   it('opens exact read-only offerings inside a selected center without losing the center or pool scope', async () => {
