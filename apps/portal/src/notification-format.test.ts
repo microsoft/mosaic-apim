@@ -34,6 +34,10 @@ describe('notification contracts', () => {
 
   it('uses fixed portal routes and encoded subject identifiers rather than arbitrary links', () => {
     expect(notificationLink(notificationItem())).toEqual({ to: '/requests?request=request%2F1', label: 'View request' })
+    expect(notificationLink(notificationItem({ subject: { requestId: 'center/1', requestKind: 'costCenter' } })))
+      .toEqual({ to: '/requests?request=center%2F1&requestKind=costCenter', label: 'View cost-center request' })
+    expect(notificationLink(notificationItem({ subject: { requestId: 'resource/1', requestKind: 'resource' } }))?.to)
+      .toBe('/requests?request=resource%2F1')
     expect(notificationLink(notificationItem({ subject: { entitlementId: '../other?x=1' } }))?.to).toBe('/access?grant=..%2Fother%3Fx%3D1')
     expect(notificationLink(notificationItem({ category: 'usageAndBudgets', subject: { costCenterId: 'shared' } }))?.to).toBe('/usage')
     expect(notificationLink(notificationItem({ category: 'operationalIssues', subject: {} }))).toBeNull()

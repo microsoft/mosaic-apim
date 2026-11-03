@@ -1,4 +1,5 @@
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from time import monotonic
 
 from mosaic_api.domain import (
@@ -18,6 +19,14 @@ from mosaic_api.integrations.graph.membership import (
 from mosaic_api.integrations.graph.photos import DirectoryPhoto, validate_photo
 
 
+@dataclass
+class FakeDirectoryState:
+    """Fictional backing store shared by read lookup and opt-in group-management fakes."""
+
+    objects: dict[str, DirectoryObject] = field(default_factory=dict)
+    group_members: dict[str, list[str]] = field(default_factory=dict)
+
+
 class FakeDirectoryLookup:
     def __init__(
         self,
@@ -33,18 +42,28 @@ class FakeDirectoryLookup:
             "GroupMember.Read.All",
             "AgentIdentity.Read.All",
         ),
+        state: FakeDirectoryState | None = None,
     ) -> None:
-        self._objects = {item.object_id.casefold(): item for item in objects}
-        self._members = {
-            group_id.casefold(): [member_id.casefold() for member_id in members]
-            for group_id, members in (group_members or {}).items()
-        }
+        self.state = state if state is not None else FakeDirectoryState()
+        self._objects = self.state.objects
+        self._members = self.state.group_members
+        self._objects.update({item.object_id.casefold(): item for item in objects})
+        self._members.update(
+            {
+                group_id.casefold(): [member_id.casefold() for member_id in members]
+                for group_id, members in (group_members or {}).items()
+            }
+        )
         self._forbidden = forbidden
         self._unavailable = unavailable
         self.photos = {key.casefold(): value for key, value in (photos or {}).items()}
         self._tenant_id = tenant_id
         self._application_permissions = frozenset(application_permissions)
         self.closed = False
+
+    @property
+    def tenant_id(self) -> str:
+        return self._tenant_id
 
     async def search(
         self, kind: DirectorySearchKind, query: str, *, limit: int = 20

@@ -15,13 +15,16 @@ import { environmentLabel } from '../environments'
 import {
   apiStyleLabel,
   capacityLabel,
+  describeRuntime,
   isModelResource,
   resourceFromCatalog,
   resourceKindLabel,
   sameResource,
 } from '../entitlement-format'
 import { usePortalEnvironments } from '../environments'
-import type { CatalogEntry, PortalCostCenter, PortalEnvironment } from '../types'
+import { accessOriginLabel, catalogGrants } from '../portal-access'
+import { invalidateRequests } from '../request-queries'
+import type { CatalogEntry, CostCenterRef, PortalEnvironment, ResolvedEntitlement } from '../types'
 
 type KindFilter = 'all' | 'model' | 'mcpServer'
 
@@ -51,7 +54,7 @@ function environmentOptions(entries: CatalogEntry[], environments: PortalEnviron
   return { known, unknown, hasUnclassified: entries.some((entry) => entry.environment === null) }
 }
 
-function costCenterLabel(costCenter: PortalCostCenter) {
+function costCenterLabel(costCenter: CostCenterRef) {
   return `${costCenter.name} (${costCenter.code})`
 }
 
@@ -60,70 +63,60 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
   const queryClient = useQueryClient()
   const requests = useQuery({ queryKey: ['portal', 'requests'], queryFn: api.listAccessRequests })
   const costCenters = useQuery({ queryKey: ['portal', 'cost-centers'], queryFn: api.listCostCenters })
+  const profile = useQuery({ queryKey: ['portal', 'profile'], queryFn: api.getProfile })
+  const entitlements = useQuery({ queryKey: ['portal', 'entitlements'], queryFn: api.listEntitlements })
   const [justification, setJustification] = useState('')
   const [selectedCostCenterId, setSelectedCostCenterId] = useState<string | undefined>(undefined)
   const resource = resourceFromCatalog(entry)
+  const definitions = entry.costCenterAccess ?? []
+  const choices = [...new Map([
+    ...(costCenters.data ?? []),
+    ...definitions.map((definition) => definition.costCenter),
+    ...(profile.data?.defaultCostCenter ? [profile.data.defaultCostCenter] : []),
+  ].map((center) => [center.id, center])).values()]
   const entitledCostCenters = new Set(entry.entitledCostCenterIds ?? [])
   const requestedCostCenters = new Set(entry.requestedCostCenterIds ?? [])
-  const olderEntitledState = !entry.entitledCostCenterIds && entry.entitled
-  const olderPendingState = !entry.requestedCostCenterIds && entry.requestState === 'pending'
-  const loadedCostCenters = costCenters.data ?? []
-  const defaultCostCenterId = costCenters.data
-    ? (costCenters.data.find((costCenter) => costCenter.isDefault) ?? costCenters.data[0])?.id
+  const defaultCostCenterId = profile.isSuccess
+    ? profile.data.defaultCostCenter?.id ?? definitions.find((definition) => definition.isDefault)?.costCenter.id
     : undefined
   const effectiveCostCenterId = selectedCostCenterId ?? defaultCostCenterId
+  const selectedDefinition = definitions.find((definition) => definition.costCenter.id === effectiveCostCenterId)
+  const selectedGrants = catalogGrants(entry, entitlements.data ?? []).filter((resolved) => resolved.costCenter?.id === effectiveCostCenterId ||
+    resolved.entitlement.costCenterId === effectiveCostCenterId)
   const allCostCentersUsed =
-    costCenters.isSuccess &&
-    loadedCostCenters.length > 0 &&
-    loadedCostCenters.every((costCenter) => entitledCostCenters.has(costCenter.id) || requestedCostCenters.has(costCenter.id))
-  const selectedAlreadyGranted = effectiveCostCenterId ? entitledCostCenters.has(effectiveCostCenterId) || olderEntitledState : entry.entitled
-  const selectedAlreadyRequested = effectiveCostCenterId
-    ? requestedCostCenters.has(effectiveCostCenterId) || olderPendingState
-    : entry.requestState === 'pending'
+    definitions.length > 0 &&
+    definitions.every((definition) => definition.mode === 'automatic' ||
+      entitledCostCenters.has(definition.costCenter.id) || requestedCostCenters.has(definition.costCenter.id))
+  const selectedAlreadyGranted = Boolean(effectiveCostCenterId &&
+    (entitledCostCenters.has(effectiveCostCenterId) || selectedGrants.length))
+  const pendingRequest = requests.data?.find(
+    (request) => request.state === 'pending' && sameResource(request.resource, resource) &&
+      request.costCenterId === effectiveCostCenterId,
+  )
+  const selectedAlreadyRequested = Boolean(effectiveCostCenterId && (requestedCostCenters.has(effectiveCostCenterId) || pendingRequest))
   const selectedUnavailable = selectedAlreadyGranted || selectedAlreadyRequested
   const government = entry.azureCloud === 'government'
-  const keysDisallowed = government && costCenters.isSuccess &&
-    loadedCostCenters.find((center) => center.id === effectiveCostCenterId)?.keysAllowed === false
-  const pendingRequest = requests.data?.find(
-    (request) =>
-      request.state === 'pending' &&
-      sameResource(request.resource, resource) &&
-      (!effectiveCostCenterId || request.costCenterId === effectiveCostCenterId || olderPendingState),
-  )
-  const invalidate = async () => {
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['portal', 'catalog'] }),
-      queryClient.invalidateQueries({ queryKey: ['portal', 'requests'] }),
-      queryClient.invalidateQueries({ queryKey: ['portal', 'profile'] }),
-      queryClient.invalidateQueries({ queryKey: ['portal', 'cost-centers'] }),
-    ])
-  }
+  const keysDisallowed = government && selectedDefinition?.keysAllowed === false
+  const defaultUnavailable = profile.data?.defaultCostCenter && (profile.data.defaultCostCenterEligible === false ||
+    !definitions.some((definition) => definition.costCenter.id === profile.data.defaultCostCenter?.id))
 
   const create = useMutation({
-    mutationFn: () =>
-      api.createAccessRequest({
+    mutationFn: () => {
+      if (!selectedDefinition || selectedDefinition.mode !== 'requestOnly' || !effectiveCostCenterId) {
+        throw new Error('Choose an eligible Request-only cost center for this exact offering.')
+      }
+      return api.createAccessRequest({
         resource,
-        costCenterId: costCenters.isSuccess ? effectiveCostCenterId : undefined,
+        costCenterId: effectiveCostCenterId,
         justification: justification.trim() || undefined,
-      }),
-    onSuccess: invalidate,
+      })
+    },
+    onSuccess: () => invalidateRequests(queryClient),
   })
   const withdraw = useMutation({
     mutationFn: (requestId: string) => api.withdrawAccessRequest(requestId),
-    onSuccess: invalidate,
+    onSuccess: () => invalidateRequests(queryClient),
   })
-
-  if (entry.entitled && !entry.entitledCostCenterIds && !costCenters.isSuccess) {
-    return (
-      <div className="action-stack">
-        {government && <Text className="connection-note">Azure Government requires a direct grant and a subscription key.
-          MOSAIC prepares your key after an administrator applies reviewed access. Your selected cost center is charged.
-          You must have network access to the gateway; portal sign-in does not connect you to it.</Text>}
-        {keysDisallowed && <Text className="form-error">This cost center does not allow keys. Choose a key-enabled cost center or contact your administrator.</Text>}
-        <Badge appearance="filled">Already entitled</Badge>
-      </div>
-    )
-  }
 
   return (
     <div className="action-stack">
@@ -131,13 +124,18 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
         MOSAIC prepares your key after an administrator applies reviewed access. Your selected cost center is charged.
         You must have network access to the gateway; portal sign-in does not connect you to it.</Text>}
       {keysDisallowed && <Text className="form-error">This cost center does not allow keys. Choose a key-enabled cost center or contact your administrator.</Text>}
-      {costCenters.isLoading && <Text size={200}>Loading cost centers…</Text>}
+      {(costCenters.isLoading || profile.isLoading) && <Text size={200}>Loading cost centers…</Text>}
       {costCenters.isError && (
         <Text size={200} className="connection-note">
-          Cost centers could not load. You can still request access; MOSAIC will use your default cost center.
+          Cost centers could not load. Eligible choices are limited to those already supplied by this exact offering.
+          {' '}<Button appearance="transparent" onClick={() => void costCenters.refetch()}>Retry cost centers</Button>
         </Text>
       )}
-      {costCenters.isSuccess && loadedCostCenters.length > 0 && (
+      {profile.isError && <Text className="connection-note">Your default cost center could not be checked. Choose an eligible cost center explicitly.
+        {' '}<Button appearance="transparent" onClick={() => void profile.refetch()}>Retry default</Button></Text>}
+      {defaultUnavailable && <Text className="connection-note">Your default cost center, {profile.data?.defaultCostCenter?.name}, is not available for this offering.
+        A default is a preference, not permission. Choose an eligible cost center; requests are not redirected to General.</Text>}
+      {choices.length > 0 && (
         <label className="cost-center-select">
           <span>Cost center</span>
           <select
@@ -145,8 +143,10 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
             value={effectiveCostCenterId ?? ''}
             onChange={(event) => setSelectedCostCenterId(event.currentTarget.value)}
           >
-            {loadedCostCenters.map((costCenter) => {
-              const suffix = entitledCostCenters.has(costCenter.id)
+            <option value="">Choose a cost center</option>
+            {choices.map((costCenter) => {
+              const definition = definitions.find((item) => item.costCenter.id === costCenter.id)
+              const suffix = !definition ? ' — Not available' : definition.mode === 'automatic' ? ' — Automatic' : entitledCostCenters.has(costCenter.id)
                 ? ' — already entitled'
                 : requestedCostCenters.has(costCenter.id)
                   ? ' — request open'
@@ -161,7 +161,22 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
           </select>
         </label>
       )}
-      {selectedAlreadyGranted && <Badge appearance="filled">Already entitled for this cost center</Badge>}
+      {selectedDefinition?.mode === 'automatic' && <>
+        <Badge appearance="tint">Automatic through your cost center</Badge>
+        <Text>This is one shared Entra group entitlement, not an individual grant or an inherited key.
+          Use a token with the required invocation permission and group claims. Gateway apply may still be pending.</Text>
+        <Link to="/access">Check automatic access in My access</Link>
+      </>}
+      {selectedAlreadyGranted && selectedGrants.length > 0 && <div className="catalog-grant-status">
+        {selectedGrants.map((resolved) => <p key={resolved.entitlement.id}>
+          <strong>{accessOriginLabel(resolved)}</strong> · {describeRuntime(resolved.entitlement)}
+          {' '}<Link to={`/access?grant=${encodeURIComponent(resolved.entitlement.id)}`}>View access status</Link>
+        </p>)}
+      </div>}
+      {selectedAlreadyGranted && selectedGrants.length === 0 && <Text>Access is recorded for this cost center.
+        {' '}<Link to="/access">Check its gateway status in My access</Link>.</Text>}
+      {entitlements.isError && <Text className="connection-note">Grant status could not load.
+        {' '}<Button appearance="transparent" onClick={() => void entitlements.refetch()}>Retry access status</Button></Text>}
       {selectedAlreadyRequested && !selectedAlreadyGranted && <Text>A request is already open for this cost center.</Text>}
       {selectedAlreadyRequested && pendingRequest && (
         <Button
@@ -173,11 +188,22 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
       )}
       {allCostCentersUsed && (
         <Text size={200} className="connection-note">
-          All cost centers already have access or an open request.
+          All eligible cost centers have automatic access, recorded access, or an open request.
         </Text>
       )}
-      {!selectedUnavailable && !allCostCentersUsed && (
+      {!selectedDefinition && !costCenters.isLoading && !profile.isLoading && <div className="catalog-unavailable">
+        <Badge appearance="outline">Not available</Badge>
+        <Text>{effectiveCostCenterId
+          ? 'This offering has no eligible access definition for the selected cost center. Custom centers need verified group setup, membership claims, and resource availability.'
+          : 'Choose an eligible cost center for this exact offering. If none are available, ask an administrator to review group setup, membership, resource mode, and caller-side token support.'}</Text>
+        <Link to="/requests/new-cost-center">Request a cost center</Link>
+      </div>}
+      {!selectedUnavailable && selectedDefinition?.mode === 'requestOnly' && (
         <>
+          <Badge appearance="outline">Request-only</Badge>
+          <Text>Approval is for you under this cost center. Gateway apply is a separate step.
+            {selectedDefinition.keysAllowed ? ' Individual keys may be available after approval and apply; keys are never inherited from the group.' :
+              'Individual keys are not available for this offering and cost center. Use Entra tokens where enabled.'}</Text>
           <Textarea
             value={justification}
             aria-label={`Justification for ${entry.displayName}`}
@@ -185,15 +211,15 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
             resize="vertical"
             onChange={(_, data) => setJustification(data.value)}
           />
-          <Button appearance="primary" onClick={() => create.mutate()} disabled={create.isPending || keysDisallowed}>
+          <Button appearance="primary" onClick={() => create.mutate()} disabled={create.isPending || keysDisallowed || !effectiveCostCenterId}>
             Request access
           </Button>
         </>
       )}
-      {create.isError && <Text className="form-error">{create.error.message}</Text>}
-      {withdraw.isError && <Text className="form-error">{withdraw.error.message}</Text>}
+      {create.isError && <Text role="alert" className="form-error">{create.error.message}</Text>}
+      {withdraw.isError && <Text role="alert" className="form-error">{withdraw.error.message}</Text>}
       {create.isSuccess && pendingRequest?.id === create.data.id && (
-        <Text>Request submitted. <Link to="/requests">Track it in My requests</Link>. Gateway access may still need to be applied after approval.</Text>
+        <Text>Request submitted. <Link to={`/requests?request=${encodeURIComponent(create.data.id)}`}>Track it in My requests</Link>. Gateway access may still need to be applied after approval.</Text>
       )}
     </div>
   )
@@ -217,6 +243,7 @@ export function CatalogPage() {
   const api = usePortalApi()
   const catalog = useQuery({ queryKey: ['portal', 'catalog'], queryFn: api.listCatalog })
   const environments = usePortalEnvironments()
+  const entitlements = useQuery({ queryKey: ['portal', 'entitlements'], queryFn: api.listEntitlements })
   const [environmentFilter, setEnvironmentFilter] = useState('all')
   const [cloudFilter, setCloudFilter] = useState('all')
   const [kindFilter, setKindFilter] = useState<KindFilter>('all')
@@ -329,7 +356,7 @@ export function CatalogPage() {
                         <CloudBadge key={cloud} cloud={cloud} />)}{uniqueValues(group.items.map((entry) => entry.environment)).map((key) =>
                         <EnvironmentBadge key={key ?? 'unclassified'} environment={key} environments={environments.data} />)}</>}
                       status={<>
-                        <span>{granted > 0 ? (group.items.length === 1 ? 'Access granted' : `${granted} of ${group.items.length} options granted`) : 'Not granted'}</span>
+                        <span>{catalogStatus(group.items, entitlements.data ?? [], granted)}</span>
                         {pending > 0 && <small>{pending} {pending === 1 ? 'request' : 'requests'} pending</small>}
                       </>}
                       action="View options" actionLabel={`View access options for ${group.title}`}
@@ -365,7 +392,7 @@ export function CatalogPage() {
               </div>
               <p className="resource-context">{entryDescription(offering)}</p>
               {offering.summary && <p>{offering.summary}</p>}
-              <p className="connection-note">Choose the cost center for your calls. An administrator reviews your request.</p>
+              <p className="connection-note">Choose an exact offering and cost center. Automatic access uses its Entra group; Request-only access needs individual approval. Model and MCP grants are separate.</p>
               <CatalogAction entry={offering} />
             </div> : <p className="connection-note">Select an option to check access or make a request.</p>}
           </DetailPanel>}
@@ -373,4 +400,12 @@ export function CatalogPage() {
       )}
     </>
   )
+}
+
+function catalogStatus(entries: CatalogEntry[], entitlements: ResolvedEntitlement[], granted: number) {
+  const origins = uniqueValues(entries.flatMap((entry) => catalogGrants(entry, entitlements).map(accessOriginLabel)))
+  if (origins.length) return origins.join(' · ')
+  if (entries.some((entry) => entry.costCenterAccess?.some((access) => access.mode === 'automatic'))) return 'Automatic through your cost center'
+  if (granted > 0) return 'Access recorded · check gateway status'
+  return entries.some((entry) => entry.costCenterAccess?.length) ? 'Request-only choices available' : 'Not available'
 }

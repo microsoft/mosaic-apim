@@ -9,7 +9,8 @@ imported server's own gateway policy decides who can call it.
 ## Before you start
 
 You need an applied MCP grant, and the server must be published with gateway enforcement applied.
-Copy these values from the grant's MCP connection details in the portal, or from
+Copy these values from the exact offering's MCP connection details in the portal. For an
+individual grant, the equivalent API route is
 `GET /api/v1/me/entitlements/{id}/mcp-connection`:
 
 | Field | What it's for |
@@ -161,15 +162,35 @@ runtime token. The token must contain the group's object ID in its `groups` clai
 
 Each member gets the group's full call allowance in the grant window. If you also have a direct
 grant, the direct grant wins. If you match several groups, the gateway uses the most generous
-enabled group grant.
+enabled group grant, within the selected center and subject to its mandatory group check.
 
 Microsoft Entra omits `groups` from access tokens when the caller is in too many groups and marks
 the token as an overage token. API Management cannot call Microsoft Graph during MCP invocation. If
-your token has overage, ask for a direct grant.
+your token has overage, a direct token grant cannot bypass a custom center's required group claim.
+Resolve claim eligibility with an administrator. General retains its exempt direct-token path.
 
 ## Cost centers
 
-Every grant is charged to a cost center. When you hold the same MCP server under several cost
+Every grant is charged to a cost center. A custom center uses one verified exclusively bound Entra
+group for membership and Automatic, Request-only, or Not available for this **exact MCP offering**.
+Automatic supplies a stable group JWT grant after apply, not a personal key or a grant on the
+server's models. Request-only needs an individual approval and gateway apply; Not available blocks
+new grants/requests. General is exempt from the mandatory group. Government's existing key-only
+workflow above is excluded from these new center modes; this adds no commercial MCP key path.
+
+An individual MCP token grant still requires the custom center group ID in its validated runtime
+token. Adding a group member changes Entra, not the Automatic APIM policy or a collection of
+per-person automatic grants. Membership edits require optional API-identity consent, not Graph
+permissions on APIM or the caller.
+
+Removal does not invalidate already-issued JWTs. Human tokens normally last 60-90 minutes from
+issuance; actual remaining `exp`, token policy, and propagation matter. Managed-identity
+per-resource token/authorization caching can be around 24 hours, with changes taking several hours.
+There is no immediate revocation/CAE promise or universal 90-minute bound. Existing independent
+individual keys elsewhere require explicit eligibility recheck and revoke/apply, not merely a
+directory change. See [removal consequences](cost-centers.md#removing-a-member).
+
+When you hold the same MCP server under several cost
 centers, name the one your calls charge with the `x-mosaic-cost-center` header, set to the cost
 center's `code`. The code is compared without case. In VS Code, add it to the server's headers:
 
@@ -188,7 +209,8 @@ center's `code`. The code is compared without case. In VS Code, add it to the se
 Without the header, the gateway uses your grant under your default cost center, then your other
 direct grants, oldest first, then the grants you hold through security groups. A header naming a
 cost center you hold no grant under is refused with 403. The gateway removes the header before the
-call reaches the MCP server.
+call reaches the MCP server. The header and personal/tenant defaults select among authorized
+grants; they do not add anyone to the group or authorize a resource.
 
 Only MCP servers MOSAIC publishes, with your grant applied, read the header. Don't send it to an
 imported server: its own policy doesn't read or remove it, so the server would receive it.
@@ -211,6 +233,10 @@ grant, and MOSAIC records which of the server's model calls served your tool cal
 removes any `x-mosaic-on-behalf-of` header you send. [MCP servers that call models](mcp-servers-that-call-models.md)
 explains how it works, for administrators and for the people who build those servers.
 
+The server application must separately satisfy model invocation permission and, for a
+custom-center model JWT path, that center's group membership. The MCP and model centers can be
+different; one grant or the attribution reference never authorizes both legs.
+
 ## Troubleshooting
 
 | What you see | Cause and fix |
@@ -218,9 +244,9 @@ explains how it works, for administrators and for the people who build those ser
 | HTTP 401 with `resource_metadata` | The request had no token or an invalid token. Let the client fetch the metadata URL, then sign in for the tenant and scope it returns. |
 | The metadata URL does not return JSON | The server is not a MOSAIC-published MCP server, or the publication is not applied correctly. Ask an administrator to re-plan and apply the publication. |
 | Consent or **Need admin approval** during sign-in | The client is not consented for `api://<model-runtime-client-id>/Mcp.Invoke`. An administrator consents that delegated scope for the client. |
-| HTTP 403 with `insufficient_scope` | The token is valid, but it lacks `Mcp.Invoke`, lacks `Mcp.Invoke.Application`, or does not match an applied direct or group grant. Copy the scope from connection details and confirm the grant was applied. |
+| HTTP 403 with `insufficient_scope` | Check `Mcp.Invoke` / `Mcp.Invoke.Application`, the exact applied MCP grant, and the custom center group claim, including for an individual grant. Copy the scope from connection details. |
 | HTTP 403 that names the cost center | The `x-mosaic-cost-center` header names a cost center you hold no applied grant under, or isn't a valid code. Use `costCenter.code` from connection details, or remove the header. |
-| HTTP 403 mentioning group overage | The token does not contain usable group IDs. Ask for a direct grant to the user, application or agent identity. |
+| HTTP 403 mentioning group overage | The token lacks usable group IDs. Resolve claim eligibility with an administrator; an individual token grant cannot bypass a custom center's group check. General retains its exempt direct-token path. |
 | HTTP 403 **Access unavailable** | The last apply failed, the publication is not applied, or the server was unpublished. An administrator needs to review the publication status and apply access again. |
 | Imported server grant is visible but the gateway denies it | Imported servers are recorded in MOSAIC but not enforced by MOSAIC. The server's existing API Management policy decides access. |
 

@@ -90,6 +90,9 @@ class NotificationSubject(MosaicModel):
 
     resource: EntitlementResource | None = None
     request_id: Identifier | None = None
+    request_kind: Literal["resource", "costCenter"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     entitlement_id: Identifier | None = None
     budget_id: Identifier | None = None
     cost_center_id: Identifier | None = None

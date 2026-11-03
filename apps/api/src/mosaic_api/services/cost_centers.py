@@ -6,20 +6,23 @@ from typing import Any
 
 import structlog
 
+from mosaic_api.cost_center_directory import DirectoryOperationState
+from mosaic_api.cost_center_management import (
+    CostCenterDirectoryMembers,
+    CostCenterDirectoryOperationView,
+    CostCenterGroupCapabilities,
+    CostCenterManagementView,
+)
 from mosaic_api.cost_centers import (
     COST_CENTERS_BUSY,
     COST_CENTERS_SCOPE,
-    MAX_MEMBERS,
     CostCenter,
     CostCenterBook,
     CostCenterCreate,
     CostCenterLimitsUpdate,
-    CostCenterMember,
-    CostCenterMemberView,
     CostCenterSettings,
     CostCenterSettingsUpdate,
     CostCenterUpdate,
-    CostCenterView,
     PendingRecheck,
     PortalCostCenter,
     default_settings,
@@ -36,14 +39,22 @@ from mosaic_api.domain import (
     new_id,
     utc_now,
 )
-from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
-from mosaic_api.managed_cost_center_groups import linked_cost_center, managed_group
+from mosaic_api.errors import (
+    ChangeNotRecordedError,
+    ConflictError,
+    DirectoryError,
+    DomainError,
+    NotFoundError,
+    ValidationError,
+)
+from mosaic_api.integrations.graph import DirectoryLookup, GroupManagement
 from mosaic_api.repositories import (
     CostCenterRepository,
     DirectoryRepository,
     EntitlementRepository,
     GatewayRepository,
 )
+from mosaic_api.services.cost_center_directory import CostCenterDirectoryService
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.model_access import scope_lease
 
@@ -138,7 +149,10 @@ class CostCenterService:
         entitlement_repository: EntitlementRepository,
         gateway_repository: GatewayRepository,
         entitlements: Any,
-        managed_groups_enabled: bool = False,
+        directory_lookup: DirectoryLookup | None = None,
+        group_management: GroupManagement | None = None,
+        directory_tenant_id: str | None = None,
+        group_management_unavailable_reason: str | None = None,
     ) -> None:
         # ``entitlements`` is the EntitlementService, which revokes a removed member's grants
         # under the publication locks its own mutations take.
@@ -147,7 +161,15 @@ class CostCenterService:
         self._entitlement_records = entitlement_repository
         self._gateways = gateway_repository
         self._entitlements = entitlements
-        self._managed_groups_enabled = managed_groups_enabled
+        self._directory_groups = CostCenterDirectoryService(
+            repository,
+            gateway_repository,
+            directory_lookup=directory_lookup,
+            group_management=group_management,
+            directory_tenant_id=directory_tenant_id,
+            access_checks=entitlements,
+            unavailable_reason=group_management_unavailable_reason,
+        )
 
     @staticmethod
     def _audit(
@@ -168,7 +190,7 @@ class CostCenterService:
     async def _stored(self, actor: Actor, cost_center_id: str) -> CostCenter:
         return await stored_cost_center(self._repository, actor, cost_center_id)
 
-    async def _views(self, actor: Actor, book: CostCenterBook) -> list[CostCenterView]:
+    async def _views(self, actor: Actor, book: CostCenterBook) -> list[CostCenterManagementView]:
         principals = {
             principal.id: principal
             for principal in await self._directory.list_principals(actor.tenant_id)
@@ -181,53 +203,17 @@ class CostCenterService:
             if principal.kind == PrincipalKind.SECURITY_GROUP:
                 continue
             defaults.setdefault(book.default_for(principal), []).append(principal.id)
-        views: list[CostCenterView] = []
+        views: list[CostCenterManagementView] = []
         for cost_center in sorted(
             book.by_id.values(), key=lambda item: (not item.built_in, item.name.casefold())
         ):
-            explicit = cost_center.member_ids()
-            details: list[CostCenterMemberView] = []
-            for member in cost_center.members:
-                listed = principals.get(member.principal_id)
-                details.append(
-                    CostCenterMemberView(
-                        principal_id=member.principal_id,
-                        object_id=listed.object_id if listed else None,
-                        label=(listed.label or listed.object_id) if listed else None,
-                        kind=listed.kind if listed else None,
-                        explicit=True,
-                        is_default=bool(
-                            listed and listed.default_cost_center_id == cost_center.id
-                        ),
-                        added_at=member.added_at,
-                    )
-                )
-            # People whose own default this is may charge it without being listed. The tenant's
-            # default is everyone's, so listing them there would list everybody.
-            listed_defaults = (
-                [] if cost_center.id == book.tenant_default_id else defaults.get(cost_center.id, [])
-            )
-            for principal_id in listed_defaults:
-                principal = principals[principal_id]
-                if principal_id in explicit or principal.default_cost_center_id != cost_center.id:
-                    continue
-                details.append(
-                    CostCenterMemberView(
-                        principal_id=principal_id,
-                        object_id=principal.object_id,
-                        label=principal.label or principal.object_id,
-                        kind=principal.kind,
-                        explicit=False,
-                        is_default=True,
-                    )
-                )
             views.append(
-                CostCenterView.model_validate(
+                CostCenterManagementView.model_validate(
                     {
                         **cost_center.model_dump(by_alias=False),
                         "etag": cost_center.etag,
                         "is_tenant_default": cost_center.id == book.tenant_default_id,
-                        "member_details": details,
+                        "member_details": [],
                         "grant_count": counts.get(cost_center.id, 0),
                         "enabled_grant_count": enabled.get(cost_center.id, 0),
                         "default_for": len(defaults.get(cost_center.id, [])),
@@ -236,15 +222,22 @@ class CostCenterService:
             )
         return views
 
-    async def list_cost_centers(self, actor: Actor) -> list[CostCenterView]:
+    async def list_cost_centers(self, actor: Actor) -> list[CostCenterManagementView]:
         return await self._views(actor, await self.book(actor.tenant_id))
 
-    async def get_cost_center(self, actor: Actor, cost_center_id: str) -> CostCenterView:
+    async def get_cost_center(self, actor: Actor, cost_center_id: str) -> CostCenterManagementView:
         book = await self.book(actor.tenant_id)
         if book.get(cost_center_id) is None:
             raise NotFoundError("Cost center not found", details={"id": cost_center_id})
         views = await self._views(actor, book)
-        return next(view for view in views if view.id == cost_center_id)
+        view = next(view for view in views if view.id == cost_center_id)
+        return view.model_copy(
+            update={
+                "directory_operations": await self._directory_groups.list_operations(
+                    actor, cost_center_id
+                )
+            }
+        )
 
     async def get_settings(self, actor: Actor) -> CostCenterSettings:
         return await self._repository.get_settings(actor.tenant_id) or default_settings(
@@ -272,74 +265,116 @@ class CostCenterService:
                 details={"reason": "codeInUse", "costCenterId": clash.id},
             )
 
-    async def create_cost_center(
-        self, actor: Actor, request: CostCenterCreate
-    ) -> CostCenterView:
-        async with scope_lease(
-            self._gateways, actor.tenant_id, COST_CENTERS_SCOPE, busy_message=COST_CENTERS_BUSY
-        ):
-            await self._require_unique_code(actor, request.code)
-            cost_center = CostCenter(
-                id=new_id("costCenter"),
-                tenant_id=actor.tenant_id,
-                name=request.name.strip(),
-                code=request.code,
-                description=request.description,
-                owners=request.owners,
-                keys_allowed=request.keys_allowed,
-            )
-            if self._managed_groups_enabled:
-                cost_center = linked_cost_center(cost_center)
-            details: dict[str, Any] = {"code": request.code}
-            if cost_center.group_id is not None:
-                details["groupId"] = cost_center.group_id
-            await self._repository.create_cost_center(
-                cost_center,
-                self._audit(actor, "costCenter.created", cost_center.id, details),
-            )
-        logger.info("cost_center_created", cost_center_id=cost_center.id, tenant_id=actor.tenant_id)
-        return await self.get_cost_center(actor, cost_center.id)
+    async def create(
+        self,
+        actor: Actor,
+        request: CostCenterCreate,
+        *,
+        cost_center_id: str | None = None,
+    ) -> CostCenterManagementView:
+        """Save before Graph; the internal forced ID lets request approval safely resume."""
 
-    async def enable_managed_group(self, actor: Actor, cost_center_id: str) -> CostCenterView:
-        if not self._managed_groups_enabled:
-            raise ValidationError("Experimental managed cost-center groups are disabled")
+        if not request.name.strip():
+            raise ValidationError("A cost center name cannot be blank")
+        if cost_center_id is not None and (
+            not cost_center_id.strip()
+            or len(cost_center_id) > 128
+            or cost_center_id == general_cost_center_id(actor.tenant_id)
+        ):
+            raise ValidationError(
+                "A reserved custom cost-center ID must be nonempty and not General"
+            )
+        proposed = CostCenter(
+            id=cost_center_id or new_id("costCenter"),
+            tenant_id=actor.tenant_id,
+            name=request.name.strip(),
+            code=request.code,
+            description=request.description,
+            owners=request.owners,
+            keys_allowed=request.keys_allowed,
+            resource_access=request.resource_access,
+        )
+        await self._entitlements.validate_cost_center_access(actor, proposed)
         async with scope_lease(
             self._gateways, actor.tenant_id, COST_CENTERS_SCOPE, busy_message=COST_CENTERS_BUSY
         ):
-            current = await self._stored(actor, cost_center_id)
-            if current.group_id is None:
-                updated = linked_cost_center(current)
-                await self._repository.save_cost_center(
-                    updated,
-                    self._audit(
-                        actor,
-                        "costCenter.groupLinked",
-                        current.id,
-                        {"groupId": updated.group_id, "memberCount": len(current.members)},
-                    ),
+            existing = await self._repository.get_cost_center(actor.tenant_id, proposed.id)
+            if existing is not None:
+                fields = (
+                    "name",
+                    "code",
+                    "description",
+                    "owners",
+                    "keys_allowed",
+                    "resource_access",
                 )
+                if (
+                    cost_center_id is None
+                    or existing.is_general
+                    or any(getattr(existing, field) != getattr(proposed, field) for field in fields)
+                ):
+                    raise ConflictError(
+                        "The reserved ID belongs to a different or subsequently edited center",
+                        details={"costCenterId": proposed.id},
+                    )
+                self._directory_groups.require_custom_center(existing)
             else:
-                group = await self._directory.get_group(actor.tenant_id, current.group_id)
-                if group is None:
-                    raise ConflictError("The cost center's managed group is missing")
-                managed_group(current, group)
-        return await self.get_cost_center(actor, cost_center_id)
+                await self._require_unique_code(actor, request.code)
+                await self._repository.create_cost_center(
+                    proposed,
+                    self._audit(actor, "costCenter.created", proposed.id, {"code": request.code}),
+                )
+        try:
+            if request.group_setup is not None:
+                await self._directory_groups.setup_group(actor, proposed.id, request.group_setup)
+        except DomainError as exc:
+            exc.details.update({"savedCostCenterId": proposed.id})
+            raise
+        except Exception as exc:
+            raise ChangeNotRecordedError(
+                "The cost center is saved, but its directory setup could not finish. Reload "
+                "this center and its recorded operations; do not create another center or group.",
+                details={"savedCostCenterId": proposed.id},
+            ) from exc
+        logger.info("cost_center_created", cost_center_id=proposed.id, tenant_id=actor.tenant_id)
+        return await self.get_cost_center(actor, proposed.id)
+
+    async def create_cost_center(
+        self,
+        actor: Actor,
+        request: CostCenterCreate,
+        *,
+        cost_center_id: str | None = None,
+    ) -> CostCenterManagementView:
+        return await self.create(actor, request, cost_center_id=cost_center_id)
 
     async def update_cost_center(
         self, actor: Actor, cost_center_id: str, request: CostCenterUpdate
-    ) -> CostCenterView:
-        changes = request.model_dump(by_alias=False, exclude_unset=True)
-        for field in ("name", "code", "owners", "keys_allowed"):
+    ) -> CostCenterManagementView:
+        changes = request.model_dump(by_alias=False, exclude_unset=True, exclude={"group_setup"})
+        for field in ("name", "code", "owners", "keys_allowed", "resource_access"):
             if field in changes and changes[field] is None:
                 changes.pop(field)
+        if "name" in changes:
+            changes["name"] = changes["name"].strip()
+            if not changes["name"]:
+                raise ValidationError("A cost center name cannot be blank")
+        before = await self._stored(actor, cost_center_id)
+        if request.group_setup is not None:
+            self._directory_groups.require_custom_center(before)
+        proposed = CostCenter.model_validate(
+            {**before.model_dump(by_alias=False), **changes, "etag": before.etag}
+        )
+        if {"resource_access", "keys_allowed"} & changes.keys():
+            await self._entitlements.validate_cost_center_access(actor, proposed)
         async with scope_lease(
             self._gateways, actor.tenant_id, COST_CENTERS_SCOPE, busy_message=COST_CENTERS_BUSY
         ):
             current = await self._stored(actor, cost_center_id)
+            if current.etag != before.etag:
+                raise ConflictError("The cost center changed; reload it and try again")
             if "code" in changes:
                 await self._require_unique_code(actor, changes["code"], exclude=current.id)
-            if "name" in changes:
-                changes["name"] = changes["name"].strip()
             updated = CostCenter.model_validate(
                 {
                     **current.model_dump(by_alias=False),
@@ -354,6 +389,20 @@ class CostCenterService:
             await self._repository.save_cost_center(
                 updated, self._audit(actor, "costCenter.updated", cost_center_id, details)
             )
+        try:
+            if request.group_setup is not None:
+                await self._directory_groups.setup_group(actor, cost_center_id, request.group_setup)
+            if "resource_access" in changes:
+                await self._entitlements.sync_cost_center_access(actor, cost_center_id)
+        except DomainError as exc:
+            exc.details.update({"savedCostCenterId": cost_center_id})
+            raise
+        except Exception as exc:
+            raise ChangeNotRecordedError(
+                "The cost-center update is saved, but directory/access setup could not finish. "
+                "Reload this center and its recorded operations before retrying.",
+                details={"savedCostCenterId": cost_center_id},
+            ) from exc
         return await self.get_cost_center(actor, cost_center_id)
 
     async def delete_cost_center(self, actor: Actor, cost_center_id: str) -> None:
@@ -363,7 +412,7 @@ class CostCenterService:
             current = await self._repository.get_cost_center(actor.tenant_id, cost_center_id)
             if current is None:
                 raise NotFoundError("Cost center not found", details={"id": cost_center_id})
-            if current.built_in:
+            if current.is_general:
                 raise ConflictError(
                     "General is built in. Rename it instead of deleting it.",
                     details={"reason": "builtIn"},
@@ -375,15 +424,43 @@ class CostCenterService:
                     details={"reason": "tenantDefault"},
                 )
             all_grants = await self._entitlement_records.list_entitlements(actor.tenant_id)
-            grants = [
-                grant
-                for grant in all_grants
-                if grant.cost_center_id == current.id
-            ]
+            grants = [grant for grant in all_grants if grant.cost_center_id == current.id]
             if grants:
                 raise ConflictError(
                     "Grants are charged to this cost center. Remove them before deleting it.",
                     details={"reason": "hasGrants", "grants": len(grants)},
+                )
+            applied = [
+                (item.id, item.applied_access)
+                for item in await self._gateways.list_publications(actor.tenant_id)
+            ]
+            applied_mcp = [
+                (item.id, item.applied_access)
+                for item in await self._gateways.list_mcp_publications(actor.tenant_id)
+            ]
+            applied_pools = [
+                (item.id, item.applied_access)
+                for item in await self._gateways.list_model_pools(actor.tenant_id)
+            ]
+            if any(
+                access is not None
+                and any(grant.cost_center_id == current.id for grant in access.grants)
+                for _, access in [*applied, *applied_mcp, *applied_pools]
+            ):
+                raise ConflictError(
+                    "Applied gateway access still names this cost center. Revoke and apply first.",
+                    details={"reason": "hasAppliedGrants"},
+                )
+            unsettled = await self._repository.list_directory_operations(
+                actor.tenant_id, current.id, limit=1, unsettled_only=True
+            )
+            if unsettled:
+                raise ConflictError(
+                    "Resolve this cost center's pending or unknown directory operation first",
+                    details={
+                        "reason": "directoryOperationUnsettled",
+                        "operationId": unsettled[0].id,
+                    },
                 )
             if current.group_id and any(
                 grant.subject.kind == EntitlementSubjectKind.GROUP
@@ -410,7 +487,7 @@ class CostCenterService:
 
     async def set_limits(
         self, actor: Actor, cost_center_id: str, request: CostCenterLimitsUpdate
-    ) -> CostCenterView:
+    ) -> CostCenterManagementView:
         for limit in request.limits:
             await self._require_resource(
                 actor, limit.resource.kind, limit.resource.id, limit.resource.scope_id
@@ -438,9 +515,7 @@ class CostCenterService:
             found: object = await self._gateways.get_model_api(actor.tenant_id, resource_id)
         elif kind == EntitlementResourceKind.POOL_MODEL:
             model_pool = (
-                await self._gateways.get_model_pool(actor.tenant_id, scope_id)
-                if scope_id
-                else None
+                await self._gateways.get_model_pool(actor.tenant_id, scope_id) if scope_id else None
             )
             found = (
                 next((item for item in model_pool.models if item.id == resource_id), None)
@@ -457,162 +532,120 @@ class CostCenterService:
 
     async def add_member(
         self, actor: Actor, cost_center_id: str, principal_id: str
-    ) -> CostCenterView:
+    ) -> CostCenterManagementView:
         view, _ = await self.add_member_with_status(actor, cost_center_id, principal_id)
         return view
 
     async def add_member_with_status(
         self, actor: Actor, cost_center_id: str, principal_id: str
-    ) -> tuple[CostCenterView, bool]:
+    ) -> tuple[CostCenterManagementView, bool]:
         principal = await self._directory.get_principal(actor.tenant_id, principal_id)
         if principal is None:
             raise NotFoundError("Principal was not found", details={"id": principal_id})
-        current = await self._stored(actor, cost_center_id)
-        if principal_id in current.member_ids():
+        if await self._directory_groups.direct_membership(
+            actor, cost_center_id, principal.object_id
+        ):
             return await self.get_cost_center(actor, cost_center_id), False
-        if len(current.members) >= MAX_MEMBERS:
-            raise ValidationError(
-                "A cost center lists at most 500 members. Add a security group instead."
-            )
-        updated = current.model_copy(
-            update={
-                "members": [
-                    *current.members,
-                    CostCenterMember(principal_id=principal_id, added_by=actor.object_id),
-                ],
-                "updated_at": utc_now(),
-            },
-            deep=True,
+        operation = await self.add_directory_member(
+            actor,
+            cost_center_id,
+            principal.object_id,
+            principal.kind,
+            idempotency_key=new_id("member"),
         )
-        await self._repository.save_cost_center(
-            updated,
-            self._audit(
-                actor, "costCenter.memberAdded", cost_center_id, {"principalId": principal_id}
-            ),
-        )
+        self._require_confirmed_member_write(operation)
         return await self.get_cost_center(actor, cost_center_id), True
 
     async def remove_member(
         self, actor: Actor, cost_center_id: str, principal_id: str, *, explicit_only: bool = False
-    ) -> CostCenterView:
-        """Stop a principal charging the cost center, and revoke the grants that relied on it.
+    ) -> CostCenterManagementView:
+        """Compatibility wrapper: mutate a real direct relationship, never a local roster."""
 
-        One save removes the member and records a recheck of the grants that may have relied on
-        it: the principal's own, or every grant under the cost center when a security group
-        leaves, since people may have charged it only through the group. The principal's default
-        is reset if it was this cost center. Then the recheck revokes each covered grant whose
-        subject can no longer charge the cost center (see ``EntitlementService.resume_rechecks``).
-        A grant whose model is busy stays pending, and applies leave it out until it's checked.
-        Repeating the request, or checking the cost center's grants again, finishes the job. The
-        next apply of each revoked grant's model deletes its key.
-
-        With ``explicit_only``, an absent reference needs a recorded explicit removal to retry.
-        An older removal must not reset a default assigned since then.
-        """
-
-        current = await self._stored(actor, cost_center_id)
         principal = await self._directory.get_principal(actor.tenant_id, principal_id)
-        explicit = principal_id in current.member_ids()
-        is_default = principal is not None and principal.default_cost_center_id == current.id
-        if (
-            explicit_only
-            and not explicit
-            and not await self._repository.member_removal_recorded(
-                actor.tenant_id,
-                current.id,
-                principal_id,
-                not_before=principal.updated_at if principal is not None and is_default else None,
-            )
-        ):
-            raise NotFoundError(
-                "That principal isn't a member of this cost center",
-                details={"costCenterId": cost_center_id, "principalId": principal_id},
-            )
-        settings = await self._repository.get_settings(actor.tenant_id)
-        charged = current.id == tenant_default_id(settings, actor.tenant_id)
-        remaining = (
-            []
-            if charged
-            else [
-                grant
-                for grant in await self._entitlement_records.list_entitlements(
-                    actor.tenant_id, subject_id=principal_id
-                )
-                if grant.cost_center_id == current.id and grant.revocation is None
-            ]
+        if principal is None:
+            raise NotFoundError("Principal was not found", details={"id": principal_id})
+        operation = await self.remove_directory_member(
+            actor,
+            cost_center_id,
+            principal.object_id,
+            idempotency_key=new_id("member"),
         )
-        if not explicit and not is_default and not remaining:
-            if current.pending_rechecks:
-                # Repeating a removal whose recheck couldn't finish finishes it.
-                await self._entitlements.resume_rechecks(actor, current.id)
-                return await self.get_cost_center(actor, cost_center_id)
-            raise NotFoundError(
-                "That principal isn't a member of this cost center",
-                details={"costCenterId": cost_center_id, "principalId": principal_id},
-            )
-        # Everyone may charge the tenant's default, so leaving it revokes nothing. A member whose
-        # principal is gone may have been a security group, so every grant is checked then.
-        group_left = explicit and (
-            principal is None or principal.kind == PrincipalKind.SECURITY_GROUP
-        )
-        pending = (
-            current.pending_rechecks
-            if charged
-            else with_recheck(
-                current.pending_rechecks,
-                PendingRecheck(
-                    reason="memberRemoved",
-                    subject_id=None if group_left else principal_id,
-                    requested_by=actor.object_id,
-                ),
-            )
-        )
-        # A retry that still resets a default must validate the cost center's ETag too.
-        if explicit or pending != current.pending_rechecks or (explicit_only and is_default):
-            await self._repository.save_cost_center(
-                current.model_copy(
-                    update={
-                        "members": [
-                            member
-                            for member in current.members
-                            if member.principal_id != principal_id
-                        ],
-                        "pending_rechecks": pending,
-                        "updated_at": utc_now(),
-                    },
-                    deep=True,
-                ),
-                self._audit(
-                    actor,
-                    "costCenter.memberRemoved",
-                    cost_center_id,
-                    {"principalId": principal_id, "listed": explicit},
-                ),
-            )
-        if is_default and principal is not None:
-            await self._directory.save_principal(
-                principal.model_copy(
-                    update={"default_cost_center_id": None, "updated_at": utc_now()}
-                ),
-                self._audit(
-                    actor,
-                    "principal.updated",
-                    principal.id,
-                    {"defaultCostCenterReset": current.id},
-                    resource_type="principal",
-                ),
-            )
-        revoked = [] if charged else await self._entitlements.resume_rechecks(actor, current.id)
-        logger.info(
-            "cost_center_member_removed",
-            cost_center_id=cost_center_id,
-            principal_id=principal_id,
-            revoked_grants=len(revoked),
-            tenant_id=actor.tenant_id,
-        )
+        self._require_confirmed_member_write(operation)
         return await self.get_cost_center(actor, cost_center_id)
 
-    async def recheck(self, actor: Actor, cost_center_id: str) -> CostCenterView:
+    @staticmethod
+    def _require_confirmed_member_write(operation: CostCenterDirectoryOperationView) -> None:
+        if operation.state != DirectoryOperationState.SUCCEEDED:
+            raise DirectoryError(
+                operation.error_message or "The directory membership change is not confirmed",
+                details={
+                    "operationId": operation.id,
+                    "state": operation.state,
+                    "errorCode": operation.error_code,
+                },
+            )
+
+    async def group_capabilities(self, actor: Actor) -> CostCenterGroupCapabilities:
+        return await self._directory_groups.capabilities(actor)
+
+    async def list_directory_members(
+        self,
+        actor: Actor,
+        cost_center_id: str,
+        *,
+        page_size: int = 100,
+        cursor: str | None = None,
+    ) -> CostCenterDirectoryMembers:
+        return await self._directory_groups.list_members(
+            actor, cost_center_id, page_size=page_size, cursor=cursor
+        )
+
+    async def add_directory_member(
+        self,
+        actor: Actor,
+        cost_center_id: str,
+        object_id: str,
+        member_kind: PrincipalKind,
+        *,
+        idempotency_key: str,
+    ) -> CostCenterDirectoryOperationView:
+        return await self._directory_groups.add_member(
+            actor, cost_center_id, object_id, member_kind, idempotency_key=idempotency_key
+        )
+
+    async def remove_directory_member(
+        self,
+        actor: Actor,
+        cost_center_id: str,
+        object_id: str,
+        *,
+        idempotency_key: str,
+    ) -> CostCenterDirectoryOperationView:
+        return await self._directory_groups.remove_member(
+            actor, cost_center_id, object_id, idempotency_key=idempotency_key
+        )
+
+    async def list_directory_operations(
+        self, actor: Actor, cost_center_id: str, *, limit: int = 50
+    ) -> list[CostCenterDirectoryOperationView]:
+        return await self._directory_groups.list_operations(actor, cost_center_id, limit=limit)
+
+    async def get_directory_operation(
+        self, actor: Actor, cost_center_id: str, operation_id: str
+    ) -> CostCenterDirectoryOperationView:
+        return await self._directory_groups.get_operation(actor, cost_center_id, operation_id)
+
+    async def retry_directory_operation(
+        self, actor: Actor, cost_center_id: str, operation_id: str
+    ) -> CostCenterDirectoryOperationView:
+        return await self._directory_groups.retry(actor, cost_center_id, operation_id)
+
+    async def recover_directory_operation(
+        self, actor: Actor, cost_center_id: str, operation_id: str
+    ) -> CostCenterDirectoryOperationView:
+        return await self._directory_groups.recover(actor, cost_center_id, operation_id)
+
+    async def recheck(self, actor: Actor, cost_center_id: str) -> CostCenterManagementView:
         """Check again the grants the cost center's pending rechecks cover, and settle them."""
 
         await self._stored(actor, cost_center_id)
@@ -628,13 +661,10 @@ class CostCenterService:
     async def update_settings(
         self, actor: Actor, request: CostCenterSettingsUpdate
     ) -> CostCenterSettings:
-        """Name the tenant's default cost center.
+        """Change the default preference without granting membership.
 
-        Everyone may charge the tenant default, so moving it off a cost center revokes the grants
-        under that cost center whose subjects may charge it no other way: as a listed member,
-        through a listed security group, or as their own default. The recheck is recorded before
-        the move, and every pending recheck runs after it, so repeating the request finishes one
-        that couldn't. If the move fails, the recheck runs anyway and finds nothing changed.
+        Preserve the existing durable recheck boundary and finish earlier pending checks after
+        releasing the lease. A custom center still requires its verified Entra group.
         """
 
         recorded: str | None = None
@@ -651,7 +681,12 @@ class CostCenterService:
                         "No cost center has that ID",
                         details={"defaultCostCenterId": request.default_cost_center_id},
                     )
-                await self._stored(actor, request.default_cost_center_id)
+                chosen = await self._stored(actor, request.default_cost_center_id)
+                if not chosen.is_general and chosen.verified_group_object_id is None:
+                    raise ValidationError(
+                        "A setup-required cost center cannot become the tenant default",
+                        details={"reason": "setupRequired", "costCenterId": chosen.id},
+                    )
                 current = await self._repository.get_settings(actor.tenant_id)
                 previous = tenant_default_id(current, actor.tenant_id)
                 if previous != request.default_cost_center_id:
@@ -719,5 +754,9 @@ class CostCenterService:
                 is_default=item.id == default_id,
                 keys_allowed=item.keys_allowed,
             )
-            for item in book.chargeable(principal, groups)
+            for item in book.chargeable(
+                principal,
+                groups,
+                group_object_ids=() if actor.groups_overage else actor.group_ids,
+            )
         ]

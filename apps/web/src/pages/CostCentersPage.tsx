@@ -13,9 +13,7 @@ import {
   MessageBarBody,
   MessageBarTitle,
   Select,
-  Switch,
   Text,
-  Textarea,
   Title3,
 } from '@fluentui/react-components'
 import { AddRegular, BuildingRegular, MoneyRegular, PeopleRegular, SettingsRegular, GaugeRegular } from '@fluentui/react-icons'
@@ -27,28 +25,19 @@ import { BUDGET_LEVEL_LABELS, budgetBadgeColor } from '../budgets'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { BudgetDetails, BudgetForm, BudgetMeter } from '../components/BudgetEditor'
 import { PageHeader } from '../components/PageHeader'
-import { RowActions } from '../components/RowActions'
-import { IdentityAvatar } from '../components/IdentityAvatar'
 import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { ResourceWorkbench } from '../components/ResourceWorkbench'
-import { WorkspaceEditorFrame } from '../components/WorkspaceEditorFrame'
+import { CostCenterEditor } from '../components/CostCenterSetupForm'
+import { CostCenterDirectoryMembers } from '../components/CostCenterDirectoryMembers'
+import { CostCenterDirectoryOperations } from '../components/CostCenterDirectoryOperations'
+import { CostCenterResourceAccessFields } from '../components/CostCenterResourceAccess'
 import { WorkspaceLeaveGuard, completeWorkspaceNavigation } from '../components/WorkspaceLeaveGuard'
 import { useWorkbenchLocation } from '../components/useWorkbenchLocation'
-import { PRINCIPAL_KIND_LABELS } from '../labels'
-import { invalidateCostCenterMembership } from '../cost-centers'
+import { COST_CENTER_SETUP_LABELS, costCenterSetupState } from '../cost-centers'
 import type { BudgetUpdate, CostCenter, CostCenterLimit, QuotaPeriod } from '../types'
 import styles from './CostCentersPage.module.css'
 
-const CODE_PATTERN = /^[A-Za-z0-9._-]{1,64}$/
 const PERIODS: QuotaPeriod[] = ['Hourly', 'Daily', 'Weekly', 'Monthly', 'Yearly']
-
-interface CostCenterForm {
-  name: string
-  code: string
-  description: string
-  owners: string
-  keysAllowed: boolean
-}
 
 interface LimitDraft {
   /** The chosen resource's `limitKey`. */
@@ -79,14 +68,6 @@ function limitKey(resource: CostCenterLimit['resource']): string {
     : `${resource.kind}:${resource.id}`
 }
 
-const emptyForm: CostCenterForm = {
-  name: '',
-  code: '',
-  description: '',
-  owners: '',
-  keysAllowed: true,
-}
-
 const emptyLimitDraft: LimitDraft = {
   resource: '',
   tokensPerMinute: '',
@@ -99,25 +80,8 @@ const emptyLimitDraft: LimitDraft = {
   monthlyCalls: '',
 }
 
-function owners(value: string) {
-  return value
-    .split(/[,\n]/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-}
-
-function costCenterPayload(form: CostCenterForm) {
-  return {
-    name: form.name.trim(),
-    code: form.code.trim(),
-    description: form.description.trim() || null,
-    owners: owners(form.owners),
-    keysAllowed: form.keysAllowed,
-  }
-}
-
 function ownerText(costCenter: Pick<CostCenter, 'owners'>) {
-  return costCenter.owners.length ? costCenter.owners.join(', ') : 'No owners'
+  return costCenter.owners.length ? costCenter.owners.join(', ') : 'No contact owners'
 }
 
 function errorMessage(error: unknown, fallback: string) {
@@ -138,14 +102,16 @@ function pendingRecheckText(costCenter: CostCenter) {
   const which = counted && grants.size > 0
     ? `${grants.size.toLocaleString()} grant${grants.size === 1 ? '' : 's'} under this cost center`
     : 'Some grants under this cost center'
-  return `${which} may no longer be chargeable here, and MOSAIC couldn't finish checking them because their models were busy. Applies leave them out until it does.`
+  return `${which} may no longer be chargeable here. Eligibility verification or a busy resource prevented the check from finishing. Applies leave affected grants out until the recheck completes.`
 }
 
 function CostCenterBadges({ costCenter, showKeys = true }: { costCenter: CostCenter; showKeys?: boolean }) {
   return (
     <span className={styles.badges}>
       {costCenter.isTenantDefault && <Badge appearance="tint" color="brand">Tenant default</Badge>}
-      {costCenter.builtIn && <Badge appearance="tint">Built in</Badge>}
+      <Badge appearance="tint" color={costCenterSetupState(costCenter) === 'setupRequired' ? 'warning' : 'informative'}>
+        {COST_CENTER_SETUP_LABELS[costCenterSetupState(costCenter)]}
+      </Badge>
       {(costCenter.pendingRechecks?.length ?? 0) > 0 && (
         <Badge appearance="tint" color="warning">Recheck pending</Badge>
       )}
@@ -158,39 +124,6 @@ function CostCenterBadges({ costCenter, showKeys = true }: { costCenter: CostCen
   )
 }
 
-function CostCenterFields({ form, onChange, editing = false }: {
-  form: CostCenterForm
-  onChange: (form: CostCenterForm) => void
-  editing?: boolean
-}) {
-  const codeInvalid = Boolean(form.code) && !CODE_PATTERN.test(form.code)
-  return (
-    <>
-      <div className={styles.formGrid}>
-        <Field label="Name" required>
-          <Input required aria-label="Name" value={form.name} onChange={(_, data) => onChange({ ...form, name: data.value })} />
-        </Field>
-        <Field label="Code" required
-          hint={editing ? 'Changing the code marks grants pending until their models are applied.' : 'Use 1 to 64 letters, numbers, dots, underscores, or hyphens.'}
-          validationMessage={codeInvalid ? 'Use only A-Z, a-z, 0-9, dot, underscore, or hyphen.' : undefined}>
-          <Input required aria-label="Code" value={form.code} onChange={(_, data) => onChange({ ...form, code: data.value })} />
-        </Field>
-      </div>
-      <Field label="Description">
-        <Textarea aria-label="Description" value={form.description} onChange={(_, data) => onChange({ ...form, description: data.value })} />
-      </Field>
-      <Field label="Owners" hint="Enter email addresses separated by commas or new lines.">
-        <Textarea aria-label="Owners" value={form.owners} onChange={(_, data) => onChange({ ...form, owners: data.value })} />
-      </Field>
-      <Switch checked={form.keysAllowed} label="Keys allowed"
-        onChange={(_, data) => onChange({ ...form, keysAllowed: data.checked })} />
-      {editing && <Text className={styles.muted}>
-        Turning keys off suspends this cost center&apos;s keys on the next apply. Changing the code or this switch marks grants pending until their models are applied.
-      </Text>}
-    </>
-  )
-}
-
 export function CostCentersPage() {
   const sections = [
     { value: 'centers', label: 'Cost centers', icon: <BuildingRegular /> },
@@ -200,12 +133,10 @@ export function CostCentersPage() {
   const workbench = useWorkbenchLocation({ section })
   const api = useMosaicApi()
   const queryClient = useQueryClient()
-  const [form, setForm] = useState<CostCenterForm>(emptyForm)
   const [defaultCostCenterId, setDefaultCostCenterId] = useState('')
   const costCenters = useQuery({ queryKey: ['cost-centers'], queryFn: api.listCostCenters })
   const settings = useQuery({ queryKey: ['cost-center-settings'], queryFn: api.getCostCenterSettings })
   const budgets = useQuery({ queryKey: ['budgets'], queryFn: api.getBudgets })
-  const codeInvalid = Boolean(form.code) && !CODE_PATTERN.test(form.code)
   const budgetsByCostCenter = useMemo(
     () => new Map((budgets.data?.costCenters ?? []).flatMap((item) => (item.costCenter ? [[item.costCenter.id, item] as const] : []))),
     [budgets.data],
@@ -224,15 +155,6 @@ export function CostCentersPage() {
     onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['budgets'] }),
   })
 
-  const create = useMutation({
-    mutationFn: () => api.createCostCenter(costCenterPayload(form)),
-    onSuccess: async (created) => {
-      setForm(emptyForm)
-      await queryClient.invalidateQueries({ queryKey: ['cost-centers'] })
-      completeWorkspaceNavigation(() => workbench.close(created.id))
-    },
-  })
-
   const saveSettings = useMutation({
     mutationFn: () => api.updateCostCenterSettings({ defaultCostCenterId }),
     // Moving the default changes which cost center is badged as the tenant default, and the
@@ -246,48 +168,27 @@ export function CostCentersPage() {
     },
   })
 
-  function submit(event: FormEvent) {
-    event.preventDefault()
-    if (!form.name.trim() || !form.code.trim() || codeInvalid) return
-    create.mutate()
-  }
-
   return (
     <section className={styles.page}>
       <PageHeader
         title="Cost centers"
-        description="Charge grants and keys to named cost centers across gateways."
+        description="Connect dedicated Entra groups, choose exact resource access, and charge grants and individual keys across gateways."
       />
       <SectionLayout label="Cost centers" sections={sections} active={section} onSelect={(value) => { if (value !== section) selectSection(value) }}>
       {section === 'centers' && (costCenters.isPending || settings.isPending) && <Loading label="Loading cost centers" />}
       {section === 'centers' && (costCenters.isError || settings.isError) && <ErrorState error={costCenters.error ?? settings.error} />}
       {section === 'centers' && costCenters.data && settings.data && (
         workbench.mode === 'new' ? (
-          <WorkspaceEditorFrame title="New cost center"
-            description="Create a named charge scope. Membership, resource limits, and its budget can be configured after saving."
-            onBack={() => { setForm(emptyForm); create.reset(); workbench.close() }}
-            onCancel={() => { setForm(emptyForm); create.reset(); workbench.close() }}
-            dirty={JSON.stringify(form) !== JSON.stringify(emptyForm)} pending={create.isPending}
-            error={create.isError ? errorMessage(create.error, 'Review the fields and try again.') : undefined}>
-            <form className={styles.editorForm} onSubmit={submit}>
-              <CostCenterFields form={form} onChange={setForm} />
-              <div className={styles.rowActions}>
-                <Button appearance="primary" icon={<AddRegular />} type="submit"
-                  disabled={create.isPending || codeInvalid || !form.name.trim() || !form.code.trim()}>
-                  Create cost center
-                </Button>
-              </div>
-            </form>
-          </WorkspaceEditorFrame>
+          <CostCenterEditor onCancel={() => workbench.close()} onSaved={(id) => workbench.close(id)} />
         ) : workbench.mode === 'edit' && workbench.selectedId ? (
           <CostCenterWorkspace key={workbench.selectedId} costCenterId={workbench.selectedId} embedded />
         ) : (
           <div className={styles.stack}>
             <ResourceWorkbench
               title="Cost centers"
-              description="Everyone may charge the tenant default; other cost centers are available only to their members."
+              description="Custom centers require a verified exclusive Entra group. General is exempt; a default preference is not a custom-center membership grant."
               actions={<Button appearance="primary" icon={<AddRegular />}
-                onClick={() => { setForm(emptyForm); create.reset(); workbench.open('new') }}>New cost center</Button>}
+                onClick={() => workbench.open('new')}>New cost center</Button>}
               items={costCenters.data}
               getId={(costCenter) => costCenter.id}
               selectedId={workbench.selectedId}
@@ -298,7 +199,7 @@ export function CostCentersPage() {
                 const budget = budgetsByCostCenter.get(costCenter.id)
                 return <span className={styles.resourceRow}>
                   <span className={styles.primary}>{costCenter.name}</span>
-                  <span className={styles.muted}>{costCenter.code} · {costCenter.isTenantDefault ? 'Everyone' : `${costCenter.members.length} members`} · {costCenter.enabledGrantCount} / {costCenter.grantCount} grants</span>
+                  <span className={styles.muted}>{costCenter.code} · {costCenter.enabledGrantCount} / {costCenter.grantCount} grants</span>
                   <span className={styles.badges}>
                     <CostCenterBadges costCenter={costCenter} />
                     {budget && budget.status.level !== 'ok' && <Badge appearance="tint" color={budgetBadgeColor(budget.status.level)}>
@@ -309,7 +210,7 @@ export function CostCentersPage() {
               }}
               renderDetail={(costCenter) => <CostCenterWorkspace key={costCenter.id} costCenterId={costCenter.id} embedded />}
               emptyList={<EmptyState title="No cost centers">Create a cost center to charge grants separately.</EmptyState>}
-              emptySelection={<EmptyState title="Select a cost center">Inspect its ownership, members, limits, and budget.</EmptyState>}
+              emptySelection={<EmptyState title="Select a cost center">Inspect group setup, actual directory members, resource access, limits, and budget.</EmptyState>}
             />
             <details className={styles.defaultSettings}>
               <summary>Tenant default</summary>
@@ -320,12 +221,12 @@ export function CostCentersPage() {
                 </MessageBar>
               )}
               <Text className={styles.muted}>
-                New principals are charged here unless you pick another default when you onboard them. Everyone may charge it, so moving it revokes grants under the old default that their subjects may charge no other way.
+                This is a charging preference for eligible principals. Choosing a custom center never grants group membership. General retains its legacy eligibility rules; changing the default may require individual grant rechecks.
               </Text>
               <Field label="Default cost center">
                 <Select value={defaultCostCenterId} onChange={(_, data) => setDefaultCostCenterId(data.value)}>
                   {costCenters.data.map((costCenter) => (
-                    <option key={costCenter.id} value={costCenter.id}>{costCenter.name} ({costCenter.code})</option>
+                    <option key={costCenter.id} value={costCenter.id} disabled={costCenterSetupState(costCenter) === 'setupRequired'}>{costCenter.name} ({costCenter.code}){costCenterSetupState(costCenter) === 'setupRequired' ? ' — Setup required' : ''}</option>
                   ))}
                 </Select>
               </Field>
@@ -411,6 +312,7 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
   const sections = [
     { value: 'overview', label: 'Overview', icon: <BuildingRegular /> },
     { value: 'members', label: 'Members', icon: <PeopleRegular /> },
+    { value: 'access', label: 'Resource access', icon: <GaugeRegular /> },
     { value: 'limits', label: 'Limits', icon: <GaugeRegular /> },
     { value: 'budget', label: 'Budget', icon: <MoneyRegular /> },
   ]
@@ -421,14 +323,10 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const location = useLocation()
-  const [form, setForm] = useState<CostCenterForm>(emptyForm)
-  const [memberId, setMemberId] = useState('')
-  const [removeMember, setRemoveMember] = useState<{ id: string; label: string; securityGroup: boolean } | null>(null)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [limitDraft, setLimitDraft] = useState<LimitDraft>(emptyLimitDraft)
   const [limitValidation, setLimitValidation] = useState<string | null>(null)
   const [limits, setLimits] = useState<CostCenterLimit[]>([])
-  const draftLoadedId = useRef<string | null>(null)
   const limitsLoadedId = useRef<string | null>(null)
   const limitsBaseline = useRef<CostCenterLimit[]>([])
   const previousLimitSection = useRef(section)
@@ -439,12 +337,10 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
     queryFn: () => api.getCostCenterBudget(costCenterId),
     enabled: Boolean(costCenterId),
   })
-  const principals = useQuery({ queryKey: ['principals'], queryFn: api.listPrincipals })
   const modelApis = useQuery({ queryKey: ['model-apis'], queryFn: () => api.listModelApis() })
   const mcpServers = useQuery({ queryKey: ['mcp-servers'], queryFn: () => api.listMcpServers() })
   const modelPools = useQuery({ queryKey: ['model-pools', 'list'], queryFn: () => api.listModelPools() })
   const data = costCenter.data
-  const managedGroupId = data?.groupId
 
   const resources = useMemo<LimitResourceOption[]>(
     () => [
@@ -464,19 +360,6 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
 
   useEffect(() => {
     if (!data) return
-    if (editing && draftLoadedId.current === data.id) return
-    draftLoadedId.current = data.id
-    setForm({
-      name: data.name,
-      code: data.code,
-      description: data.description ?? '',
-      owners: data.owners.join(', '),
-      keysAllowed: data.keysAllowed,
-    })
-  }, [data, editing])
-
-  useEffect(() => {
-    if (!data) return
     const keepDraft = limitsLoadedId.current === data.id && previousLimitSection.current === section && section === 'limits'
     const previousBaseline = limitsBaseline.current
     setLimits((current) => keepDraft && JSON.stringify(current) !== JSON.stringify(previousBaseline) ? current : data.limits)
@@ -489,31 +372,6 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
     previousLimitSection.current = section
   }, [data, section])
 
-  const update = useMutation({
-    mutationFn: () => api.updateCostCenter(costCenterId, costCenterPayload(form)),
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['cost-centers'] }),
-        queryClient.invalidateQueries({ queryKey: ['cost-centers', costCenterId] }),
-        ...(data?.groupId ? [queryClient.invalidateQueries({ queryKey: ['groups'] })] : []),
-      ])
-      completeWorkspaceNavigation(() => workbench.close(embedded ? costCenterId : undefined))
-    },
-  })
-  const addMember = useMutation({
-    mutationFn: () => api.addCostCenterMember(costCenterId, memberId),
-    onSuccess: async () => {
-      setMemberId('')
-      await invalidateCostCenterMembership(queryClient, data?.groupId)
-    },
-  })
-  const remove = useMutation({
-    mutationFn: (principalId: string) => api.removeCostCenterMember(costCenterId, principalId),
-    onSuccess: async () => {
-      setRemoveMember(null)
-      await invalidateCostCenterMembership(queryClient, data?.groupId)
-    },
-  })
   const saveLimits = useMutation({
     mutationFn: () => api.updateCostCenterLimits(costCenterId, limits),
     onSuccess: async (saved) => {
@@ -527,10 +385,6 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
     mutationFn: () => api.deleteCostCenter(costCenterId),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['cost-centers'] })
-      if (data?.groupId) {
-        await queryClient.invalidateQueries({ queryKey: ['groups'] })
-        queryClient.removeQueries({ queryKey: ['memberships', data.groupId] })
-      }
       completeWorkspaceNavigation(() => embedded ? workbench.close(null) : navigate('/cost-centers'))
     },
   })
@@ -604,24 +458,8 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
     <Button onClick={() => embedded ? workbench.close(null) : navigate('/cost-centers')}>Back to cost centers</Button>
   </div>
 
-  const nonMembers = (principals.data ?? []).filter((principal) =>
-    !data.memberDetails.some((member) => member.principalId === principal.id && member.explicit),
-  )
-  const codeInvalid = !CODE_PATTERN.test(form.code)
   const selectedLimitResource = resources.find((item) => item.key === limitDraft.resource)
   const limitResourceIsMcp = selectedLimitResource?.kind === 'mcpServer'
-  const originalForm: CostCenterForm = {
-    name: data.name,
-    code: data.code,
-    description: data.description ?? '',
-    owners: data.owners.join(', '),
-    keysAllowed: data.keysAllowed,
-  }
-  function cancelEditing() {
-    setForm(originalForm)
-    update.reset()
-    workbench.close()
-  }
   function selectCostCenterSection(value: string) {
     if (value === section) return
     if (!embedded) {
@@ -634,21 +472,8 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
   }
 
   if (editing) return (
-    <WorkspaceEditorFrame title={`Edit ${data.name}`}
-      description="Update ownership and local charge settings. Membership, resource limits, and budgets remain separate."
-      onBack={cancelEditing} onCancel={cancelEditing}
-      dirty={JSON.stringify(form) !== JSON.stringify(originalForm)} pending={update.isPending}
-      error={update.isError ? errorMessage(update.error, 'Unable to save the cost center.') : undefined}>
-      <form className={styles.editorForm} onSubmit={(event) => {
-        event.preventDefault()
-        if (!codeInvalid && form.name.trim()) update.mutate()
-      }}>
-        <CostCenterFields form={form} onChange={setForm} editing />
-        <div className={styles.rowActions}>
-          <Button appearance="primary" type="submit" disabled={update.isPending || codeInvalid || !form.name.trim()}>Save changes</Button>
-        </div>
-      </form>
-    </WorkspaceEditorFrame>
+    <CostCenterEditor costCenter={data} onCancel={() => workbench.close()}
+      onSaved={() => workbench.close(embedded ? costCenterId : undefined)} />
   )
 
   return (
@@ -694,23 +519,34 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
         <div className={styles.card}>
           <Title3 as="h2">Summary</Title3>
           <div className={styles.rowActions}>
-            <Button appearance="primary" icon={<SettingsRegular />} onClick={() => { setForm(originalForm); update.reset(); workbench.open('edit', embedded ? data.id : undefined) }}>Edit cost center</Button>
+            <Button appearance="primary" icon={<SettingsRegular />} onClick={() => workbench.open('edit', embedded ? data.id : undefined)}>Edit cost center</Button>
+            {costCenterSetupState(data) === 'setupRequired' && <Button onClick={() => workbench.open('edit', embedded ? data.id : undefined)}>Finish group setup</Button>}
             {embedded && <Button onClick={() => navigate(`/entitlements?costCenter=${encodeURIComponent(data.id)}`)}>View grants</Button>}
           </div>
           <dl className={styles.detailList}>
             <div><dt>Status</dt><dd><CostCenterBadges costCenter={data} /></dd></div>
             <div><dt>Grants</dt><dd>{data.enabledGrantCount} enabled of {data.grantCount}</dd></div>
-            <div><dt>Owners</dt><dd>{ownerText(data)}</dd></div>
+            <div><dt>Contact owners</dt><dd>{ownerText(data)} · Does not assign group ownership or membership</dd></div>
             <div><dt>Defaults</dt><dd>{data.defaultFor} principal{data.defaultFor === 1 ? '' : 's'}</dd></div>
-            <div><dt>Members</dt><dd>{data.isTenantDefault ? 'Everyone may charge this cost center' : `${data.memberDetails.length} listed or default members`}</dd></div>
-            {managedGroupId && <div><dt>Managed group</dt><dd><Button appearance="subtle" size="small"
-              onClick={() => navigate(`/identity?tab=groups&selected=${encodeURIComponent(managedGroupId)}`)}>View membership group</Button></dd></div>}
+            <div><dt>Membership authority</dt><dd>{data.setupState === 'exempt' ? 'General is exempt from dedicated group setup' : 'Actual Entra membership, read one page at a time in Members. No local shadow roster.'}</dd></div>
+            {data.entraBinding && <>
+              <div><dt>Directory tenant</dt><dd className={styles.code}>{data.entraBinding.directoryTenantId}</dd></div>
+              <div><dt>Entra group object ID</dt><dd className={styles.code}>{data.entraBinding.groupObjectId}</dd></div>
+              <div><dt>Group verification</dt><dd>{data.entraBinding.verificationState} · {data.entraBinding.provenance}</dd></div>
+            </>}
+            <div><dt>Resource access definitions</dt><dd>{data.resourceAccess?.length ?? 0} exact offerings · Saving intent is not gateway apply</dd></div>
             <div><dt>Resource limits</dt><dd>{data.limits.length} configured</dd></div>
           </dl>
           {budget.isPending && <Loading label="Loading budget" />}
           {budget.isError && <ErrorState error={budget.error} />}
           {budget.isSuccess && (budget.data ? <BudgetMeter budget={budget.data} label={data.name} /> : <Text className={styles.muted}>No budget set</Text>)}
-          {!data.builtIn && (
+          {costCenterSetupState(data) === 'setupRequired' && <MessageBar intent="warning"><MessageBarBody>
+            This center is saved but not usable for custom-center access until its exclusive Entra group is verified.
+            {data.entraBinding?.verificationError ? ` ${data.entraBinding.verificationError}` : ''}
+          </MessageBarBody></MessageBar>}
+          {data.setupState !== 'exempt' && <Button onClick={() => recheck.mutate()} disabled={recheck.isPending}>Recheck individual grant and key eligibility</Button>}
+          {data.pendingRechecks?.map((check) => check.verificationError && <Text key={check.id}>{check.verificationError}</Text>)}
+          {data.setupState !== 'exempt' && (
             <>
               {deleteCostCenter.isError && (
                 <MessageBar intent="error"><MessageBarBody>{errorMessage(deleteCostCenter.error, 'Unable to delete this cost center.')}</MessageBarBody></MessageBar>
@@ -719,7 +555,17 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
             </>
           )}
         </div>
+        {data.setupState !== 'exempt' && <CostCenterDirectoryOperations costCenterId={data.id} />}
       </div>}
+
+      {section === 'access' && <div className={styles.stack}>
+        {data.setupState === 'exempt' ? <Text>General retains legacy resource availability and credential rules; it is exempt by stable ID.</Text> : <>
+          <div className={styles.rowActions}><Button appearance="primary" onClick={() => workbench.open('edit', embedded ? data.id : undefined)}>Edit resource access</Button></div>
+          <CostCenterResourceAccessFields value={data.resourceAccess ?? []} costCenter={data} />
+        </>}
+      </div>}
+
+      {section === 'members' && <CostCenterDirectoryMembers costCenter={data} onSetup={() => workbench.open('edit', embedded ? data.id : undefined)} />}
 
       {section === 'budget' && <div className={styles.card}>
         <div className={styles.cardHeader}>
@@ -765,78 +611,7 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
         )}
       </div>}
 
-      {(section === 'members' || section === 'limits') && <div className={styles.stack}>
-        {section === 'members' && <div className={styles.card}>
-          <Title3 as="h2">Members</Title3>
-          {managedGroupId && <>
-            <Text className={styles.muted}>This cost center and its managed MOSAIC group share one explicit roster. Adding a member does not grant model access.</Text>
-            <div className={styles.rowActions}><Button
-              onClick={() => navigate(`/identity?tab=groups&selected=${encodeURIComponent(managedGroupId)}`)}>View membership group</Button></div>
-          </>}
-          <Text className={styles.muted}>Removing a member revokes their grants under this cost center, unless they may still charge it another way, such as through a listed security group. The next apply deletes their keys. Removing a security group revokes the grants that relied on it.</Text>
-          <form className={styles.addMember} onSubmit={(event) => { event.preventDefault(); if (memberId) addMember.mutate() }}>
-            <Field label="Add member">
-              <Select aria-label="Add member" value={memberId} onChange={(_, selectData) => setMemberId(selectData.value)}>
-                <option value="">Select a MOSAIC principal</option>
-                {nonMembers.map((principal) => (
-                  <option key={principal.id} value={principal.id}>{principal.label ?? principal.objectId} — {PRINCIPAL_KIND_LABELS[principal.kind]}</option>
-                ))}
-              </Select>
-            </Field>
-            <Button appearance="primary" type="submit" disabled={!memberId || addMember.isPending}>Add member</Button>
-          </form>
-          {(addMember.isError || remove.isError) && (
-            <MessageBar intent="error"><MessageBarBody>{errorMessage(addMember.error ?? remove.error, 'Unable to update members.')}</MessageBarBody></MessageBar>
-          )}
-          <div className={styles.tableWrap}>
-            <table aria-label="Cost center members">
-              <thead><tr><th>Member</th><th>Kind</th><th>Membership</th><th>Actions</th></tr></thead>
-              <tbody>
-                {data.memberDetails.length === 0 ? (
-                  <tr><td colSpan={4}><EmptyState title="No members">Add a principal or security group to let it charge this cost center.</EmptyState></td></tr>
-                ) : data.memberDetails.map((member) => (
-                  <tr key={`${member.principalId}:${member.explicit}`}>
-                    <td>
-                      <div className={styles.identityCell}>
-                        {member.kind && <IdentityAvatar
-                          name={member.label ?? member.principalId}
-                          kind={member.kind}
-                          objectId={member.objectId ?? undefined}
-                          size={32}
-                        />}
-                        <div>
-                          <span className={styles.primary}>{member.label ?? member.principalId}</span>
-                          {member.isDefault && <div><Badge appearance="tint" color="brand">Default</Badge></div>}
-                          <details className={styles.technicalDetails}>
-                            <summary>Object ID</summary>
-                            <code className={styles.code}>{member.objectId ?? '—'}</code>
-                          </details>
-                        </div>
-                      </div>
-                    </td>
-                    <td>{member.kind ? PRINCIPAL_KIND_LABELS[member.kind] : 'Unknown'}</td>
-                    <td>{member.explicit ? 'Listed' : 'Default only'}</td>
-                    <td>
-                      {member.explicit && (
-                        <RowActions
-                          label={`More actions for ${member.label ?? member.principalId}`}
-                          primary={<Button
-                            appearance="subtle"
-                            className={styles.dangerButton}
-                            onClick={() => setRemoveMember({ id: member.principalId, label: member.label ?? member.principalId, securityGroup: member.kind === 'securityGroup' })}
-                          >
-                            Remove
-                          </Button>}
-                        />
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>}
-
+      {section === 'limits' && <div className={styles.stack}>
         {section === 'limits' && <div className={styles.card} data-workspace-editor>
           <Title3 as="h2">Limits</Title3>
           <Text className={styles.muted}>
@@ -901,30 +676,12 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
       </div>}
       </SectionLayout>
 
-      <Dialog open={removeMember !== null} onOpenChange={(_, dialogData) => !dialogData.open && setRemoveMember(null)}>
-        <DialogSurface>
-          <DialogBody>
-            <DialogTitle>Remove member</DialogTitle>
-            <DialogContent>
-              <Text>
-                Remove <strong>{removeMember?.label}</strong>? This revokes their grants under this cost center, unless they may still charge it another way, and the next apply deletes their keys.
-                {removeMember?.securityGroup ? ' Grants people charged only through this group are revoked too.' : ''}
-              </Text>
-            </DialogContent>
-            <DialogActions>
-              <Button appearance="secondary" onClick={() => setRemoveMember(null)}>Cancel</Button>
-              <Button appearance="primary" onClick={() => removeMember && remove.mutate(removeMember.id)}>Remove</Button>
-            </DialogActions>
-          </DialogBody>
-        </DialogSurface>
-      </Dialog>
-
       <Dialog open={deleteOpen} onOpenChange={(_, dialogData) => !dialogData.open && setDeleteOpen(false)}>
         <DialogSurface>
           <DialogBody>
             <DialogTitle>Delete cost center</DialogTitle>
             <DialogContent>
-              <Text>Delete <strong>{data.name}</strong>? This is refused while it is the tenant default, a principal default, or has grants.</Text>
+              <Text>Delete <strong>{data.name}</strong>? This is refused while it is the tenant default, a principal default, or has grants. Deleting a MOSAIC record never deletes its Entra group, and does not remove previously applied gateway access.</Text>
             </DialogContent>
             <DialogActions>
               <Button appearance="secondary" onClick={() => setDeleteOpen(false)}>Cancel</Button>

@@ -27,7 +27,7 @@ export function DetailPanel({ title, onClose, children }: { title: string; onClo
       style={{ width: 'min(680px, 100%)', maxWidth: '100%' }}
       onOpenChange={(_, data) => { if (!data.open) onClose() }}>
       <DrawerHeader>
-        <DrawerHeaderTitle id={titleId} action={<Button appearance="subtle" icon={<DismissRegular />} aria-label="Close details" onClick={onClose} />}>
+        <DrawerHeaderTitle heading={{ id: titleId }} action={<Button appearance="subtle" icon={<DismissRegular />} aria-label="Close details" onClick={onClose} />}>
           {title}
         </DrawerHeaderTitle>
       </DrawerHeader>

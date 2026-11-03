@@ -1,10 +1,10 @@
-"""Read-only Microsoft Graph directory lookup.
+"""Read-only Microsoft Graph directory lookup and a separate opt-in management adapter.
 
 MOSAIC reads the directory with its own managed identity to let administrators find users,
 agents and security groups by name, to confirm an object exists and is the kind they said, and to
-work out which granted groups a principal belongs to. It never writes to the directory. The
-gateway never calls Graph: runtime enforcement uses the ``groups`` claim Entra puts in the caller's
-token.
+work out which granted groups a principal belongs to. ``DirectoryLookup`` never writes to the
+directory. ``GroupManagement`` is a separate, explicitly consented administrator capability. The
+gateway never calls Graph: runtime enforcement uses the ``groups`` claim in the caller's token.
 """
 
 from collections.abc import Sequence
@@ -75,12 +75,37 @@ class DirectoryLookup(Protocol):
 
 
 from mosaic_api.integrations.graph.client import GraphDirectoryLookup  # noqa: E402
-from mosaic_api.integrations.graph.fake import FakeDirectoryLookup  # noqa: E402
+from mosaic_api.integrations.graph.fake import FakeDirectoryLookup, FakeDirectoryState  # noqa: E402
+from mosaic_api.integrations.graph.fake_group_management import FakeGroupManagement  # noqa: E402
+from mosaic_api.integrations.graph.group_management import (  # noqa: E402
+    DirectGroupMember,
+    GraphGroup,
+    GraphGroupManagement,
+    GroupFailureKind,
+    GroupManagement,
+    GroupManagementCapabilities,
+    GroupManagementError,
+    GroupMemberPage,
+    GroupWriteOutcome,
+    GroupWriteResult,
+)
 
 __all__ = [
+    "DirectGroupMember",
     "DirectoryLookup",
     "DirectoryPhoto",
     "FakeDirectoryLookup",
+    "FakeDirectoryState",
+    "FakeGroupManagement",
     "GraphDirectoryLookup",
+    "GraphGroup",
+    "GraphGroupManagement",
+    "GroupFailureKind",
+    "GroupManagement",
+    "GroupManagementCapabilities",
+    "GroupManagementError",
+    "GroupMemberPage",
     "GroupMembershipEvidence",
+    "GroupWriteOutcome",
+    "GroupWriteResult",
 ]

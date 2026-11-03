@@ -9,6 +9,10 @@ The 2026-10-08 amendment below replaces the per-publication metadata API with op
 shared, blank-path API, because API Management services created since about October 2026 refuse an
 API path that starts with a dot.
 
+The [ADR 0030](0030-entra-backed-cost-centers.md) amendment requires the center group claim on
+both group and individual custom-center token grants. It does not merge MCP and model permissions
+or extend the new workflow to Government.
+
 ## Context
 
 ADR 0007 let MOSAIC register MCP servers directly and record the tools they declare. ADR 0005 let
@@ -95,7 +99,8 @@ audience is refused because the gateway would not know which token to request.
   model token with only `Models.Invoke`, APIM subscription key, or upstream server credential is not
   enough.
 - Security-group grants fail closed when Entra omits the `groups` claim because of overage. The
-  remedy is a direct grant.
+  General direct-token path can avoid an optional resource-group check, but an individual token
+  grant cannot bypass a custom center's mandatory group claim.
 - A failed apply can deliberately leave the server denied until an administrator reviews and applies
   a fresh plan. That is safer than guessing how to restore an older access policy.
 - MCP response-body logging in API Management diagnostics is now an operational prerequisite.
@@ -262,3 +267,21 @@ establishes denial. Recovery also acquires the gateway lock for interrupted pre-
 If someone adds an unrecorded operation to the shared API, unpublish keeps the API to avoid removing
 their operation. Once the last publication drops its reference, MOSAIC no longer has ownership
 evidence and refuses to adopt that retained API; an operator must resolve it before publishing again.
+
+## Amendment 2026-11-03: Entra-backed center resource policy
+
+[ADR 0030](0030-entra-backed-cost-centers.md) applies Automatic, Request-only, and Not available
+to each exact MCP offering independently of its model offerings. Automatic uses one stable
+center-group JWT grant after reviewed apply; adding members does not generate individual
+automatic entitlements or APIM policy writes. Individual MCP token grants also require the
+custom center's group claim. General is exempt by built-in identity; overage cannot be resolved
+with a direct token grant under a custom center.
+
+The caller still needs `Mcp.Invoke` or `Mcp.Invoke.Application` plus its applied MCP grant. If the
+server calls a model, its application separately needs model invocation permission and an applied
+model grant, including the model center's group claim for a custom-center token path. The
+attribution reference grants no access. Directory membership writes are optional API-identity
+control-plane operations, never APIM Graph permissions or inference-time callbacks.
+
+Government's pre-existing key-only behavior is outside this redesign. No group key, immediate
+JWT revocation, CAE, or directory-watched key revocation is introduced.

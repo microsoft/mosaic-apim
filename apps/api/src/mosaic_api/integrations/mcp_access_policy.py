@@ -50,6 +50,7 @@ from mosaic_api.integrations.access_policy import (
     append_grant_attribution_trace,
     classify_traces,
     cost_center_details,
+    cost_center_group_details,
     describe_on_behalf_removal,
     grant_counter_identity,
     validate_cloud_access,
@@ -65,7 +66,8 @@ _COUNTER_PREFIX = "mosaic:mcp:"
 _DENIED = "MCP access denied."
 _GROUPS_OVERAGE_DENIED = (
     "MCP access denied. Your token doesn't list your groups because you belong to too many; "
-    "ask an administrator for a direct grant."
+    "ask an administrator to resolve group-claim overage. Direct token grants for custom cost "
+    "centers still require cost-center membership."
 )
 _PERIOD_LABELS: dict[QuotaPeriod, str] = {
     "Hourly": "hour",
@@ -543,6 +545,7 @@ def _facets(
                 f"Application tokens require {snapshot.application_role} in roles with no real "
                 "scp claim.",
                 "Direct user and application grants are checked before security-group grants.",
+                *cost_center_group_details(grants),
                 *cost_center_details(),
             ],
             attributes={

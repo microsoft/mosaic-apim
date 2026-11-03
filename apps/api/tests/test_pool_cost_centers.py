@@ -9,16 +9,19 @@ every plan leaves it out, as ADR 0022 requires of a publication's grants.
 import xml.etree.ElementTree as ET
 
 import pytest
+from mosaic_api.cost_center_directory import EntraGroupBinding
 from mosaic_api.cost_centers import (
-    CostCenterCreate,
+    CostCenter,
     CostCenterLimit,
     CostCenterLimitsUpdate,
+    CostCenterResourceAccess,
     CostCenterView,
     PersonLimits,
     PooledQuota,
 )
 from mosaic_api.domain import (
     GENERAL_COST_CENTER_CODE,
+    DirectoryObject,
     Entitlement,
     EntitlementEnforcement,
     EntitlementResource,
@@ -30,7 +33,9 @@ from mosaic_api.domain import (
     PublishRunStatus,
     TokenEnforcement,
     entitlement_id,
+    utc_now,
 )
+from mosaic_api.integrations.graph import FakeDirectoryLookup
 from mosaic_api.integrations.pool_policy import pool_grant_counter_key_expression
 from mosaic_api.model_pools import ModelPool
 from mosaic_api.services.cost_centers import CostCenterService
@@ -40,6 +45,7 @@ from test_model_pools import ACTOR, TENANT, _audit
 from test_pool_governed import GENERAL, GovernedEstate
 
 WAITING = "waiting for MOSAIC to check"
+GROUP = "44444444-4444-4444-4444-444444444444"
 
 
 class Charged(GovernedEstate):
@@ -47,12 +53,17 @@ class Charged(GovernedEstate):
 
     def __init__(self) -> None:
         super().__init__()
+        self.graph = FakeDirectoryLookup(
+            [DirectoryObject(object_id=GROUP, kind="securityGroup", display_name="Research")],
+            tenant_id=TENANT,
+        )
         self.grants = EntitlementService(
             self.entitlements,
             directory_repository=self.directory,
             gateway_repository=self.gateway_repository,
             endpoint_repository=self.endpoint_repository,
             cost_center_repository=self.cost_centers,
+            directory_lookup=self.graph,
         )
         self.charging = CostCenterService(
             self.cost_centers,
@@ -63,12 +74,41 @@ class Charged(GovernedEstate):
         )
 
     async def research(self, *members: Principal) -> CostCenterView:
-        created = await self.charging.create_cost_center(
-            ACTOR, CostCenterCreate(name="Research", code="RES")
+        self.graph.state.group_members[GROUP] = [item.object_id for item in members]
+        created = await self.cost_centers.create_cost_center(
+            CostCenter(
+                id="costCenter-research",
+                tenant_id=TENANT,
+                name="Research",
+                code="RES",
+                entra_binding=EntraGroupBinding(
+                    directory_tenant_id=TENANT,
+                    group_object_id=GROUP,
+                    provenance="attached",
+                    verification_state="verified",
+                    verified_at=utc_now(),
+                ),
+                resource_access=[
+                    CostCenterResourceAccess(
+                        resource=EntitlementResource(
+                            kind="poolModel", id=model.id, scope_id=pool.id
+                        ),
+                        mode="requestOnly",
+                    )
+                    for pool in await self.gateway_repository.list_model_pools(TENANT)
+                    for model in pool.models
+                ],
+            ),
+            _audit(),
         )
-        for member in members:
-            await self.charging.add_member(ACTOR, created.id, member.id)
-        return created
+        return CostCenterView.model_validate(created.model_dump(by_alias=False))
+
+    async def remove_research_member(self, center_id: str, principal: Principal) -> CostCenterView:
+        self.graph.state.group_members[GROUP].remove(principal.object_id)
+        await self.grants.member_removed_from_cost_center(
+            ACTOR, center_id, principal.object_id, principal.kind
+        )
+        return await self.charging.get_cost_center(ACTOR, center_id)
 
     async def charged_grant(
         self,
@@ -212,7 +252,7 @@ async def test_leaving_a_cost_center_revokes_the_pool_grants_charged_to_it(
     for key in (charged_key, kept_key):
         await estate.issue_key(pool.id, key)
 
-    view = await estate.charging.remove_member(ACTOR, research.id, ada.id)
+    view = await estate.remove_research_member(research.id, ada)
 
     assert view.pending_rechecks == []
     revoked = await estate.entitlement(charged.id)
@@ -255,13 +295,13 @@ async def test_a_recheck_waits_for_a_busy_pool_and_its_grant_stays_out_until_the
     await estate.gateway_repository.acquire_publication_lock(TENANT, pool.id, "run-elsewhere")
 
     # Ada leaves at once. Revoking her grant needs the pool's lock, so the recheck waits.
-    view = await estate.charging.remove_member(ACTOR, research.id, ada.id)
+    view = await estate.remove_research_member(research.id, ada)
 
     assert ada.id not in view.member_ids()
     [pending] = view.pending_rechecks
     assert (pending.reason, pending.subject_id, pending.entitlement_ids) == (
         "memberRemoved",
-        ada.id,
+        None,
         [charged.id],
     )
     assert (await estate.entitlement(charged.id)).revocation is None

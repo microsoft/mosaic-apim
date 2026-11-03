@@ -2,6 +2,12 @@
 
 **Status:** Accepted
 
+**Amended by [ADR 0030](0030-entra-backed-cost-centers.md), 2026-11-03:** The original embedded
+membership roster, default-based eligibility, and local-only removal assumptions below are
+historical. Custom centers now require a verified exclusive Entra group; defaults select among
+eligible grants but do not grant membership. General is exempt by built-in identity. Charging,
+exact-grant selection, limits, and reporting remain unless explicitly amended.
+
 **Amends:** [ADR 0011](0011-governed-model-access.md), where applies created every grant's key,
 and [ADR 0016](0016-agent-identities-and-security-group-grants.md), where precedence chose one grant
 per resource.
@@ -48,7 +54,7 @@ Several things shape how MOSAIC can do that:
 **A principal has a default cost center, set at onboarding.** It's the tenant's default unless the
 administrator picks another. A security group has none.
 
-**Who may charge a cost center:**
+**Who may charge a cost center (original MVP rules; superseded by ADR 0030):**
 - everyone may charge the tenant's default;
 - a principal may charge its own default;
 - a listed member may charge it, and so may anyone in a listed security group;
@@ -75,7 +81,7 @@ Where the evidence of group membership comes from depends on who asks:
   preselected. One open request per resource and cost center. An approval grants under that cost
   center, or another the administrator chooses that the requester may charge.
 
-**Losing the right to charge a cost center revokes the grants that relied on it.**
+**Losing the right to charge a cost center (original local-roster workflow; amended below).**
 - A revoked grant is disabled and records why, as a `revocation`. The next apply deletes its key
   rather than suspending it. An administrator can turn it back on only once its subject may charge
   the cost center again.
@@ -91,7 +97,7 @@ Where the evidence of group membership comes from depends on who asks:
   a grant nothing proves eligible is revoked: this fails closed.
 - Leaving the tenant's default revokes nothing, because everyone may charge it.
 
-**A recheck is recorded before the change, and finished even when it's interrupted.**
+**A recheck is recorded before the change (original Cosmos-only change boundary; amended below).**
 - The cost center records a `pendingRecheck` before the change that may need it. A member's
   removal saves both in one write. Then the change is saved, and the recheck runs.
 - Revoking a grant needs its publication's lock, which an apply holds while it runs. A grant whose
@@ -225,6 +231,10 @@ Where the evidence of group membership comes from depends on who asks:
 
 ## Live verification still required
 
+The criteria below cover the original cost-center policies, not verification of the new Entra
+group workflow. ADR 0030 adds separate consent, mutation, token-membership, and key-revocation
+acceptance boundaries; neither document claims live checks have passed.
+
 The policies are tested as compiled XML, not on a gateway. On a real deployment, confirm:
 - that a call through two `llm-token-limit` policies counts its tokens against both, so the pooled
   monthly quota and the grant's own limit each apply, and each returns its remaining-tokens header;
@@ -235,3 +245,36 @@ The policies are tested as compiled XML, not on a gateway. On a real deployment,
 - that the pooled `quota-by-key` resets at the start of the calendar month;
 - that `regeneratePrimaryKey` and `regenerateSecondaryKey` on the `2024-05-01` API change one slot
   and leave the other working.
+
+## Amendment 2026-11-03: Entra membership, exact-resource modes, and separate revocation
+
+[ADR 0030](0030-entra-backed-cost-centers.md) replaces custom-center membership/default
+eligibility and the [ADR 0029](0029-managed-cost-center-groups.md) local-group foundation.
+The center defines charging and resource policy; one verified exclusively bound Entra group
+defines membership. Ordinary cloud-managed assigned security groups are supported; there is no
+editable internal shadow roster. General is exempt from the mandatory group by built-in identity.
+Government is excluded from the new workflow.
+
+Automatic creates one stable group grant for an exact model, pool-model offering, or MCP server.
+Request-only permits individual requests; Not available blocks new grants/requests server-side.
+Adding a member performs Graph work with no per-user automatic grants or APIM management writes.
+Every custom-center token path, including individual grants, requires the center group claim.
+Default preferences and `x-mosaic-cost-center` only choose among authorized grants.
+
+Center setup is saved before external group creation. Graph and Cosmos are not one transaction;
+small retained operations, conditional results, and explicit unknown outcomes replace the
+assumption that a local roster write proves a directory change. Group creation/member writes
+require separate optional API consent. A verified attachment can operate read-only. Deleting a
+center never automatically deletes its Entra group.
+
+Individual keys remain explicit credentials where resource and center permit them. Creation/reveal
+requires current eligibility; membership removal does not itself revoke a copied key. Use affected
+grant/key rechecks and reviewed revoke/apply. Out-of-band membership edits require an explicit
+recheck, not a continuous directory watcher. Existing JWT claims survive until expiry; human
+tokens normally last 60-90 minutes from issuance and managed-identity caching can be around
+24 hours per resource. Actual remaining expiry, directory propagation, and caching govern timing,
+not immediate invalidation or a universal 90-minute bound.
+
+Old MVP centers require explicit reconfiguration/recreation. There is no production migration,
+automatic member copy, individual-to-group grant conversion, silent data deletion, or silent
+charge fallback to General. Current operator guidance is in [cost centers](../cost-centers.md).

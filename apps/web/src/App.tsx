@@ -137,7 +137,7 @@ function AdminShell() {
     { label: 'Models · Published models', to: '/models?tab=published' },
     { label: 'Models · Imported model APIs', to: '/models?tab=imported' },
     { label: 'Models · Model endpoints', to: '/models?tab=endpoints' },
-    { label: 'Entitlements · Access requests', to: '/entitlements?tab=requests' },
+    { label: 'Entitlements · Requests', to: '/entitlements?tab=requests' },
     { label: 'Entitlements · Model access settings', to: '/entitlements?tab=settings' },
     { label: 'Entitlements · Approval policies', to: '/entitlements?tab=approvalPolicies' },
     { label: 'Settings · AI approval assistance', to: '/settings?tab=approvalAi' },

@@ -23,14 +23,17 @@ MailboxResolver = Callable[[NotificationDelivery], Awaitable[str | None]]
 
 def _notification_path(delivery: NotificationDelivery, event: NotificationEvent) -> str:
     subject = event.subject
+    kind_query = "&requestKind=costCenter" if subject.request_kind == "costCenter" else ""
     if delivery.persona == "portal":
         if subject.request_id:
-            return "/requests?request=" + quote(subject.request_id, safe="")
+            path = "/requests?request=" + quote(subject.request_id, safe="")
+            return path + kind_query
         if subject.entitlement_id:
             return "/access?grant=" + quote(subject.entitlement_id, safe="")
         return "/notifications"
     if subject.request_id:
-        return "/entitlements?tab=requests&selected=" + quote(subject.request_id, safe="")
+        path = "/entitlements?tab=requests&selected=" + quote(subject.request_id, safe="")
+        return path + kind_query
     if subject.entitlement_id:
         return "/entitlements?tab=grants&selected=" + quote(subject.entitlement_id, safe="")
     run = quote(subject.run_id, safe="") if subject.run_id else None

@@ -100,6 +100,8 @@ class PortalService:
             item for item in await self._requests(actor) if item.state == AccessRequestState.PENDING
         ]
         book = await self._entitlements.cost_center_book(actor.tenant_id)
+        default = book.get(book.default_for(principal))
+        groups = await self._entitlements.caller_group_principal_ids(actor)
         return PortalProfile(
             object_id=actor.object_id,
             tenant_id=actor.tenant_id,
@@ -111,6 +113,15 @@ class PortalService:
             pending_request_count=len(pending),
             groups_overage=actor.groups_overage,
             default_cost_center=book.ref(book.default_for(principal)),
+            default_cost_center_eligible=bool(
+                default
+                and default
+                in book.chargeable(
+                    principal,
+                    groups,
+                    group_object_ids=() if actor.groups_overage else actor.group_ids,
+                )
+            ),
         )
 
     async def _resolved(
@@ -123,7 +134,7 @@ class PortalService:
         return await self._entitlements.resolve_for_object_id(
             actor,
             actor.object_id,
-            group_object_ids=actor.group_ids,
+            group_object_ids=frozenset() if actor.groups_overage else actor.group_ids,
             include_disabled=include_disabled,
             records=records,
         )
@@ -192,6 +203,13 @@ class PortalService:
                     "entitlement": portal_entitlement(item.entitlement),
                     "resource_display_name": name,
                     "model": model,
+                    "access_origin": (
+                        "automaticCostCenter"
+                        if item.entitlement.managed_by == "costCenterAutomatic"
+                        else "approvedIndividual"
+                        if item.via == "direct"
+                        else "group"
+                    ),
                 }
             )
             for item, name, model in zip(resolved, names, models, strict=True)
@@ -380,6 +398,24 @@ class PortalService:
         )
         for entry, descriptor in zip(entries, models, strict=True):
             entry.model = descriptor
+        book = await self._entitlements.cost_center_book(actor.tenant_id)
+        principal = await self._directory.find_principal_by_object_id(
+            actor.tenant_id, actor.object_id
+        )
+        groups = await self._entitlements.caller_group_principal_ids(actor)
+        centers = book.chargeable(
+            principal,
+            groups,
+            group_object_ids=() if actor.groups_overage else actor.group_ids,
+        )
+        for entry in entries:
+            entry.cost_center_access = await self._entitlements.cost_center_access_options(
+                actor,
+                EntitlementResource(kind=entry.kind, id=entry.id, scope_id=entry.scope_id),
+                centers=centers,
+                default_cost_center_id=book.default_for(principal),
+                records=records,
+            )
         entries.sort(key=lambda item: (item.display_name.casefold(), item.id))
         return entries
 

@@ -26,6 +26,14 @@ import type {
   CatalogVisibility,
   ConsoleAccess,
   CostCenter,
+  CostCenterCreate,
+  CostCenterUpdate,
+  CostCenterGroupCapabilities,
+  CostCenterDirectoryMembers,
+  CostCenterDirectoryOperationView,
+  AdminCostCenterRequest,
+  CostCenterRequestApproval,
+  RequestCounts,
   CostCenterLimit,
   CostCenterSettings,
   DeclaredDeploymentInput,
@@ -149,6 +157,7 @@ interface RequestOptions {
   cache?: RequestCache
   signal?: AbortSignal
   ifMatch?: number
+  idempotencyKey?: string
 }
 
 export interface DownloadedFile {
@@ -220,21 +229,23 @@ export interface MosaicApi extends AdminApi {
   assignEnvironments(payload: EnvironmentAssignmentRequest): Promise<EnvironmentAssignmentResult>
   listEnvironmentFindings(gatewayId?: string): Promise<EnvironmentFindingList>
   listCostCenters(): Promise<CostCenter[]>
-  createCostCenter(payload: {
-    name: string
-    code: string
-    description?: string | null
-    owners?: string[]
-    keysAllowed?: boolean
-  }): Promise<CostCenter>
+  createCostCenter(payload: CostCenterCreate): Promise<CostCenter>
   getCostCenter(costCenterId: string): Promise<CostCenter>
   updateCostCenter(
     costCenterId: string,
-    payload: Partial<Pick<CostCenter, 'name' | 'code' | 'description' | 'owners' | 'keysAllowed'>>,
+    payload: CostCenterUpdate,
   ): Promise<CostCenter>
   deleteCostCenter(costCenterId: string): Promise<void>
   addCostCenterMember(costCenterId: string, principalId: string): Promise<CostCenter>
   removeCostCenterMember(costCenterId: string, principalId: string): Promise<CostCenter>
+  getCostCenterGroupCapabilities(): Promise<CostCenterGroupCapabilities>
+  listCostCenterDirectoryMembers(costCenterId: string, options?: { pageSize?: number; cursor?: string }): Promise<CostCenterDirectoryMembers>
+  addCostCenterDirectoryMember(costCenterId: string, objectId: string, memberKind: PrincipalKind, idempotencyKey: string): Promise<CostCenterDirectoryOperationView>
+  removeCostCenterDirectoryMember(costCenterId: string, objectId: string, idempotencyKey: string): Promise<CostCenterDirectoryOperationView>
+  listCostCenterDirectoryOperations(costCenterId: string): Promise<CostCenterDirectoryOperationView[]>
+  getCostCenterDirectoryOperation(costCenterId: string, operationId: string): Promise<CostCenterDirectoryOperationView>
+  retryCostCenterDirectoryOperation(costCenterId: string, operationId: string): Promise<CostCenterDirectoryOperationView>
+  recoverCostCenterDirectoryOperation(costCenterId: string, operationId: string): Promise<CostCenterDirectoryOperationView>
   updateCostCenterLimits(costCenterId: string, limits: CostCenterLimit[]): Promise<CostCenter>
   recheckCostCenter(costCenterId: string): Promise<CostCenter>
   getCostCenterSettings(): Promise<CostCenterSettings>
@@ -445,6 +456,11 @@ export interface MosaicApi extends AdminApi {
   resolveEntitlements(principalId: string): Promise<ResolvedEntitlement[]>
   getGrantOverlaps(filters?: { resource?: string }): Promise<GrantOverlapReport>
   listAccessRequests(state?: string): Promise<AccessRequest[]>
+  getRequestCounts(): Promise<RequestCounts>
+  listCostCenterRequests(state?: string): Promise<AdminCostCenterRequest[]>
+  getCostCenterRequest(requestId: string): Promise<AdminCostCenterRequest>
+  approveCostCenterRequest(requestId: string, approval: CostCenterRequestApproval): Promise<AdminCostCenterRequest>
+  denyCostCenterRequest(requestId: string, note?: string | null): Promise<AdminCostCenterRequest>
   approveAccessRequest(requestId: string, approval: AccessRequestApproval): Promise<AccessRequest>
   denyAccessRequest(requestId: string, note?: string): Promise<AccessRequest>
   previewPolicy(payload: {
@@ -556,6 +572,7 @@ export function useMosaicApi(): MosaicApi {
     async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
       const headers = await requestHeaders(options.body !== undefined)
       if (options.ifMatch !== undefined) headers.set('If-Match', String(options.ifMatch))
+      if (options.idempotencyKey) headers.set('Idempotency-Key', options.idempotencyKey)
       const response = await fetch(`${runtimeConfig.apiBaseUrl}${path}`, {
         method: options.method ?? 'GET',
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
@@ -729,6 +746,33 @@ export function useMosaicApi(): MosaicApi {
           `/api/v1/cost-centers/${encodeURIComponent(id)}/members/${encodeURIComponent(principalId)}`,
           { method: 'DELETE' },
         ),
+      getCostCenterGroupCapabilities: () =>
+        request<CostCenterGroupCapabilities>('/api/v1/cost-centers/group-capabilities', { cache: 'no-store' }),
+      listCostCenterDirectoryMembers: (id, options) => {
+        const params = new URLSearchParams({ pageSize: String(options?.pageSize ?? 100) })
+        if (options?.cursor) params.set('cursor', options.cursor)
+        return request<CostCenterDirectoryMembers>(
+          `/api/v1/cost-centers/${encodeURIComponent(id)}/directory-members?${params}`, { cache: 'no-store' },
+        )
+      },
+      addCostCenterDirectoryMember: (id, objectId, memberKind, idempotencyKey) =>
+        request<CostCenterDirectoryOperationView>(
+          `/api/v1/cost-centers/${encodeURIComponent(id)}/directory-members/${encodeURIComponent(objectId)}`,
+          { method: 'PUT', body: { memberKind }, idempotencyKey },
+        ),
+      removeCostCenterDirectoryMember: (id, objectId, idempotencyKey) =>
+        request<CostCenterDirectoryOperationView>(
+          `/api/v1/cost-centers/${encodeURIComponent(id)}/directory-members/${encodeURIComponent(objectId)}`,
+          { method: 'DELETE', idempotencyKey },
+        ),
+      listCostCenterDirectoryOperations: (id) =>
+        request<CostCenterDirectoryOperationView[]>(`/api/v1/cost-centers/${encodeURIComponent(id)}/directory-operations`, { cache: 'no-store' }),
+      getCostCenterDirectoryOperation: (id, operationId) =>
+        request<CostCenterDirectoryOperationView>(`/api/v1/cost-centers/${encodeURIComponent(id)}/directory-operations/${encodeURIComponent(operationId)}`, { cache: 'no-store' }),
+      retryCostCenterDirectoryOperation: (id, operationId) =>
+        request<CostCenterDirectoryOperationView>(`/api/v1/cost-centers/${encodeURIComponent(id)}/directory-operations/${encodeURIComponent(operationId)}/retry`, { method: 'POST' }),
+      recoverCostCenterDirectoryOperation: (id, operationId) =>
+        request<CostCenterDirectoryOperationView>(`/api/v1/cost-centers/${encodeURIComponent(id)}/directory-operations/${encodeURIComponent(operationId)}/recover`, { method: 'POST' }),
       updateCostCenterLimits: (id, limits) =>
         request<CostCenter>(`/api/v1/cost-centers/${encodeURIComponent(id)}/limits`, {
           method: 'PUT',
@@ -1141,6 +1185,15 @@ export function useMosaicApi(): MosaicApi {
         request<GrantOverlapReport>(
           `/api/v1/entitlements/overlaps${filters?.resource ? `?resource=${encodeURIComponent(filters.resource)}` : ''}`,
         ),
+      getRequestCounts: () => request<RequestCounts>('/api/v1/request-counts'),
+      listCostCenterRequests: (state) =>
+        request<AdminCostCenterRequest[]>(`/api/v1/cost-center-requests${state ? `?state=${encodeURIComponent(state)}` : ''}`),
+      getCostCenterRequest: (id) =>
+        request<AdminCostCenterRequest>(`/api/v1/cost-center-requests/${encodeURIComponent(id)}`),
+      approveCostCenterRequest: (id, approval) =>
+        request<AdminCostCenterRequest>(`/api/v1/cost-center-requests/${encodeURIComponent(id)}/approve`, { method: 'POST', body: approval }),
+      denyCostCenterRequest: (id, note) =>
+        request<AdminCostCenterRequest>(`/api/v1/cost-center-requests/${encodeURIComponent(id)}/deny`, { method: 'POST', body: { note: note ?? null } }),
       listAccessRequests: (state) =>
         request<AccessRequest[]>(
           `/api/v1/access-requests${state ? `?state=${encodeURIComponent(state)}` : ''}`,

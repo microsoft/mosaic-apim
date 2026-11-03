@@ -30,6 +30,7 @@ from playwright.sync_api import Locator, Page, Route, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from scripts.screenshots.demo_api import (
+    COST_CENTERS,
     EXTRA_DIRECTORY_OBJECTS,
     GROUPS,
     PARTNER_FOUNDRY_DEMO_KEY,
@@ -53,6 +54,8 @@ RESOURCE_NAMES = [
     *(person.label.lower().replace(" ", "-") for person in PEOPLE),
     *(person.display_name for person in EXTRA_DIRECTORY_OBJECTS),
     *(name for name, _description, _members in GROUPS),
+    *(f"Contoso {code} access" for code, *_rest in COST_CENTERS),
+    "Contoso RAI-620 access",
     "Contoso AI Gateway",
     "Contoso Government Gateway",
     "Contoso Government Azure OpenAI",
@@ -379,6 +382,12 @@ def select_first_resource(list_name: str) -> Action:
     return act
 
 
+def select_resource_request(page: Page) -> None:
+    page.get_by_role("list", name="Requests", exact=True).get_by_role("button").filter(
+        has=page.get_by_text("Resource access", exact=True)
+    ).first.click()
+
+
 def click_detail_menu_action(name: str) -> Action:
     def act(page: Page) -> None:
         page.get_by_role("button", name=re.compile(r"^More actions")).filter(
@@ -456,6 +465,30 @@ def open_grant_connection(model: str, cost_center: str, *, cloud: str | None = N
     return act
 
 
+def open_automatic_access(model: str, cost_center: str, *, connection: bool = False) -> Action:
+    def act(page: Page) -> None:
+        page.get_by_role("button", name=f"View access for {model}", exact=True).click()
+        _settle(page)
+        dialog = page.get_by_role("dialog")
+        select = dialog.get_by_role("combobox", name="Grant", exact=True)
+        if select.count():
+            choices = [
+                text.strip()
+                for text in select.locator("option").all_inner_texts()
+                if text.strip().startswith(cost_center + " ·")
+            ]
+            if len(choices) != 1:
+                raise CaptureError(f"Expected one automatic {model} grant in {cost_center}")
+            select.select_option(label=choices[0])
+        dialog.get_by_text("Automatic through your cost center", exact=True).filter(
+            visible=True
+        ).first.wait_for()
+        if connection:
+            dialog.get_by_role("button", name="Connection details", exact=True).click()
+
+    return act
+
+
 def select_access_offering(cloud: str) -> Action:
     def act(page: Page) -> None:
         select = page.get_by_role("dialog").get_by_role(
@@ -478,6 +511,31 @@ def wait_for_text(text: str) -> Action:
     return act
 
 
+def wait_for_list(name: str) -> Action:
+    def act(page: Page) -> None:
+        page.get_by_role("list", name=name, exact=True).wait_for()
+
+    return act
+
+
+def preview_cost_center_creation(page: Page) -> None:
+    fill_textbox("Name", "Responsible AI evaluation")(page)
+    fill_textbox("Code", "RAI-620")(page)
+    page.get_by_role("radio", name="Create with MOSAIC", exact=True).check()
+    fill_textbox("New group display name", "Contoso RAI-620 access")(page)
+    wait_for_text("Creation preview")(page)
+    page.get_by_text("Directory capabilities and optional permissions", exact=True).click()
+
+
+def review_cost_center_request(page: Page) -> None:
+    click_button("Responsible AI evaluation")(page)
+    page.wait_for_function(
+        "new URLSearchParams(location.search).get('requestKind') === 'costCenter'"
+    )
+    page.goto(page.url + "&mode=review")
+    page.get_by_role("heading", name="Review cost-center request", exact=True).wait_for()
+
+
 def review_demo_changes(page: Page) -> None:
     select_option("Published model", "GPT-4o")(page)
     page.get_by_role("switch", name="Dedicated subscription keys", exact=True).uncheck()
@@ -487,7 +545,7 @@ def review_demo_changes(page: Page) -> None:
 
 
 def review_demo_requests(page: Page) -> None:
-    click_button("Bulk approval review")(page)
+    click_button("Bulk resource approval review")(page)
     _settle(page)
     # Two explicit requests keep the facts readable without changing any approval state.
     for checkbox in page.get_by_role("checkbox").all()[:2]:
@@ -864,8 +922,8 @@ SHOTS: list[Shot] = [
         "console",
         "/entitlements?tab=requests",
         "light",
-        "Access requests",
-        actions=(select_first_resource("Access requests"),),
+        "Requests",
+        actions=(select_resource_request,),
         height=1250,
     ),
     Shot(
@@ -873,7 +931,7 @@ SHOTS: list[Shot] = [
         "console",
         "/entitlements?tab=requests",
         "dark",
-        "Access requests",
+        "Requests",
         actions=(review_demo_requests, wait_for_text("Compatible shared limits")),
         height=1950,
     ),
@@ -954,22 +1012,47 @@ SHOTS: list[Shot] = [
         actions=(
             click_button("Customer Insights"),
             click_tab("Members"),
-            wait_for_text("Membership"),
+            wait_for_list("Direct Entra members"),
+            wait_for_text("Directory operations"),
         ),
-        height=1560,
+        height=1850,
     ),
     Shot(
-        "console-cost-center-group",
+        "console-cost-center-access",
         "console",
-        "/identity?tab=groups",
+        "/cost-centers",
         "light",
-        "MOSAIC groups",
+        "Customer Insights",
         actions=(
-            click_button(re.compile(r"^Cost center: Customer Insights")),
-            wait_for_text("Managed cost-center group"),
-            wait_for_text("4 explicit references"),
+            click_button("Customer Insights"),
+            click_tab("Resource access"),
+            wait_for_list("Exact resource offerings"),
+            click_button("Text embeddings (large)"),
+            wait_for_text("Saved resource caller configuration"),
         ),
-        height=1700,
+        height=1900,
+    ),
+    Shot(
+        "console-cost-center-setup",
+        "console",
+        "/cost-centers",
+        "dark",
+        "Knowledge Engineering",
+        actions=(
+            click_button("Knowledge Engineering"),
+            click_button("Finish group setup"),
+            wait_for_text("Edit Knowledge Engineering"),
+        ),
+        height=1800,
+    ),
+    Shot(
+        "console-cost-center-request-review",
+        "console",
+        "/entitlements?tab=requests",
+        "light",
+        "Responsible AI evaluation",
+        actions=(review_cost_center_request,),
+        height=1950,
     ),
     Shot(
         "console-mcp-publish",
@@ -983,15 +1066,6 @@ SHOTS: list[Shot] = [
             wait_for_text("Impact of applying"),
         ),
         height=1400,
-    ),
-    Shot(
-        "console-model-change-review",
-        "console",
-        "/entitlements?tab=settings",
-        "light",
-        "Published model",
-        actions=(review_demo_changes,),
-        height=2600,
     ),
     Shot(
         "console-unpublish-review",
@@ -1045,11 +1119,11 @@ SHOTS: list[Shot] = [
     Shot(
         "console-new-cost-center",
         "console",
-        "/cost-centers",
+        "/cost-centers?mode=new",
         "dark",
-        "Cost centers",
-        actions=(click_button("New cost center"),),
-        height=1000,
+        "New cost center",
+        actions=(preview_cost_center_creation,),
+        height=1900,
     ),
     Shot(
         "console-analytics",
@@ -1298,8 +1372,9 @@ SHOTS: list[Shot] = [
         "dark",
         "Applied to APIM",
         actions=(
-            open_grant_connection("Contoso Docs Search", "Customer Insights"),
+            open_automatic_access("Contoso Docs Search", "Customer Insights", connection=True),
             wait_for_text("VS Code"),
+            scroll_to_text("Server URL", margin=110),
         ),
         height=1240,
     ),
@@ -1310,10 +1385,10 @@ SHOTS: list[Shot] = [
         "light",
         "My access",
         actions=(
-            open_grant_connection("gpt-4o-mini", "Customer Insights", cloud="Azure Government"),
+            open_grant_connection("gpt-4o-mini", "General", cloud="Azure Government"),
             wait_for_text("Authentication"),
         ),
-        height=1420,
+        height=1680,
     ),
     Shot(
         "portal-government-mcp-connection",
@@ -1322,14 +1397,63 @@ SHOTS: list[Shot] = [
         "dark",
         "My access",
         actions=(
-            open_grant_connection(
-                "Government Docs Search", "Customer Insights", cloud="Azure Government"
-            ),
+            open_grant_connection("Government Docs Search", "General", cloud="Azure Government"),
             wait_for_text("VS Code"),
         ),
-        height=1420,
+        height=1800,
     ),
-    Shot("portal-requests", "portal", "/requests", "dark", "Approved for the churn analysis"),
+    Shot(
+        "portal-requests",
+        "portal",
+        "/requests?status=pending",
+        "dark",
+        "Responsible AI evaluation",
+        height=1320,
+    ),
+    Shot(
+        "portal-cost-center-request",
+        "portal",
+        "/requests/new-cost-center",
+        "light",
+        "Suggest an existing Entra group",
+        actions=(
+            fill_textbox("Name", "Responsible AI evaluation"),
+            fill_textbox("Code (optional)", "RAI-620"),
+            fill_textbox(
+                "Description (optional)",
+                "Safety reviews and release evaluations for our AI services.",
+            ),
+            fill_textbox(
+                "Purpose / justification",
+                "Give evaluators governed model access and keep their testing costs separate.",
+            ),
+            fill_textbox(
+                "Suggested group object ID (optional)", EXTRA_DIRECTORY_OBJECTS[-1].object_id
+            ),
+        ),
+        height=1200,
+    ),
+    Shot(
+        "portal-cost-center-request-status",
+        "portal",
+        "/requests?kind=costCenter&status=completed",
+        "dark",
+        "Knowledge Engineering",
+        actions=(
+            wait_for_text("Approval and access are separate"),
+            wait_for_text("Group setup required"),
+        ),
+        height=1050,
+    ),
+    Shot(
+        "portal-automatic-access",
+        "portal",
+        "/access",
+        "light",
+        "My access",
+        actions=(open_automatic_access("Contoso Docs Search", "Customer Insights"),),
+        height=1100,
+    ),
     # Tall enough for the budget banner, the figures, the daily trend, and the last 24 hours.
     Shot("portal-usage", "portal", "/usage", "light", "Busiest resource", height=1400),
     Shot(
@@ -1354,6 +1478,16 @@ SHOTS: list[Shot] = [
     # Customer Insights, which Megan charges, has used most of its budget, and blocks at 100%.
     Shot(
         "portal-budget-banner", "portal", "/access", "light", "near its monthly budget", height=720
+    ),
+    # This saves an unapplied key-setting change; keep it after all connection screenshots.
+    Shot(
+        "console-model-change-review",
+        "console",
+        "/entitlements?tab=settings",
+        "light",
+        "Published model",
+        actions=(review_demo_changes,),
+        height=2600,
     ),
 ]
 

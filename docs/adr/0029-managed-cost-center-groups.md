@@ -1,8 +1,14 @@
 # ADR 0029: Managed cost-center group foundation
 
-**Status:** Experimental, disabled by default
+**Status:** Superseded by [ADR 0030](0030-entra-backed-cost-centers.md), 2026-11-03
 
 **Extends:** [ADR 0022](0022-cost-centers.md), without changing gateway authorization.
+
+**Historical record:** The original experiment below used a default-off local managed group and
+embedded MOSAIC roster. It is not the current Entra-backed workflow, a supported authorization
+fallback, or an instruction to enable its old flag. ADR 0030 replaces the local-only decision,
+including the rejection of Entra writes. Existing MVP centers require explicit reconfiguration;
+old local IDs and members are never silently converted into Entra identities or relationships.
 
 ## Context
 
@@ -94,4 +100,5 @@ Generic groups and their grant/membership behavior remain unchanged.
   bindings with incremental data updates, subject to the APIM feasibility gate, not larger policies
   or a manual apply for each join/leave.
 - **Create or manage Entra groups.** Rejected: existing Entra groups remain read-only references;
-  this feature must not require Graph write permissions.
+  this feature must not require Graph write permissions. **This historical alternative is reversed
+  by ADR 0030**, which preserves read-only lookup but adds separately consented group management.

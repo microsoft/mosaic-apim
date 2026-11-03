@@ -21,6 +21,7 @@ const api = vi.hoisted(() => ({
   getApprovalRecommendations: vi.fn(),
   getNotificationPreferences: vi.fn(), saveNotificationPreferences: vi.fn(), previewNotificationPreferences: vi.fn(),
   listNotificationInbox: vi.fn(), listAccessRequests: vi.fn(), listPrincipals: vi.fn(),
+  getRequestCounts: vi.fn(), listCostCenterRequests: vi.fn(),
   getSyncRun: vi.fn(),
   getNotificationInboxItem: vi.fn(), setNotificationRead: vi.fn(),
   getMyTeamsStatus: vi.fn(), checkMyTeamsAccess: vi.fn(), testMyTeamsConnection: vi.fn(),
@@ -51,6 +52,8 @@ beforeEach(() => {
   api.getMyTeamsStatus.mockResolvedValue({ enabled: false, state: 'notInstalled', checks: [], lastTest: null })
   api.listNotificationInbox.mockResolvedValue({ items: [], unreadCount: 7, continuationToken: null })
   api.listAccessRequests.mockResolvedValue([first.request, second.request])
+  api.listCostCenterRequests.mockResolvedValue([])
+  api.getRequestCounts.mockResolvedValue({ pendingResourceCount: 2, pendingCostCenterCount: 0, pendingCount: 2 })
   api.listPrincipals.mockResolvedValue([])
 })
 describe('bulk approval workspace', () => {
@@ -213,6 +216,7 @@ describe('readiness and notification truth', () => {
   })
   it('links exact authenticated subjects without accepting arbitrary notification URLs', () => {
     expect(notificationTarget({ requestId: 'request/opaque' })).toBe('/entitlements?tab=requests&selected=request%2Fopaque')
+    expect(notificationTarget({ requestId: 'request/opaque', requestKind: 'costCenter' })).toBe('/entitlements?tab=requests&selected=request%2Fopaque&requestKind=costCenter')
     expect(notificationTarget({})).toBeNull()
     expect(notificationTarget({ gatewayId: 'gateway/id', runId: 'run/id', integration: 'gatewayInventory' })).toBe('/gateways/gateway%2Fid?syncRun=run%2Fid')
     expect(notificationTarget({ endpointId: 'endpoint', runId: 'run', integration: 'endpointInventory' })).toBeNull()

@@ -1,8 +1,9 @@
 # Budgets and alerts
 
-A budget caps what a cost center spends on AI each month. MOSAIC emails its owners and anyone else
-at 80% and 100% of it, and, if the cost center chooses, refuses its calls at the gateway once it's
-used up. An organization budget covers everything and only warns.
+A budget sets a cost center's monthly AI spending target. MOSAIC emails its owners and anyone else
+at 80% and 100% of it, and, if the cost center chooses, updates the gateway to refuse calls after
+priced usage reaches it. This is delayed feedback, not a hard financial cap: blocking normally
+trails usage by 15-30 minutes and can overshoot. An organization budget covers everything and only warns.
 [ADR 0023](adr/0023-budgets-and-notifications.md) records the design.
 
 Personal request/status messages, configurable notification channels, and daily/weekly/monthly
@@ -73,7 +74,7 @@ and `budget.deleted`.
 - A cost center's spend is exactly what **Analytics > Cost** shows for it: the calls of its
   grants, priced by deployment and day at list price. Provisioned throughput is shared among its
   callers by their share of its tokens. See [Pricing](pricing.md). A grant on a
-  [model pool](../README.md#model-pools)'s model counts the same way, each call priced at the
+  [model pool](model-pools.md)'s model counts the same way, each call priced at the
   deployment that served it, whichever region that was.
 - Reserved capacity nobody called, and calls MOSAIC couldn't link to a grant, belong to no cost
   center. They count only toward the organization's budget, which counts every priced call.
@@ -204,8 +205,9 @@ Administrators (`Admin`):
 | POST | `/budgets/check` | Check every budget now; 429 within a minute of the last check, 409 while another runs |
 | GET, PUT, DELETE | `/budgets/organization` | The organization's budget; 422 for `"action": "block"` |
 | GET, PUT, DELETE | `/cost-centers/{id}/budget` | A cost center's budget: `amount`, `thresholds`, `recipients`, `notifyOwners`, `action` |
-| GET, PUT | `/settings/email` | Email settings: `enabled`, `endpoint`, `sender`, with the last test and the deployment's suggestions |
-| POST | `/settings/email/test` | Send a test email: `{"to": "..."}`; 409 `notConfigured` without an endpoint and sender, 429 within 30 seconds of the last |
+| GET, PUT | `/settings/email` | Graph mailbox settings, configuration revision, budget-email switch, migration/readiness state, and last explicit test |
+| GET | `/settings/email/checks` | Read-only runtime identity and configuration checks; never sends email or grants access |
+| POST | `/settings/email/test` | Explicitly send a test email: `{"to": "..."}`; reports provider acceptance or failure, not proof of recipient delivery |
 
 People (`User`), for themselves only:
 

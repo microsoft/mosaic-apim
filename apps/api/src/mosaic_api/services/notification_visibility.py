@@ -154,6 +154,15 @@ class NotificationVisibility:
             return True
         subject = event.subject
         if subject.request_id:
+            if subject.request_kind == "costCenter":
+                center_request = await self._entitlements.get_cost_center_request(
+                    event.tenant_id, subject.request_id
+                )
+                return bool(
+                    center_request
+                    and center_request.tenant_id == event.tenant_id
+                    and center_request.requester_object_id.casefold() == object_id.casefold()
+                )
             request = await self._entitlements.get_access_request(
                 event.tenant_id,
                 subject.request_id,

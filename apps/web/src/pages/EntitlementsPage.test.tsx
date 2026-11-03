@@ -4,12 +4,13 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AccessRequest, Entitlement, EnvironmentCatalogView } from '../types'
+import type { AccessRequest, AdminCostCenterRequest, Entitlement, EnvironmentCatalogView } from '../types'
 import { GOVERNED_COUNTER_KEY, callRateError, describeLimits } from '../entitlement-limits'
 import { EntitlementsPage } from './EntitlementsPage'
 import { accessPlan, connectionInfo, directGrant, modelPublication, publishedModelApi } from '../test/model-access'
 import { ApiError } from '../api'
 import { anthropicPool, governedAnthropicPool } from '../test/pool-fixtures'
+import { costCenterCreationRequest, readyCostCenter } from '../test/cost-center-fixtures'
 
 const entitlement: Entitlement = {
   id: 'entitlement_1', tenantId: 'tenant',
@@ -52,6 +53,9 @@ const api = {
   getGrantOverlaps: vi.fn(), getMcpConnection: vi.fn(), getEntitlementConnection: vi.fn(),
   createEntitlementKey: vi.fn(), rotateEntitlementKey: vi.fn(), deleteEntitlementKey: vi.fn(),
   revealEntitlementKey: vi.fn(),
+  getRequestCounts: vi.fn(), listCostCenterRequests: vi.fn(), getCostCenterRequest: vi.fn(),
+  approveCostCenterRequest: vi.fn(), denyCostCenterRequest: vi.fn(),
+  getCostCenterGroupCapabilities: vi.fn(),
 }
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
@@ -101,6 +105,10 @@ describe('Entitlements workbench', () => {
     api.getCostCenterSettings.mockResolvedValue({ defaultCostCenterId: 'cc_general' })
     api.listMcpPublications.mockResolvedValue([])
     api.listAccessRequests.mockResolvedValue([])
+    api.getRequestCounts.mockResolvedValue({ pendingResourceCount: 0, pendingCostCenterCount: 0, pendingCount: 0 })
+    api.listCostCenterRequests.mockResolvedValue([])
+    api.getCostCenterRequest.mockResolvedValue(costCenterCreationRequest)
+    api.getCostCenterGroupCapabilities.mockResolvedValue({ available: false, canReadGroups: false, canCreateGroups: false })
     api.listPublications.mockResolvedValue([])
     api.resolveEntitlements.mockResolvedValue([])
     api.getGrantOverlaps.mockResolvedValue({ overlaps: [], membershipChecked: true, skipped: [] })
@@ -144,7 +152,7 @@ describe('Entitlements workbench', () => {
   it('clears cross-section selection atomically while preserving filters', async () => {
     const user = userEvent.setup()
     const { params } = renderPage('/entitlements?selected=entitlement_1&costCenter=cc_general&custom=keep')
-    await user.click(screen.getByRole('button', { name: 'Access requests' }))
+    await user.click(screen.getByRole('button', { name: 'Requests' }))
     expect(params().get('tab')).toBe('requests')
     expect(params().has('selected')).toBe(false)
     expect(params().get('costCenter')).toBe('cc_general')
@@ -277,7 +285,7 @@ describe('Entitlements workbench', () => {
     const { params } = renderPage('/entitlements?mode=new&custom=keep')
     const editor = await screen.findByRole('region', { name: 'New grant' })
     await user.type(within(editor).getByRole('textbox', { name: 'Notes' }), 'Draft only')
-    await user.click(screen.getByRole('button', { name: 'Access requests' }))
+    await user.click(screen.getByRole('button', { name: 'Requests' }))
     expect(await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })).toBeVisible()
     expect(params().get('mode')).toBe('new')
     await user.click(screen.getByRole('button', { name: 'Stay' }))
@@ -395,6 +403,134 @@ describe('Entitlements workbench', () => {
     expect(await within(detail).findByText('Already decided')).toBeVisible()
     expect(within(detail).getByRole('button', { name: 'Approve' })).toBeDisabled()
     expect(api.listAccessRequests).toHaveBeenCalledWith()
+  })
+
+  it('combines both request kinds and keeps equal raw IDs distinct in selection and deep links', async () => {
+    const user = userEvent.setup()
+    const centerRequest = { ...costCenterCreationRequest, id: request.id, requesterObjectId: request.requesterObjectId }
+    api.listAccessRequests.mockResolvedValue([request])
+    api.listCostCenterRequests.mockResolvedValue([centerRequest])
+    api.getCostCenterRequest.mockResolvedValue(centerRequest)
+    api.getRequestCounts.mockResolvedValue({ pendingResourceCount: 1, pendingCostCenterCount: 1, pendingCount: 2 })
+    const { params } = renderPage('/entitlements?tab=requests&custom=keep')
+    const list = await screen.findByRole('list', { name: 'Requests' })
+    await waitFor(() => expect(within(list).getAllByRole('button')).toHaveLength(2))
+    expect(await screen.findByText('2 pending requests')).toBeVisible()
+    await user.click(within(list).getByRole('button', { name: /Research Cost-center creation/ }))
+    const center = await screen.findByRole('region', { name: 'Selected cost-center request' })
+    expect(await within(center).findByText(costCenterCreationRequest.justification)).toBeVisible()
+    expect(params().get('selected')).toBe(request.id)
+    expect(params().get('requestKind')).toBe('costCenter')
+    expect(params().get('custom')).toBe('keep')
+    expect(within(center).queryByText('Chat completions')).not.toBeInTheDocument()
+    await user.click(within(list).getByRole('button', { name: /Chat completions .*Resource access/ }))
+    const resource = await screen.findByRole('region', { name: 'Selected access request' })
+    expect(await within(resource).findByText('Support bot evaluation')).toBeVisible()
+    expect(params().has('requestKind')).toBe(false)
+    expect(params().get('selected')).toBe(request.id)
+  })
+
+  it('loads the exact decided cost-center request outside the pending filter and exposes its partial outcome', async () => {
+    const partial: AdminCostCenterRequest = {
+      ...costCenterCreationRequest, state: 'approved', setupState: 'setupRequired', needsAdministratorAttention: true,
+      preparationError: 'Directory write consent missing',
+      costCenter: { id: readyCostCenter.id, name: readyCostCenter.name, code: readyCostCenter.code },
+      requesterMembershipState: 'unknown',
+    }
+    api.getCostCenterRequest.mockResolvedValue(partial)
+    const { params } = renderPage(`/entitlements?tab=requests&selected=${partial.id}&requestKind=costCenter`)
+    const detail = await screen.findByRole('region', { name: 'Selected cost-center request' })
+    expect(await within(detail).findByText(/Approval is saved, but setup is incomplete/)).toBeVisible()
+    expect(within(detail).getByText(/Do not repeat requester enrollment/)).toBeVisible()
+    expect(within(detail).getByRole('link', { name: 'Open saved center: Research' })).toHaveAttribute('href', `/cost-centers/${readyCostCenter.id}`)
+    expect(api.getCostCenterRequest).toHaveBeenCalledWith(partial.id)
+    expect(api.listCostCenterRequests).toHaveBeenCalledWith('pending')
+    expect(params().get('requestStatus')).toBeNull()
+    expect(api.approveAccessRequest).not.toHaveBeenCalled()
+  })
+
+  it('uses shared full-workspace review and returns to a partial approval without claiming ready or creating grants', async () => {
+    const user = userEvent.setup()
+    api.listCostCenterRequests.mockResolvedValue([costCenterCreationRequest])
+    api.approveCostCenterRequest.mockImplementation(async (_id, reviewed) => {
+      const partial: AdminCostCenterRequest = {
+        ...costCenterCreationRequest, state: 'approved', setupState: 'setupRequired', needsAdministratorAttention: true,
+        approval: { ...reviewed, costCenterId: readyCostCenter.id, decidedByObjectId: 'admin', startedAt: '2026-11-02T10:00:00Z' },
+        costCenter: { id: readyCostCenter.id, name: readyCostCenter.name, code: readyCostCenter.code },
+      }
+      api.listCostCenterRequests.mockResolvedValue([])
+      api.getCostCenterRequest.mockResolvedValue(partial)
+      return partial
+    })
+    const { params, queryClient } = renderPage(`/entitlements?tab=requests&selected=${costCenterCreationRequest.id}&requestKind=costCenter&mode=review`)
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const editor = await screen.findByRole('region', { name: 'Review cost-center request' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(within(editor).getByRole('checkbox', { name: 'Add requester to the Entra group' })).not.toBeChecked()
+    await user.click(within(editor).getByRole('button', { name: 'Approve cost-center request' }))
+    const detail = await screen.findByRole('region', { name: 'Selected cost-center request' })
+    expect(await within(detail).findByText(/Approval is saved, but setup is incomplete/)).toBeVisible()
+    expect(params().has('mode')).toBe(false)
+    expect(api.approveCostCenterRequest).toHaveBeenCalledWith(costCenterCreationRequest.id, expect.objectContaining({ addRequester: false }))
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['request-counts'] })
+    expect(api.createEntitlement).not.toHaveBeenCalled()
+    expect(api.approveAccessRequest).not.toHaveBeenCalled()
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+    await user.click(within(detail).getByRole('button', { name: 'Resume recorded approval' }))
+    const resumed = await screen.findByRole('region', { name: 'Resume cost-center approval' })
+    expect(within(resumed).getByLabelText('Name')).toBeDisabled()
+  })
+
+  it('shows an inaccessible exact cost-center request instead of selecting a resource with the same ID', async () => {
+    api.listAccessRequests.mockResolvedValue([request])
+    api.getCostCenterRequest.mockRejectedValue(new ApiError('Cost-center request is inaccessible', 404))
+    renderPage(`/entitlements?tab=requests&selected=${request.id}&requestKind=costCenter`)
+    expect(await screen.findByText('Cost-center request is inaccessible')).toBeVisible()
+    expect(screen.queryByText('Support bot evaluation')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry selected request' })).toBeVisible()
+  })
+
+  it('preserves the reviewed approval through a failed authoritative refresh and resumes only its recorded configuration', async () => {
+    const user = userEvent.setup()
+    const approval = {
+      costCenter: { name: 'Research', code: 'research', description: 'Fictional research center', owners: [], keysAllowed: true, resourceAccess: [] },
+      addRequester: true, note: null,
+    }
+    const reserved: AdminCostCenterRequest = {
+      ...costCenterCreationRequest,
+      approval: { ...approval, costCenterId: readyCostCenter.id, decidedByObjectId: 'admin', startedAt: '2026-11-02T10:00:00Z' },
+    }
+    api.listCostCenterRequests.mockResolvedValue([costCenterCreationRequest])
+    api.getCostCenterRequest.mockResolvedValueOnce(costCenterCreationRequest)
+      .mockRejectedValueOnce(new Error('Recorded request temporarily unavailable')).mockResolvedValue(reserved)
+    api.approveCostCenterRequest.mockRejectedValueOnce(new Error('Approval response lost')).mockResolvedValueOnce(reserved)
+    renderPage(`/entitlements?tab=requests&selected=${costCenterCreationRequest.id}&requestKind=costCenter&mode=review`)
+    const editor = await screen.findByRole('region', { name: 'Review cost-center request' })
+    await user.click(within(editor).getByRole('checkbox', { name: 'Add requester to the Entra group' }))
+    await user.click(within(editor).getByRole('button', { name: 'Approve cost-center request' }))
+    expect(await screen.findByText('Recorded request temporarily unavailable')).toBeVisible()
+    const locked = screen.getByRole('region', { name: 'Resume cost-center approval' })
+    expect(within(locked).getByLabelText('Name')).toBeDisabled()
+    expect(within(locked).getByRole('button', { name: 'Resume unchanged approval' })).toBeDisabled()
+    await user.click(within(locked).getByRole('button', { name: 'Refresh recorded request' }))
+    await waitFor(() => expect(within(locked).getByRole('button', { name: 'Resume unchanged approval' })).toBeEnabled())
+    await user.click(within(locked).getByRole('button', { name: 'Resume unchanged approval' }))
+    await waitFor(() => expect(api.approveCostCenterRequest).toHaveBeenCalledTimes(2))
+    expect(api.approveCostCenterRequest.mock.calls[0]).toEqual([costCenterCreationRequest.id, approval])
+    expect(api.approveCostCenterRequest.mock.calls[1]).toEqual(api.approveCostCenterRequest.mock.calls[0])
+  })
+
+  it.each(['', '&mode=edit'])('protects managed Automatic group grants from ordinary editing and revocation%s', async (mode) => {
+    api.listEntitlements.mockResolvedValue([{ ...directGrant, managedBy: 'costCenterAutomatic', costCenterId: readyCostCenter.id }])
+    renderPage(`/entitlements?selected=${directGrant.id}${mode}`)
+    const detail = await screen.findByRole('region', { name: 'Selected grant' })
+    expect(await within(detail).findByText(/managed by the cost center's exact Automatic resource configuration/)).toBeVisible()
+    expect(within(detail).getByRole('link', { name: 'Manage automatic access in cost center' })).toHaveAttribute('href', `/cost-centers/${readyCostCenter.id}?tab=access`)
+    expect(within(detail).queryByRole('button', { name: 'Edit grant' })).not.toBeInTheDocument()
+    expect(within(detail).queryByRole('button', { name: /^More actions/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Edit grant' })).not.toBeInTheDocument()
+    expect(api.updateEntitlement).not.toHaveBeenCalled()
+    expect(api.deleteEntitlement).not.toHaveBeenCalled()
   })
 
   it('reports an inaccessible exact request rather than silently selecting another request', async () => {
@@ -533,7 +669,7 @@ describe('Entitlements workbench', () => {
     await user.click(connection)
     expect(await screen.findByRole('dialog')).toBeVisible()
     // Programmatic navigation covers notification/sidebar/Back changes while a reveal is mounted.
-    fireEvent.click(screen.getByRole('button', { name: 'Access requests', hidden: true }))
+    fireEvent.click(screen.getByRole('button', { name: 'Requests', hidden: true }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(api.revealEntitlementKey).not.toHaveBeenCalled()
   })

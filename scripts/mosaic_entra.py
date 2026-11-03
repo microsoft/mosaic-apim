@@ -41,6 +41,11 @@ GRAPH_APPLICATION_PERMISSION_VALUES = (
     "GroupMember.Read.All",
     "AgentIdentity.Read.All",
 )
+GRAPH_OPTIONAL_APPLICATION_PERMISSION_VALUES = (
+    "Group.Create",
+    "GroupMember.ReadWrite.All",
+    "Application.ReadWrite.All",
+)
 PORTAL_APP_NOTES = "MOSAIC end-user portal application registration managed by azd hooks."
 MODEL_CLIENT_NOTES = (
     "MOSAIC public client application registration managed by azd hooks. People sign in with "
@@ -539,7 +544,44 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--deployed-web-url", help="Override the deployed MOSAIC web URL for postprovision."
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--grant-group-create",
+        action="store_true",
+        help=(
+            "Opt in to tenant-wide Group.Create consent for the API managed identity "
+            "(postprovision only). MOSAIC-created groups explicitly name that identity as owner."
+        ),
+    )
+    parser.add_argument(
+        "--grant-group-member-write",
+        action="store_true",
+        help=(
+            "Opt in to tenant-wide GroupMember.ReadWrite.All for real group membership changes "
+            "(postprovision only). MOSAIC Admin alone is not directory consent."
+        ),
+    )
+    parser.add_argument(
+        "--grant-service-principal-member-write",
+        action="store_true",
+        help=(
+            "Advanced, broad consent: additionally grant Application.ReadWrite.All to add service "
+            "principals as members. Requires --grant-group-member-write; postprovision only."
+        ),
+    )
+    options = parser.parse_args(argv)
+    if options.command != "postprovision" and any(
+        (
+            options.grant_group_create,
+            options.grant_group_member_write,
+            options.grant_service_principal_member_write,
+        )
+    ):
+        parser.error("Optional Graph write consent switches apply only to postprovision")
+    if options.grant_service_principal_member_write and not options.grant_group_member_write:
+        parser.error(
+            "--grant-service-principal-member-write also requires --grant-group-member-write"
+        )
+    return options
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -548,7 +590,14 @@ def main(argv: list[str] | None = None) -> int:
     if options.command == "preprovision":
         preprovision(runner, options.environment_name)
     else:
-        postprovision(runner, options.environment_name, options.deployed_web_url)
+        postprovision(
+            runner,
+            options.environment_name,
+            options.deployed_web_url,
+            grant_group_create=options.grant_group_create,
+            grant_group_member_write=options.grant_group_member_write,
+            grant_service_principal_member_write=options.grant_service_principal_member_write,
+        )
     return 0
 
 
@@ -789,6 +838,10 @@ def postprovision(
     runner: CliRunner,
     environment_name_override: str | None,
     deployed_web_url_override: str | None,
+    *,
+    grant_group_create: bool = False,
+    grant_group_member_write: bool = False,
+    grant_service_principal_member_write: bool = False,
 ) -> None:
     context = build_context(runner, environment_name_override)
     if runner.dry_run:
@@ -848,6 +901,9 @@ def postprovision(
     ensure_api_managed_identity_graph_permissions(
         runner,
         managed_identity_principal_id=api_managed_identity_principal_id,
+        grant_group_create=grant_group_create,
+        grant_group_member_write=grant_group_member_write,
+        grant_service_principal_member_write=grant_service_principal_member_write,
     )
 
 
@@ -1062,16 +1118,49 @@ def ensure_user_admin_role_assignment(
     )
 
 
+def graph_application_permission_values(
+    *,
+    grant_group_create: bool = False,
+    grant_group_member_write: bool = False,
+    grant_service_principal_member_write: bool = False,
+) -> tuple[str, ...]:
+    """Keep write consent opt-in; never infer it from deployment or the MOSAIC Admin role."""
+    if grant_service_principal_member_write and not grant_group_member_write:
+        raise OperationFailed(
+            "Advanced service-principal membership consent also requires explicit "
+            "GroupMember.ReadWrite.All consent."
+        )
+    optional = (
+        ("Group.Create", grant_group_create),
+        ("GroupMember.ReadWrite.All", grant_group_member_write),
+        ("Application.ReadWrite.All", grant_service_principal_member_write),
+    )
+    return (
+        *GRAPH_APPLICATION_PERMISSION_VALUES,
+        *(value for value, enabled in optional if enabled),
+    )
+
+
 def ensure_api_managed_identity_graph_permissions(
-    runner: CliRunner, *, managed_identity_principal_id: str
+    runner: CliRunner,
+    *,
+    managed_identity_principal_id: str,
+    grant_group_create: bool = False,
+    grant_group_member_write: bool = False,
+    grant_service_principal_member_write: bool = False,
 ) -> None:
     operation_name = "grant Microsoft Graph application permissions to API managed identity"
+    permission_values = graph_application_permission_values(
+        grant_group_create=grant_group_create,
+        grant_group_member_write=grant_group_member_write,
+        grant_service_principal_member_write=grant_service_principal_member_write,
+    )
     graph_sp = resolve_graph_service_principal(runner, operation_name)
     role_ids_by_value = {
         role["value"]: role["id"]
         for role in graph_sp.get("appRoles", [])
         if isinstance(role, dict)
-        and role.get("value") in GRAPH_APPLICATION_PERMISSION_VALUES
+        and role.get("value") in permission_values
         and "Application" in role.get("allowedMemberTypes", [])
         and role.get("isEnabled", True)
     }
@@ -1091,7 +1180,7 @@ def ensure_api_managed_identity_graph_permissions(
         if item.get("resourceId") == graph_sp["id"] and isinstance(item.get("appRoleId"), str)
     }
     missing: list[tuple[str, str]] = []
-    for role_value in GRAPH_APPLICATION_PERMISSION_VALUES:
+    for role_value in permission_values:
         role_id = role_ids_by_value.get(role_value)
         if role_id is None:
             print(
@@ -1178,8 +1267,10 @@ def graph_application_permission_warning(
     return (
         "WARNING: Microsoft Graph denied application permission assignment for the MOSAIC API "
         f"managed identity. Missing permissions: {values}. Deployment continues, but directory "
-        "lookup will fail until a Privileged Role Administrator or Global Administrator grants "
-        "them. Run these commands:\n"
+        "capabilities requiring these permissions remain unavailable until a Privileged Role "
+        "Administrator or Global Administrator grants them. Optional write permissions are "
+        "tenant-wide; MOSAIC restricts their use to administrator-managed bound groups. "
+        "Run these commands:\n"
         f"{commands}"
     )
 
@@ -1461,7 +1552,10 @@ class CliRunner:
                     "allowedMemberTypes": ["Application"],
                     "isEnabled": True,
                 }
-                for value in GRAPH_APPLICATION_PERMISSION_VALUES
+                for value in (
+                    *GRAPH_APPLICATION_PERMISSION_VALUES,
+                    *GRAPH_OPTIONAL_APPLICATION_PERMISSION_VALUES,
+                )
             ],
         }
         self._dry_run_role_assignments: dict[str, list[dict[str, Any]]] = {}

@@ -11,6 +11,7 @@ import type {
   AccessRequestCreate,
   ApiErrorBody,
   CatalogEntry,
+  CostCenterRequestCreate,
   GrantKey,
   KeyRevealResult,
   KeySlot,
@@ -19,6 +20,8 @@ import type {
   MyUsageReport,
   PortalBudgetAlert,
   PortalCostCenter,
+  PortalCostCenterRequest,
+  PortalRequestCounts,
   PortalProfile,
   PortalEnvironment,
   ResolvedEntitlement,
@@ -70,6 +73,11 @@ export interface PortalApi {
   listCatalog(): Promise<CatalogEntry[]>
   listCostCenters(): Promise<PortalCostCenter[]>
   listAccessRequests(): Promise<AccessRequest[]>
+  getRequestCounts(): Promise<PortalRequestCounts>
+  listCostCenterRequests(): Promise<PortalCostCenterRequest[]>
+  getCostCenterRequest(requestId: string): Promise<PortalCostCenterRequest>
+  createCostCenterRequest(payload: CostCenterRequestCreate): Promise<PortalCostCenterRequest>
+  withdrawCostCenterRequest(requestId: string): Promise<PortalCostCenterRequest>
   createAccessRequest(payload: AccessRequestCreate): Promise<AccessRequest>
   withdrawAccessRequest(requestId: string): Promise<AccessRequest>
   getMyUsage(period: UsagePeriod): Promise<MyUsageReport>
@@ -162,10 +170,18 @@ export function usePortalApi(): PortalApi {
       listCatalog: () => request<CatalogEntry[]>('/api/v1/portal/catalog'),
       listCostCenters: () => request<PortalCostCenter[]>('/api/v1/portal/cost-centers'),
       listAccessRequests: () => request<AccessRequest[]>('/api/v1/portal/access-requests'),
+      getRequestCounts: () => request<PortalRequestCounts>('/api/v1/portal/request-counts', { cache: 'no-store' }),
+      listCostCenterRequests: () => request<PortalCostCenterRequest[]>('/api/v1/portal/cost-center-requests'),
+      getCostCenterRequest: (requestId) =>
+        request<PortalCostCenterRequest>(`/api/v1/portal/cost-center-requests/${encodeURIComponent(requestId)}`),
+      createCostCenterRequest: (payload) =>
+        request<PortalCostCenterRequest>('/api/v1/portal/cost-center-requests', { method: 'POST', body: payload }),
+      withdrawCostCenterRequest: (requestId) =>
+        request<PortalCostCenterRequest>(`/api/v1/portal/cost-center-requests/${encodeURIComponent(requestId)}/withdraw`, { method: 'POST' }),
       createAccessRequest: (payload) =>
         request<AccessRequest>('/api/v1/portal/access-requests', { method: 'POST', body: payload }),
       withdrawAccessRequest: (requestId) =>
-        request<AccessRequest>(`/api/v1/portal/access-requests/${requestId}/withdraw`, {
+        request<AccessRequest>(`/api/v1/portal/access-requests/${encodeURIComponent(requestId)}/withdraw`, {
           method: 'POST',
         }),
       getMyUsage: (period) =>

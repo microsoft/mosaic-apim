@@ -4,7 +4,7 @@ import type {
 } from './notification-types'
 
 export const notificationCategories = [
-  { value: 'requestLifecycle', label: 'Access requests', description: 'Submissions, decisions, and withdrawals for your requests.' },
+  { value: 'requestLifecycle', label: 'Access requests', description: 'Submissions, decisions, and withdrawals for your resource and cost-center requests.' },
   { value: 'accessLifecycle', label: 'My access', description: 'Grant changes and observed gateway readiness for your access.' },
   { value: 'operationalIssues', label: 'Operational issues', description: 'Failures and recovery affecting resources you can access.' },
   { value: 'usageAndBudgets', label: 'Usage & budgets', description: 'Your attributed usage and authorized shared budget totals.' },
@@ -76,7 +76,10 @@ export function preferenceValidation(input: NotificationPreferencesInput): strin
 }
 
 export function notificationLink(item: NotificationInboxItem): { to: string; label: string } | null {
-  if (item.subject.requestId) return { to: `/requests?request=${encodeURIComponent(item.subject.requestId)}`, label: 'View request' }
+  if (item.subject.requestId) return {
+    to: `/requests?request=${encodeURIComponent(item.subject.requestId)}${item.subject.requestKind === 'costCenter' ? '&requestKind=costCenter' : ''}`,
+    label: item.subject.requestKind === 'costCenter' ? 'View cost-center request' : 'View request',
+  }
   if (item.subject.entitlementId) return { to: `/access?grant=${encodeURIComponent(item.subject.entitlementId)}`, label: 'View access status' }
   if (item.category === 'usageAndBudgets') return { to: '/usage', label: 'View my usage & cost' }
   if (item.category === 'integrationHealth') return { to: '/notification-preferences', label: 'Check notification readiness' }
