@@ -21,6 +21,28 @@ is not yet a runtime revocation. Use the person's Entra object ID, the applicati
 application client IDs are not interchangeable except for agent identities, whose app ID and object
 ID are the same. Prefer the subscription-key header over putting credentials in URLs.
 
+New principal registrations require a GUID object ID for every kind, including manually
+entered applications and managed identities. MOSAIC stores it in lowercase, hyphenated form
+and permits only one registration per object ID within a tenant, regardless of principal kind.
+A GUID's syntax does not verify its existence or kind in Entra; manual enrollment does not
+silently require additional Microsoft Graph permissions.
+
+Existing registrations remain readable, including older non-GUID IDs. Self-service direct
+access requires one unambiguous registration for the caller and a grant naming that same
+principal with its matching user/application subject kind. Duplicate registrations block
+listing and direct connection/key operations with a conflict, even if one ID matches exactly.
+This is a directory-record ownership check, not independent verification of the token's
+user/application class. Security-group membership remains a separate token-based path and
+never authorizes disclosure of a group's key. Explicit administrator handoff is unchanged.
+
+To repair legacy registrations, review **Principals**, their grants, and credential audit events.
+Disable the affected grants and review/apply revocation before removing their references through
+the supported grant, membership, and principal-management operations. Register the correct Entra
+object ID and kind, recreate the intended grants, then review/apply access. MOSAIC does not merge
+duplicate records or rewrite existing principal/grant IDs automatically. If a key might have
+been disclosed, rotate it through an administrator route; fixing directory metadata cannot
+recall an already copied bearer credential.
+
 Opting in deliberately stops the publication's former generic/bootstrap key from authorizing
 requests. Each direct grant can have its own API-scoped subscription, created on request rather
 than by an apply: the grant's holder creates, rotates, or deletes it in the portal, and an

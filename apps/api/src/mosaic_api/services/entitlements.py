@@ -65,6 +65,7 @@ from mosaic_api.domain import (
     Publication,
     ResolvedEntitlement,
     ResourceSummary,
+    canonical_object_id,
     deterministic_id,
     entitlement_id,
     grant_precedence_key,
@@ -93,7 +94,7 @@ from mosaic_api.repositories import (
 from mosaic_api.repositories.approvals import AccessRequestEventRepository
 from mosaic_api.services.cost_center_access import verified_cost_center_members
 from mosaic_api.services.cost_centers import load_book, record_recheck
-from mosaic_api.services.directory import Actor, DirectoryService
+from mosaic_api.services.directory import Actor, DirectoryService, find_unique_principal
 from mosaic_api.services.mcp_access import (
     decorate_mcp_entitlement,
     entitlement_mcp_publication,
@@ -475,17 +476,13 @@ class EntitlementService:
         self._validate_access_methods(center, mode, settings)
 
     async def _automatic_group_principal(self, actor: Actor, center: CostCenter) -> Principal:
-        group_id = center.verified_group_object_id
-        assert group_id is not None
-        matches = [
-            item
-            for item in await self._directory.list_principals(actor.tenant_id)
-            if item.object_id.casefold() == group_id.casefold()
-        ]
-        if len(matches) > 1 or (matches and matches[0].kind != PrincipalKind.SECURITY_GROUP):
+        assert center.verified_group_object_id is not None
+        group_id = canonical_object_id(center.verified_group_object_id)
+        existing = await find_unique_principal(self._directory, actor.tenant_id, group_id)
+        if existing and existing.kind != PrincipalKind.SECURITY_GROUP:
             raise ConflictError("The center's Entra group has conflicting principal metadata.")
-        if matches:
-            return matches[0]
+        if existing:
+            return existing
         principal = Principal(
             id=deterministic_id("principal", actor.tenant_id, group_id),
             tenant_id=actor.tenant_id,
@@ -501,7 +498,7 @@ class EntitlementService:
                 principal, self._audit(actor, "principal.created", "principal", principal.id)
             )
         except ConflictError:
-            found = await self._directory.find_principal_by_object_id(actor.tenant_id, group_id)
+            found = await find_unique_principal(self._directory, actor.tenant_id, group_id)
             if found is None or found.kind != PrincipalKind.SECURITY_GROUP:
                 raise
             return found
@@ -2985,15 +2982,7 @@ class EntitlementService:
         )
 
     async def _requester_principal(self, actor: Actor, object_id: str) -> Principal | None:
-        principal = await self._directory.find_principal_by_object_id(actor.tenant_id, object_id)
-        if principal is None:
-            # Principal IDs derive from the case-folded object ID. That also finds a principal
-            # an administrator registered with different letter case, which would otherwise
-            # collide with the one registration would create.
-            principal = await self._directory.get_principal(
-                actor.tenant_id, deterministic_id("principal", actor.tenant_id, object_id)
-            )
-        return principal
+        return await find_unique_principal(self._directory, actor.tenant_id, object_id)
 
     async def _register_requester(self, actor: Actor, object_id: str) -> Principal:
         try:

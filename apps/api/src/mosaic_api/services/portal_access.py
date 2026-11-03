@@ -37,6 +37,7 @@ from mosaic_api.domain import (
     mcp_server_url,
     model_access_subscription_name,
     new_id,
+    principal_object_id_key,
     subject_kind_for,
 )
 from mosaic_api.errors import ConflictError, DomainError, NotFoundError, ValidationError
@@ -55,7 +56,7 @@ from mosaic_api.services.automatic_keys import (
     record_key_owner,
     validate_owner_runtime,
 )
-from mosaic_api.services.directory import Actor
+from mosaic_api.services.directory import Actor, find_unique_principal
 from mosaic_api.services.entitlements import EntitlementService
 from mosaic_api.services.mcp_access import entitlement_mcp_publication
 from mosaic_api.services.model_access import (
@@ -379,25 +380,13 @@ class PortalAccessService:
 
     async def list_for_caller(self, actor: Actor) -> list[Entitlement]:
         group_object_ids = frozenset() if actor.groups_overage else actor.group_ids
-        principal = await self._directory.find_principal_by_object_id(
-            actor.tenant_id, actor.object_id
+        principal = await find_unique_principal(
+            self._directory, actor.tenant_id, actor.object_id
         )
         direct: list[Entitlement] = []
         # A grant is effective per resource and cost center: a group grant under another cost
         # center than the caller's direct grant is still theirs to select with the header.
         direct_resource_keys: set[tuple[str, str, str, str]] = set()
-        if principal is None:
-            matches = [
-                candidate
-                for candidate in await self._directory.list_principals(actor.tenant_id)
-                if candidate.object_id.casefold() == actor.object_id.casefold()
-            ]
-            if len(matches) > 1:
-                raise ConflictError(
-                    "Multiple principals map to this identity; resolve the duplicates"
-                )
-            if matches:
-                principal = matches[0]
         if principal is not None:
             expected_kind = subject_kind_for(principal.kind)
             direct = [
@@ -464,7 +453,8 @@ class PortalAccessService:
             or (
                 not administrator
                 and principal.kind != PrincipalKind.SECURITY_GROUP
-                and principal.object_id.casefold() != actor.object_id.casefold()
+                and principal_object_id_key(principal.object_id)
+                != principal_object_id_key(actor.object_id)
             )
             or (
                 not administrator
@@ -473,6 +463,13 @@ class PortalAccessService:
             )
         ):
             raise NotFoundError("Entitlement was not found")
+        if not administrator and principal.kind != PrincipalKind.SECURITY_GROUP:
+            caller = await find_unique_principal(
+                self._directory, actor.tenant_id, actor.object_id
+            )
+            if caller is None or caller.id != principal.id:
+                raise NotFoundError("Entitlement was not found")
+            principal = caller
         expected_kind = subject_kind_for(principal.kind)
         if entitlement.subject.kind != expected_kind:
             raise ConflictError("The grant no longer matches its principal's identity kind")

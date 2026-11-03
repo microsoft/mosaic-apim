@@ -10,14 +10,17 @@ from fastapi import Request
 from fastapi.testclient import TestClient
 from mosaic_api.auth import AuthContext, EntraAuthenticator, LocalAuthenticator
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
-from mosaic_api.domain import DirectoryObject, PrincipalKind
+from mosaic_api.domain import AuditEvent, DirectoryObject, Principal, PrincipalCreate, PrincipalKind
 from mosaic_api.errors import (
+    ConflictError,
     DirectoryError,
     DirectoryForbiddenError,
     DirectoryThrottledError,
 )
 from mosaic_api.integrations.graph import DirectoryPhoto, FakeDirectoryLookup, GraphDirectoryLookup
 from mosaic_api.main import create_app
+from mosaic_api.repositories import InMemoryDirectoryRepository
+from mosaic_api.services.directory import Actor, DirectoryService
 from photo_double import photo_image
 
 USER_ID = "11111111-1111-1111-1111-111111111111"
@@ -26,6 +29,32 @@ AGENT_ID = "33333333-3333-3333-3333-333333333333"
 GROUP_ID = "44444444-4444-4444-4444-444444444444"
 NESTED_GROUP_ID = "55555555-5555-5555-5555-555555555555"
 MISSING_ID = "66666666-6666-6666-6666-666666666666"
+
+
+@pytest.mark.parametrize("kind", list(PrincipalKind))
+@pytest.mark.parametrize("object_id", ["not-a-guid", " ", "legacy-servicePrincipal"])
+def test_new_principals_require_guids(
+    client: TestClient, kind: PrincipalKind, object_id: str
+) -> None:
+    response = client.post(
+        "/api/v1/principals", json={"objectId": object_id, "kind": kind}
+    )
+    assert response.status_code == 422
+    assert client.get("/api/v1/principals").json() == []
+
+
+@pytest.mark.parametrize("kind", list(PrincipalKind))
+@pytest.mark.parametrize(
+    "object_id",
+    [
+        "ABCDEF12-AAAA-BBBB-CCCC-ABCDEFABCDEF",
+        "abcdef12aaaabbbbccccabcdefabcdef",
+        "{abcdef12-aaaa-bbbb-cccc-abcdefabcdef}",
+    ],
+)
+def test_principal_request_normalizes_guids(kind: PrincipalKind, object_id: str) -> None:
+    request = PrincipalCreate(object_id=object_id, kind=kind)
+    assert request.object_id == "abcdef12-aaaa-bbbb-cccc-abcdefabcdef"
 
 
 def _lookup() -> FakeDirectoryLookup:
@@ -130,7 +159,7 @@ def test_group_principal_membership_lifecycle(client: TestClient) -> None:
 
 def test_uniqueness_and_reference_validation(client: TestClient) -> None:
     payload = {
-        "objectId": "not-a-guid-but-legacy-sp-id",
+        "objectId": USER_ID,
         "kind": "servicePrincipal",
     }
     assert client.post("/api/v1/principals", json=payload).status_code == 201
@@ -140,6 +169,62 @@ def test_uniqueness_and_reference_validation(client: TestClient) -> None:
     group = client.post("/api/v1/groups", json={"name": "Consumers"}).json()
     missing = client.put(f"/api/v1/groups/{group['id']}/members/principal_missing")
     assert missing.status_code == 404
+
+
+@pytest.mark.parametrize("kind", list(PrincipalKind))
+async def test_concurrent_enrollment_is_unique_across_kinds(kind: PrincipalKind) -> None:
+    class ConcurrentDirectory(InMemoryDirectoryRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.arrived = 0
+            self.ready = asyncio.Event()
+
+        async def create_principal(
+            self, principal: Principal, audit_event: AuditEvent
+        ) -> Principal:
+            self.arrived += 1
+            if self.arrived == 2:
+                self.ready.set()
+            await asyncio.wait_for(self.ready.wait(), timeout=5)
+            return await super().create_principal(principal, audit_event)
+
+    repository = ConcurrentDirectory()
+    service = DirectoryService(repository)
+    actor = Actor(object_id="local-admin", tenant_id="tenant-test")
+    results = await asyncio.gather(
+        service.create_principal(actor, PrincipalCreate(object_id=USER_ID, kind="user")),
+        service.create_principal(
+            actor, PrincipalCreate(object_id=USER_ID.replace("-", ""), kind=kind)
+        ),
+        return_exceptions=True,
+    )
+    assert sum(isinstance(result, Principal) for result in results) == 1
+    assert sum(isinstance(result, ConflictError) for result in results) == 1
+    assert len(repository.principals) == 1
+    assert len(repository.audit_events) == 1
+
+
+async def test_guid_identity_is_tenant_scoped_and_legacy_duplicates_are_rejected() -> None:
+    repository = InMemoryDirectoryRepository()
+    service = DirectoryService(repository)
+    actor = Actor(object_id="local-admin", tenant_id="tenant-test")
+    first = await service.create_principal(
+        actor, PrincipalCreate(object_id=USER_ID, kind="user")
+    )
+    other = await service.create_principal(
+        Actor(object_id="local-admin", tenant_id="other-tenant"),
+        PrincipalCreate(object_id=USER_ID, kind="managedIdentity"),
+    )
+    assert first.id != other.id
+    repository.principals[first.id] = first.model_copy(
+        update={"object_id": f"{{{USER_ID}}}"}
+    )
+    with pytest.raises(ConflictError):
+        await service.create_principal(
+            actor, PrincipalCreate(object_id=USER_ID, kind="servicePrincipal")
+        )
+    assert len(repository.principals) == 2
+    assert len(repository.audit_events) == 2
 
 
 def test_entra_mode_requires_bearer_token() -> None:
@@ -602,9 +687,9 @@ def test_photo_errors_do_not_affect_onboarding(
     )
     assert created.status_code == 201
     assert created.json()["directoryVerifiedAt"] is not None
-    for kind in ["servicePrincipal", "managedIdentity"]:
+    for kind, object_id in [("servicePrincipal", AGENT_ID), ("managedIdentity", MISSING_ID)]:
         application = directory_client.post(
-            "/api/v1/principals", json={"objectId": f"legacy-{kind}", "kind": kind}
+            "/api/v1/principals", json={"objectId": object_id, "kind": kind}
         )
         assert application.status_code == 201
         assert application.json()["directoryVerifiedAt"] is None

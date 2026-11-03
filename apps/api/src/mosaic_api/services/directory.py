@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from math import ceil
 from typing import Literal, Protocol
-from uuid import UUID
 
 from mosaic_api.cost_centers import (
     COST_CENTERS_BUSY,
@@ -33,9 +32,11 @@ from mosaic_api.domain import (
     PrincipalCreate,
     PrincipalKind,
     PrincipalUpdate,
+    canonical_object_id,
     deterministic_id,
     general_cost_center_id,
     new_id,
+    principal_object_id_key,
     subject_kind_for,
     utc_now,
 )
@@ -74,6 +75,22 @@ class Actor:
     # True when the caller is in more groups than a token can list, so ``group_ids`` is incomplete
     # and the gateway can't match any group grant for them.
     groups_overage: bool = False
+
+
+async def find_unique_principal(
+    repository: DirectoryRepository, tenant_id: str, object_id: str
+) -> Principal | None:
+    """Resolve all canonical matches; an exact lookup must not hide a legacy duplicate."""
+
+    wanted = principal_object_id_key(object_id)
+    matches = [
+        principal
+        for principal in await repository.list_principals(tenant_id)
+        if principal_object_id_key(principal.object_id) == wanted
+    ]
+    if len(matches) > 1:
+        raise ConflictError("Multiple principals map to this identity; resolve the duplicates")
+    return matches[0] if matches else None
 
 
 class CostCenterChecks(Protocol):
@@ -568,19 +585,7 @@ class DirectoryService:
         kind = request.kind
         requested_default = request.default_cost_center_id
         await self._onboarding_default(actor, kind, requested_default)
-        object_id = _normalize_object_id(
-            request.object_id,
-            request.kind,
-            require_guid=(
-                self._directory is not None
-                or request.kind
-                in {
-                    PrincipalKind.AGENT_USER,
-                    PrincipalKind.AGENT_IDENTITY,
-                    PrincipalKind.SECURITY_GROUP,
-                }
-            ),
-        )
+        object_id = request.object_id
         identity_parent_id = request.identity_parent_id
         verified = await self._verify_principal_request(request.kind, object_id)
         if verified:
@@ -605,13 +610,9 @@ class DirectoryService:
                 label=request.label,
                 identity_parent_id=None,
             )
-        existing = await self._repository.find_principal_by_object_id(
-            actor.tenant_id, request.object_id
+        existing = await find_unique_principal(
+            self._repository, actor.tenant_id, request.object_id
         )
-        if not existing:
-            existing = await self._find_principal_by_object_id_casefold(
-                actor.tenant_id, request.object_id
-            )
         if existing:
             raise ConflictError(
                 "A principal with this Entra object ID already exists",
@@ -985,35 +986,12 @@ class DirectoryService:
             )
         return found
 
-    async def _find_principal_by_object_id_casefold(
-        self, tenant_id: str, object_id: str
-    ) -> Principal | None:
-        wanted = object_id.casefold()
-        for principal in await self._repository.list_principals(tenant_id):
-            if principal.object_id.casefold() == wanted:
-                return principal
-        return None
-
 
 def _canonical_guid(value: str, field_name: str) -> str:
     try:
-        return str(UUID(value.strip()))
+        return canonical_object_id(value)
     except ValueError as exc:
         raise ValidationError(f"{field_name} must be a GUID") from exc
-
-
-def _normalize_object_id(value: str, kind: PrincipalKind, *, require_guid: bool) -> str:
-    if require_guid and kind in {
-        PrincipalKind.USER,
-        PrincipalKind.AGENT_USER,
-        PrincipalKind.AGENT_IDENTITY,
-        PrincipalKind.SECURITY_GROUP,
-    }:
-        return _canonical_guid(value, "objectId")
-    try:
-        return str(UUID(value.strip()))
-    except ValueError:
-        return value.strip()
 
 
 def _kind_label(kind: PrincipalKind) -> str:

@@ -139,6 +139,23 @@ administrator-only handoff route. Tenant membership, a known application ID, a c
 binding, and membership in a MOSAIC group do not authorize disclosure. The service checks the
 subscription's current active API scope and rechecks the grant after the ARM round trip.
 
+**Direct ownership must be unambiguous even in legacy directory data.** Current-user listing
+and direct connection/key operations resolve every matching principal in the caller's tenant,
+comparing GUIDs canonically rather than accepting the first exact object-ID match. Multiple
+registrations fail closed. A direct grant must name that unique principal and match its
+`subject_kind_for` identity mapping. This check is repeated after credential retrieval, so
+ambiguity introduced during the ARM round trip prevents disclosure. Security-group membership
+and explicit administrator handoff retain their separate authorization paths.
+
+Every new principal registration requires a GUID object ID, normalized to lowercase hyphenated
+form, and the tenant-plus-object-ID deterministic record ID is independent of principal kind.
+Create-only writes prevent concurrent enrollment from creating another canonical registration.
+Persisted legacy records remain readable for repair; they are not automatically merged or
+assigned new IDs. Manual enrollment still does not establish directory existence or type.
+Registry-based ownership is not independent proof of a token's user/application class.
+See [registration repair guidance](../access.md#governed-model-access); suspected prior
+disclosure requires key rotation, not just metadata correction.
+
 Reveals require durable, secret-free audit records and non-cacheable responses. Normal listing,
 planning, publishing, and synchronization never call `listSecrets`. Administrator UI reveals
 use transient state, not query caches or browser storage. Upstream errors never substitute a
