@@ -9,6 +9,13 @@ AZURE_CLI_CLIENT = "04b07795-8ddb-461a-bbee-02f9e1bf7b46"
 
 def provision(operator: Operator, *, for_model_verification=False) -> None:
     operator.verify_target()
+    recorded = (
+        operator.state["objects"].get("operatorModelConsent") if for_model_verification else None
+    )
+    if recorded is not None and recorded.get("cleanedUp"):
+        raise OperationError(
+            "Previous model verification consent was retired; review before another probe"
+        )
     target = operator.target
     app_id = target["apiAppClientId"]
     apps = operator.items("/applications?" + urlencode({"$filter": f"appId eq '{app_id}'"}))
@@ -36,6 +43,14 @@ def provision(operator: Operator, *, for_model_verification=False) -> None:
         app = apps[0]
         scope_value = "Models.Invoke"
         state_key = "operatorModelConsent"
+    api = app["api"]
+    scopes = [
+        scope["id"]
+        for scope in api["oauth2PermissionScopes"]
+        if scope["value"] == scope_value and scope["isEnabled"]
+    ]
+    if len(scopes) != 1:
+        raise OperationError("The owned API's delegated operator scope is unavailable")
     client = operator.items(
         "/servicePrincipals?"
         + urlencode(
@@ -44,6 +59,19 @@ def provision(operator: Operator, *, for_model_verification=False) -> None:
             }
         )
     )
+    if len(client) > 1:
+        raise OperationError("Azure CLI enterprise application is ambiguous")
+    if recorded is not None:
+        expected = {
+            "apiClientId": app_id,
+            "applicationObjectId": app["id"],
+            "resourceId": principal_id,
+            "operatorId": me["id"],
+            "clientId": client[0]["id"] if client else None,
+            "scopeId": scopes[0],
+        }
+        if not client or any(recorded.get(key) != value for key, value in expected.items()):
+            raise OperationError("Temporary model consent ownership changed; provisioning stopped")
     if not client:
         principal = operator.graph("POST", "/servicePrincipals", {"appId": AZURE_CLI_CLIENT})
         operator.remember(
@@ -55,16 +83,6 @@ def provision(operator: Operator, *, for_model_verification=False) -> None:
             },
         )
         client = [principal]
-    if len(client) != 1:
-        raise OperationError("Azure CLI enterprise application is ambiguous")
-    api = app["api"]
-    scopes = [
-        scope["id"]
-        for scope in api["oauth2PermissionScopes"]
-        if scope["value"] == scope_value and scope["isEnabled"]
-    ]
-    if len(scopes) != 1:
-        raise OperationError("The owned API's delegated operator scope is unavailable")
     authorized = list(api.get("preAuthorizedApplications", []))
     entry = next((item for item in authorized if item["appId"] == AZURE_CLI_CLIENT), None)
     if for_model_verification and state_key not in operator.state["objects"]:

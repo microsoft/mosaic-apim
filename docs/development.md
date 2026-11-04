@@ -217,7 +217,9 @@ Set-Location ..
 az bicep build --file infra\main.bicep
 az bicep build --file e2e\mcp-servers\deploy\main.bicep
 uv run python -m unittest discover -s scripts/tests -t .
-uv run ruff check scripts/federal_demo scripts/tests/test_federal_demo.py scripts/tests/test_federal_model_verifier.py
+uv run ruff check scripts/federal_demo `
+  scripts/tests/test_federal_demo.py scripts/tests/test_federal_model_verifier.py `
+  scripts/tests/test_federal_access_lifecycle.py scripts/tests/test_federal_job_cleanup.py
 az bicep build --file infra\federal-demo\main.bicep
 az bicep build --file infra\federal-demo\runtime-only.bicep
 az bicep build --file infra\federal-demo\inference-only.bicep

@@ -13,8 +13,8 @@ from support import FAKE_TOKEN, SCOPE, FakeCredential, model_env
 pytestmark = pytest.mark.anyio
 
 
-def answer(text: str = "Cited public snapshot brief.") -> dict:
-    return {"choices": [{"message": {"content": text}}]}
+def answer(text: str = "Cited public snapshot brief.", *, finish_reason: str = "stop") -> dict:
+    return {"choices": [{"message": {"content": text}, "finish_reason": finish_reason}]}
 
 
 async def test_model_calls_are_mi_authenticated_bounded_and_attribution_is_request_local():
@@ -49,6 +49,37 @@ async def test_model_calls_are_mi_authenticated_bounded_and_attribution_is_reque
         assert payload["reasoning_effort"] == "none"
         assert payload["stream"] is False
         assert payload["messages"][1]["content"] == "Public evidence"
+
+
+@pytest.mark.parametrize("finish_reason", ["stop", "length"])
+async def test_nonempty_completion_checks_output_limit_without_retry(finish_reason, caplog):
+    caplog.set_level(logging.INFO, logger="m_agent")
+    requests = []
+    text = f"Private completion {FAKE_TOKEN}"
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json=answer(text, finish_reason=finish_reason))
+
+    gateway = BriefGateway(
+        settings_from_env(model_env()),
+        FakeCredential(),
+        httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+    )
+    if finish_reason == "length":
+        with pytest.raises(ModelCallError) as error:
+            await gateway.ask("Private evidence")
+        assert str(error.value) == "Model gateway exhausted the output token limit."
+    else:
+        assert await gateway.ask("Private evidence") == "Private completion [redacted]"
+    await gateway.aclose()
+    assert len(requests) == 1
+    assert json.loads(requests[0].content)["max_completion_tokens"] == 256
+    own_logs = "\n".join(
+        record.getMessage() for record in caplog.records if record.name == "m_agent"
+    )
+    for secret in (FAKE_TOKEN, text, "Private evidence"):
+        assert secret not in own_logs
 
 
 @pytest.mark.parametrize("status", [301, 401, 403, 429, 500, 503])

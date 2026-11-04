@@ -119,9 +119,12 @@ class BriefGateway:
                 raw = await read_bounded(response)
             try:
                 payload = json.loads(raw)
-                answer = payload["choices"][0]["message"]["content"]
+                completion = payload["choices"][0]
+                answer = completion["message"]["content"]
             except (ValueError, KeyError, IndexError, TypeError):
                 raise ModelCallError("Model gateway returned an invalid completion.") from None
+            if completion.get("finish_reason") == "length":
+                raise ModelCallError("Model gateway exhausted the output token limit.")
             if not isinstance(answer, str) or not answer.strip():
                 raise ModelCallError("Model gateway returned no answer text.")
             if len(answer) > MAX_ANSWER_CHARS:

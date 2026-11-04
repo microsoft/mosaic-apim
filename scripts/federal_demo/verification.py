@@ -10,6 +10,11 @@ NOTE = "Owned temporary federal deployment verification; revoke after bounded pr
 
 def prepare(operator: Operator) -> list[dict]:
     operator.verify_target()
+    ledger = operator.state["objects"].get("verificationAccess")
+    if ledger is not None and ledger.get("cleanedUp"):
+        raise OperationError(
+            "Previous verification access was retired; review before another probe"
+        )
     api = Mosaic(operator)
     models = {
         key: value for key, value in operator.state["objects"].items() if key.startswith("model:")
@@ -19,23 +24,19 @@ def prepare(operator: Operator) -> list[dict]:
     me = operator.graph("GET", "/me?$select=id,displayName")
     existing = api.request("GET", "/principals")
     found = next((row for row in existing if row["objectId"] == me["id"]), None)
+    if ledger is not None and (found is None or ledger.get("principalId") != found["id"]):
+        raise OperationError("Verification principal ownership changed; preparation stopped")
     principal = found or register_identity(
         api, me["id"], "user", "Deployment verification operator"
     )
     center = next(row for row in api.request("GET", "/cost-centers") if row["code"] == "general")
-    ledger = operator.state["objects"].get(
-        "verificationAccess",
-        {
+    if ledger is None:
+        ledger = {
             "principalId": principal["id"],
             "principalCreated": found is None,
             "grants": [],
             "cleanedUp": False,
-        },
-    )
-    if ledger["cleanedUp"]:
-        raise OperationError(
-            "Previous verification access was retired; review before another probe"
-        )
+        }
     operator.remember("verificationAccess", ledger)
     targets = []
     for key, model in models.items():

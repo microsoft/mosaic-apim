@@ -53,13 +53,20 @@ def job_settings(profile: str, mcp_origin: str, model_origin: str) -> Settings:
     )
 
 
-def model_app(requests: list, status: int = 200) -> Starlette:
+def model_app(requests: list, status: int = 200, *, finish_reason: str = "stop") -> Starlette:
     async def complete(request: Request):
         requests.append({"headers": dict(request.headers), "body": await request.json()})
         if status != 200:
             return PlainTextResponse(f"private prompt {FAKE_TOKEN}", status)
         return JSONResponse(
-            {"choices": [{"message": {"content": "A real network test completion."}}]}
+            {
+                "choices": [
+                    {
+                        "message": {"content": "A real network test completion."},
+                        "finish_reason": finish_reason,
+                    }
+                ]
+            }
         )
 
     return Starlette(routes=[Route("/{path:path}", complete, methods=["POST"])])
@@ -134,6 +141,23 @@ async def test_model_network_denial_is_not_a_success_and_is_not_retried(status):
                 job_settings("usda-field", mcp_origin, model_origin), credential=FakeCredential()
             )
     assert len(model_requests) == 1
+
+
+async def test_nonempty_truncated_model_completion_fails_workload_without_retry():
+    model_requests = []
+    credential = FakeCredential()
+    with (
+        serve(create_app(ServerSettings("usda-crop-insights"))) as mcp_origin,
+        serve(model_app(model_requests, finish_reason="length")) as model_origin,
+    ):
+        with pytest.raises(WorkloadError) as error:
+            await run_workload(
+                job_settings("usda-field", mcp_origin, model_origin), credential=credential
+            )
+    assert str(error.value) == "Workload failed; no success or fabricated usage is reported."
+    assert len(model_requests) == 1
+    assert model_requests[0]["body"]["max_completion_tokens"] == 256
+    assert credential.closed
 
 
 @pytest.mark.parametrize("mode", ["tool-error", "wrong-profile", "no-provenance", "empty-records"])

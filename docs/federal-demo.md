@@ -164,6 +164,9 @@ Deploy the protected runtime initially with `backendAuthVerified=false`. Then ru
 right-audience tokens as an unapproved application, requires all 24 hosts to return HTTP 403,
 and removes its temporary backend roles before recording success. Network failures and HTTP 401
 are not valid-token authorization proof; a 23-of-24 result does not pass.
+Every recorded temporary-role removal is attempted even when another removal fails. Any cleanup
+failure is reported and prevents a successful verification record; inspect the remaining exact
+assignments before retrying.
 
 Only after that proof, use `authorize-runtime --apply`, `prepare-inference --apply`, and the
 inference-only deployment to grant the five exact gateway/account inference pairs. Use
@@ -196,6 +199,10 @@ Successful verification installs deployment-scoped prices and the six budgets be
 reapplies the publications. Retire temporary grants and delegated model consent even after a
 failed attempt; inspect uncertain writes before resuming. Applies wait for the exact reviewed
 run to succeed, not merely an already-applied publication while its new run is still finishing.
+Resuming temporary access requires the same recorded operator, application, resource, client,
+scope and verification principal. A retired ledger cannot reopen access. Consent retirement is
+attempted even if grant cleanup fails, and failures from both are reported rather than presenting
+partial cleanup as success.
 Disabled applied snapshots retain historical principal references: cleanup preserves an
 ungranted operator record when the API requires it for that history, rather than unpublishing
 live models to erase it. No enabled temporary grant or delegated model consent is kept.

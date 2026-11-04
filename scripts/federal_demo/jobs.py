@@ -189,8 +189,16 @@ def verify_wrong_client(operator: Operator) -> None:
                 "Backend proof does not match the exact expected request inventory"
             )
     finally:
+        failures = []
         for path, assignment_id in reversed(temporary):
-            operator.graph("DELETE", path + "/" + quote(assignment_id, safe=""))
+            try:
+                operator.graph("DELETE", path + "/" + quote(assignment_id, safe=""))
+            except OperationError as error:
+                failures.append(f"{assignment_id}: {error}")
+        if failures:
+            raise OperationError(
+                "Failed to remove temporary backend roles: " + "; ".join(failures)
+            )
     operator.remember(
         "wrongClientVerification",
         {

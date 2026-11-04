@@ -242,8 +242,18 @@ def main(argv=None) -> int:
                 "deployment prices/budgets configured."
             )
         elif args.command == "cleanup-model-verification":
-            verification.cleanup(operator)
-            consent.cleanup_model_verification(operator)
+            errors = []
+            try:
+                verification.cleanup(operator)
+            except (OperationError, ValueError, KeyError, OSError) as error:
+                errors.append(f"Grant cleanup failed: {error}")
+            finally:
+                try:
+                    consent.cleanup_model_verification(operator)
+                except (OperationError, ValueError, KeyError, OSError) as error:
+                    errors.append(f"Consent cleanup failed: {error}")
+            if errors:
+                raise OperationError("; ".join(errors))
             print("Temporary model-verification grants and consent retired.")
     except (OperationError, ValueError, KeyError, OSError) as error:
         print(f"Federal demo failed: {error}", file=sys.stderr)
