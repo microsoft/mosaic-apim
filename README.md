@@ -22,6 +22,7 @@ Start with the [architecture](docs/architecture.md), [workflow diagrams](docs/wo
 | Answer questions about Entra, limits, billing, and failure behavior | [FAQ](docs/faq.md) |
 | See the applications | [Selected screenshots](#screenshots) and [full gallery](docs/gallery.md) |
 | Run locally or deploy to Azure | [Development](docs/development.md) and [deployment](docs/deployment.md) |
+| Explore the opt-in multi-environment customer demo | [Federal demonstration estate](docs/federal-demo.md) |
 | Register gateways and model endpoints | [Gateways](docs/gateways.md) and [model endpoints](docs/model-endpoints.md) |
 | Publish models or combine deployments | [Model publishing](docs/model-publishing.md) and [model pools](docs/model-pools.md) |
 | Grant access and connect a client | [Grants](docs/access.md), [Entra model calls](docs/call-models-with-entra-tokens.md), and [MCP connections](docs/connect-to-mcp-servers.md) |

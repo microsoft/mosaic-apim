@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": {"value": "mosaic-federal-demo"},
+    "appServiceLocation": {"value": "eastus2"},
+    "apiPlaceholderImage": {"value": "mcr.microsoft.com/azuredocs/aci-helloworld:latest"},
+    "webPlaceholderImage": {"value": "mcr.microsoft.com/appsvc/staticsite:latest"},
+    "portalPlaceholderImage": {"value": "mcr.microsoft.com/appsvc/staticsite:latest"},
+    "coreBackingResourceTags": {"value": {}},
+    "provisionProductionLuna": {"value": false},
+    "productionLunaSkuName": {"value": "DataZoneStandard"},
+    "tenantId": {"value": "<tenant-id>"},
+    "apiAppClientId": {"value": "<mosaic-api-registration-client-id>"},
+    "apiServicePrincipalObjectId": {"value": "<mosaic-api-registration-service-principal-object-id>"},
+    "spaAppClientId": {"value": "<mosaic-console-registration-client-id>"},
+    "portalAppClientId": {"value": "<mosaic-portal-registration-client-id>"},
+    "apiApplicationIdUri": {"value": "api://<mosaic-api-registration-client-id>"},
+    "apiScope": {"value": "api://<mosaic-api-registration-client-id>/access_as_user"},
+    "modelRuntimeClientId": {"value": "<model-runtime-registration-client-id>"},
+    "modelClientId": {"value": "<public-model-client-registration-client-id>"},
+    "reusedLunaResourceId": {"value": "<existing-luna-account-resource-id-in-the-current-subscription>"},
+    "reusedTerraResourceId": {"value": "<existing-terra-account-resource-id-in-the-current-subscription>"},
+    "apimPublisherName": {"value": "<approved-publisher-name>"},
+    "apimPublisherEmail": {"value": "<approved-publisher-contact-address>"},
+    "onboardingOperatorObjectId": {"value": "<approved-operator-object-id>"},
+    "deployRuntime": {"value": false},
+    "backendAuthVerified": {"value": false},
+    "enableGatewayInference": {"value": false}
+  }
+}

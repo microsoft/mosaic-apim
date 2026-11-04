@@ -1,0 +1,178 @@
+{
+  "entrypoint": "infra\\federal-demo\\main.bicep",
+  "scope": "subscription",
+  "location": "eastus2",
+  "bootstrapEnvironment": "dev",
+  "mcpDiscoveryTimeout": {
+    "setting": "MOSAIC_MCP_DISCOVERY_TIMEOUT_SECONDS",
+    "seconds": 60,
+    "normalDeploymentDefaultSeconds": 20,
+    "purpose": "Allow authenticated discovery to wait for scale-to-zero MCP cold starts. Does not change authentication, replica limits or run inference."
+  },
+  "parameters": {
+    "environmentName": "Defaults to mosaic-federal-demo. Must match the local azd environment so normal service tags and azd deploy discovery remain compatible.",
+    "appServiceLocation": "Optional; defaults to location (eastus2). The profile allows eastus2 or the explicitly approved centralus US quota-recovery option. Overrides ONLY the B1 App Service plan and API/web/portal sites. All newly owned resource groups, APIMs, AI accounts, Container Apps, registry, Cosmos DB, vaults and monitoring remain in eastus2; reused resources retain their existing locations. Check hosting quota in the chosen App Service region; SKU and architecture are unchanged.",
+    "coreBackingResourceTags": "Optional object, default {}. Forwarded unchanged and merged only onto Cosmos, backend vault, management vault and onboarding vault. Never applied to sites, ACR, AI accounts, APIM, Container Apps, shared tags or resource groups. Private parameters may preserve an already approved one-time per-resource exception and its SAME original expiry; no expiry is generated, extended or renewed by IaC. The operator owns the expiry fence and must stop staged writes after expiry rather than renew the exception.",
+    "provisionProductionLuna": "Optional boolean, default false. True creates the owned ai-mosaic-fed-prod-luna-<suffix> account and gpt-5.6-luna deployment only in the Production group, instead of reading/granting access on reusedLunaResourceId. The original three owned AI accounts and existing Terra are unchanged: five usable endpoints are then four owned plus one reused. reusedLunaResourceId remains a required legacy input but is ignored in this mode.",
+    "productionLunaSkuName": "Optional, defaults to DataZoneStandard; allowed values DataZoneStandard and GlobalStandard. Affects only the opt-in owned Production Luna. Parent may explicitly choose GlobalStandard after fresh quota review for fictional/public demo data. Capacity is fixed at native 10; version is 2026-07-09 with no auto-upgrade. No unrelated quota/deployment is reclaimed, resized or modified.",
+    "coreImages": {
+      "apiPlaceholderImage": "Optional core API image; bootstrap default mcr.microsoft.com/azuredocs/aci-helloworld:latest.",
+      "webPlaceholderImage": "Optional core console image; bootstrap default mcr.microsoft.com/appsvc/staticsite:latest.",
+      "portalPlaceholderImage": "Optional core portal image; bootstrap default mcr.microsoft.com/appsvc/staticsite:latest.",
+      "redeployment": "Despite their legacy PlaceholderImage names, these three parameters select the core site images on EVERY root deployment. After real images are built, persist all three reviewed owned-ACR explicit tagged refs in the private parameters and retain them for deployRuntime/enableGatewayInference redeploys. The template does not discover/adopt running images; omitted overrides revert to bootstrap defaults. These parameters are independent of runtimeConfigurations.<env>.image."
+    },
+    "required": [
+      "apiAppClientId",
+      "apiServicePrincipalObjectId",
+      "spaAppClientId",
+      "portalAppClientId",
+      "apiApplicationIdUri",
+      "apiScope",
+      "modelRuntimeClientId",
+      "apimPublisherName",
+      "apimPublisherEmail",
+      "onboardingOperatorObjectId",
+      "reusedLunaResourceId",
+      "reusedTerraResourceId"
+    ],
+    "reusedAccountResourceIds": "Supply reusedLunaResourceId and reusedTerraResourceId only through private deployment parameters. Reused inputs must be canonical /subscriptions/<current-subscription>/resourceGroups/<group>/providers/Microsoft.CognitiveServices/accounts/<account> IDs, without trailing slash or deployment child. The wrapper validates the effective account ID's shape, provider, type, same-subscription scope and name lengths; invalid input fails nested account-name validation before role assignments are created. With provisionProductionLuna=true the missing/old reused Luna is never read or changed; only the new owned Production Luna ID is used. No real account/group names or IDs are committed as defaults.",
+    "existingIdentityHooks": "Same meanings as infra/main.bicep. tenantId defaults to the current tenant. modelClientId is optional but needed for delegated model-client setup.",
+    "onboardingOperatorPrincipalType": ["User", "ServicePrincipal"],
+    "stagedDefaults": {
+      "deployRuntime": false,
+      "backendAuthVerified": false,
+      "enableGatewayInference": false,
+      "runtimeConfigurations": null
+    },
+    "runtimeConfigurations": {
+      "keys": ["dev", "stg", "prod"],
+      "requiredPerEnvironment": [
+        "image",
+        "backendAudienceClientId",
+        "gatewayClientId",
+        "mosaicApiClientId",
+        "modelEndpoint",
+        "modelDeployment"
+      ],
+      "image": "Full core-ACR image URI including an explicit version tag or digest, never latest or a public placeholder image.",
+      "backendAudienceClientId": "A separate Entra backend registration per environment; all three IDs must differ.",
+      "gatewayClientId": "Matching APIM system-assigned managed identity client ID, resolved from the gateway principalId via directory lookup.",
+      "mosaicApiClientId": "MOSAIC API system-assigned managed identity client ID, resolved from CORE.api.principalId. This is not apiAppClientId.",
+      "modelEndpoint": "Final deterministic model base URL on the matching environment APIM, which can be configured before publication/grants exist; never a direct Azure AI endpoint. A wrong-host route fails nested image parameter validation before runnable resources are created.",
+      "modelDeployment": "Exact model name: gpt-5.6-luna, gpt-5.6-terra or gpt-5.1; never the URL slug.",
+      "runtimeScope": "All environments use api://<modelRuntimeClientId>/.default, derived by infrastructure from the shared core runtime registration.",
+      "runtimeIdentitySelection": "Each app/job sets AZURE_CLIENT_ID to its own user-assigned managed identity client ID, not its object/principal ID or shared pull identity. MCP uses the image default server CMD; jobs run python -m federal_runtime.workload.",
+      "modelApiVersion": "Optional; defaults to 2024-10-21.",
+      "prodWorkloads": {
+        "property": "workloads",
+        "requiredKeys": ["nasa-brief", "faa-airspace", "faa-standards", "doe-research", "usda-field"],
+        "requiredPerWorkload": ["modelEndpoint", "modelDeployment", "mcpGatewayUrl"],
+        "gatewayUrls": "Both URLs must use the Production APIM HTTPS hostname. Infrastructure and runtime validate this; mcpGatewayUrl is the exact published MCP route."
+      }
+    }
+  },
+  "postRootEntryPoints": {
+    "usage": "After Root reaches a terminal successful state, capture its outputs once and use these separate entrypoints for runtime/inference stages. Do not rerun main.bicep for those stages: it intentionally re-PUTs core/APIM/AI resources. Generate separate private parameter files containing only the parameters each stage declares, not the whole Root parameter file. Neither stage touches core images, backing exception tags, vault/Cosmos networking, ACR, CAEs, managed identities, APIM services, or AI account/deployment resources.",
+    "runtimeOnly": {
+      "entrypoint": "infra\\federal-demo\\runtime-only.bicep",
+      "scope": "subscription",
+      "required": {
+        "core": "Completed Root CORE output value (the object inside ARM's {type,value} wrapper).",
+        "environments": "Completed Root ENVIRONMENTS value, ordered dev,stg,prod.",
+        "runtimeIdentities": "Completed Root RUNTIME_IDENTITIES value, ordered dev,stg,prod. Contains existing pull, eight MCP UAMIs per environment, and five Production workload UAMIs.",
+        "runtimeConfigurations": "Same RuntimeConfigurations contract as the Root profile: real core-ACR versioned images, matching backend audiences and MI client IDs, final published-route URLs/deployments, and all five Production workload configurations.",
+        "modelRuntimeClientId": "The original shared model-runtime registration client ID from private Root parameters."
+      },
+      "optional": {
+        "tenantId": "Defaults to the authenticated tenant; use the original Root tenant.",
+        "location": "Defaults to eastus2; only eastus2 is allowed. Existing App Service hosting location is irrelevant.",
+        "backendAuthVerified": "Defaults false: deploy protected hosts with model helpers disabled. Set true only after actual backend 401/403/allowed-client checks pass."
+      },
+      "writes": "Only the same 24 MCP ContainerApps, their 24 current authConfigs, and five manually triggered Production jobs. Reuses protected-mcp.bicep/manual-job.bicep. CAE, ACR and UAMI IDs are references; no IAM, provider registration, image build, or job execution occurs.",
+      "validation": "Requires the expected owned core/environment groups, current-subscription registry/CAE/identity scopes, eight exact MCP keys per environment, five Production workload keys (none elsewhere), three distinct audiences, matching gateway model-route hosts, and a real versioned core-ACR image. App/job names match Root formulas and use existing runtime UAMI client IDs for AZURE_CLIENT_ID.",
+      "outputs": {
+        "RUNTIMES": "Array ordered dev,stg,prod: {key,resourceGroupName,mcpApps:[{key,name,id,url,deployed:true}],jobs:[{key,name,id,deployed:true}]}",
+        "ENVIRONMENTS": "Original supplied environment metadata with only mcpApps/jobs replaced by the deployed runtime results. Gateway/model/Production Luna metadata is copied as data, not redeployed.",
+        "BACKEND_AUTH_VERIFIED": "Echoes the operator assertion; not a new verification result."
+      }
+    },
+    "inferenceOnly": {
+      "entrypoint": "infra\\federal-demo\\inference-only.bicep",
+      "scope": "subscription",
+      "required": {
+        "core": "Completed Root CORE value; Reader principal is core.api.principalId.",
+        "environments": "Root (or runtime-only returned) ENVIRONMENTS value, ordered dev,stg,prod.",
+        "effectiveLunaResourceId": "Completed Root EFFECTIVE_LUNA_RESOURCE_ID value, never the vanished original reuse ID when owned replacement mode is active.",
+        "reusedTerraResourceId": "Exact reviewed existing Terra account ID from the private Root parameters.",
+        "backendAuthVerified": "Required boolean true; false is rejected by ARM parameter validation before scoped role writes."
+      },
+      "pairs": [
+        "environments[0].model.id -> environments[0].gateway.principalId (Development Luna)",
+        "environments[1].model.id -> environments[1].gateway.principalId (Staging Luna)",
+        "environments[2].model.id -> environments[2].gateway.principalId (Production GPT-5.1)",
+        "effectiveLunaResourceId -> environments[2].gateway.principalId (Production Luna)",
+        "reusedTerraResourceId -> environments[2].gateway.principalId (Production Terra)"
+      ],
+      "writes": "Only the same five resource-scoped API Reader assignments and five matching-gateway Cognitive Services OpenAI User assignments, using reused-model-access.bicep/model-access.bicep and their original deterministic role IDs. Rejects duplicate accounts and incorrect environment/gateway scopes. Does not grant runtime UAMIs direct model-account access, Entra app roles, or MOSAIC application grants.",
+      "outputs": {
+        "ROLE_ASSIGNMENTS": "Five-element array {key,environment,accountResourceId,gatewayPrincipalId,reader,inference}. Keep this stage ledger separately; it is not the Root ROLE_ASSIGNMENTS object."
+      }
+    }
+  },
+  "publicModelRoutes": {
+    "endpointFormat": "https://<matching-environment-gateway-host>/<apiPath>",
+    "allEnvironments": {
+      "gpt-5.6-luna": "mosaic/federal/gpt-5-6-luna"
+    },
+    "productionOnly": {
+      "gpt-5.6-terra": "mosaic/federal/gpt-5-6-terra",
+      "gpt-5.1": "mosaic/federal/gpt-5-1"
+    },
+    "mcpSummaryModel": "The environment-local gpt-5.6-luna route.",
+    "workloadModels": {
+      "nasa-brief": "gpt-5.6-terra",
+      "faa-airspace": "gpt-5.6-luna",
+      "faa-standards": "gpt-5.6-luna",
+      "doe-research": "gpt-5.1",
+      "usda-field": "gpt-5.6-luna"
+    }
+  },
+  "outputs": {
+    "CORE": "Object: resourceGroupName; api/web/portal {name,url,id,principalId}; registry {name,id,loginServer}; workspace/applicationInsights {name,id}; backendVault/managementVault/onboardingVault {name,id,uri}.",
+    "ENVIRONMENTS": "Array ordered dev,stg,prod: key,name,resourceGroupName,gateway {name,id,url,principalId},containerAppsEnvironment {name,id},model {name,id,endpoint,deployment,model,version,sku,capacity},productionLuna ({} unless owned Luna is requested in prod),backendAudienceClientId,mcpApps [{key,name,url,deployed}],jobs [{key,name,id,deployed}]. The existing model field remains GPT-5.1 in prod; productionLuna is additional.",
+    "EFFECTIVE_LUNA_RESOURCE_ID": "Full ARM account ID used by the Production Luna IAM module. Defaults to reusedLunaResourceId; when provisionProductionLuna=true resolves from the completed Production environment module's productionLuna.id, guaranteeing the new account/deployment exists before IAM.",
+    "PRODUCTION_LUNA": "Object {} in reuse mode; otherwise {owned:true,name,id,endpoint,deployment:'gpt-5.6-luna',model:'gpt-5.6-luna',version:'2026-07-09',sku:<productionLunaSkuName>,capacity:10}. id is the additional owned account resource ID; name is ai-mosaic-fed-prod-luna-<suffix> in rg-mosaic-federal-prod.",
+    "RUNTIME_IDENTITIES": "Array ordered dev,stg,prod: environment,pull {name,id,clientId,principalId},mcp [{key,name,id,clientId,principalId}],workloads [{key,costCenter,name,id,clientId,principalId}]. All identities are provisioned in the first stage even when runtime is absent.",
+    "ROLE_ASSIGNMENTS": "Exact ARM IDs for the operator ownership ledger: onboardingOperator, registryPull[], backendVaultGateways[], reusedTerra {reader,inference}, and legacy-named reusedLuna {resourceId,reader,inference}. reusedLuna now targets EFFECTIVE_LUNA_RESOURCE_ID, whether reused or owned: Reader is for the MOSAIC API, Cognitive Services OpenAI User only for the Production gateway and only when enableGatewayInference && deployRuntime && backendAuthVerified. No runtime gets direct account rights. An empty inference ID means not requested, not proof an old role was revoked.",
+    "ENVIRONMENT_ROLE_ASSIGNMENTS": "Array ordered dev,stg,prod: {environment,gateway[],modelReader,modelInference} with exact environment-scoped role assignment ARM IDs for the original three owned AI accounts (prod model is GPT-5.1). Additional owned Production Luna IAM is returned under the legacy ROLE_ASSIGNMENTS.reusedLuna key with its effective resourceId.",
+    "ONBOARDING_KEY_VAULT_NAME": "Operator-only onboarding vault name.",
+    "ONBOARDING_KEY_VAULT_URI": "Operator-only onboarding vault URI.",
+    "ONBOARDING_KEY_VAULT_RESOURCE_ID": "Operator-only onboarding vault ARM ID.",
+    "compatibility": "API_APP_NAME/URL/PRINCIPAL_ID, WEB_APP_NAME/URL, PORTAL_APP_NAME/URL, AZURE_CONTAINER_REGISTRY_NAME/ENDPOINT, LOG_ANALYTICS_WORKSPACE_ID, KEY_VAULT_URI, MANAGEMENT_KEY_VAULT_URI, and APIM_NAME/RESOURCE_ID/PRINCIPAL_ID/GATEWAY_URL (Development)."
+  },
+  "stages": [
+    "Deploy defaults: four resource groups, shared core, operator onboarding vault, exactly three Developer_1 APIMs, three new AI accounts/deployments, one CAE per environment and runtime/pull identities. Optional provisionProductionLuna adds a fourth owned account instead of reused Luna. Preserve any already approved coreBackingResourceTags with the original expiry unchanged through staged updates. No runnable MCP apps/jobs or gateway inference grants.",
+    "Build real core API/console/portal images and persist all three reviewed owned-ACR refs in apiPlaceholderImage/webPlaceholderImage/portalPlaceholderImage private parameters before any root redeployment. Resolve API/APIM MI client IDs; create three backend audiences; build and push the real runtime image; construct the final deterministic environment-local model URLs; supply full runtimeConfigurations and deployRuntime=true. Routes/grants need not exist yet; pull-role grants already exist from the first deployment.",
+    "Verify anonymous requests receive 401, wrong-environment/wrong-client tokens are rejected, and API/matching-gateway identities can sync/invoke protected hosts.",
+    "Apply reviewed governance/publications and separate MOSAIC/Entra application roles/model grants after protection is verified. Set backendAuthVerified=true and enableGatewayInference=true only after protection and governance gates pass. This adds scoped gateway inference roles and enables MCP model helpers; infrastructure itself never creates MOSAIC/Entra model-caller grants."
+  ],
+  "limitations": [
+    "Azure/Entra writes and live verification are not performed by compilation or tests.",
+    "First-create APIM ordering is explicit on the ARM v2 existing-resource alias itself as well as scoped role/diagnostic writes. Gateway identities are returned by the module that creates APIM, not eagerly read from an independent alias. A successful retry against an already existing APIM is not proof of clean first-create dependency ordering.",
+    "New vaults and Cosmos explicitly request publicNetworkAccess=Enabled while retaining Key Vault RBAC/purge protection and Cosmos disableLocalAuth=true/TLS 1.2. A successful ARM deployment is not proof of effective reachability: inherited modify policy can replace Enabled with Disabled. Compare submitted templates, effective GET properties and policy activity/rules. Only a previously approved one-time exception may be preserved through coreBackingResourceTags with the original expiry unchanged; never create unreviewed exclusions, renew an expired exception, alter permanent policy/exemption enforcement, weaken authentication, or modify unrelated private resources.",
+    "Keep JSON-array app settings structured across nested module parameters and serialize with map() directly in the final web-app siteConfig.appSettings property. ARM variable-copy expansion reparses serialized array strings at CREATE time even when what-if succeeds; do not introduce a variable-copy serialization intermediate.",
+    "Quota, capacity, publisher contact, effective permissions, cost and global name availability require fresh preflight and ARM what-if before provisioning.",
+    "Incremental ARM deployment flags set false do not delete previously deployed apps/jobs or revoke existing inference assignments; pause/revocation needs explicit separately reviewed actions.",
+    "Manual jobs use parallelism=1, replicaCompletionCount=1, retryLimit=0, timeout=300; Azure still allows the operator to start overlapping executions. The operator runner must prevent concurrent starts.",
+    "EasyAuth is a child resource applied after the app exists. Do not assign runtime model access or enable model helpers until live backend-auth verification passes.",
+    "The reused Luna/Terra resources are never redeployed or changed; only API Reader and optionally Production gateway Cognitive Services OpenAI User resource-scoped assignments are added.",
+    "The onboarding-vault template grants only the operator secret access; inherited subscription permissions remain subject to normal Azure RBAC."
+  ],
+  "offlineValidation": [
+    "az bicep build --file infra\\main.bicep --stdout",
+    "az bicep build --file infra\\federal-demo\\main.bicep --stdout",
+    "az bicep build --file infra\\federal-demo\\runtime-only.bicep --stdout",
+    "az bicep build --file infra\\federal-demo\\inference-only.bicep --stdout",
+    "python -m unittest discover -s infra\\federal-demo\\tests -v"
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "profile": "nasa-earthdata-explorer",
+  "provenance": {
+    "mode": "snapshot",
+    "release": "NASA CMR collection metadata capture",
+    "retrieved_at": "2026-10-29T00:19:18.461467+00:00",
+    "sources": [
+      {
+        "url": "https://cmr.earthdata.nasa.gov/search/collections.json?keyword=MODIS&page_size=3",
+        "sha256": "d87fa59e17cb3b7948615c41be3a3e80f8c0f7b1f460d574a035b98ad08bcafe"
+      }
+    ],
+    "selection": "Small selected public-data subset, not a complete agency inventory."
+  },
+  "records": [
+    {
+      "id": "C2565093311-NSIDC_CPRD",
+      "title": "MODIS/Terra Snow Cover Daily L3 Global 500m SIN Grid V061",
+      "short_name": "MOD10A1",
+      "version": "61",
+      "time_start": "2000-02-24T00:00:00.000Z",
+      "time_end": null,
+      "boxes": [
+        "-90 -180 90 180"
+      ],
+      "source_url": "https://cmr.earthdata.nasa.gov/search/concepts/C2565093311-NSIDC_CPRD.html",
+      "note": "Null time_end means not specified, not a promise of current coverage. Metadata discovery only; authenticated granule downloads not performed."
+    },
+    {
+      "id": "C3380708980-OB_CLOUD",
+      "title": "Aqua MODIS Level-2 Regional  Ocean Color (OC) Data, version 2022.0",
+      "short_name": "MODISA_L2_OC",
+      "version": "2022.0",
+      "time_start": "2002-07-04T00:00:00.000Z",
+      "time_end": null,
+      "boxes": [
+        "-90 -180 90 180"
+      ],
+      "source_url": "https://cmr.earthdata.nasa.gov/search/concepts/C3380708980-OB_CLOUD.html",
+      "note": "Null time_end means not specified, not a promise of current coverage. Metadata discovery only; authenticated granule downloads not performed."
+    },
+    {
+      "id": "C3044685923-NSIDC_CPRD",
+      "title": "MODIS/Terra Snow Cover 8-Day L3 Global 500m SIN Grid V061",
+      "short_name": "MOD10A2",
+      "version": "61",
+      "time_start": "2000-02-18T00:00:00.000Z",
+      "time_end": null,
+      "boxes": [
+        "-90 -180 90 180"
+      ],
+      "source_url": "https://cmr.earthdata.nasa.gov/search/concepts/C3044685923-NSIDC_CPRD.html",
+      "note": "Null time_end means not specified, not a promise of current coverage. Metadata discovery only; authenticated granule downloads not performed."
+    }
+  ]
+}

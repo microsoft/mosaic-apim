@@ -38,7 +38,12 @@ resource site 'Microsoft.Web/sites@2023-12-01' = {
     siteConfig: {
       acrUseManagedIdentityCreds: true
       alwaysOn: true
-      appSettings: siteAppSettings
+      // Variable-copy expansion reparses stringified JSON arrays as ARM expressions at CREATE.
+      // Serialize directly in the resource property, without a variable-copy intermediate.
+      appSettings: map(siteAppSettings, setting => {
+        name: setting.name
+        value: string(setting.value)
+      })
       cors: {
         allowedOrigins: corsAllowedOrigins
         supportCredentials: false

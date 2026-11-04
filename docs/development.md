@@ -217,6 +217,13 @@ Set-Location ..
 az bicep build --file infra\main.bicep
 az bicep build --file e2e\mcp-servers\deploy\main.bicep
 uv run python -m unittest discover -s scripts/tests -t .
+uv run ruff check scripts/federal_demo `
+  scripts/tests/test_federal_demo.py scripts/tests/test_federal_model_verifier.py `
+  scripts/tests/test_federal_access_lifecycle.py scripts/tests/test_federal_job_cleanup.py
+az bicep build --file infra\federal-demo\main.bicep
+az bicep build --file infra\federal-demo\runtime-only.bicep
+az bicep build --file infra\federal-demo\inference-only.bicep
+python -m unittest discover -s infra\federal-demo\tests -v
 ```
 
 [CI](../.github/workflows/ci.yml) runs these checks on every pull request to `main` and every push to
@@ -225,6 +232,9 @@ and an M-protected Docker smoke check; their commands live in the
 [MCP fixture guide](../e2e/mcp-servers/README.md). The E2E browser checks use mocked traffic and
 temporary contexts, not live fixtures or persona profiles; CI installs Chromium's Linux system
 dependencies as well.
+
+The [federal demo runtime](../demo/federal/README.md#run-and-validate) has its own pinned environment
+and isolated test/lint commands. Its CI job does not make live directory, gateway, or model calls.
 
 ## Merging into `main`
 
