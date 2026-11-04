@@ -33,11 +33,11 @@ from mosaic_api.domain import (
     PublishedResource,
     PublishedResourceKind,
     TokenEnforcement,
-    grant_precedence_key,
     mcp_resource_metadata_url,
     mcp_server_url,
     model_access_subscription_name,
     new_id,
+    principal_object_id_key,
     subject_kind_for,
 )
 from mosaic_api.errors import ConflictError, DomainError, NotFoundError, ValidationError
@@ -56,7 +56,7 @@ from mosaic_api.services.automatic_keys import (
     record_key_owner,
     validate_owner_runtime,
 )
-from mosaic_api.services.directory import Actor
+from mosaic_api.services.directory import Actor, find_unique_principal
 from mosaic_api.services.entitlements import EntitlementService
 from mosaic_api.services.mcp_access import entitlement_mcp_publication
 from mosaic_api.services.model_access import (
@@ -379,25 +379,14 @@ class PortalAccessService:
                 )
 
     async def list_for_caller(self, actor: Actor) -> list[Entitlement]:
-        principal = await self._directory.find_principal_by_object_id(
-            actor.tenant_id, actor.object_id
+        group_object_ids = frozenset() if actor.groups_overage else actor.group_ids
+        principal = await find_unique_principal(
+            self._directory, actor.tenant_id, actor.object_id
         )
         direct: list[Entitlement] = []
         # A grant is effective per resource and cost center: a group grant under another cost
         # center than the caller's direct grant is still theirs to select with the header.
         direct_resource_keys: set[tuple[str, str, str, str]] = set()
-        if principal is None:
-            matches = [
-                candidate
-                for candidate in await self._directory.list_principals(actor.tenant_id)
-                if candidate.object_id.casefold() == actor.object_id.casefold()
-            ]
-            if len(matches) > 1:
-                raise ConflictError(
-                    "Multiple principals map to this identity; resolve the duplicates"
-                )
-            if matches:
-                principal = matches[0]
         if principal is not None:
             expected_kind = subject_kind_for(principal.kind)
             direct = [
@@ -421,7 +410,7 @@ class PortalAccessService:
             item.id: item
             for item in await self._directory.list_principals(actor.tenant_id)
             if item.kind == PrincipalKind.SECURITY_GROUP
-            and item.object_id.casefold() in actor.group_ids
+            and item.object_id.casefold() in group_object_ids
         }
         group_candidates = [
             entitlement
@@ -437,29 +426,12 @@ class PortalAccessService:
             )
             not in direct_resource_keys
         ]
-        effective = set[str]()
-        if principal is not None:
-            effective = {
-                item.entitlement.id
-                for item in await self._entitlements.resolve_for_object_id(
-                    actor, actor.object_id, group_object_ids=actor.group_ids
-                )
-            }
-        else:
-            winners: dict[tuple[str, str, str, str], Entitlement] = {}
-            for entitlement in group_candidates:
-                key = (
-                    str(entitlement.resource.kind),
-                    entitlement.resource.id,
-                    entitlement.resource.scope_id or "",
-                    entitlement.cost_center_id,
-                )
-                winner = winners.get(key)
-                if winner is None or grant_precedence_key(
-                    entitlement.enforcement, entitlement.id
-                ) < grant_precedence_key(winner.enforcement, winner.id):
-                    winners[key] = entitlement
-            effective = {item.id for item in winners.values()}
+        effective = {
+            item.entitlement.id
+            for item in await self._entitlements.resolve_for_object_id(
+                actor, actor.object_id, group_object_ids=group_object_ids
+            )
+        }
         return [
             portal_entitlement(item)
             for item in sorted(
@@ -481,15 +453,23 @@ class PortalAccessService:
             or (
                 not administrator
                 and principal.kind != PrincipalKind.SECURITY_GROUP
-                and principal.object_id.casefold() != actor.object_id.casefold()
+                and principal_object_id_key(principal.object_id)
+                != principal_object_id_key(actor.object_id)
             )
             or (
                 not administrator
                 and principal.kind == PrincipalKind.SECURITY_GROUP
-                and principal.object_id.casefold() not in actor.group_ids
+                and (actor.groups_overage or principal.object_id.casefold() not in actor.group_ids)
             )
         ):
             raise NotFoundError("Entitlement was not found")
+        if not administrator and principal.kind != PrincipalKind.SECURITY_GROUP:
+            caller = await find_unique_principal(
+                self._directory, actor.tenant_id, actor.object_id
+            )
+            if caller is None or caller.id != principal.id:
+                raise NotFoundError("Entitlement was not found")
+            principal = caller
         expected_kind = subject_kind_for(principal.kind)
         if entitlement.subject.kind != expected_kind:
             raise ConflictError("The grant no longer matches its principal's identity kind")
@@ -835,6 +815,7 @@ class PortalAccessService:
             or grant.enforcement != effective_enforcement(entitlement, intent)
             or grant.intent_digest
             != entitlement_intent_digest(entitlement, context.principal, intent)
+            or grant.required_cost_center_group_id != intent.required_cost_center_group_id
             or grant.key_name != expected_name
         ):
             raise ConflictError("Apply the pending changes to this grant before using its key")
@@ -866,7 +847,7 @@ class PortalAccessService:
                 "is blocked"
             )
         return context, self._applied_pool_grant(
-            context, await self._intent(context, require_current=True)
+            context, await self._intent(actor, context, require_current=True)
         )
 
     async def _mcp_context(
@@ -1090,6 +1071,7 @@ class PortalAccessService:
             or grant.enforcement != effective_enforcement(entitlement, intent)
             or grant.intent_digest
             != entitlement_intent_digest(entitlement, context.principal, intent)
+            or grant.required_cost_center_group_id != intent.required_cost_center_group_id
             or grant.subscription_name != expected_name
         ):
             raise ConflictError("Apply the pending changes to this grant before using its key")
@@ -1117,11 +1099,12 @@ class PortalAccessService:
                 "A publication operation is in progress or needs recovery; key retrieval is blocked"
             )
         return context, self._applied_grant(
-            context, await self._intent(context, require_current=True)
+            context, await self._intent(actor, context, require_current=True)
         )
 
     async def _intent(
         self,
+        actor: Actor,
         context: _AccessContext | _PoolAccessContext | _McpAccessContext,
         *,
         require_current: bool = False,
@@ -1130,14 +1113,15 @@ class PortalAccessService:
         charged = book.get(context.entitlement.cost_center_id)
         if (
             require_current
-            and context.gateway.azure_cloud == "government"
             and charged is not None
             and charged.recheck_pending(context.entitlement.id, context.principal.id)
         ):
             raise ConflictError(
                 "This grant's cost-center access needs review before using its key."
             )
-        return cost_center_intent(
+        if require_current:
+            await self._entitlements.require_current_key_eligibility(actor, context.entitlement)
+        intent = cost_center_intent(
             context.entitlement,
             context.principal,
             book,
@@ -1148,6 +1132,37 @@ class PortalAccessService:
             )
             else None,
         )
+        if require_current and isinstance(context, _PoolAccessContext):
+            name = entitlement_key_name(context.pool, context.entitlement)
+            snapshot = context.pool.applied_access
+            for shared in snapshot.key_grants().get(name or "", []) if snapshot else []:
+                if not shared.enabled or shared.revoked:
+                    continue
+                current = await self._repository.get_entitlement(
+                    context.entitlement.tenant_id, shared.entitlement_id
+                )
+                current_intent = (
+                    cost_center_intent(current, context.principal, book) if current else None
+                )
+                if (
+                    current is None
+                    or not current.enabled
+                    or current.subject != context.entitlement.subject
+                    or current.cost_center_id != context.entitlement.cost_center_id
+                    or current_intent is None
+                    or shared.intent_digest
+                    != entitlement_intent_digest(current, context.principal, current_intent)
+                    or shared.required_cost_center_group_id
+                    != current_intent.required_cost_center_group_id
+                    or (
+                        charged is not None
+                        and charged.recheck_pending(current.id, current.subject.id)
+                    )
+                ):
+                    raise ConflictError(
+                        "Apply the pending changes to all models sharing this key before using it."
+                    )
+        return intent
 
     async def _audit(
         self,
@@ -1195,7 +1210,7 @@ class PortalAccessService:
             if await self._gateways.get_publication_lock(actor.tenant_id, publication.id):
                 raise ConflictError("An MCP publication operation is in progress; try again later.")
             mcp_grant = self._applied_mcp_grant(
-                mcp_context, await self._intent(mcp_context, require_current=True)
+                mcp_context, await self._intent(actor, mcp_context, require_current=True)
             )
             await self._verify_government_runtime(mcp_context.gateway, publication)
             assert mcp_grant.subscription_name is not None
@@ -1506,7 +1521,7 @@ class PortalAccessService:
                     await manager.delete(name)
                 await self._record_key(context, name, present=False)
             else:
-                intent = await self._intent(context, require_current=True)
+                intent = await self._intent(actor, context, require_current=True)
                 grant = self._applied_grant(context, intent, require_key=action == "rotated")
                 await self._verify_government_runtime(context.gateway, context.publication)
                 live = await manager.get_subscription(name)
@@ -1594,7 +1609,7 @@ class PortalAccessService:
             else:
                 grant = self._applied_pool_grant(
                     context,
-                    await self._intent(context, require_current=True),
+                    await self._intent(actor, context, require_current=True),
                     require_key=action == "rotated",
                 )
                 await self._verify_government_runtime(context.gateway, pool)
@@ -1657,6 +1672,10 @@ class PortalAccessService:
     def _applied_mcp_grant(
         context: _McpAccessContext, intent: CostCenterIntent | None, *, require_key: bool = True
     ) -> McpAccessGrant:
+        if context.gateway.azure_cloud != "government":
+            raise ConflictError(
+                "This MCP publication supports Entra tokens only, not subscription keys."
+            )
         publication = context.publication
         entitlement = context.entitlement
         snapshot = publication.applied_access if publication is not None else None
@@ -1689,6 +1708,7 @@ class PortalAccessService:
             or grant.subscription_name != expected
             or grant.intent_digest
             != entitlement_intent_digest(entitlement, context.principal, intent)
+            or grant.required_cost_center_group_id != intent.required_cost_center_group_id
             or grant.enforcement != effective_enforcement(entitlement, intent)
             or grant.cost_center_id != entitlement.cost_center_id
         ):
@@ -1745,7 +1765,7 @@ class PortalAccessService:
             else:
                 grant = self._applied_mcp_grant(
                     context,
-                    await self._intent(context, require_current=True),
+                    await self._intent(actor, context, require_current=True),
                     require_key=action == "rotated",
                 )
                 await self._verify_government_runtime(context.gateway, publication)

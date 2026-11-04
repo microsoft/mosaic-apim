@@ -524,7 +524,7 @@ recover it on the Entitlements page, then run it again.
 ## Verify runtime access
 
 Phase 8 calls the gateway directly with `scripts\verify_model_access.py`, outside the browser.
-[Verifying a real gateway](../../README.md#verifying-a-real-gateway) explains its checks, flags
+[Verifying a real gateway](../verification.md#verifying-a-real-gateway) explains its checks, flags
 and variables. The live driver's `verify` command runs it for the personas, so nobody copies a
 token by hand:
 

@@ -111,6 +111,31 @@ identity is recorded, create a model entitlement:
 
 Security-group grants use Entra tokens only. They do not issue APIM subscription keys.
 
+### Custom cost centers
+
+For a custom [cost center](cost-centers.md), the agent identity or agent user must also belong to
+that center's verified Entra group. **Both individual and group token grants require the center
+group ID in the runtime token.** A direct agent grant, a default-center setting, or the
+`x-mosaic-cost-center` header cannot bypass membership. General is exempt from the mandatory group
+by built-in identity; Government is excluded from the new group workflow.
+
+Automatic access provides a stable group grant on one exact model or pool-model offering;
+Request-only needs an individual approval and reviewed gateway apply; Not available blocks new
+grants/requests. Adding an agent to the group does not create per-agent automatic entitlements or
+APIM policy writes. App-role/blueprint invocation permission is still required separately.
+
+Administrators edit the real Entra group through the optionally consented API identity, not a
+local shadow roster. Runtime callers and APIM do not need Graph write permissions. Where the
+resource and center allow individual keys, a separately eligible individual grant can use them;
+group grants never provide a shared or inherited key.
+
+Already-issued tokens keep their claims until expiry. Managed identities can cache per-resource
+tokens/authorization for around 24 hours, with membership changes taking several hours. Human
+tokens normally last 60-90 minutes from issuance; actual remaining expiry and propagation govern
+removal timing. Membership removal does not revoke an existing individual key: recheck and
+revoke/apply are separate work. There is no immediate JWT revocation/CAE or directory-watched key
+revocation promise. See [removal consequences](cost-centers.md#removing-a-member).
+
 ## Call the model
 
 The request is the same as for any Entra runtime token. Use the endpoint and operation from
@@ -168,8 +193,8 @@ pooled tokens this month). Each is present only when that limit applies.
 | --- | --- |
 | HTTP 401 from the gateway | The token could not be validated. Check that it is a runtime token for the model audience, not a MOSAIC control-plane token, Graph token or expired token. |
 | HTTP 403 that names the cost center | The `x-mosaic-cost-center` header names a cost center the agent holds no applied grant under, or isn't a valid code. Use `costCenter.code` from connection details, or leave the header out. |
-| HTTP 403 from the gateway | The token is valid but does not match an applied grant. Reapply the model access plan, confirm the grant is enabled, and check whether you are calling as the agent identity or the agent user you granted. |
+| HTTP 403 from the gateway | The token is valid but does not satisfy applied access. Confirm the exact model/pool-model grant, enabled state, agent identity versus agent user, invocation role, and custom center's group claim. Review/apply pending resource changes. |
 | Missing `Models.Invoke.Application` | Assign the app role directly to the agent identity, or configure inheritable permissions and grant the role on the blueprint principal. Group app-role assignment does not flow to service principals. |
-| Group grant does not work | Get a fresh runtime token and confirm the `groups` claim contains the granted security-group object ID. If the token has group overage, use a direct grant. |
-| Overage warning in the portal or smoke verifier | The caller is in too many groups for Entra to emit group IDs in the token. APIM cannot query Graph during model invocation, so a direct grant is required. |
+| Group grant does not work | Get a refreshed runtime token after directory/cache propagation and confirm the required group IDs, including the custom center group. Managed-identity caching can delay changes substantially. |
+| Overage warning in the portal or smoke verifier | APIM receives no usable group list and cannot query Graph during inference. A direct token grant cannot bypass a custom center's group requirement; resolve claim eligibility or review an allowed individual-key path. General retains its exempt direct-token path. |
 | Grant not yet applied | Saving a grant is desired state only. Review and apply the publication's access plan, then wait for APIM propagation before retrying. |

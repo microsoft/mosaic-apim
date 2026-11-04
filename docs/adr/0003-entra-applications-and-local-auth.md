@@ -31,7 +31,7 @@ local/test environment settings; startup rejects either when the environment is 
 [ADR 0016](0016-agent-identities-and-security-group-grants.md) adds Entra security-group grants
 and agent identities. Bootstrap now configures `groupMembershipClaims: SecurityGroup` on the
 model-runtime and control-plane API registrations so validated tokens can carry group object IDs.
-The API's managed identity also needs read-only Microsoft Graph application permissions:
+The API's managed identity also needs the read-only Microsoft Graph application-permission baseline:
 `User.ReadBasic.All`, `GroupMember.Read.All` and `AgentIdentity.Read.All`.
 
 The model-runtime registration now exposes the `Mcp.Invoke` delegated scope and
@@ -47,3 +47,18 @@ request once the API recorded its requests. The root is now anonymous too, besid
 endpoints. It answers `GET` and `HEAD` with an empty `200`: no name, version or configuration.
 It isn't in the OpenAPI document, and its requests aren't recorded. Every route under `/api/v1`
 still requires a token.
+
+## Amendment 2026-11-03: Optional cost-center group management
+
+[ADR 0030](0030-entra-backed-cost-centers.md) preserves the read-only lookup adapter and baseline.
+A separate, optionally consented API-identity adapter may create a center's Entra group and edit
+its real direct membership: `Group.Create` for creation with the API service principal as owner,
+`GroupMember.ReadWrite.All` for user membership changes, and additionally
+`Application.ReadWrite.All` to add service principals. These are explicit administrator-consented
+application permissions, not powers implied by a MOSAIC role or silently added by deployment.
+Cost-center contact emails do not assign directory owners.
+
+The gateway needs no Graph permissions and makes no inference-time Graph calls. Runtime invocation
+permissions remain separate from membership and resource grants. Ordinary resource approval does
+not consent app registrations, assign invocation/Azure roles, or add members automatically.
+See [deployment setup](../deployment.md#optional-cost-center-group-management).

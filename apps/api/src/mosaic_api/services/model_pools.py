@@ -155,6 +155,7 @@ from mosaic_api.services.directory import Actor
 from mosaic_api.services.environments import load_environment_catalog
 from mosaic_api.services.model_access import (
     cost_center_intent,
+    custom_grant_supported,
     effective_enforcement,
     entitlement_intent_digest,
     environment_guard,
@@ -1483,8 +1484,22 @@ class ModelPoolService:
                     )
                     continue
                 charged = book.get(entitlement.cost_center_id)
-                if charged is not None and charged.recheck_pending(
-                    entitlement.id, entitlement.subject.id
+                if not custom_grant_supported(
+                    entitlement,
+                    intent,
+                    azure_cloud=gateway.azure_cloud,
+                    settings=settings,
+                    group_claims_enabled=self._security_group_claims,
+                ):
+                    warnings.append(
+                        f"Grant {entitlement.id}'s custom cost-center authentication is not "
+                        "supported; it is excluded from runtime access."
+                    )
+                    continue
+                if (
+                    entitlement.managed_by != "costCenterAutomatic"
+                    and charged is not None
+                    and charged.recheck_pending(entitlement.id, entitlement.subject.id)
                 ):
                     warnings.append(
                         f"Grant {entitlement.id} is waiting for MOSAIC to check that its subject "
@@ -1552,6 +1567,7 @@ class ModelPoolService:
                         granted_at=entitlement.created_at,
                         keys_allowed=intent.keys_allowed,
                         revoked=entitlement.revocation is not None,
+                        required_cost_center_group_id=intent.required_cost_center_group_id,
                     )
                 )
                 if intent.pool is not None:

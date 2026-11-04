@@ -42,14 +42,23 @@ phase.
 6. Choose **Apply all pending changes**. This includes every saved pending edit for the publication,
    not just the edit that opened the review. MOSAIC runs the reviewed plan asynchronously and records each step. Once the
    MCP API is in API Management, the portal lists the server in its catalog.
-7. Create or update MCP entitlements for users, agent identities, agent users or Entra security
-   groups.
+7. Configure the exact MCP offering's [cost-center access mode](cost-centers.md#resource-access-modes):
+   Automatic uses the center's stable group grant; Request-only approvals create individual
+   grants; Not available blocks new requests/grants. Explicitly reviewed individual exceptions
+   remain eligible and membership-gated.
 8. Re-plan and re-apply the publication so the gateway receives the new grant snapshot. Saving a
    grant does not change APIM until this apply succeeds.
 
+Custom centers require a verified dedicated Entra group, and every individual or group JWT path
+requires that center's group claim. Automatic needs caller-side token support; adding a member
+does not generate per-person automatic entitlements or APIM policy writes. General is exempt from
+the mandatory group, and Government is excluded from this new workflow. An MCP grant does not
+authorize a model the server calls; that application needs separate model permission and access.
+See [MCP connections](connect-to-mcp-servers.md) and [center setup](cost-centers.md#set-up-cost-centers).
+
 ## Environment rules
 
-MCP publications follow the same [environment rules](../README.md#environments) as model
+MCP publications follow the same [environment rules](environments.md) as model
 publications. Creating, planning, and applying a publication each judge the gateway against the
 registered MCP server:
 

@@ -45,6 +45,8 @@ export function EntitlementAccessState({ entitlement }: { entitlement: Entitleme
         <Text size={200}>Interrupted applies can retain the model lock. Before confirming recovery, an operator must stop the original worker and verify that all submitted ARM operations are terminal.</Text>
       )}
       {runtime?.error && <Text size={200}>{runtime.error}</Text>}
+      {runtime?.eligibilityRecheckPending && <Text size={200}>Current Entra membership verification is pending. This is not a confirmed eligibility result.</Text>}
+      {runtime?.keyRevocationPending && <Text size={200}>Previously copied keys may still work. Review and apply the affected key or grant revocation separately.</Text>}
     </div>
   )
 }

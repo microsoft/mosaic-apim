@@ -1,15 +1,26 @@
-"""Cost centers: codes, defaults, who may charge them, grants per cost center, and removal.
+"""Cost-center domain and administrator API contracts after retiring local membership."""
 
-See ADR 0022. The gateway side is in ``test_cost_center_policy`` and keys in
-``test_cost_center_keys``.
-"""
-
+import base64
 from collections.abc import Iterator
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
+from cost_center_management_double import (
+    BASELINE,
+    GROUP,
+    OTHER_GROUP,
+    TENANT,
+    USER,
+    WORKLOAD,
+    Management,
+    audit,
+    management,
+)
 from fastapi.testclient import TestClient
+from mosaic_api.auth import LocalAuthenticator
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
+from mosaic_api.cost_center_directory import EntraGroupBinding
 from mosaic_api.cost_centers import (
     SUBSCRIPTION_COUNTER,
     CostCenter,
@@ -21,143 +32,111 @@ from mosaic_api.cost_centers import (
     PersonLimits,
     PooledQuota,
     cost_center_settings_id,
+    general_cost_center,
     may_charge,
     normalize_code,
 )
 from mosaic_api.domain import (
-    AccessRequestApproval,
-    AccessRequestCreate,
-    AuditEvent,
+    DirectoryObject,
     Entitlement,
-    EntitlementCreate,
     EntitlementResource,
     EntitlementSubject,
     ModelApi,
     Principal,
-    PrincipalCreate,
-    PrincipalKind,
     entitlement_id,
     general_cost_center_id,
-    new_id,
+    utc_now,
 )
-from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
+from mosaic_api.integrations.graph import GroupFailureKind, GroupManagementError, GroupWriteOutcome
 from mosaic_api.main import create_app
-from mosaic_api.model_pools import (
-    ModelPool,
-    PoolModel,
-    backend_pool_name,
-    model_pool_id,
-    pool_model_id,
-)
-from mosaic_api.repositories import InMemoryCostCenterRepository, InMemoryGatewayRepository
-from mosaic_api.services.cost_centers import CostCenterService
-from mosaic_api.services.directory import Actor, DirectoryService
-from mosaic_api.services.entitlements import EntitlementService
+from mosaic_api.model_pools import ModelPool, PoolModel
+from mosaic_api.services.directory import Actor
 from mosaic_api.services.model_access import cost_center_intent, entitlement_intent_digest
 
-TENANT = "tenant-test"
-ADMIN = Actor(object_id="local-admin", tenant_id=TENANT)
 GENERAL = general_cost_center_id(TENANT)
 RESOURCE = EntitlementResource(kind="modelApi", id="modelApi_seed")
-PERSON = "0f5c9a3e-1111-4c2b-9d7e-000000000001"
-OTHER = "0f5c9a3e-1111-4c2b-9d7e-000000000002"
-GROUP = "0f5c9a3e-2222-4c2b-9d7e-00000000000a"
 
 
 @pytest.fixture
-def client() -> Iterator[TestClient]:
+def estate() -> Management:
+    return management()
+
+
+@pytest.fixture
+def client(estate: Management) -> Iterator[TestClient]:
     settings = Settings(
+        _env_file=None,
         environment=Environment.TEST,
         auth_mode=AuthMode.LOCAL,
         repository_backend=RepositoryBackend.MEMORY,
         tenant_id=TENANT,
     )
-    with TestClient(create_app(settings)) as test_client:
+    with TestClient(
+        create_app(settings, directory_lookup=estate.lookup, group_management=estate.graph)
+    ) as test_client:
+        estate.lookup.gateways = test_client.app.state.gateway_repository
         yield test_client
 
 
-def _audit() -> AuditEvent:
-    return AuditEvent(
-        id=new_id("audit"),
-        tenant_id=TENANT,
-        action="test.seed",
-        resource_type="test",
-        resource_id="seed",
-        actor_object_id="local-admin",
-    )
-
-
-async def _seed_model(client: TestClient) -> None:
-    gateways: InMemoryGatewayRepository = client.app.state.gateway_repository
-    await gateways.save_model_api(
-        ModelApi(
-            id=RESOURCE.id,
-            tenant_id=TENANT,
-            gateway_id="gateway_seed",
-            api_name="chat",
-            display_name="Chat completions",
-            path="chat",
-            imported_from_snapshot_id="snapshot-1",
-        ),
-        _audit(),
-    )
-
-
-def _ok(response: Any, status: int = 200) -> Any:
+def ok(response: Any, status: int = 200) -> Any:
     assert response.status_code == status, response.text
     return response.json() if response.content else None
 
 
-def _create(client: TestClient, name: str, code: str, **values: object) -> dict[str, Any]:
-    body: dict[str, Any] = _ok(
-        client.post("/api/v1/cost-centers", json={"name": name, "code": code, **values}), 201
-    )
-    return body
-
-
-def _principal(
-    client: TestClient, object_id: str, kind: str = "user", **values: object
-) -> dict[str, Any]:
-    body: dict[str, Any] = _ok(
+def create(client: TestClient, name: str = "Research", code: str = "RES", **values: Any) -> Any:
+    return ok(
         client.post(
-            "/api/v1/principals",
+            "/api/v1/cost-centers",
             json={
-                "objectId": object_id,
-                "kind": kind,
-                "label": f"{kind} {object_id[-2:]}",
+                "name": name,
+                "code": code,
                 **values,
             },
         ),
         201,
     )
-    return body
 
 
-def _grant(
-    client: TestClient, principal: dict[str, Any], cost_center_id: str | None = None, **values: Any
-) -> Any:
-    kind = "securityGroup" if principal["kind"] == "securityGroup" else "user"
-    payload: dict[str, Any] = {
-        "subject": {"kind": kind, "id": principal["id"]},
-        "resource": {"kind": "modelApi", "id": RESOURCE.id},
+def ready(client: TestClient, group_id: str = GROUP, **values: Any) -> Any:
+    return create(
+        client,
+        groupSetup={
+            "mode": "attach",
+            "groupObjectId": group_id,
+            "acknowledgeMembershipChanges": True,
+        },
         **values,
-    }
-    if cost_center_id is not None:
-        payload["costCenterId"] = cost_center_id
-    return client.post("/api/v1/entitlements", json=payload)
+    )
 
 
-def _service(client: TestClient) -> EntitlementService:
-    service: EntitlementService = client.app.state.entitlement_service
-    return service
+def principal(client: TestClient, object_id: str = USER, **values: Any) -> Any:
+    return ok(
+        client.post(
+            "/api/v1/principals",
+            json={
+                "objectId": object_id,
+                "kind": "user",
+                **values,
+            },
+        ),
+        201,
+    )
 
 
-def _cost_centers(client: TestClient) -> CostCenterService:
-    service: CostCenterService = client.app.state.cost_center_service
-    return service
-
-
-# -- the domain ---------------------------------------------------------------------------------
+def bound_center(center_id: str = "center") -> CostCenter:
+    return CostCenter(
+        id=center_id,
+        tenant_id=TENANT,
+        name="Research",
+        code="RES",
+        entra_binding=EntraGroupBinding(
+            directory_tenant_id=TENANT,
+            group_object_id=GROUP,
+            provenance="attached",
+            verification_state="verified",
+            verified_at=utc_now(),
+        ),
+    )
 
 
 @pytest.mark.parametrize("code", ["CC-01", "research.eu", "a_b", "x" * 64, " padded "])
@@ -171,11 +150,13 @@ def test_other_codes_are_refused(code: str) -> None:
         normalize_code(code)
 
 
-def test_owners_are_distinct_email_addresses() -> None:
-    created = CostCenterCreate(
-        name="Research", code="RES", owners=["Ana@example.com", "ana@example.com", "b@example.com"]
+def test_owners_are_distinct_email_addresses_not_members_or_entra_owners() -> None:
+    request = CostCenterCreate(
+        name="Research",
+        code="RES",
+        owners=["Ana@example.test", "ana@example.test", "b@example.test"],
     )
-    assert created.owners == ["Ana@example.com", "b@example.com"]
+    assert request.owners == ["Ana@example.test", "b@example.test"]
     with pytest.raises(ValueError, match="email"):
         CostCenterCreate(name="Research", code="RES", owners=["not an address"])
 
@@ -199,806 +180,629 @@ def test_limits_need_something_to_limit_and_mcp_servers_count_calls() -> None:
         )
     with pytest.raises(ValueError, match="scope"):
         EntitlementResource(kind="poolModel", id="poolModel_1")
-    limit = CostCenterLimit(
-        resource=EntitlementResource(kind="poolModel", id="poolModel_1", scope_id="pool_1"),
-        pool=PooledQuota(monthly_tokens=10),
-    )
-    assert limit.resource.scope_id == "pool_1"
 
 
 def test_per_person_limits_become_grant_limits_on_the_grants_own_counter() -> None:
-    enforcement = PersonLimits(
+    limits = PersonLimits(
         tokens_per_minute=1000, token_quota=50000, token_quota_period="Monthly", calls_per_minute=5
     ).enforcement()
-    assert enforcement.tokens is not None and enforcement.requests is not None
-    assert enforcement.tokens.counter_key_expression == SUBSCRIPTION_COUNTER
-    assert enforcement.tokens.tokens_per_minute == 1000
-    assert enforcement.tokens.token_quota == 50000
-    assert enforcement.requests.calls == 5
-    assert enforcement.requests.renewal_period_seconds == 60
+    assert limits.tokens is not None and limits.requests is not None
+    assert limits.tokens.counter_key_expression == SUBSCRIPTION_COUNTER
+    assert limits.tokens.tokens_per_minute == 1000 and limits.tokens.token_quota == 50000
+    assert limits.requests.calls == 5 and limits.requests.renewal_period_seconds == 60
 
 
-def _cost_center(cost_center_id: str, *members: str) -> CostCenter:
-    return CostCenter(
-        id=cost_center_id,
-        tenant_id=TENANT,
-        name=cost_center_id,
-        code=cost_center_id,
-        members=[CostCenterMember(principal_id=member) for member in members],
+def test_custom_chargeability_requires_verified_real_group_not_defaults_or_local_roster() -> None:
+    person = Principal(
+        id="person", tenant_id=TENANT, object_id=USER, kind="user", default_cost_center_id="legacy"
     )
-
-
-def _person(
-    principal_id: str, *, default: str | None = None, kind: PrincipalKind = PrincipalKind.USER
-) -> Principal:
-    return Principal(
-        id=principal_id,
+    legacy = CostCenter(
+        id="legacy",
         tenant_id=TENANT,
-        object_id=f"object-{principal_id}",
-        kind=kind,
-        default_cost_center_id=default,
+        name="Old",
+        code="old",
+        members=[CostCenterMember(principal_id=person.id)],
     )
-
-
-def test_who_may_charge_a_cost_center() -> None:
-    research = _cost_center("research", "member", "group")
     settings = CostCenterSettings(
-        id=cost_center_settings_id(TENANT), tenant_id=TENANT, default_cost_center_id="tenant"
+        id=cost_center_settings_id(TENANT), tenant_id=TENANT, default_cost_center_id=legacy.id
     )
-    tenant_default = _cost_center("tenant")
-
-    # Everyone may charge the tenant's default, even someone MOSAIC hasn't onboarded.
-    assert may_charge(tenant_default, principal=None, settings=settings)
-    # A principal may charge its own default, and a listed member may charge it.
-    assert may_charge(research, principal=_person("p", default="research"), settings=settings)
-    assert may_charge(research, principal=_person("member"), settings=settings)
-    # So may anyone in a listed security group, onboarded or not.
-    assert may_charge(
-        research, principal=_person("p"), settings=settings, group_principal_ids=["group"]
-    )
-    assert may_charge(research, principal=None, settings=settings, group_principal_ids=["group"])
-    assert not may_charge(research, principal=_person("p"), settings=settings)
     assert not may_charge(
-        research, principal=_person("p"), settings=settings, group_principal_ids=["other"]
+        legacy, principal=person, settings=settings, group_principal_ids=[person.id]
     )
-    # A security group charges only the tenant default or a cost center that lists it.
-    group = _person("group", kind=PrincipalKind.SECURITY_GROUP)
-    other_group = _person("other", default="research", kind=PrincipalKind.SECURITY_GROUP)
-    assert may_charge(research, principal=group, settings=settings)
-    assert not may_charge(
-        research, principal=other_group, settings=settings, group_principal_ids=["group"]
+    center = bound_center()
+    assert not may_charge(center, principal=person, settings=settings)
+    assert not may_charge(center, principal=person, settings=settings, group_principal_ids=[GROUP])
+    assert may_charge(center, principal=person, settings=settings, group_object_ids=[GROUP.upper()])
+    assert may_charge(center, principal=None, settings=None, group_object_ids=[GROUP])
+    matching_group = Principal(
+        id="bound-group", tenant_id=TENANT, object_id=GROUP, kind="securityGroup"
     )
+    assert may_charge(center, principal=matching_group, settings=None)
+    assert may_charge(general_cost_center(TENANT), principal=None, settings=None)
 
 
-def test_every_tenant_has_general_and_it_is_the_default_until_changed() -> None:
+def test_every_tenant_has_stable_general_and_it_is_the_initial_default() -> None:
     book = CostCenterBook(TENANT, [], None)
     general = book.get(GENERAL)
-    assert general is not None and general.built_in and general.code == "general"
-    assert book.tenant_default_id == GENERAL
-    assert book.default_for(None) == GENERAL
-    assert book.default_for(_person("p", default="research")) == "research"
+    assert general is not None and general.is_general and general.built_in
+    assert general.setup_state == "exempt" and general.code == "general"
+    assert book.tenant_default_id == GENERAL and book.default_for(None) == GENERAL
 
 
 def test_grant_identity_includes_the_cost_center() -> None:
-    subject = EntitlementSubject(kind="user", id="principal")
+    subject = EntitlementSubject(kind="user", id="person")
     assert entitlement_id(TENANT, subject, RESOURCE, GENERAL) != entitlement_id(
-        TENANT, subject, RESOURCE, "costCenter_research"
-    )
-    assert entitlement_id(TENANT, subject, RESOURCE, GENERAL) == entitlement_id(
-        TENANT, subject, RESOURCE, GENERAL
+        TENANT, subject, RESOURCE, "research"
     )
 
 
-def test_turning_keys_off_changes_only_the_intent_of_grants_that_can_have_a_key() -> None:
-    person = _person("principal", default=GENERAL)
-    allowed = CostCenterBook(TENANT, [_cost_center(GENERAL)], None)
+def test_general_key_restrictions_change_individual_intent_only() -> None:
+    person = Principal(id="person", tenant_id=TENANT, object_id=USER, kind="user")
+    allowed = CostCenterBook(TENANT, [general_cost_center(TENANT)], None)
     off = CostCenterBook(
-        TENANT, [_cost_center(GENERAL).model_copy(update={"keys_allowed": False})], None
+        TENANT, [general_cost_center(TENANT).model_copy(update={"keys_allowed": False})], None
+    )
+    grant = Entitlement(
+        id="grant",
+        tenant_id=TENANT,
+        subject=EntitlementSubject(kind="user", id=person.id),
+        resource=RESOURCE,
+        cost_center_id=GENERAL,
+    )
+    assert (
+        len(
+            {
+                entitlement_intent_digest(grant, person, cost_center_intent(grant, person, book))
+                for book in (allowed, off)
+            }
+        )
+        == 2
     )
 
-    def digests(resource: EntitlementResource, subject_kind: str = "user") -> set[str]:
-        grant = Entitlement(
-            id="grant",
-            tenant_id=TENANT,
-            subject=EntitlementSubject(kind=subject_kind, id="principal"),
-            resource=resource,
-            cost_center_id=GENERAL,
-        )
-        return {
-            entitlement_intent_digest(grant, person, cost_center_intent(grant, person, book))
-            for book in (allowed, off)
-        }
 
-    assert len(digests(RESOURCE)) == 2
-    assert len(digests(EntitlementResource(kind="mcpServer", id="mcp_seed"))) == 1
-    assert len(digests(RESOURCE, "securityGroup")) == 1
-
-
-# -- administering cost centers -----------------------------------------------------------------
-
-
-def test_general_is_built_in_and_the_tenant_default(client: TestClient) -> None:
-    [general] = _ok(client.get("/api/v1/cost-centers"))
-
-    assert general["id"] == GENERAL
-    assert general["code"] == "general"
-    assert general["builtIn"] is True
-    assert general["isTenantDefault"] is True
-    assert _ok(client.get("/api/v1/cost-center-settings"))["defaultCostCenterId"] == GENERAL
-
-
-def test_codes_are_unique_whatever_their_case(client: TestClient) -> None:
-    research = _create(client, "Research", "RES-01", owners=["lead@example.com"])
-    assert research["code"] == "RES-01"
-    assert research["owners"] == ["lead@example.com"]
-
-    clash = client.post("/api/v1/cost-centers", json={"name": "Other", "code": "res-01"})
-    assert clash.status_code == 409
-    assert clash.json()["details"]["reason"] == "codeInUse"
-    other = _create(client, "Other", "OTHER")
-    renamed = client.patch(f"/api/v1/cost-centers/{other['id']}", json={"code": "GENERAL"})
-    assert renamed.status_code == 409
-    assert client.post(
-        "/api/v1/cost-centers", json={"name": "Bad", "code": "has space"}
-    ).status_code == 422
-
-
-def test_general_can_be_renamed_and_recoded_but_not_deleted(client: TestClient) -> None:
-    renamed = _ok(
+def test_general_admin_view_is_exempt_and_renamable_not_deletable(client: TestClient) -> None:
+    [general] = ok(client.get("/api/v1/cost-centers"))
+    assert general["id"] == GENERAL and general["isTenantDefault"]
+    assert general["setupState"] == "exempt"
+    renamed = ok(
         client.patch(f"/api/v1/cost-centers/{GENERAL}", json={"name": "Shared", "code": "SHARED"})
     )
-    assert (renamed["name"], renamed["code"], renamed["builtIn"]) == ("Shared", "SHARED", True)
-    assert _ok(client.get(f"/api/v1/cost-centers/{GENERAL}"))["name"] == "Shared"
-
-    refused = client.delete(f"/api/v1/cost-centers/{GENERAL}")
-    assert refused.status_code == 409
-    assert refused.json()["details"]["reason"] == "builtIn"
-
-
-async def test_a_cost_center_in_use_is_not_deleted(client: TestClient) -> None:
-    await _seed_model(client)
-    research = _create(client, "Research", "RES")
-
-    _ok(client.put("/api/v1/cost-center-settings", json={"defaultCostCenterId": research["id"]}))
-    assert client.delete(f"/api/v1/cost-centers/{research['id']}").json()["details"][
-        "reason"
-    ] == "tenantDefault"
-    _ok(client.put("/api/v1/cost-center-settings", json={"defaultCostCenterId": GENERAL}))
-
-    person = _principal(client, PERSON, defaultCostCenterId=research["id"])
-    assert client.delete(f"/api/v1/cost-centers/{research['id']}").json()["details"][
-        "reason"
-    ] == "isDefault"
-    _ok(client.patch(f"/api/v1/principals/{person['id']}", json={"defaultCostCenterId": GENERAL}))
-
-    _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{person['id']}"))
-    _ok(_grant(client, person, research["id"]), 201)
-    assert client.delete(f"/api/v1/cost-centers/{research['id']}").json()["details"][
-        "reason"
-    ] == "hasGrants"
-
-    unused = _create(client, "Unused", "UNUSED")
-    assert client.delete(f"/api/v1/cost-centers/{unused['id']}").status_code == 204
-    assert client.get(f"/api/v1/cost-centers/{unused['id']}").status_code == 404
-
-
-def test_the_tenant_setting_names_new_peoples_default(client: TestClient) -> None:
-    research = _create(client, "Research", "RES")
-    assert _principal(client, OTHER)["defaultCostCenterId"] == GENERAL
-
-    _ok(client.put("/api/v1/cost-center-settings", json={"defaultCostCenterId": research["id"]}))
-    person = _principal(client, PERSON)
-    group = _principal(client, GROUP, kind="securityGroup")
-    chosen = _principal(
-        client, "0f5c9a3e-1111-4c2b-9d7e-000000000003", defaultCostCenterId=GENERAL
+    assert renamed["setupState"] == "exempt" and renamed["builtIn"]
+    assert client.delete(f"/api/v1/cost-centers/{GENERAL}").status_code == 409
+    assert (
+        client.patch(
+            f"/api/v1/cost-centers/{GENERAL}",
+            json={
+                "groupSetup": {"mode": "create"},
+            },
+        ).status_code
+        == 422
     )
 
-    assert person["defaultCostCenterId"] == research["id"]
-    # A group is never anyone's default; its members have their own.
-    assert group["defaultCostCenterId"] is None
-    # An administrator can pick another at onboarding.
-    assert chosen["defaultCostCenterId"] == GENERAL
-    assert client.put(
-        "/api/v1/cost-center-settings", json={"defaultCostCenterId": "costCenter_missing"}
-    ).status_code == 422
 
-
-async def test_limits_name_models_mosaic_governs(client: TestClient) -> None:
-    research = _create(client, "Research", "RES")
-    limits = {
-        "limits": [
-            {
-                "resource": {"kind": "modelApi", "id": RESOURCE.id},
-                "person": {"tokensPerMinute": 2000},
-                "pool": {"monthlyTokens": 1000000},
-            }
-        ]
-    }
-    refused = client.put(f"/api/v1/cost-centers/{research['id']}/limits", json=limits)
-    assert refused.status_code == 422
-
-    await _seed_model(client)
-    saved = _ok(client.put(f"/api/v1/cost-centers/{research['id']}/limits", json=limits))
-    assert saved["limits"][0]["pool"]["monthlyTokens"] == 1000000
-    duplicate = {"limits": [limits["limits"][0], limits["limits"][0]]}
-    assert client.put(
-        f"/api/v1/cost-centers/{research['id']}/limits", json=duplicate
-    ).status_code == 422
-
-
-async def test_limits_name_pool_models_by_their_pool(client: TestClient) -> None:
-    research = _create(client, "Research", "RES")
-    api_name = "mosaic-pool-anthropic"
-    pool_id = model_pool_id(TENANT, "gateway_seed", api_name)
-    opus = pool_model_id(pool_id, "claude-opus-4-5")
-    limits = {
-        "limits": [
-            {
-                "resource": {"kind": "poolModel", "id": opus, "scopeId": pool_id},
-                "person": {"tokensPerMinute": 2000},
-                "pool": {"monthlyTokens": 1000000},
-            }
-        ]
-    }
-    refused = client.put(f"/api/v1/cost-centers/{research['id']}/limits", json=limits)
-    assert refused.status_code == 422
-    unscoped = {"limits": [{**limits["limits"][0], "resource": {"kind": "poolModel", "id": opus}}]}
-    assert client.put(
-        f"/api/v1/cost-centers/{research['id']}/limits", json=unscoped
-    ).status_code == 422
-
-    gateways: InMemoryGatewayRepository = client.app.state.gateway_repository
-    await gateways.save_model_pool(
-        ModelPool(
-            id=pool_id,
-            tenant_id=TENANT,
-            gateway_id="gateway_seed",
-            display_name="Anthropic",
-            vendor="Anthropic",
-            api_name=api_name,
-            api_path="mosaic/pool-anthropic",
-            fragment_name=api_name,
-            product_name=api_name,
-            subscription_name=api_name,
-            models=[
-                PoolModel(
-                    id=opus,
-                    public_name="claude-opus-4-5",
-                    display_name="Claude Opus 4.5",
-                    backend_pool_name=backend_pool_name(api_name, opus, "claude-opus-4-5"),
-                )
-            ],
-        ),
-        _audit(),
+def test_draft_custom_centers_are_saved_but_not_usable_or_projected_to_groups(
+    client: TestClient,
+) -> None:
+    created = create(client, owners=["contact@example.test"], keysAllowed=True)
+    assert created["setupState"] == "setupRequired" and created["entraBinding"] is None
+    assert created["groupId"] is None and created["members"] == created["memberDetails"] == []
+    assert created["keysAllowed"] is True and created["directoryOperations"] == []
+    assert ok(client.get("/api/v1/groups")) == []
+    assert (
+        client.put(
+            "/api/v1/cost-center-settings",
+            json={
+                "defaultCostCenterId": created["id"],
+            },
+        ).status_code
+        == 422
     )
-    saved = _ok(client.put(f"/api/v1/cost-centers/{research['id']}/limits", json=limits))
-    assert saved["limits"][0]["resource"] == {"kind": "poolModel", "id": opus, "scopeId": pool_id}
-    # A model the pool doesn't serve is refused, even under the right pool.
-    other = {
-        "limits": [
-            {
-                **limits["limits"][0],
-                "resource": {
-                    "kind": "poolModel",
-                    "id": pool_model_id(pool_id, "claude-haiku-4-5"),
-                    "scopeId": pool_id,
+    assert (
+        client.post(
+            "/api/v1/principals",
+            json={
+                "objectId": USER,
+                "kind": "user",
+                "defaultCostCenterId": created["id"],
+            },
+        ).status_code
+        == 422
+    )
+    assert [item["id"] for item in ok(client.get("/api/v1/portal/cost-centers"))] == [GENERAL]
+
+
+def test_codes_are_unique_case_insensitively_and_names_cannot_be_blank(client: TestClient) -> None:
+    created = create(client)
+    assert (
+        client.post(
+            "/api/v1/cost-centers",
+            json={
+                "name": "Other",
+                "code": "res",
+            },
+        ).json()["details"]["reason"]
+        == "codeInUse"
+    )
+    assert (
+        client.patch(
+            f"/api/v1/cost-centers/{created['id']}",
+            json={
+                "code": "GENERAL",
+            },
+        ).status_code
+        == 409
+    )
+    assert (
+        client.post(
+            "/api/v1/cost-centers",
+            json={
+                "name": "  ",
+                "code": "blank",
+            },
+        ).status_code
+        == 422
+    )
+    assert (
+        client.post(
+            "/api/v1/cost-centers",
+            json={
+                "name": "Bad",
+                "code": "has space",
+            },
+        ).status_code
+        == 422
+    )
+
+
+def test_attach_requires_acknowledgment_and_rejects_client_tenant_or_url(
+    client: TestClient,
+) -> None:
+    for setup in [
+        {"mode": "attach", "groupObjectId": GROUP},
+        {"mode": "attach", "groupObjectId": GROUP, "acknowledgeMembershipChanges": False},
+        {
+            "mode": "attach",
+            "groupObjectId": GROUP,
+            "acknowledgeMembershipChanges": True,
+            "directoryTenantId": USER,
+        },
+        {
+            "mode": "attach",
+            "groupObjectId": "https://graph.microsoft.com/groups/anything",
+            "acknowledgeMembershipChanges": True,
+        },
+    ]:
+        assert (
+            client.post(
+                "/api/v1/cost-centers",
+                json={
+                    "name": "Research",
+                    "code": "res",
+                    "groupSetup": setup,
                 },
-            }
-        ]
-    }
-    assert client.put(
-        f"/api/v1/cost-centers/{research['id']}/limits", json=other
-    ).status_code == 422
-
-
-async def test_a_person_sees_only_the_cost_centers_they_may_charge(client: TestClient) -> None:
-    research = _create(client, "Research", "RES")
-    sales = _create(client, "Sales", "SALES")
-    _create(client, "Hidden", "HIDDEN")
-    person = _principal(client, PERSON, defaultCostCenterId=sales["id"])
-    group = _principal(client, GROUP, kind="securityGroup")
-    _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{group['id']}"))
-
-    seen = await _cost_centers(client).chargeable_for_caller(
-        Actor(object_id=PERSON, tenant_id=TENANT, group_ids=frozenset({GROUP}))
-    )
-
-    assert [(item.code, item.is_default) for item in seen] == [
-        ("general", False),
-        ("RES", False),
-        ("SALES", True),
-    ]
-    assert person["defaultCostCenterId"] == sales["id"]
-    # Someone not in the group sees only General.
-    stranger = await _cost_centers(client).chargeable_for_caller(
-        Actor(object_id=OTHER, tenant_id=TENANT)
-    )
-    assert [(item.code, item.is_default) for item in stranger] == [("general", True)]
-    # The portal route answers for the caller, from their token, with no members or owners.
-    [only] = _ok(client.get("/api/v1/portal/cost-centers"))
-    assert set(only) == {"id", "name", "code", "isDefault", "keysAllowed"}
-
-
-def test_the_cost_center_page_lists_members_defaults_and_grants(client: TestClient) -> None:
-    research = _create(client, "Research", "RES")
-    member = _principal(client, PERSON)
-    defaulted = _principal(client, OTHER, defaultCostCenterId=research["id"])
-    _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{member['id']}"))
-
-    view = _ok(client.get(f"/api/v1/cost-centers/{research['id']}"))
-
-    details = {item["principalId"]: item for item in view["memberDetails"]}
-    assert details[member["id"]]["explicit"] is True
-    assert details[defaulted["id"]]["explicit"] is False
-    assert details[defaulted["id"]]["isDefault"] is True
-    assert view["defaultFor"] == 1
-    assert client.put(
-        f"/api/v1/cost-centers/{research['id']}/members/principal_missing"
-    ).status_code == 404
-
-
-# -- grants per cost center ---------------------------------------------------------------------
-
-
-async def test_one_model_under_two_cost_centers_is_two_grants(client: TestClient) -> None:
-    await _seed_model(client)
-    research = _create(client, "Research", "RES")
-    person = _principal(client, PERSON)
-    _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{person['id']}"))
-
-    general = _ok(_grant(client, person), 201)
-    charged = _ok(_grant(client, person, research["id"]), 201)
-
-    assert general["costCenterId"] == GENERAL
-    assert charged["costCenterId"] == research["id"]
-    assert general["id"] != charged["id"]
-    assert _grant(client, person, research["id"]).status_code == 409
-    listed = _ok(client.get(f"/api/v1/entitlements?costCenter={research['id']}"))
-    assert [item["id"] for item in listed] == [charged["id"]]
-
-    resolved = await _service(client).resolve_for_principal(ADMIN, person["id"])
-    assert {item.entitlement.id for item in resolved if item.effective} == {
-        general["id"],
-        charged["id"],
-    }
-    assert {item.cost_center.code for item in resolved if item.cost_center} == {"general", "RES"}
-
-
-async def test_a_grant_charges_only_a_cost_center_its_subject_may_charge(
-    client: TestClient,
-) -> None:
-    await _seed_model(client)
-    research = _create(client, "Research", "RES")
-    person = _principal(client, PERSON)
-
-    refused = _grant(client, person, research["id"])
-
-    assert refused.status_code == 422
-    assert refused.json()["details"]["reason"] == "notACostCenterMember"
-    assert _grant(client, person, "costCenter_missing").status_code == 422
-
-
-async def test_a_grant_naming_no_cost_center_charges_its_subjects_default(
-    client: TestClient,
-) -> None:
-    await _seed_model(client)
-    research = _create(client, "Research", "RES")
-    person = _principal(client, PERSON, defaultCostCenterId=research["id"])
-
-    granted = _ok(_grant(client, person), 201)
-
-    assert granted["costCenterId"] == research["id"]
-
-
-# -- requests and approvals ---------------------------------------------------------------------
-
-
-async def test_requests_name_one_of_the_requesters_cost_centers(client: TestClient) -> None:
-    await _seed_model(client)
-    research = _create(client, "Research", "RES")
-    service = _service(client)
-    person = Actor(object_id=PERSON, tenant_id=TENANT)
-
-    with pytest.raises(ValidationError, match="can't charge"):
-        await service.create_access_request(
-            person, AccessRequestCreate(resource=RESOURCE, cost_center_id=research["id"])
+            ).status_code
+            == 422
         )
-    by_default = await service.create_access_request(person, AccessRequestCreate(resource=RESOURCE))
-    assert by_default.cost_center_id == GENERAL
-    # One open request per resource and cost center.
-    with pytest.raises(ConflictError, match="under this cost center"):
-        await service.create_access_request(
-            person, AccessRequestCreate(resource=RESOURCE, cost_center_id=GENERAL)
+    assert len(ok(client.get("/api/v1/cost-centers"))) == 1
+    configured = ready(client)
+    assert configured["setupState"] == "ready"
+    assert configured["entraBinding"]["groupObjectId"] == GROUP
+    assert configured["entraBinding"]["provenance"] == "attached"
+
+
+def test_create_failure_returns_saved_setup_required_center_with_a_tracked_error(
+    client: TestClient,
+    estate: Management,
+) -> None:
+    estate.graph.failures["create_group"] = GroupManagementError(
+        "Fictional missing Group.Create consent", kind=GroupFailureKind.FORBIDDEN
+    )
+    created = create(client, groupSetup={"mode": "create"})
+    assert created["setupState"] == "setupRequired"
+    [operation] = created["directoryOperations"]
+    assert operation["state"] == "failed" and operation["canRetry"]
+    assert operation["errorCode"] == "forbidden"
+    assert not operation["directoryUpdated"] and not estate.graph.writes
+    estate.graph.failures.clear()
+    retried = ok(
+        client.post(
+            f"/api/v1/cost-centers/{created['id']}/directory-operations/{operation['id']}/retry"
         )
+    )
+    assert retried["state"] == "succeeded"
+    assert ok(client.get(f"/api/v1/cost-centers/{created['id']}"))["setupState"] == "ready"
 
 
-async def test_a_request_through_a_group_is_approved_on_the_groups_evidence(
+def test_capability_route_is_advisory_read_only_and_not_caught_by_center_id_route(
     client: TestClient,
+    estate: Management,
 ) -> None:
-    await _seed_model(client)
-    research = _create(client, "Research", "RES")
-    group = _principal(client, GROUP, kind="securityGroup")
-    _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{group['id']}"))
-    service = _service(client)
-    caller = Actor(object_id=PERSON, tenant_id=TENANT, group_ids=frozenset({GROUP}))
-
-    request = await service.create_access_request(
-        caller, AccessRequestCreate(resource=RESOURCE, cost_center_id=research["id"])
-    )
-    assert request.cost_center_group_ids == [group["id"]]
-    # A second request under General is a separate one.
-    other = await service.create_access_request(caller, AccessRequestCreate(resource=RESOURCE))
-    assert other.cost_center_id == GENERAL
-
-    approved = await service.approve_access_request(ADMIN, request.id, AccessRequestApproval())
-    grant = await service.get_entitlement(ADMIN, approved.granted_entitlement_id or "")
-    assert grant.cost_center_id == research["id"]
-    assert grant.enabled and grant.revocation is None
+    estate.lookup._application_permissions = frozenset(BASELINE)
+    capabilities = ok(client.get("/api/v1/cost-centers/group-capabilities"))
+    assert capabilities["advisory"] and capabilities["canReadGroups"]
+    assert not capabilities["canCreateGroups"] and not capabilities["canAddUsers"]
+    assert capabilities["memberListingApi"] == "beta"
+    assert "preview" in capabilities["memberListingNotice"]
+    assert estate.graph.writes == []
 
 
-async def test_approval_rechecks_a_group_that_left_the_cost_center(client: TestClient) -> None:
-    await _seed_model(client)
-    research = _create(client, "Research", "RES")
-    group = _principal(client, GROUP, kind="securityGroup")
-    _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{group['id']}"))
-    service = _service(client)
-    request = await service.create_access_request(
-        Actor(object_id=PERSON, tenant_id=TENANT, group_ids=frozenset({GROUP})),
-        AccessRequestCreate(resource=RESOURCE, cost_center_id=research["id"]),
-    )
-    _ok(client.delete(f"/api/v1/cost-centers/{research['id']}/members/{group['id']}"))
-
-    with pytest.raises(ValidationError, match="can't charge"):
-        await service.approve_access_request(ADMIN, request.id, AccessRequestApproval())
-    # The administrator can charge General instead, which everyone may.
-    approved = await service.approve_access_request(
-        ADMIN, request.id, AccessRequestApproval(cost_center_id=GENERAL)
-    )
-    grant = await service.get_entitlement(ADMIN, approved.granted_entitlement_id or "")
-    assert grant.cost_center_id == GENERAL
-
-
-# -- leaving a cost center ----------------------------------------------------------------------
-
-
-async def test_removing_a_member_revokes_their_grants_and_resets_their_default(
+def test_directory_member_routes_require_idempotency_and_return_real_tracked_state(
     client: TestClient,
+    estate: Management,
 ) -> None:
-    await _seed_model(client)
-    research = _create(client, "Research", "RES")
-    person = _principal(client, PERSON, defaultCostCenterId=research["id"])
-    _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{person['id']}"))
-    charged = _ok(_grant(client, person, research["id"]), 201)
-    general = _ok(_grant(client, person, GENERAL), 201)
-
-    view = _ok(client.delete(f"/api/v1/cost-centers/{research['id']}/members/{person['id']}"))
-
-    assert person["id"] not in {item["principalId"] for item in view["memberDetails"]}
-    revoked = _ok(client.get(f"/api/v1/entitlements/{charged['id']}"))
-    assert revoked["enabled"] is False
-    assert revoked["revocation"]["costCenterId"] == research["id"]
-    assert _ok(client.get(f"/api/v1/entitlements/{general['id']}"))["enabled"] is True
-    assert _ok(client.get(f"/api/v1/principals/{person['id']}"))["defaultCostCenterId"] is None
-    audit = client.app.state.entitlement_repository.audit_events.values()
-    assert any(
-        event.action == "entitlement.revoked" and event.resource_id == charged["id"]
-        for event in audit
+    center = ready(client)
+    url = f"/api/v1/cost-centers/{center['id']}/directory-members/{WORKLOAD}"
+    assert client.put(url, json={"memberKind": "servicePrincipal"}).status_code == 422
+    added = ok(
+        client.put(
+            url,
+            json={"memberKind": "servicePrincipal"},
+            headers={"Idempotency-Key": "add-workload"},
+        )
     )
-    # It comes back only once they may charge the cost center again.
-    assert client.patch(
-        f"/api/v1/entitlements/{charged['id']}", json={"enabled": True}
-    ).status_code == 422
-    _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{person['id']}"))
-    restored = _ok(client.patch(f"/api/v1/entitlements/{charged['id']}", json={"enabled": True}))
-    assert restored["enabled"] is True and restored["revocation"] is None
-    assert client.delete(
-        f"/api/v1/cost-centers/{research['id']}/members/principal_missing"
-    ).status_code == 404
-
-
-async def test_a_group_leaving_revokes_grants_that_relied_on_it(client: TestClient) -> None:
-    await _seed_model(client)
-    research = _create(client, "Research", "RES")
-    group = _principal(client, GROUP, kind="securityGroup")
-    listed = _principal(client, OTHER)
-    for member in (group, listed):
-        _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{member['id']}"))
-    service = _service(client)
-    request = await service.create_access_request(
-        Actor(object_id=PERSON, tenant_id=TENANT, group_ids=frozenset({GROUP})),
-        AccessRequestCreate(resource=RESOURCE, cost_center_id=research["id"]),
+    assert added["state"] == "succeeded" and added["directoryUpdated"]
+    assert added["propagationNotice"] and not added["keyRevocationNotice"]
+    assert estate.lookup.state.group_members[GROUP] == [WORKLOAD]
+    repeated = ok(
+        client.put(
+            url,
+            json={"memberKind": "servicePrincipal"},
+            headers={"Idempotency-Key": "add-workload"},
+        )
     )
-    approved = await service.approve_access_request(ADMIN, request.id, AccessRequestApproval())
-    through_group = approved.granted_entitlement_id or ""
-    direct = _ok(_grant(client, listed, research["id"]), 201)
-    group_grant = _ok(_grant(client, group, research["id"]), 201)
+    assert repeated["id"] == added["id"] and len(estate.graph.writes) == 1
+    assert (
+        client.put(
+            url,
+            json={
+                "memberKind": "servicePrincipal",
+                "groupObjectId": OTHER_GROUP,
+            },
+            headers={"Idempotency-Key": "arbitrary"},
+        ).status_code
+        == 422
+    )
+    removed = ok(client.delete(url, headers={"Idempotency-Key": "remove-workload"}))
+    assert removed["state"] == "succeeded" and removed["keyRevocationNotice"]
+    operation_url = f"/api/v1/cost-centers/{center['id']}/directory-operations"
+    history = ok(client.get(operation_url))
+    assert {item["id"] for item in history} == {added["id"], removed["id"]}
+    assert ok(client.get(f"{operation_url}/{removed['id']}"))["state"] == "succeeded"
+    assert client.post(f"{operation_url}/{removed['id']}/retry").status_code == 409
+    assert ok(client.post(f"{operation_url}/{removed['id']}/recover"))["state"] == "succeeded"
 
-    _ok(client.delete(f"/api/v1/cost-centers/{research['id']}/members/{group['id']}"))
 
-    assert (await service.get_entitlement(ADMIN, through_group)).revocation is not None
-    assert (await service.get_entitlement(ADMIN, group_grant["id"])).revocation is not None
-    assert (await service.get_entitlement(ADMIN, direct["id"])).revocation is None
-
-
-async def test_leaving_the_tenant_default_revokes_nothing(client: TestClient) -> None:
-    await _seed_model(client)
-    person = _principal(client, PERSON)
-    _ok(client.put(f"/api/v1/cost-centers/{GENERAL}/members/{person['id']}"))
-    granted = _ok(_grant(client, person, GENERAL), 201)
-
-    _ok(client.delete(f"/api/v1/cost-centers/{GENERAL}/members/{person['id']}"))
-
-    assert _ok(client.get(f"/api/v1/entitlements/{granted['id']}"))["enabled"] is True
-
-
-async def test_a_grant_written_while_its_member_leaves_is_revoked(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+def test_unknown_member_result_is_accepted_not_reported_as_directory_success(
+    client: TestClient,
+    estate: Management,
 ) -> None:
-    await _seed_model(client)
-    research = _create(client, "Research", "RES")
-    person = _principal(client, PERSON)
-    _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{person['id']}"))
-    service = _service(client)
-    repository: InMemoryCostCenterRepository = client.app.state.cost_center_repository
-    prepare = service._prepare_entitlement
-
-    async def removed_meanwhile(*args: Any, **kwargs: Any) -> Any:
-        record = await prepare(*args, **kwargs)
-        # The removal saves the cost center after the grant was checked, before it's saved.
-        current = await repository.get_cost_center(TENANT, research["id"])
-        assert current is not None
-        await repository.save_cost_center(current.model_copy(update={"members": []}), _audit())
-        return record
-
-    monkeypatch.setattr(service, "_prepare_entitlement", removed_meanwhile)
-    created = await service.create_entitlement(
-        ADMIN,
-        EntitlementCreate(
-            subject=EntitlementSubject(kind="user", id=person["id"]),
-            resource=RESOURCE,
-            cost_center_id=research["id"],
+    center = ready(client)
+    estate.graph.failures["remove_member"] = GroupManagementError(
+        "Fictional timed-out write",
+        kind=GroupFailureKind.UNKNOWN_OUTCOME,
+        outcome=GroupWriteOutcome.UNKNOWN,
+    )
+    operation = ok(
+        client.delete(
+            f"/api/v1/cost-centers/{center['id']}/directory-members/{USER}",
+            headers={"Idempotency-Key": "uncertain"},
         ),
+        202,
     )
-
-    assert created.enabled is False
-    assert created.revocation is not None
-
-
-async def test_removing_someone_who_never_charged_it_is_not_found(client: TestClient) -> None:
-    research = _create(client, "Research", "RES")
-    person = _principal(client, PERSON)
-
-    with pytest.raises(NotFoundError):
-        await _cost_centers(client).remove_member(ADMIN, research["id"], person["id"])
+    assert operation["state"] == "unknown" and not operation["directoryUpdated"]
+    assert operation["recoveryNotice"] and operation["keyRevocationNotice"]
+    assert not operation["canRetry"]
 
 
-# -- losing the right to charge another way -----------------------------------------------------
-
-
-async def test_moving_a_default_revokes_grants_charged_only_through_it(client: TestClient) -> None:
-    await _seed_model(client)
-    research = _create(client, "Research", "RES")
-    person = _principal(client, PERSON, defaultCostCenterId=research["id"])
-    listed = _principal(client, OTHER, defaultCostCenterId=research["id"])
-    _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{listed['id']}"))
-    charged = _ok(_grant(client, person, research["id"]), 201)
-    kept = _ok(_grant(client, listed, research["id"]), 201)
-
-    for principal in (person, listed):
-        _ok(
-            client.patch(
-                f"/api/v1/principals/{principal['id']}", json={"defaultCostCenterId": GENERAL}
-            )
+def test_operation_openapi_declares_tracked_and_unknown_response_bodies() -> None:
+    app = create_app(
+        Settings(
+            _env_file=None,
+            environment="test",
+            auth_mode="local",
+            repository_backend="memory",
+            tenant_id=TENANT,
         )
+    )
+    paths = app.openapi()["paths"]
+    prefix = "/api/v1/cost-centers/{cost_center_id}"
+    for path, methods in [
+        (f"{prefix}/directory-members/{{object_id}}", ["put", "delete"]),
+        (f"{prefix}/directory-operations/{{operation_id}}/retry", ["post"]),
+        (f"{prefix}/directory-operations/{{operation_id}}/recover", ["post"]),
+    ]:
+        for method in methods:
+            responses = paths[path][method]["responses"]
+            for status in ("200", "202"):
+                assert responses[status]["content"]["application/json"]["schema"]["$ref"] == (
+                    "#/components/schemas/CostCenterDirectoryOperationView"
+                )
+            assert "inspect state" in responses["200"]["description"]
 
-    revoked = _ok(client.get(f"/api/v1/entitlements/{charged['id']}"))
-    assert revoked["enabled"] is False
-    assert revoked["revocation"]["costCenterId"] == research["id"]
-    # A listed member still charges it as a member.
-    assert _ok(client.get(f"/api/v1/entitlements/{kept['id']}"))["enabled"] is True
+
+def test_paged_member_api_returns_direct_rows_preview_and_scoped_opaque_cursor(
+    client: TestClient,
+    estate: Management,
+) -> None:
+    center = ready(client)
+    estate.lookup.state.group_members[GROUP] = [USER, WORKLOAD]
+    url = f"/api/v1/cost-centers/{center['id']}/directory-members"
+    first = ok(client.get(url, params={"pageSize": 1}))
+    assert len(first["members"]) == 1 and first["nextCursor"]
+    assert first["members"][0]["membershipType"] == "direct"
+    assert "Graph beta" in first["previewNotice"]
+    second = ok(client.get(url, params={"pageSize": 1, "cursor": first["nextCursor"]}))
+    assert len(second["members"]) == 1 and second["nextCursor"] is None
+    assert client.get(url, params={"pageSize": 1000}).status_code == 422
+    assert client.get(url, params={"cursor": "not-base64!"}).status_code == 422
+    foreign_cursor = base64.urlsafe_b64encode(
+        f"https://graph.microsoft.com/beta/groups/{OTHER_GROUP}/members?$skiptoken=1".encode()
+    ).decode()
+    assert client.get(url, params={"cursor": foreign_cursor}).status_code == 502
 
 
-async def test_moving_the_tenant_default_revokes_grants_charged_only_through_it(
+async def test_defaults_are_preferences_and_do_not_grant_custom_membership(
+    client: TestClient,
+    estate: Management,
+) -> None:
+    center = ready(client)
+    ok(client.put("/api/v1/cost-center-settings", json={"defaultCostCenterId": center["id"]}))
+    person = principal(client)
+    assert person["defaultCostCenterId"] == center["id"]
+    service = client.app.state.cost_center_service
+    outsider = await service.chargeable_for_caller(Actor(object_id=USER, tenant_id=TENANT))
+    assert center["id"] not in {item.id for item in outsider}
+    member = await service.chargeable_for_caller(
+        Actor(object_id=USER, tenant_id=TENANT, group_ids=frozenset({GROUP}))
+    )
+    assert [(item.id, item.is_default) for item in member] == [(center["id"], True)]
+    overage = await service.chargeable_for_caller(
+        Actor(object_id=USER, tenant_id=TENANT, group_ids=frozenset({GROUP}), groups_overage=True)
+    )
+    assert center["id"] not in {item.id for item in overage}
+    assert estate.lookup.state.group_members.get(GROUP, []) == []
+
+
+def test_cost_center_detail_does_not_misrepresent_defaults_as_directory_members(
     client: TestClient,
 ) -> None:
-    await _seed_model(client)
-    research = _create(client, "Research", "RES")
-    # Onboarded while General was the tenant default, so General is their own default too.
-    onboarded = _principal(client, PERSON)
-    elsewhere = _principal(client, OTHER, defaultCostCenterId=research["id"])
-    _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{elsewhere['id']}"))
-    own_default = _ok(_grant(client, onboarded, GENERAL), 201)
-    through_tenant_default = _ok(_grant(client, elsewhere, GENERAL), 201)
-
-    _ok(client.put("/api/v1/cost-center-settings", json={"defaultCostCenterId": research["id"]}))
-
-    assert _ok(client.get(f"/api/v1/entitlements/{own_default['id']}"))["enabled"] is True
-    revoked = _ok(client.get(f"/api/v1/entitlements/{through_tenant_default['id']}"))
-    assert revoked["enabled"] is False
-    assert revoked["revocation"]["costCenterId"] == GENERAL
+    center = ready(client)
+    principal(client, defaultCostCenterId=center["id"])
+    view = ok(client.get(f"/api/v1/cost-centers/{center['id']}"))
+    assert view["defaultFor"] == 1 and view["members"] == view["memberDetails"] == []
+    assert (
+        client.put(f"/api/v1/cost-centers/{center['id']}/members/missing-principal").status_code
+        == 404
+    )
 
 
-async def test_a_principal_a_cost_center_lists_is_not_deleted(client: TestClient) -> None:
-    research = _create(client, "Research", "RES")
-    group = _principal(client, GROUP, kind="securityGroup")
-    _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{group['id']}"))
-
-    refused = client.delete(f"/api/v1/principals/{group['id']}")
-    assert refused.status_code == 409
-    assert refused.json()["details"] == {
-        "reason": "costCenterMember",
-        "costCenterIds": [research["id"]],
+async def test_limits_keep_resource_validation_and_exact_pool_scope(client: TestClient) -> None:
+    center = create(client)
+    url = f"/api/v1/cost-centers/{center['id']}/limits"
+    model_limit = {
+        "resource": {"kind": "modelApi", "id": RESOURCE.id},
+        "person": {"tokensPerMinute": 2000},
+        "pool": {"monthlyTokens": 1000000},
     }
-
-    _ok(client.delete(f"/api/v1/cost-centers/{research['id']}/members/{group['id']}"))
-    _ok(client.delete(f"/api/v1/principals/{group['id']}"), 204)
-
-
-async def test_turning_a_grant_back_on_checks_its_cost_center_again(client: TestClient) -> None:
-    await _seed_model(client)
-    research = _create(client, "Research", "RES")
-    person = _principal(client, PERSON)
-    _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{person['id']}"))
-    granted = _ok(_grant(client, person, research["id"], enabled=False), 201)
-    # Their membership ends without the grant being revoked, as a concurrent change could.
-    repository: InMemoryCostCenterRepository = client.app.state.cost_center_repository
-    current = await repository.get_cost_center(TENANT, research["id"])
-    assert current is not None
-    await repository.save_cost_center(current.model_copy(update={"members": []}), _audit())
-
-    refused = client.patch(f"/api/v1/entitlements/{granted['id']}", json={"enabled": True})
-
-    assert refused.status_code == 422
-    assert refused.json()["details"]["reason"] == "notACostCenterMember"
-    assert _ok(client.get(f"/api/v1/entitlements/{granted['id']}"))["enabled"] is False
-
-
-# -- rechecks that can't finish at once ---------------------------------------------------------
-
-
-async def _busy(*_args: Any, **_kwargs: Any) -> Any:
-    raise ConflictError("Another change to this model is already running")
-
-
-async def test_a_recheck_a_busy_model_interrupts_is_finished_later(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    await _seed_model(client)
-    research = _create(client, "Research", "RES")
-    elsewhere = _principal(client, OTHER, defaultCostCenterId=research["id"])
-    _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{elsewhere['id']}"))
-    granted = _ok(_grant(client, elsewhere, GENERAL), 201)
-    monkeypatch.setattr(_service(client), "revoke_for_cost_center", _busy)
-
-    # The move is saved. Revoking waits for the model, so the recheck stays pending.
-    _ok(client.put("/api/v1/cost-center-settings", json={"defaultCostCenterId": research["id"]}))
-
-    general = _ok(client.get(f"/api/v1/cost-centers/{GENERAL}"))
-    [pending] = general["pendingRechecks"]
-    assert pending["reason"] == "tenantDefaultChanged"
-    assert pending["entitlementIds"] == [granted["id"]]
-    assert _ok(client.get(f"/api/v1/entitlements/{granted['id']}"))["enabled"] is True
-
-    monkeypatch.undo()
-    rechecked = _ok(client.post(f"/api/v1/cost-centers/{GENERAL}/recheck"))
-
-    assert rechecked["pendingRechecks"] == []
-    revoked = _ok(client.get(f"/api/v1/entitlements/{granted['id']}"))
-    assert revoked["enabled"] is False
-    assert revoked["revocation"]["costCenterId"] == GENERAL
-
-
-async def test_repeating_a_group_removal_finishes_its_recheck(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    await _seed_model(client)
-    research = _create(client, "Research", "RES")
-    group = _principal(client, GROUP, kind="securityGroup")
-    _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{group['id']}"))
-    service = _service(client)
-    request = await service.create_access_request(
-        Actor(object_id=PERSON, tenant_id=TENANT, group_ids=frozenset({GROUP})),
-        AccessRequestCreate(resource=RESOURCE, cost_center_id=research["id"]),
+    assert client.put(url, json={"limits": [model_limit]}).status_code == 422
+    gateways = client.app.state.gateway_repository
+    await gateways.save_model_api(
+        ModelApi(
+            id=RESOURCE.id,
+            tenant_id=TENANT,
+            gateway_id="gateway",
+            api_name="chat",
+            display_name="Chat",
+            path="chat",
+            imported_from_snapshot_id="snapshot",
+        ),
+        audit(),
     )
-    approved = await service.approve_access_request(ADMIN, request.id, AccessRequestApproval())
-    through_group = approved.granted_entitlement_id or ""
-    monkeypatch.setattr(service, "revoke_for_cost_center", _busy)
-
-    view = _ok(client.delete(f"/api/v1/cost-centers/{research['id']}/members/{group['id']}"))
-
-    assert group["id"] not in {item["principalId"] for item in view["memberDetails"]}
-    [pending] = view["pendingRechecks"]
-    assert pending["subjectId"] is None
-    assert pending["entitlementIds"] == [through_group]
-    assert (await service.get_entitlement(ADMIN, through_group)).revocation is None
-
-    # The group isn't listed any more, but repeating its removal finishes the recheck.
-    monkeypatch.undo()
-    view = _ok(client.delete(f"/api/v1/cost-centers/{research['id']}/members/{group['id']}"))
-
-    assert view["pendingRechecks"] == []
-    assert (await service.get_entitlement(ADMIN, through_group)).revocation is not None
-
-
-async def test_repeating_a_default_change_finishes_its_recheck(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    await _seed_model(client)
-    research = _create(client, "Research", "RES")
-    person = _principal(client, PERSON, defaultCostCenterId=research["id"])
-    granted = _ok(_grant(client, person, research["id"]), 201)
-    monkeypatch.setattr(_service(client), "revoke_for_cost_center", _busy)
-
-    _ok(client.patch(f"/api/v1/principals/{person['id']}", json={"defaultCostCenterId": GENERAL}))
-
-    [pending] = _ok(client.get(f"/api/v1/cost-centers/{research['id']}"))["pendingRechecks"]
-    assert (pending["reason"], pending["subjectId"]) == ("defaultChanged", person["id"])
-    assert pending["entitlementIds"] == [granted["id"]]
-    assert _ok(client.get(f"/api/v1/entitlements/{granted['id']}"))["enabled"] is True
-
-    monkeypatch.undo()
-    _ok(client.patch(f"/api/v1/principals/{person['id']}", json={"defaultCostCenterId": GENERAL}))
-
-    assert _ok(client.get(f"/api/v1/cost-centers/{research['id']}"))["pendingRechecks"] == []
-    revoked = _ok(client.get(f"/api/v1/entitlements/{granted['id']}"))
-    assert revoked["revocation"]["costCenterId"] == research["id"]
-
-
-async def test_a_default_change_that_fails_leaves_no_recheck_behind(client: TestClient) -> None:
-    await _seed_model(client)
-    research = _create(client, "Research", "RES")
-    person = _principal(client, PERSON, defaultCostCenterId=research["id"])
-    granted = _ok(_grant(client, person, research["id"]), 201)
-
-    refused = client.patch(
-        f"/api/v1/principals/{person['id']}", json={"defaultCostCenterId": "costCenter_missing"}
+    assert ok(client.put(url, json={"limits": [model_limit]}))["limits"][0]["pool"] == {
+        "monthlyTokens": 1000000,
+        "monthlyCalls": None,
+    }
+    assert client.put(url, json={"limits": [model_limit, model_limit]}).status_code == 422
+    pool = ModelPool(
+        id="pool",
+        tenant_id=TENANT,
+        gateway_id="gateway",
+        display_name="Pool",
+        vendor="Fictional",
+        api_name="pool",
+        api_path="pool",
+        fragment_name="pool",
+        product_name="pool",
+        subscription_name="pool",
+        models=[
+            PoolModel(
+                id="model", public_name="model", display_name="Model", backend_pool_name="model"
+            )
+        ],
     )
-
-    assert refused.status_code == 422
-    assert _ok(client.get(f"/api/v1/cost-centers/{research['id']}"))["pendingRechecks"] == []
-    assert _ok(client.get(f"/api/v1/entitlements/{granted['id']}"))["enabled"] is True
-
-
-async def test_onboarding_cant_take_a_default_deleted_meanwhile(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    research = _create(client, "Research", "RES")
-    directory: DirectoryService = client.app.state.directory_service
-    cost_centers = _cost_centers(client)
-
-    async def deleted_during_lookup(*_args: Any, **_kwargs: Any) -> None:
-        await cost_centers.delete_cost_center(ADMIN, research["id"])
-
-    monkeypatch.setattr(directory, "_verify_principal_request", deleted_during_lookup)
-
-    with pytest.raises(ValidationError, match="No cost center has that ID"):
-        await directory.create_principal(
-            ADMIN,
-            PrincipalCreate(object_id=PERSON, kind="user", default_cost_center_id=research["id"]),
-        )
-    assert await client.app.state.repository.find_principal_by_object_id(TENANT, PERSON) is None
+    await gateways.save_model_pool(pool, audit())
+    pool_limit = {
+        "resource": {"kind": "poolModel", "id": "model", "scopeId": "pool"},
+        "pool": {"monthlyTokens": 1000},
+    }
+    assert (
+        ok(client.put(url, json={"limits": [pool_limit]}))["limits"][0]["resource"]
+        == (pool_limit["resource"])
+    )
+    pool_limit["resource"]["scopeId"] = "wrong-pool"  # type: ignore[index]
+    assert client.put(url, json={"limits": [pool_limit]}).status_code == 422
 
 
-async def test_removing_a_member_keeps_grants_they_still_charge_through_a_group(
+def test_resource_access_route_uses_validation_then_desired_grant_sync(
     client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    await _seed_model(client)
-    research = _create(client, "Research", "RES")
-    group = _principal(client, GROUP, kind="securityGroup")
-    for principal_id in (group["id"], _principal(client, PERSON)["id"]):
-        _ok(client.put(f"/api/v1/cost-centers/{research['id']}/members/{principal_id}"))
-    service = _service(client)
-    request = await service.create_access_request(
-        Actor(object_id=PERSON, tenant_id=TENANT, group_ids=frozenset({GROUP})),
-        AccessRequestCreate(resource=RESOURCE, cost_center_id=research["id"]),
+    center = ready(client)
+    entitlements = client.app.state.entitlement_service
+    validate, sync = AsyncMock(), AsyncMock(return_value=[])
+    monkeypatch.setattr(entitlements, "validate_cost_center_access", validate)
+    monkeypatch.setattr(entitlements, "sync_cost_center_access", sync)
+    definitions = [
+        {
+            "resource": {"kind": "modelApi", "id": RESOURCE.id, "scopeId": None},
+            "mode": "requestOnly",
+        }
+    ]
+    updated = ok(
+        client.patch(f"/api/v1/cost-centers/{center['id']}", json={"resourceAccess": definitions})
     )
-    approved = await service.approve_access_request(ADMIN, request.id, AccessRequestApproval())
-    granted = approved.granted_entitlement_id or ""
-    person = await service.get_entitlement(ADMIN, granted)
+    assert updated["resourceAccess"] == definitions
+    assert validate.await_count == sync.await_count == 1
+    assert validate.await_args.args[1].resource_access[0].mode == "requestOnly"
+    assert sync.await_args.args[1] == center["id"]
 
-    view = _ok(
-        client.delete(f"/api/v1/cost-centers/{research['id']}/members/{person.subject.id}")
+
+def test_generic_group_crud_remains_local_and_separate_from_cost_center_graph_writes(
+    client: TestClient,
+    estate: Management,
+) -> None:
+    center = ready(client)
+    person = principal(client)
+    group = ok(client.post("/api/v1/groups", json={"name": "Local reporting"}), 201)
+    membership_url = f"/api/v1/groups/{group['id']}/members/{person['id']}"
+    ok(client.put(membership_url), 201)
+    assert len(ok(client.get(f"/api/v1/groups/{group['id']}/members"))) == 1
+    assert client.delete(membership_url).status_code == 204
+    assert client.delete(f"/api/v1/groups/{group['id']}").status_code == 204
+    assert estate.graph.writes == []
+    assert ok(client.get(f"/api/v1/cost-centers/{center['id']}"))["members"] == []
+    assert client.post(f"/api/v1/cost-centers/{center['id']}/group").status_code == 404
+
+
+def test_principal_kind_and_default_update_verifies_directory_outside_cosmos_lease(
+    client: TestClient,
+    estate: Management,
+) -> None:
+    person = principal(client)
+    estate.lookup.state.objects[USER] = DirectoryObject(
+        object_id=USER,
+        kind="agentUser",
+        display_name="Fictional agent user",
+        identity_parent_id=OTHER_GROUP,
     )
+    updated = ok(
+        client.patch(
+            f"/api/v1/principals/{person['id']}",
+            json={"kind": "agentUser", "defaultCostCenterId": GENERAL},
+        )
+    )
+    assert updated["kind"] == "agentUser" and updated["directoryVerifiedAt"]
+    assert updated["defaultCostCenterId"] == GENERAL
+    assert estate.graph.writes == []
 
-    assert view["pendingRechecks"] == []
-    assert (await service.get_entitlement(ADMIN, granted)).revocation is None
+
+def test_management_routes_remain_admin_only(client: TestClient) -> None:
+    client.app.state.authenticator = LocalAuthenticator(TENANT, ["User"])
+    for response in [
+        client.get("/api/v1/cost-centers/group-capabilities"),
+        client.get("/api/v1/cost-centers/center/directory-members"),
+        client.put(
+            "/api/v1/cost-centers/center/directory-members/" + USER,
+            json={"memberKind": "user"},
+            headers={"Idempotency-Key": "admin-only"},
+        ),
+        client.delete(
+            "/api/v1/cost-centers/center/directory-members/" + USER,
+            headers={"Idempotency-Key": "admin-only"},
+        ),
+        client.get("/api/v1/cost-centers/center/directory-operations"),
+        client.post("/api/v1/cost-centers/center/directory-operations/op/recover"),
+        client.post("/api/v1/cost-centers/center/directory-operations/op/retry"),
+    ]:
+        assert response.status_code == 403
+
+
+def test_local_default_di_never_creates_fake_directory_success() -> None:
+    settings = Settings(
+        _env_file=None,
+        environment="test",
+        auth_mode="local",
+        repository_backend="memory",
+        tenant_id=TENANT,
+    )
+    with TestClient(create_app(settings)) as client:
+        capabilities = ok(client.get("/api/v1/cost-centers/group-capabilities"))
+        assert not capabilities["available"]
+        created = create(client, groupSetup={"mode": "create"})
+        assert created["setupState"] == "setupRequired"
+        assert created["directoryOperations"][0]["state"] == "failed"
+        assert client.app.state.group_management is None
+        assert ok(client.get("/api/v1/groups")) == []
+
+
+def test_retired_feature_flag_cannot_reenable_local_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOSAIC_MANAGED_COST_CENTER_GROUPS", "true")
+    settings = Settings(
+        _env_file=None,
+        environment="test",
+        auth_mode="local",
+        repository_backend="memory",
+        tenant_id=TENANT,
+    )
+    assert "managed_cost_center_groups" not in Settings.model_fields
+    with TestClient(create_app(settings)) as client:
+        created = create(client)
+        assert created["groupId"] is None and created["setupState"] == "setupRequired"
+        assert ok(client.get("/api/v1/groups")) == []
+
+
+def test_non_guid_legacy_tenant_keeps_baseline_api_but_disables_directory_writes(
+    estate: Management,
+) -> None:
+    settings = Settings(
+        _env_file=None,
+        environment="test",
+        auth_mode="entra",
+        repository_backend="memory",
+        tenant_id="tenant-fixture",
+        api_client_id="fictional-api",
+    )
+    with TestClient(create_app(settings, directory_lookup=estate.lookup)) as client:
+        client.app.state.authenticator = LocalAuthenticator(settings.tenant_id, ["Admin"])
+        assert client.get("/healthz").status_code == 200
+        assert client.app.state.group_management is None
+        capabilities = ok(client.get("/api/v1/cost-centers/group-capabilities"))
+        assert not capabilities["available"]
+        assert "tenant GUID" in capabilities["message"]
+        assert estate.lookup.reads == 0
+
+
+def test_government_di_keeps_new_group_workflows_unavailable(estate: Management) -> None:
+    settings = Settings(
+        _env_file=None,
+        environment="test",
+        auth_mode="local",
+        repository_backend="memory",
+        tenant_id=TENANT,
+        graph_endpoint="https://graph.microsoft.us",
+    )
+    with TestClient(
+        create_app(settings, directory_lookup=estate.lookup, group_management=estate.graph)
+    ) as client:
+        capabilities = ok(client.get("/api/v1/cost-centers/group-capabilities"))
+        assert not capabilities["available"] and "Government" in capabilities["message"]
+        created = create(client, groupSetup={"mode": "create"})
+        assert created["setupState"] == "setupRequired" and estate.graph.writes == []
+        assert client.app.state.group_management is None
+
+
+def test_fake_adapter_lifecycle_is_closed_without_touching_real_cloud(estate: Management) -> None:
+    settings = Settings(
+        _env_file=None,
+        environment="test",
+        auth_mode="local",
+        repository_backend="memory",
+        tenant_id=TENANT,
+    )
+    with TestClient(
+        create_app(settings, directory_lookup=estate.lookup, group_management=estate.graph)
+    ):
+        assert not estate.graph.closed and not estate.lookup.closed
+    assert estate.graph.closed and estate.lookup.closed

@@ -42,7 +42,9 @@ function NotificationInbox() {
         <Checkbox label="Unread only" checked={unreadOnly} onChange={(_, data) => setUnreadOnly(data.checked === true)} />
         <Button onClick={() => void inbox.refetch()} disabled={inbox.isFetching}>Refresh inbox</Button>
       </div>
-      <p className="notification-context">Approval creates a grant; it does not mean gateway access is ready.
+      <p className="notification-context">Resource request approval saves a grant.
+        Cost-center approval creates a center, but group setup and membership may still be pending.
+        Neither approval means gateway access is ready.
         Usage updates show only your attributed activity and authorized shared budget totals, never other members’ activity.</p>
       {inbox.isPending && <Loading label="Loading your notifications" />}
       {inbox.isError && <ErrorState error={inbox.error} />}

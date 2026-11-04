@@ -4,10 +4,11 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import type { PortalApi } from '../api'
-import type { AccessRequest, CatalogEntry, PortalCostCenter } from '../types'
+import type { AccessRequest, CatalogEntry, PortalCostCenter, PortalProfile, ResolvedEntitlement } from '../types'
 import { CatalogPage } from './CatalogPage'
 import { resourceFromCatalog } from '../entitlement-format'
 import { resourceKey } from '../model-presentation'
+import { directResolved, securityGroupResolved } from '../test/connection'
 
 const mocks = vi.hoisted(() => ({
   api: {} as PortalApi,
@@ -18,6 +19,15 @@ vi.mock('../api', () => ({
     status = 500
   },
   usePortalApi: () => mocks.api,
+}))
+
+const costCenters: PortalCostCenter[] = [
+  { id: 'cc-general', name: 'General', code: 'GEN', isDefault: true, keysAllowed: true },
+  { id: 'cc-research', name: 'Research', code: 'RES', isDefault: false, keysAllowed: true },
+]
+const requestOnlyChoices = costCenters.map((center) => ({
+  costCenter: { id: center.id, name: center.name, code: center.code },
+  mode: 'requestOnly' as const, isDefault: center.isDefault, keysAllowed: true,
 }))
 
 const catalogEntry: CatalogEntry = {
@@ -31,6 +41,7 @@ const catalogEntry: CatalogEntry = {
   entitled: false,
   requestState: null,
   enforced: false,
+  costCenterAccess: requestOnlyChoices,
 }
 
 const pendingRequest: AccessRequest = {
@@ -39,6 +50,7 @@ const pendingRequest: AccessRequest = {
   entityType: 'accessRequest',
   requesterObjectId: 'user-1',
   requesterPrincipalId: 'principal-1',
+  costCenterId: 'cc-general',
   resource: { kind: 'mcpServer', id: 'mcp-weather', scopeId: 'gateway-1' },
   justification: null,
   state: 'pending',
@@ -62,11 +74,6 @@ const pendingRequest: AccessRequest = {
   updatedAt: '2026-01-01T00:00:00Z',
 }
 
-const costCenters: PortalCostCenter[] = [
-  { id: 'cc-general', name: 'General', code: 'GEN', isDefault: true, keysAllowed: true },
-  { id: 'cc-research', name: 'Research', code: 'RES', isDefault: false, keysAllowed: true },
-]
-
 /** A model several endpoints serve behind one API. The catalog shows only the model. */
 const servedModelEntry: CatalogEntry = {
   kind: 'poolModel',
@@ -82,9 +89,11 @@ const servedModelEntry: CatalogEntry = {
   enforced: null,
   apiStyle: 'anthropicMessages',
   capacity: 'provisionedWithOverflow',
+  costCenterAccess: requestOnlyChoices,
 }
 
-function renderPage(entries: CatalogEntry[], requests: AccessRequest[], centers: PortalCostCenter[] | Error = costCenters) {
+function renderPage(entries: CatalogEntry[], requests: AccessRequest[], centers: PortalCostCenter[] | Error = costCenters,
+  profileOverride: Partial<PortalProfile> = {}, entitlements: ResolvedEntitlement[] = []) {
   let currentRequests = [...requests]
   const createAccessRequest = vi.fn(async (payload) => {
     const created = {
@@ -121,6 +130,13 @@ function renderPage(entries: CatalogEntry[], requests: AccessRequest[], centers:
       if (centers instanceof Error) throw centers
       return centers
     },
+    getProfile: async () => ({
+      objectId: 'user-1', tenantId: 'tenant-1', roles: ['User'], isAdmin: false, principalId: 'principal-1',
+      displayLabel: 'Demo user', entitlementCount: entitlements.length, pendingRequestCount: requests.length, groupsOverage: false,
+      defaultCostCenter: costCenters[0], defaultCostCenterEligible: true,
+      ...profileOverride,
+    }),
+    listEntitlements: async () => entitlements,
     listEnvironments: async () => [
       {
         key: 'development',
@@ -159,7 +175,7 @@ async function openAccessOptions(name = 'Weather tools') {
 describe('CatalogPage', () => {
   it('shows Government key and network requirements before requesting and blocks key-disallowed cost centers', async () => {
     const { createAccessRequest } = renderPage(
-      [{ ...catalogEntry, azureCloud: 'government' }], [],
+      [{ ...catalogEntry, azureCloud: 'government', costCenterAccess: [{ ...requestOnlyChoices[0], keysAllowed: false }] }], [],
       costCenters.map((center) => ({ ...center, keysAllowed: false })),
     )
     expect(await screen.findByLabelText('Azure Government')).toBeVisible()
@@ -274,11 +290,11 @@ describe('CatalogPage', () => {
     await openAccessOptions()
     expect(await screen.findByRole('option', { name: 'General (GEN) — already entitled' })).toBeInTheDocument()
     expect(screen.getByRole('option', { name: 'Research (RES) — request open' })).toBeInTheDocument()
-    expect(screen.getByText('All cost centers already have access or an open request.')).toBeVisible()
+    expect(screen.getByText('All eligible cost centers have automatic access, recorded access, or an open request.')).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Request access' })).not.toBeInTheDocument()
   })
 
-  it('falls back to the server default when cost centers cannot load', async () => {
+  it('keeps exact eligible choices when the flat center list fails and always sends the explicit center', async () => {
     const user = userEvent.setup()
     const { createAccessRequest } = renderPage([catalogEntry], [], new Error('No cost centers'))
 
@@ -288,6 +304,7 @@ describe('CatalogPage', () => {
 
     await waitFor(() => expect(createAccessRequest).toHaveBeenCalledWith({
       resource: { kind: 'mcpServer', id: 'mcp-weather', scopeId: null },
+      costCenterId: 'cc-general',
       justification: undefined,
     }))
   })
@@ -308,11 +325,105 @@ describe('CatalogPage', () => {
     await openAccessOptions()
     const selector = await screen.findByRole('combobox', { name: 'Cost center for Weather tools' })
     expect(selector).toHaveValue('cc-general')
-    expect(screen.getByText('Already entitled for this cost center')).toBeVisible()
+    expect(screen.getByText(/Access is recorded for this cost center/)).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Request access' })).not.toBeInTheDocument()
 
     await user.selectOptions(selector, 'cc-research')
     expect(screen.getByRole('button', { name: 'Request access' })).toBeEnabled()
+  })
+
+  it('shows automatic group access without making a personal request or inheriting a key', async () => {
+    const automatic = { ...catalogEntry, costCenterAccess: [{ ...requestOnlyChoices[1], mode: 'automatic' as const, isDefault: true }] }
+    const { createAccessRequest } = renderPage([automatic], [], costCenters, {
+      defaultCostCenter: costCenters[1],
+    })
+    await openAccessOptions()
+    expect(screen.getAllByText('Automatic through your cost center').length).toBeGreaterThan(0)
+    expect(screen.getByText(/one shared Entra group entitlement, not an individual grant or an inherited key/)).toBeVisible()
+    expect(screen.getByText(/Gateway apply may still be pending/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Request access' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /key/i })).not.toBeInTheDocument()
+    expect(createAccessRequest).not.toHaveBeenCalled()
+  })
+
+  it('keeps an ineligible custom default selected as unavailable instead of silently choosing General', async () => {
+    const { createAccessRequest } = renderPage([{
+      ...catalogEntry, costCenterAccess: [requestOnlyChoices[0]],
+    }], [], costCenters, { defaultCostCenter: costCenters[1], defaultCostCenterEligible: false })
+    await openAccessOptions()
+    const selector = await screen.findByRole('combobox', { name: 'Cost center for Weather tools' })
+    expect(selector).toHaveValue('cc-research')
+    expect(screen.getByRole('option', { name: 'Research (RES) — Not available' })).toBeInTheDocument()
+    expect(screen.getByText(/requests are not redirected to General/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Request access' })).not.toBeInTheDocument()
+    expect(createAccessRequest).not.toHaveBeenCalled()
+    await userEvent.selectOptions(selector, 'cc-general')
+    await userEvent.click(screen.getByRole('button', { name: 'Request access' }))
+    await waitFor(() => expect(createAccessRequest).toHaveBeenCalledWith(expect.objectContaining({ costCenterId: 'cc-general' })))
+  })
+
+  it('treats missing exact access definitions as Not available rather than using defaults as eligibility', async () => {
+    const { createAccessRequest } = renderPage([{ ...catalogEntry, costCenterAccess: undefined }], [], costCenters, {
+      defaultCostCenter: costCenters[1], defaultCostCenterEligible: true,
+    })
+    await openAccessOptions()
+    expect(screen.getByRole('option', { name: 'Research (RES) — Not available' })).toBeInTheDocument()
+    expect(screen.getByText(/no eligible access definition/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Request access' })).not.toBeInTheDocument()
+    expect(createAccessRequest).not.toHaveBeenCalled()
+  })
+
+  it('keeps a no-longer-eligible default visible even when it is absent from the eligible-center list', async () => {
+    renderPage([{ ...catalogEntry, costCenterAccess: [requestOnlyChoices[0]] }], [], [costCenters[0]], {
+      defaultCostCenter: costCenters[1], defaultCostCenterEligible: false,
+    })
+    await openAccessOptions()
+    expect(await screen.findByRole('combobox', { name: 'Cost center for Weather tools' })).toHaveValue('cc-research')
+    expect(screen.getByRole('option', { name: 'Research (RES) — Not available' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Request access' })).not.toBeInTheDocument()
+  })
+
+  it('does not make automatic access available when caller-side token support has no eligible definition', async () => {
+    renderPage([{ ...catalogEntry, costCenterAccess: [] }], [], costCenters, { defaultCostCenter: costCenters[1] })
+    await openAccessOptions()
+    expect(screen.queryByText('Automatic through your cost center')).not.toBeInTheDocument()
+    expect(screen.getByText(/no eligible access definition/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Request access' })).not.toBeInTheDocument()
+  })
+
+  it('names an individual approval and pending apply without presenting it as active', async () => {
+    const resolved: ResolvedEntitlement = {
+      ...directResolved, accessOrigin: 'approvedIndividual', costCenter: costCenters[0],
+      entitlement: { ...directResolved.entitlement, resource: resourceFromCatalog(catalogEntry), costCenterId: 'cc-general',
+        runtime: { ...directResolved.entitlement.runtime!, status: 'pending', appliedAt: null } },
+    }
+    renderPage([{ ...catalogEntry, entitled: true, entitledCostCenterIds: ['cc-general'] }], [], costCenters, {}, [resolved])
+    await openAccessOptions()
+    expect(screen.getAllByText('Approved for you').length).toBeGreaterThan(0)
+    expect(screen.getByText(/APIM changes pending/)).toBeVisible()
+    expect(screen.queryByText(/Active|Ready/)).not.toBeInTheDocument()
+  })
+
+  it('uses pool scope plus model ID for modes, personal grants, and request tracking', async () => {
+    const first = { ...servedModelEntry, model: { name: 'claude-opus-4-5', format: 'Anthropic', version: null },
+      costCenterAccess: [{ ...requestOnlyChoices[0], mode: 'automatic' as const }] }
+    const second = { ...first, displayName: 'Request-only offering', scopeId: 'other-pool', costCenterAccess: [requestOnlyChoices[0]] }
+    const inherited: ResolvedEntitlement = {
+      ...securityGroupResolved, accessOrigin: 'automaticCostCenter', costCenter: costCenters[0],
+      entitlement: { ...securityGroupResolved.entitlement, resource: resourceFromCatalog(first), managedBy: 'costCenterAutomatic' },
+    }
+    const { createAccessRequest } = renderPage([first, second], [], costCenters, {}, [inherited])
+    await openAccessOptions('claude-opus-4-5')
+    const offering = screen.getByRole('combobox', { name: 'Access option' })
+    await userEvent.selectOptions(offering, resourceKey(resourceFromCatalog(first)))
+    expect(screen.getByText(/one shared Entra group entitlement/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Request access' })).not.toBeInTheDocument()
+    await userEvent.selectOptions(offering, resourceKey(resourceFromCatalog(second)))
+    expect(screen.queryByText(/one shared Entra group entitlement/)).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Request access' }))
+    await waitFor(() => expect(createAccessRequest).toHaveBeenCalledWith({
+      resource: { kind: 'poolModel', id: first.id, scopeId: 'other-pool' }, costCenterId: 'cc-general', justification: undefined,
+    }))
   })
 
   it.each([

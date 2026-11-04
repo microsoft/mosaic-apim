@@ -13,6 +13,20 @@ whether a model call is allowed, what limits apply, and which cost center pays. 
 called the MCP server decides none of that. MOSAIC only records them, so usage can be reported by
 person.
 
+The client-to-MCP and server-to-model legs remain independent under
+[Entra-backed cost centers](cost-centers.md). Each exact offering has its own mode and grant;
+Automatic MCP access does not grant model access. The server application still needs model
+invocation permission and applied model authorization, and its JWT must carry the model center's
+group ID for a custom center even when its model grant is individual. The client must separately
+satisfy the MCP center's membership and invocation rules. The two legs can charge different
+eligible centers; an attribution header changes neither permission nor membership.
+
+Adding the server application to a center group is an optional, explicitly consented API-identity
+directory operation, not a Graph permission required by APIM or a runtime callback. Managed-identity
+token/authorization caching can be around 24 hours per resource. Removing membership does not
+invalidate already-issued tokens or independent keys; see
+[removal and credential follow-up](cost-centers.md#removing-a-member).
+
 For Azure Government, both hops use eligible applied direct-grant subscription keys, not commercial
 bearer tokens. The MCP server needs its own application model grant and its own workload key, kept
 in its secret store. The Government gateway passes the same opaque reference, and accepts it on a
@@ -73,9 +87,10 @@ Content-Type: application/json
   Plan and apply the MCP server again. The plan's review shows that the server receives each call's
   reference, and names the application. The applied access snapshot's `modelCaller` shows what's
   live.
-- **The application needs its own model grant.** For Commercial, grant the application `Models.Invoke.Application`
-  on the models its tools call, on the same gateway, and apply them. A grant on a model in a
-  governed [model pool](../README.md#model-pools) counts too. The plan warns when MOSAIC can't find
+- **The application needs its own model grant.** For Commercial, assign the runtime
+  `Models.Invoke.Application` app role separately, configure the application's grants for the exact
+  models its tools call on the same gateway, and apply them. A grant on a model in a
+  governed [model pool](model-pools.md) counts too. The plan warns when MOSAIC can't find
   an enabled direct grant for the application on a model this gateway publishes, or on a model in
   one of its governed pools. It
   warns too when MOSAIC can no longer name the principal as an application. Then the server
@@ -177,7 +192,7 @@ other figure, and counts a reference it couldn't use by its reason. See
   servers, by MCP server and model, with its estimated cost and the cost center of the
   application's grant, which paid for it. It's not in their totals, and nobody sees anyone else's.
 
-Calls to a model in a [model pool](../README.md#model-pools) count the same way. Each is priced at
+Calls to a model in a [model pool](model-pools.md) count the same way. Each is priced at
 the member that served it, as the application's own pool calls are. The portal names the model,
 never the pool, and says "Unknown model" once the model is gone from its pool.
 

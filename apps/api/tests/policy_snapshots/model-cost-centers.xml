@@ -120,7 +120,7 @@
           </trace>
           <return-response>
             <set-status code="403" reason="Forbidden" />
-            <set-body>Model access denied. Your token doesn't list your groups because you belong to too many; ask an administrator for a direct grant.</set-body>
+            <set-body>Model access denied. Your token doesn't list your groups because you belong to too many; ask an administrator to resolve group-claim overage. Direct token grants for custom cost centers still require cost-center membership.</set-body>
           </return-response>
         </when>
       </choose>

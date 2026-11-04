@@ -2,6 +2,12 @@
 
 **Status:** Accepted
 
+**Cost-center amendment:** [ADR 0030](0030-entra-backed-cost-centers.md) requires a verified
+exclusive Entra group for each custom center and applies Automatic, Request-only, or Not available
+to each exact pool model, including its pool scope. Automatic uses a stable group JWT grant,
+not per-member entitlements or inherited keys. Individual token grants also require the center
+group claim. General is exempt; Government is excluded from that new workflow.
+
 Phases 1 to 4 are implemented. Administrators create, publish, unpublish, and recover breaker,
 linear, and preferential pools, and the console lists and shows them. A pool's members are Azure
 deployments, reached with the gateway's Microsoft Entra ID or with a key, and Claude models on AWS
@@ -15,7 +21,7 @@ shows how its members answered, from a trace the policy writes for every attempt
 warns when someone changed the pool's resources outside MOSAIC. The console suggests pools, lists
 the pools that use each endpoint, warns when portal users would see a model twice, and puts pools
 with problems on the dashboard. Phase 5, a model router, isn't built. The
-[README](../../README.md#model-pools) describes what is built.
+[README](../model-pools.md) describes what is built.
 
 For pools only, this record amends [ADR 0011](0011-governed-model-access.md), as
 [ADR 0022](0022-cost-centers.md) amended it: a person or application gets one key per pool and
@@ -501,6 +507,12 @@ A pool is unpublished the way ADR 0010's 2026-09-30 amendment unpublishes a publ
   spillover appears at the endpoint's next sync.
 
 ### Access: granted per model and cost center, with one key per pool and cost center
+
+Under ADR 0030, defaults and the cost-center header only select among eligible grants, not
+membership. Member edits update actual Entra relationships through optional API-identity consent;
+they do not rebuild Automatic policy or create per-user automatic grants. Existing JWT claims can
+outlive removal, and individual keys require explicit eligibility recheck and revoke/apply. For
+out-of-band directory edits, recheck explicitly; no continuous directory watcher is introduced.
 
 - **Entitlements name a pool model.** A new resource kind, `poolModel`, carries the pool model's
   ID, with the pool's ID as its scope.

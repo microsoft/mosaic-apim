@@ -4,9 +4,10 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AccessRequest } from '../types'
+import { costCenterCreationRequest } from '../test/cost-center-fixtures'
 import { RequestNotifications } from './RequestNotifications'
 
-const mocks = vi.hoisted(() => ({ listAccessRequests: vi.fn(), listPrincipals: vi.fn(), getDirectoryObject: vi.fn() }))
+const mocks = vi.hoisted(() => ({ listAccessRequests: vi.fn(), listPrincipals: vi.fn(), getDirectoryObject: vi.fn(), getRequestCounts: vi.fn(), listCostCenterRequests: vi.fn() }))
 vi.mock('../api', () => ({ useMosaicApi: () => mocks }))
 function Page() {
   const location = useLocation()
@@ -22,6 +23,12 @@ function renderPage(initialPrincipals?: Array<{ id: string; objectId: string; la
 }
 beforeEach(() => {
   mocks.listAccessRequests.mockReset()
+  mocks.listCostCenterRequests.mockReset().mockResolvedValue([])
+  mocks.getRequestCounts.mockReset().mockImplementation(async () => {
+    const requests = await mocks.listAccessRequests('pending')
+    const centers = await mocks.listCostCenterRequests('pending')
+    return { pendingResourceCount: requests.length, pendingCostCenterCount: centers.length, pendingCount: requests.length + centers.length }
+  })
   mocks.listPrincipals.mockReset().mockResolvedValue([])
   mocks.getDirectoryObject.mockReset().mockResolvedValue({ displayName: 'Demo analyst' })
 })
@@ -51,11 +58,11 @@ describe('RequestNotifications', () => {
   })
   it('shows a failure and retry instead of claiming the queue is empty', async () => {
     mocks.listAccessRequests.mockRejectedValue(new Error('Unavailable'))
-    const client = renderPage()
-    await waitFor(() => expect(client.getQueryState(['access-requests', 'pending'])?.status).toBe('error'))
-    fireEvent.click(screen.getByRole('button', { name: 'Pending approvals' }))
+    mocks.getRequestCounts.mockResolvedValue({ pendingResourceCount: 1, pendingCostCenterCount: 0, pendingCount: 1 })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Pending approvals, 1 pending request' }))
     expect(await screen.findByRole('button', { name: 'Requests unavailable — retry' })).toBeVisible()
-    expect(screen.queryByText('No pending access requests')).not.toBeInTheDocument()
+    expect(screen.queryByText('No pending requests')).not.toBeInTheDocument()
   })
   it('includes the loaded count in the notification button name when the queue is empty', async () => {
     mocks.listAccessRequests.mockResolvedValue([])
@@ -103,6 +110,33 @@ describe('RequestNotifications', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Pending approvals, 8 pending requests' }))
     await waitFor(() => expect(mocks.getDirectoryObject).toHaveBeenCalledTimes(5))
     expect(await screen.findAllByText('Demo analyst')).toHaveLength(5)
-    expect(screen.getByRole('button', { name: 'Review access requests' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Review requests' })).toBeVisible()
+  })
+  it('uses the combined count without loading rosters or request lists until opened', async () => {
+    mocks.getRequestCounts.mockResolvedValue({ pendingResourceCount: 1, pendingCostCenterCount: 2, pendingCount: 3 })
+    renderPage()
+    expect(await screen.findByRole('button', { name: 'Pending approvals, 3 pending requests' })).toBeVisible()
+    expect(mocks.listAccessRequests).not.toHaveBeenCalled()
+    expect(mocks.listCostCenterRequests).not.toHaveBeenCalled()
+    expect(mocks.listPrincipals).not.toHaveBeenCalled()
+    expect(mocks.getDirectoryObject).not.toHaveBeenCalled()
+  })
+  it('keeps same-ID request kinds distinct and opens a kind-aware cost-center deep link', async () => {
+    mocks.listAccessRequests.mockResolvedValue([request])
+    mocks.listCostCenterRequests.mockResolvedValue([{ ...costCenterCreationRequest, id: request.id }])
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Pending approvals, 2 pending requests' }))
+    expect(await screen.findByText('Resource access')).toBeVisible()
+    expect(screen.getByText('Cost-center creation')).toBeVisible()
+    fireEvent.click(await screen.findByRole('button', { name: /Demo analyst Requests cost center Research/ }))
+    expect(document.querySelector('output')).toHaveTextContent('/entitlements?tab=requests&selected=request-test&requestKind=costCenter')
+  })
+  it('surfaces a count failure without synthesizing a zero pending badge', async () => {
+    mocks.getRequestCounts.mockRejectedValue(new Error('Counts unavailable'))
+    mocks.listAccessRequests.mockResolvedValue([])
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Pending approvals' }))
+    expect(await screen.findByRole('button', { name: 'Pending count unavailable — retry' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Pending approvals, 0 pending requests' })).not.toBeInTheDocument()
   })
 })

@@ -1,17 +1,32 @@
 from datetime import datetime
 from uuid import uuid4
 
+from mosaic_api.cost_center_directory import (
+    CostCenterDirectoryOperation,
+    CostCenterGroupReservation,
+    DirectoryOperationState,
+    cost_center_group_reservation_id,
+    cost_center_provisioning_operation_id,
+)
 from mosaic_api.cost_centers import CostCenter, CostCenterSettings
 from mosaic_api.domain import AuditEvent
 from mosaic_api.errors import ConflictError
-from mosaic_api.managed_cost_center_groups import (
-    linked_cost_center,
-    managed_group,
-    membership_changed,
+from mosaic_api.repositories.cost_center_writes import (
+    COST_CENTER_CHANGED,
+    OPERATION_CHANGED,
+    directory_operation_limit,
+    group_reservation,
+    operation_result_replayed,
+    require_binding_change,
+    require_operation_start,
+    require_operation_update,
+    require_reservation_owner,
+    validate_audit_tenant,
+    validated_cost_center,
+    validated_operation,
 )
 from mosaic_api.repositories.memory import InMemoryDirectoryRepository
 
-COST_CENTER_CHANGED = "The cost center changed; reload it and try again"
 SETTINGS_CHANGED = "The cost center settings changed; reload them and try again"
 
 
@@ -21,14 +36,11 @@ class InMemoryCostCenterRepository:
     def __init__(
         self,
         directory_repository: InMemoryDirectoryRepository | None = None,
-        *,
-        managed_groups_enabled: bool = False,
     ) -> None:
-        if managed_groups_enabled and directory_repository is None:
-            raise ValueError("Managed cost-center groups require the shared directory repository")
         self._directory = directory_repository
-        self._managed_groups_enabled = managed_groups_enabled
         self.cost_centers: dict[tuple[str, str], CostCenter] = {}
+        self.group_reservations: dict[tuple[str, str], CostCenterGroupReservation] = {}
+        self.directory_operations: dict[tuple[str, str], CostCenterDirectoryOperation] = {}
         self.settings: dict[str, CostCenterSettings] = {}
         self.audit_events: dict[str, AuditEvent] = {}
 
@@ -55,47 +67,172 @@ class InMemoryCostCenterRepository:
     async def create_cost_center(
         self, cost_center: CostCenter, audit_event: AuditEvent
     ) -> CostCenter:
+        cost_center = validated_cost_center(cost_center)
+        validate_audit_tenant(cost_center, audit_event)
         key = (cost_center.tenant_id, cost_center.id)
         if key in self.cost_centers:
             raise ConflictError("A cost center with this ID already exists")
-        if self._managed_groups_enabled:
-            cost_center = linked_cost_center(cost_center)
-        group = managed_group(cost_center) if cost_center.group_id is not None else None
-        if group is not None:
-            if self._directory is None:
-                raise ConflictError("The managed-group directory repository is not configured")
-            if group.id in self._directory.groups:
-                raise ConflictError("The managed-group identifier is already in use")
+        reservation = self._binding_reservation(None, cost_center)
+        if reservation is not None:
+            self._require_new_audit(audit_event)
         stored = cost_center.model_copy(update={"etag": uuid4().hex}, deep=True)
         self.cost_centers[key] = stored
-        if group is not None and self._directory is not None:
-            self._directory.groups[group.id] = group.model_copy(update={"etag": uuid4().hex})
-        self.audit_events[audit_event.id] = audit_event
+        self._store_reservation(reservation)
+        self.audit_events[audit_event.id] = audit_event.model_copy(deep=True)
         return stored.model_copy(deep=True)
 
     async def save_cost_center(
         self, cost_center: CostCenter, audit_event: AuditEvent
     ) -> CostCenter:
+        cost_center = validated_cost_center(cost_center)
+        validate_audit_tenant(cost_center, audit_event)
         key = (cost_center.tenant_id, cost_center.id)
         current = self.cost_centers.get(key)
         if current is None or current.etag != cost_center.etag:
             raise ConflictError(COST_CENTER_CHANGED)
-        cost_center = membership_changed(current, cost_center)
-        group = None
-        if cost_center.group_id is not None:
-            if self._directory is None:
-                raise ConflictError("The managed-group directory repository is not configured")
-            previous = self._directory.groups.get(cost_center.group_id)
-            if current.group_id is not None and previous is None:
-                raise ConflictError("The cost center's managed group is missing")
-            if current.group_id is None and previous is not None:
-                raise ConflictError("The managed-group identifier is already in use")
-            group = managed_group(cost_center, previous)
+        reservation = self._binding_reservation(current, cost_center)
+        if reservation is not None:
+            self._require_new_audit(audit_event)
         stored = cost_center.model_copy(update={"etag": uuid4().hex}, deep=True)
         self.cost_centers[key] = stored
-        if group is not None and self._directory is not None:
-            self._directory.groups[group.id] = group.model_copy(update={"etag": uuid4().hex})
-        self.audit_events[audit_event.id] = audit_event
+        self._store_reservation(reservation)
+        self.audit_events[audit_event.id] = audit_event.model_copy(deep=True)
+        return stored.model_copy(deep=True)
+
+    def _require_new_audit(self, audit_event: AuditEvent) -> None:
+        if audit_event.id in self.audit_events:
+            raise ConflictError("The audit event already exists")
+
+    def _binding_reservation(
+        self, previous: CostCenter | None, updated: CostCenter
+    ) -> CostCenterGroupReservation | None:
+        provisioning = self.directory_operations.get(
+            (
+                updated.tenant_id,
+                cost_center_provisioning_operation_id(updated.tenant_id, updated.id),
+            )
+        )
+        require_binding_change(previous, updated, provisioning)
+        if updated.entra_binding is None:
+            return None
+        requested = group_reservation(updated)
+        current = self.group_reservations.get((requested.tenant_id, requested.id))
+        if current is not None:
+            require_reservation_owner(requested, current)
+            return current
+        return requested
+
+    def _store_reservation(self, reservation: CostCenterGroupReservation | None) -> None:
+        if reservation is not None:
+            self.group_reservations[(reservation.tenant_id, reservation.id)] = (
+                reservation.model_copy(update={"etag": uuid4().hex}, deep=True)
+            )
+
+    async def get_group_reservation(
+        self, tenant_id: str, directory_tenant_id: str, group_object_id: str
+    ) -> CostCenterGroupReservation | None:
+        reservation_id = cost_center_group_reservation_id(
+            tenant_id, directory_tenant_id, group_object_id
+        )
+        item = self.group_reservations.get((tenant_id, reservation_id))
+        return None if item is None else item.model_copy(deep=True)
+
+    async def reserve_group(
+        self, reservation: CostCenterGroupReservation, audit_event: AuditEvent
+    ) -> CostCenterGroupReservation:
+        reservation = CostCenterGroupReservation.model_validate(
+            {**reservation.model_dump(by_alias=False), "etag": reservation.etag}
+        )
+        validate_audit_tenant(reservation, audit_event)
+        key = (reservation.tenant_id, reservation.id)
+        current = self.group_reservations.get(key)
+        if current is not None:
+            require_reservation_owner(reservation, current)
+            return current.model_copy(deep=True)
+        self._require_new_audit(audit_event)
+        stored = reservation.model_copy(update={"etag": uuid4().hex}, deep=True)
+        self.group_reservations[key] = stored
+        self.audit_events[audit_event.id] = audit_event.model_copy(deep=True)
+        return stored.model_copy(deep=True)
+
+    async def get_directory_operation(
+        self, tenant_id: str, operation_id: str
+    ) -> CostCenterDirectoryOperation | None:
+        item = self.directory_operations.get((tenant_id, operation_id))
+        return None if item is None else item.model_copy(deep=True)
+
+    async def list_directory_operations(
+        self,
+        tenant_id: str,
+        cost_center_id: str,
+        *,
+        limit: int = 50,
+        member_object_id: str | None = None,
+        unsettled_only: bool = False,
+    ) -> list[CostCenterDirectoryOperation]:
+        directory_operation_limit(limit)
+        return sorted(
+            (
+                item.model_copy(deep=True)
+                for (tenant, _), item in self.directory_operations.items()
+                if tenant == tenant_id
+                and item.cost_center_id == cost_center_id
+                and (member_object_id is None or item.member_object_id == member_object_id)
+                and (
+                    not unsettled_only
+                    or item.state
+                    in {DirectoryOperationState.PENDING, DirectoryOperationState.UNKNOWN}
+                )
+            ),
+            key=lambda item: (item.updated_at, item.id),
+            reverse=True,
+        )[:limit]
+
+    async def create_directory_operation(
+        self, operation: CostCenterDirectoryOperation, audit_event: AuditEvent
+    ) -> CostCenterDirectoryOperation:
+        operation = validated_operation(operation)
+        validate_audit_tenant(operation, audit_event)
+        key = (operation.tenant_id, operation.id)
+        if key in self.directory_operations:
+            raise ConflictError("The directory intent already exists; read its recorded outcome")
+        center_key = (operation.tenant_id, operation.cost_center_id)
+        current = self.cost_centers.get(center_key)
+        require_operation_start(operation, current)
+        self._require_new_audit(audit_event)
+        stored = operation.model_copy(update={"etag": uuid4().hex}, deep=True)
+        self.directory_operations[key] = stored
+        if current is not None:
+            self.cost_centers[center_key] = current.model_copy(
+                update={"etag": uuid4().hex}, deep=True
+            )
+        self.audit_events[audit_event.id] = audit_event.model_copy(deep=True)
+        return stored.model_copy(deep=True)
+
+    async def save_directory_operation(
+        self, operation: CostCenterDirectoryOperation, audit_event: AuditEvent
+    ) -> CostCenterDirectoryOperation:
+        operation = validated_operation(operation)
+        validate_audit_tenant(operation, audit_event)
+        key = (operation.tenant_id, operation.id)
+        current = self.directory_operations.get(key)
+        if current is not None and operation_result_replayed(current, operation):
+            return current.model_copy(deep=True)
+        if current is None or not operation.etag or current.etag != operation.etag:
+            raise ConflictError(OPERATION_CHANGED)
+        require_operation_update(current, operation)
+        center_key = (operation.tenant_id, operation.cost_center_id)
+        center = self.cost_centers.get(center_key)
+        if operation.state == DirectoryOperationState.PENDING:
+            require_operation_start(operation, center)
+        self._require_new_audit(audit_event)
+        stored = operation.model_copy(update={"etag": uuid4().hex}, deep=True)
+        self.directory_operations[key] = stored
+        if operation.state == DirectoryOperationState.PENDING and center is not None:
+            self.cost_centers[center_key] = center.model_copy(
+                update={"etag": uuid4().hex}, deep=True
+            )
+        self.audit_events[audit_event.id] = audit_event.model_copy(deep=True)
         return stored.model_copy(deep=True)
 
     async def member_removal_recorded(
@@ -118,6 +255,7 @@ class InMemoryCostCenterRepository:
         )
 
     async def delete_cost_center(self, cost_center: CostCenter, audit_event: AuditEvent) -> None:
+        validate_audit_tenant(cost_center, audit_event)
         key = (cost_center.tenant_id, cost_center.id)
         current = self.cost_centers.get(key)
         if (
@@ -126,14 +264,6 @@ class InMemoryCostCenterRepository:
             or current.group_id != cost_center.group_id
         ):
             raise ConflictError(COST_CENTER_CHANGED)
-        if current.group_id is not None:
-            if self._directory is None:
-                raise ConflictError("The managed-group directory repository is not configured")
-            group = self._directory.groups.get(current.group_id)
-            if group is None:
-                raise ConflictError("The cost center's managed group is missing")
-            managed_group(current, group)
-            del self._directory.groups[group.id]
         del self.cost_centers[key]
         self.audit_events[audit_event.id] = audit_event
 

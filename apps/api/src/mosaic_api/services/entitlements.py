@@ -26,8 +26,10 @@ from mosaic_api.approvals import (
 from mosaic_api.cost_centers import (
     CostCenter,
     CostCenterBook,
+    CostCenterResourceAccessMode,
     PendingRecheck,
     RecheckReason,
+    exact_resource_key,
     may_charge,
 )
 from mosaic_api.domain import (
@@ -39,6 +41,7 @@ from mosaic_api.domain import (
     AdminAccessRequestListItem,
     AuditEvent,
     BindingSource,
+    CatalogCostCenterAccess,
     CatalogVisibility,
     Entitlement,
     EntitlementBinding,
@@ -54,6 +57,7 @@ from mosaic_api.domain import (
     GroupPurpose,
     McpPublication,
     McpServer,
+    ModelAccessSettings,
     ModelApi,
     Principal,
     PrincipalCreate,
@@ -61,6 +65,7 @@ from mosaic_api.domain import (
     Publication,
     ResolvedEntitlement,
     ResourceSummary,
+    canonical_object_id,
     deterministic_id,
     entitlement_id,
     grant_precedence_key,
@@ -87,8 +92,9 @@ from mosaic_api.repositories import (
     ModelEndpointRepository,
 )
 from mosaic_api.repositories.approvals import AccessRequestEventRepository
+from mosaic_api.services.cost_center_access import verified_cost_center_members
 from mosaic_api.services.cost_centers import load_book, record_recheck
-from mosaic_api.services.directory import Actor, DirectoryService
+from mosaic_api.services.directory import Actor, DirectoryService, find_unique_principal
 from mosaic_api.services.mcp_access import (
     decorate_mcp_entitlement,
     entitlement_mcp_publication,
@@ -309,6 +315,7 @@ class EntitlementService:
         directory_lookup: DirectoryLookup | None = None,
         cost_center_repository: CostCenterRepository | None = None,
         environment_repository: EnvironmentRepository | None = None,
+        entra_group_claims_enabled: bool = True,
     ) -> None:
         self._repository = repository
         self._directory = directory_repository
@@ -317,6 +324,7 @@ class EntitlementService:
         self._directory_lookup = directory_lookup
         self._cost_centers = cost_center_repository
         self._environments = environment_repository
+        self._entra_group_claims_enabled = entra_group_claims_enabled
 
     def governed_records(self, tenant_id: str) -> GovernedRecords:
         """Records to share across the lookups that serve one response."""
@@ -330,15 +338,427 @@ class EntitlementService:
 
     # ------------------------------------------------------------------ cost centers
 
+    async def _resource_access_settings(
+        self,
+        tenant_id: str,
+        resource: EntitlementResource,
+        *,
+        records: GovernedRecords | None = None,
+        general: bool = False,
+    ) -> ModelAccessSettings:
+        records = records or self.governed_records(tenant_id)
+        gateway_id: str | None = None
+        settings: ModelAccessSettings | None = None
+        available = False
+        if resource.kind == "modelApi":
+            model = (await records.model_apis()).get(resource.id)
+            publication = (
+                (await records.publications()).get(model.publication_id)
+                if model is not None and model.publication_id
+                else None
+            )
+            if model is not None:
+                gateway_id = model.gateway_id
+                available = publication is not None and model_api_offered(model, publication)
+                settings = publication.governed_access if publication else None
+        elif resource.kind == "mcpServer":
+            server = (await records.mcp_servers()).get(resource.id)
+            mcp_publication = (
+                (await records.mcp_publications()).get(server.publication_id)
+                if server is not None and server.publication_id
+                else None
+            )
+            if server is not None:
+                gateway_id = server.gateway_id
+                available = mcp_publication is not None and mcp_server_offered(
+                    server, mcp_publication
+                )
+                settings = ModelAccessSettings(keys_enabled=False, entra_enabled=True)
+        elif resource.kind == "poolModel":
+            pool = (await records.model_pools()).get(resource.scope_id or "")
+            if pool is not None:
+                gateway_id = pool.gateway_id
+                available = pool_model_offered(pool, resource.id)
+                settings = pool.governed_access
+        gateway = (await records.gateways()).get(gateway_id or "")
+        if gateway is not None and gateway.azure_cloud != "commercial":
+            if not general:
+                raise ValidationError(
+                    "Government resources are not available in Entra-backed cost-center workflows.",
+                    details={"reason": "governmentCostCenterUnsupported"},
+                )
+            if resource.kind == "mcpServer":
+                settings = ModelAccessSettings(keys_enabled=True, entra_enabled=False)
+        if gateway is None or (not available and not general) or settings is None:
+            raise ValidationError(
+                "Custom cost-center access requires an available, governed publication.",
+                details={"reason": "resourceUnavailable", "resourceId": resource.id},
+            )
+        return settings
+
+    def _validate_access_methods(
+        self,
+        center: CostCenter,
+        mode: CostCenterResourceAccessMode,
+        settings: ModelAccessSettings,
+    ) -> None:
+        tokens = settings.entra_enabled and self._entra_group_claims_enabled
+        if mode == CostCenterResourceAccessMode.AUTOMATIC and not tokens:
+            raise ValidationError(
+                "Automatic access requires caller-side Entra tokens and configured group claims. "
+                "Enable them explicitly on the publication and deployment first.",
+                details={"reason": "automaticEntraRequired"},
+            )
+        if not tokens and not (settings.keys_enabled and center.keys_allowed):
+            raise ValidationError(
+                "No supported credential is enabled for this resource and cost center.",
+                details={"reason": "costCenterAuthenticationUnavailable"},
+            )
+
+    async def validate_cost_center_access(self, actor: Actor, proposed_center: CostCenter) -> None:
+        """Read-only pre-save validation; no grants, Graph writes, or gateway writes."""
+
+        if proposed_center.tenant_id != actor.tenant_id:
+            raise ValidationError("The cost center belongs to another tenant.")
+        if proposed_center.is_general:
+            return
+        records = self.governed_records(actor.tenant_id)
+        for definition in proposed_center.resource_access:
+            if definition.mode == CostCenterResourceAccessMode.NOT_AVAILABLE:
+                continue
+            settings = await self._resource_access_settings(
+                actor.tenant_id, definition.resource, records=records
+            )
+            self._validate_access_methods(proposed_center, definition.mode, settings)
+
+    async def _require_resource_access(
+        self,
+        actor: Actor,
+        center: CostCenter,
+        resource: EntitlementResource,
+        *,
+        request_only: bool = False,
+        subject: EntitlementSubject | None = None,
+    ) -> None:
+        if center.is_general:
+            return
+        binding = center.entra_binding
+        if (
+            center.verified_group_object_id is None
+            or binding is None
+            or binding.directory_tenant_id.casefold() != actor.tenant_id.casefold()
+        ):
+            raise ValidationError(
+                "This cost center needs a verified Entra group before it can be used.",
+                details={"reason": "costCenterSetupRequired", "costCenterId": center.id},
+            )
+        mode = center.access_mode_for(resource)
+        if mode == CostCenterResourceAccessMode.NOT_AVAILABLE:
+            raise ValidationError(
+                "This resource is Not available under the selected cost center.",
+                details={"reason": "resourceNotAvailable", "costCenterId": center.id},
+            )
+        if request_only and mode != CostCenterResourceAccessMode.REQUEST_ONLY:
+            raise ValidationError(
+                "Access requests require a Request-only resource under this cost center. "
+                "Automatic access is inherited through its Entra group.",
+                details={"reason": "requestOnlyRequired", "costCenterId": center.id},
+            )
+        if subject is not None and subject.kind not in {
+            EntitlementSubjectKind.USER,
+            EntitlementSubjectKind.APPLICATION,
+        }:
+            raise ValidationError(
+                "Custom-center group grants are managed by its Automatic resource definitions.",
+                details={"reason": "managedAutomaticGrantRequired"},
+            )
+        settings = await self._resource_access_settings(actor.tenant_id, resource)
+        self._validate_access_methods(center, mode, settings)
+
+    async def _automatic_group_principal(self, actor: Actor, center: CostCenter) -> Principal:
+        assert center.verified_group_object_id is not None
+        group_id = canonical_object_id(center.verified_group_object_id)
+        existing = await find_unique_principal(self._directory, actor.tenant_id, group_id)
+        if existing and existing.kind != PrincipalKind.SECURITY_GROUP:
+            raise ConflictError("The center's Entra group has conflicting principal metadata.")
+        if existing:
+            return existing
+        principal = Principal(
+            id=deterministic_id("principal", actor.tenant_id, group_id),
+            tenant_id=actor.tenant_id,
+            object_id=group_id,
+            kind=PrincipalKind.SECURITY_GROUP,
+            label=f"{center.name} members",
+            directory_verified_at=(
+                center.entra_binding.verified_at if center.entra_binding else None
+            ),
+        )
+        try:
+            return await self._directory.create_principal(
+                principal, self._audit(actor, "principal.created", "principal", principal.id)
+            )
+        except ConflictError:
+            found = await find_unique_principal(self._directory, actor.tenant_id, group_id)
+            if found is None or found.kind != PrincipalKind.SECURITY_GROUP:
+                raise
+            return found
+
+    async def sync_cost_center_access(self, actor: Actor, cost_center_id: str) -> list[Entitlement]:
+        """Reconcile only our stable automatic group grants as desired state; never call APIM.
+
+        A distinct managed identity avoids adopting, broadening, or disabling an unrelated grant
+        on the same group/resource. Retired managed grants remain disabled until reviewed apply.
+        """
+
+        book = await self.cost_center_book(actor.tenant_id)
+        center = self._require_cost_center(book, cost_center_id)
+        desired: dict[str, Entitlement] = {}
+        records = self.governed_records(actor.tenant_id)
+        if (
+            not center.is_general
+            and center.verified_group_object_id is not None
+            and center.entra_binding is not None
+            and center.entra_binding.directory_tenant_id.casefold() == actor.tenant_id.casefold()
+        ):
+            automatic = []
+            for definition in center.resource_access:
+                if definition.mode != CostCenterResourceAccessMode.AUTOMATIC:
+                    continue
+                try:
+                    settings = await self._resource_access_settings(
+                        actor.tenant_id, definition.resource, records=records
+                    )
+                    self._validate_access_methods(center, definition.mode, settings)
+                except ValidationError:
+                    continue
+                automatic.append(definition)
+            if automatic:
+                principal = await self._automatic_group_principal(actor, center)
+                subject = EntitlementSubject(
+                    kind=EntitlementSubjectKind.SECURITY_GROUP, id=principal.id
+                )
+                for definition in automatic:
+                    grant_id = deterministic_id(
+                        "entitlement",
+                        "costCenterAutomatic",
+                        actor.tenant_id,
+                        center.id,
+                        principal.object_id,
+                        *[part or "" for part in exact_resource_key(definition.resource)],
+                    )
+                    desired[grant_id] = Entitlement(
+                        id=grant_id,
+                        tenant_id=actor.tenant_id,
+                        subject=subject,
+                        resource=definition.resource,
+                        cost_center_id=center.id,
+                        managed_by="costCenterAutomatic",
+                    )
+        managed = {
+            item.id: item
+            for item in await self._repository.list_entitlements(actor.tenant_id)
+            if item.cost_center_id == center.id and item.managed_by == "costCenterAutomatic"
+        }
+        results: list[Entitlement] = []
+        for grant_id in sorted(managed.keys() | desired.keys()):
+            target = desired.get(grant_id) or managed[grant_id].model_copy(
+                update={"enabled": False}
+            )
+            async with self._mutation(target):
+                latest = (
+                    await self._cost_centers.get_cost_center(actor.tenant_id, center.id)
+                    if self._cost_centers is not None
+                    else None
+                )
+                current_principal = await self._directory.get_principal(
+                    actor.tenant_id, target.subject.id
+                )
+                wanted = bool(
+                    latest is not None
+                    and latest.verified_group_object_id is not None
+                    and latest.entra_binding is not None
+                    and latest.entra_binding.directory_tenant_id.casefold()
+                    == actor.tenant_id.casefold()
+                    and current_principal is not None
+                    and current_principal.object_id.casefold()
+                    == latest.verified_group_object_id.casefold()
+                    and latest.access_mode_for(target.resource)
+                    == CostCenterResourceAccessMode.AUTOMATIC
+                )
+                if wanted and latest is not None:
+                    try:
+                        settings = await self._resource_access_settings(
+                            actor.tenant_id, target.resource, records=records
+                        )
+                        self._validate_access_methods(
+                            latest, CostCenterResourceAccessMode.AUTOMATIC, settings
+                        )
+                    except ValidationError:
+                        wanted = False
+                target = target.model_copy(update={"enabled": wanted})
+                current = await self._repository.get_entitlement(actor.tenant_id, grant_id)
+                if current is None:
+                    saved = await self._repository.create_entitlement(
+                        target, self._audit(actor, "entitlement.created", "entitlement", grant_id)
+                    )
+                elif current.managed_by != "costCenterAutomatic":
+                    raise ConflictError("An unmanaged grant occupies the managed grant identity.")
+                elif current.enabled == target.enabled and current.revocation is None:
+                    saved = current
+                else:
+                    saved = await self._repository.save_entitlement(
+                        current.model_copy(
+                            update={
+                                "enabled": target.enabled,
+                                "revocation": None,
+                                "runtime": None,
+                                "updated_at": utc_now(),
+                            }
+                        ),
+                        self._audit(actor, "entitlement.updated", "entitlement", grant_id),
+                    )
+            results.append(saved)
+        return results
+
+    async def member_removed_from_cost_center(
+        self,
+        actor: Actor,
+        cost_center_id: str,
+        member_object_id: str,
+        member_kind: PrincipalKind | None,
+    ) -> None:
+        """Schedule affected individual/key grants, never automatic group access.
+
+        A nested-group removal can affect multiple people, so verify the direct-grant cohort.
+        Failed/incomplete evidence retains pending work; copied keys need a subsequent apply.
+        """
+
+        if self._cost_centers is None:
+            return
+        principals = {
+            item.id: item for item in await self._directory.list_principals(actor.tenant_id)
+        }
+        affected = [
+            grant.id
+            for grant in await self._repository.list_entitlements(actor.tenant_id)
+            if grant.cost_center_id == cost_center_id
+            and grant.subject.kind
+            in {EntitlementSubjectKind.USER, EntitlementSubjectKind.APPLICATION}
+            and grant.revocation is None
+            and (
+                member_kind in {None, PrincipalKind.SECURITY_GROUP}
+                or (
+                    (principal := principals.get(grant.subject.id)) is not None
+                    and principal.object_id.casefold() == member_object_id.casefold()
+                )
+            )
+        ]
+        if not affected:
+            return
+        await record_recheck(
+            self._cost_centers,
+            actor,
+            cost_center_id,
+            PendingRecheck(
+                reason="memberRemoved",
+                entitlement_ids=sorted(affected),
+                requested_by=actor.object_id,
+            ),
+        )
+        await self.resume_rechecks(actor, cost_center_id)
+
+    async def require_current_key_eligibility(self, actor: Actor, grant: Entitlement) -> None:
+        """Gate every new/revealed individual credential on current complete Entra evidence."""
+
+        book = await self.cost_center_book(actor.tenant_id)
+        center = self._require_cost_center(book, grant.cost_center_id)
+        if center.is_general:
+            return
+        await self._require_resource_access(actor, center, grant.resource, subject=grant.subject)
+        if not grant.enabled or center.recheck_pending(grant.id, grant.subject.id):
+            raise ConflictError(
+                "This grant's cost-center access needs review before using its key."
+            )
+        principal = await self._directory.get_principal(actor.tenant_id, grant.subject.id)
+        if principal is None:
+            raise ConflictError("The individual grant's principal no longer exists.")
+        members = await verified_cost_center_members(center, [principal], self._directory_lookup)
+        if principal.object_id.casefold() not in members:
+            await self.member_removed_from_cost_center(
+                actor, center.id, principal.object_id, principal.kind
+            )
+            raise ValidationError(
+                "Current Entra membership does not permit this individual key.",
+                details={"reason": "notACostCenterMember", "costCenterId": center.id},
+            )
+
+    async def cost_center_access_options(
+        self,
+        actor: Actor,
+        resource: EntitlementResource,
+        *,
+        centers: Sequence[CostCenter],
+        default_cost_center_id: str,
+        records: GovernedRecords | None = None,
+    ) -> list[CatalogCostCenterAccess]:
+        """Resource modes for already-eligible centers, sharing the catalog's metadata reads."""
+
+        records = records or self.governed_records(actor.tenant_id)
+        try:
+            settings = await self._resource_access_settings(
+                actor.tenant_id, resource, records=records
+            )
+        except ValidationError:
+            settings = None
+        general_settings = settings
+        if general_settings is None and any(center.is_general for center in centers):
+            try:
+                general_settings = await self._resource_access_settings(
+                    actor.tenant_id, resource, records=records, general=True
+                )
+            except ValidationError:
+                pass
+        result: list[CatalogCostCenterAccess] = []
+        for center in centers:
+            mode = center.access_mode_for(resource)
+            if mode == CostCenterResourceAccessMode.NOT_AVAILABLE:
+                continue
+            if not center.is_general:
+                if settings is None:
+                    continue
+                try:
+                    self._validate_access_methods(center, mode, settings)
+                except ValidationError:
+                    continue
+            access_settings = general_settings if center.is_general else settings
+            result.append(
+                CatalogCostCenterAccess(
+                    cost_center=center.ref(),
+                    mode=cast(Any, mode),
+                    is_default=center.id == default_cost_center_id,
+                    keys_allowed=center.keys_allowed
+                    and bool(access_settings and access_settings.keys_enabled),
+                )
+            )
+        return result
+
     async def _group_principal_ids(
         self, actor: Actor, principal: Principal, cost_center: CostCenter
     ) -> list[str]:
-        """The security groups a cost center lists that Microsoft Graph says the principal is in.
+        """Complete primary-group evidence for custom centers, legacy group IDs for General."""
 
-        Empty when the cost center lists no group, when directory lookup is off, or when Graph
-        can't answer: then only a direct membership or a default lets the principal charge it.
-        """
-
+        if not cost_center.is_general:
+            if principal.kind == PrincipalKind.SECURITY_GROUP:
+                return []
+            members = await verified_cost_center_members(
+                cost_center, [principal], self._directory_lookup
+            )
+            return (
+                [cost_center.verified_group_object_id]
+                if principal.object_id.casefold() in members
+                and cost_center.verified_group_object_id is not None
+                else []
+            )
         if principal.kind == PrincipalKind.SECURITY_GROUP or self._directory_lookup is None:
             return []
         listed = cost_center.member_ids()
@@ -379,11 +799,11 @@ class EntitlementService:
         MOSAIC groups aren't principals and never reach the gateway, so they're not checked.
         """
 
-        if subject.kind == EntitlementSubjectKind.GROUP:
+        if subject.kind == EntitlementSubjectKind.GROUP and cost_center.is_general:
             return
         principal = await self._directory.get_principal(actor.tenant_id, subject.id)
         if principal is None:
-            return
+            raise ValidationError("The grant's principal no longer exists.")
         groups = group_principal_ids
         if groups is None and not may_charge(
             cost_center, principal=principal, settings=book.settings
@@ -394,11 +814,12 @@ class EntitlementService:
             principal=principal,
             settings=book.settings,
             group_principal_ids=groups or [],
+            group_object_ids=groups or [],
         ):
             return
         raise ValidationError(
             f"{_principal_label(principal)} can't charge {cost_center.name} ({cost_center.code}). "
-            "Add them, or a security group they're in, as a member of the cost center first.",
+            "Verify their actual membership in its bound Entra security group first.",
             details={
                 "reason": "notACostCenterMember",
                 "costCenterId": cost_center.id,
@@ -444,9 +865,8 @@ class EntitlementService:
                 )
             if group.purpose == GroupPurpose.COST_CENTER:
                 raise ValidationError(
-                    "Managed cost-center groups are membership containers, not model grants. "
-                    "Automatic model access is not available yet; use existing direct or Entra "
-                    "security-group grants.",
+                    "Legacy local cost-center groups cannot grant gateway access. Configure a "
+                    "verified primary Entra group and Automatic resource definitions instead.",
                     details={
                         "reason": "managedCostCenterAccessUnavailable",
                         "costCenterId": group.cost_center_id,
@@ -982,39 +1402,61 @@ class EntitlementService:
             if (mcp_publication is not None and mcp_publication.azure_cloud == "government")
             else None,
         )
-        target = publication or mcp_publication or model_pool
         charged = book.get(entitlement.cost_center_id) if book is not None else None
-        if (
-            target is not None
-            and target.azure_cloud == "government"
-            and principal is not None
+        recheck_pending = bool(
+            principal is not None
             and charged is not None
+            and entitlement.managed_by != "costCenterAutomatic"
             and charged.recheck_pending(entitlement.id, principal.id)
-        ):
+        )
+        if recheck_pending:
             intent = None
         if entitlement.resource.kind == "poolModel":
             pool_locked = bool(
                 model_pool
                 and await self._gateways.get_publication_lock(entitlement.tenant_id, model_pool.id)
             )
-            return decorate_pool_entitlement(
+            decorated = decorate_pool_entitlement(
                 entitlement, model_pool, principal, locked=pool_locked, cost_center=intent
             )
-        locked = bool(
-            publication
-            and await self._gateways.get_publication_lock(entitlement.tenant_id, publication.id)
-        )
-        mcp_locked = bool(
-            mcp_publication
-            and await self._gateways.get_publication_lock(entitlement.tenant_id, mcp_publication.id)
-        )
-        if entitlement.resource.kind == "mcpServer":
-            return decorate_mcp_entitlement(
-                entitlement, mcp_publication, principal, locked=mcp_locked, cost_center=intent
+        else:
+            locked = bool(
+                publication
+                and await self._gateways.get_publication_lock(entitlement.tenant_id, publication.id)
             )
-        return decorate_entitlement(
-            entitlement, publication, principal, locked=locked, cost_center=intent
-        )
+            mcp_locked = bool(
+                mcp_publication
+                and await self._gateways.get_publication_lock(
+                    entitlement.tenant_id, mcp_publication.id
+                )
+            )
+            if entitlement.resource.kind == "mcpServer":
+                decorated = decorate_mcp_entitlement(
+                    entitlement, mcp_publication, principal, locked=mcp_locked, cost_center=intent
+                )
+            else:
+                decorated = decorate_entitlement(
+                    entitlement, publication, principal, locked=locked, cost_center=intent
+                )
+        if decorated.runtime is not None:
+            decorated.runtime.eligibility_recheck_pending = recheck_pending
+            if recheck_pending:
+                decorated.runtime.key_error = (
+                    "Current Entra membership needs a complete eligibility recheck. "
+                    "Existing copied keys require revoke/apply; a directory change alone "
+                    "does not revoke them."
+                )
+            decorated.runtime.key_revocation_pending = bool(
+                decorated.runtime.key_exists
+                and (
+                    recheck_pending
+                    or not entitlement.enabled
+                    or intent is None
+                    or not intent.keys_allowed
+                )
+                and decorated.runtime.status != "revoked"
+            )
+        return decorated
 
     @asynccontextmanager
     async def _mutation(self, entitlement: Entitlement) -> AsyncIterator[None]:
@@ -1088,6 +1530,9 @@ class EntitlementService:
             actor, request.subject, book
         )
         cost_center = self._require_cost_center(book, cost_center_id)
+        await self._require_resource_access(
+            actor, cost_center, request.resource, subject=request.subject
+        )
         await self._require_may_charge(
             actor,
             request.subject,
@@ -1152,6 +1597,11 @@ class EntitlementService:
         self, actor: Actor, entitlement_ref: str, request: EntitlementUpdate
     ) -> Entitlement:
         entitlement = await self.get_entitlement(actor, entitlement_ref)
+        if entitlement.managed_by == "costCenterAutomatic":
+            raise ConflictError(
+                "Change Automatic access in the cost center's resource definitions, not its "
+                "managed group grant."
+            )
         changes = request.model_dump(exclude_unset=True)
         publication = await entitlement_publication(self._gateways, entitlement)
         mcp_publication = await entitlement_mcp_publication(self._gateways, entitlement)
@@ -1179,6 +1629,14 @@ class EntitlementService:
         # nullable and keep their clear-on-null behaviour.
         if changes.get("enabled") is None:
             changes.pop("enabled", None)
+        if changes.get("enabled", entitlement.enabled):
+            book = await self.cost_center_book(actor.tenant_id)
+            await self._require_resource_access(
+                actor,
+                self._require_cost_center(book, entitlement.cost_center_id),
+                entitlement.resource,
+                subject=entitlement.subject,
+            )
         if changes.get("enabled") is True and not entitlement.enabled:
             # A grant comes back on only while its subject may charge its cost center, whether it
             # was revoked when the subject left it or turned off by hand before they did.
@@ -1218,13 +1676,19 @@ class EntitlementService:
         has nothing left to lose.
         """
 
-        if grant.subject.kind == EntitlementSubjectKind.GROUP or grant.revocation is not None:
+        if grant.revocation is not None:
             return True
         book = await self.cost_center_book(actor.tenant_id)
         cost_center = book.get(grant.cost_center_id)
         if cost_center is None:
             return False
+        if grant.managed_by == "costCenterAutomatic":
+            principal = await self._directory.get_principal(actor.tenant_id, grant.subject.id)
+            return cost_center_intent(grant, principal, book) is not None
         try:
+            await self._require_resource_access(
+                actor, cost_center, grant.resource, subject=grant.subject
+            )
             await self._require_may_charge(
                 actor, grant.subject, cost_center, book, group_principal_ids=group_principal_ids
             )
@@ -1249,8 +1713,14 @@ class EntitlementService:
         grant before it's checked.
         """
 
-        if await self._may_still_charge(actor, saved, group_principal_ids=group_principal_ids):
-            return saved
+        try:
+            if await self._may_still_charge(actor, saved, group_principal_ids=group_principal_ids):
+                return saved
+        except DirectoryError:
+            await self.request_recheck(
+                actor, saved.cost_center_id, reason="memberRemoved", subject_id=saved.subject.id
+            )
+            raise
         current = await self._repository.get_entitlement(actor.tenant_id, saved.id)
         if current is None or current.revocation is not None:
             return current or saved
@@ -1325,12 +1795,11 @@ class EntitlementService:
         """Check the grants each pending recheck covers, the cost center's or the tenant's, and
         settle the rechecks. Returns the grants it revoked.
 
-        A covered grant whose subject may no longer charge its cost center is revoked. Microsoft
-        Graph says which listed groups a subject is still in. Without it, a grant keeps only the
-        groups its approved request recorded from the requester's token, and a grant nothing
-        proves eligible is revoked: this fails closed. A grant whose publication is busy, for
-        example while its model is applied, can't be revoked yet, so its recheck stays pending,
-        narrowed to the grants it has left, and applies keep leaving those grants out.
+        Custom-center direct grants share one complete, tenant-bound cohort verification. Failed
+        evidence stays pending, never silently keeps a grant or authorizes another key. General
+        retains its legacy eligibility rules. Automatic group grants never depend on roster
+        checks. A busy publication retains the affected direct grants as pending desired work;
+        only a reviewed apply removes existing runtime access and copied keys.
         """
 
         if self._cost_centers is None:
@@ -1345,6 +1814,7 @@ class EntitlementService:
             return []
         recorded = await self._recorded_group_map(actor.tenant_id)
         everyone = await self._repository.list_entitlements(actor.tenant_id)
+        principals: dict[str, Principal] | None = None
         revoked: list[str] = []
         for cost_center in pending:
             grants = [
@@ -1352,8 +1822,48 @@ class EntitlementService:
                 for grant in everyone
                 if grant.cost_center_id == cost_center.id
                 and grant.revocation is None
-                and grant.subject.kind != EntitlementSubjectKind.GROUP
+                and grant.managed_by != "costCenterAutomatic"
+                and (
+                    grant.subject.kind != EntitlementSubjectKind.GROUP
+                    if cost_center.is_general
+                    else grant.subject.kind
+                    in {EntitlementSubjectKind.USER, EntitlementSubjectKind.APPLICATION}
+                )
             ]
+            verified_groups: dict[str, list[str]] | None = recorded
+            verification_failed = False
+            if not cost_center.is_general:
+                verified_groups = {}
+                if principals is None:
+                    principals = {
+                        item.id: item
+                        for item in await self._directory.list_principals(actor.tenant_id)
+                    }
+                cohort = {
+                    grant.subject.id: principals[grant.subject.id]
+                    for grant in grants
+                    if grant.subject.id in principals
+                    and any(
+                        recheck.covers(grant.id, grant.subject.id)
+                        for recheck in cost_center.pending_rechecks
+                    )
+                }
+                if cohort and cost_center.verified_group_object_id is not None:
+                    try:
+                        members = await verified_cost_center_members(
+                            cost_center, list(cohort.values()), self._directory_lookup
+                        )
+                        verified_groups = {
+                            grant.id: (
+                                [cost_center.verified_group_object_id]
+                                if (principal := cohort.get(grant.subject.id)) is not None
+                                and principal.object_id.casefold() in members
+                                else []
+                            )
+                            for grant in grants
+                        }
+                    except DirectoryError:
+                        verification_failed = True
             outcomes: dict[str, str] = {}
             left: dict[str, list[str]] = {}
             for recheck in cost_center.pending_rechecks:
@@ -1362,14 +1872,28 @@ class EntitlementService:
                     if not recheck.covers(grant.id, grant.subject.id):
                         continue
                     if grant.id not in outcomes:
-                        outcomes[grant.id] = await self._recheck_grant(actor, grant, recorded)
+                        outcomes[grant.id] = (
+                            "unchecked"
+                            if verification_failed
+                            else await self._recheck_grant(actor, grant, verified_groups)
+                        )
                     if outcomes[grant.id] == "unchecked":
                         unchecked.append(grant.id)
                 left[recheck.id] = unchecked
             revoked.extend(
                 grant_id for grant_id, outcome in outcomes.items() if outcome == "revoked"
             )
-            await self._settle_rechecks(actor, cost_center.id, left)
+            await self._settle_rechecks(
+                actor,
+                cost_center.id,
+                left,
+                verification_error=(
+                    "Current complete Entra membership verification failed or returned "
+                    "incomplete evidence. Retry Check grants again."
+                    if verification_failed
+                    else None
+                ),
+            )
         return revoked
 
     async def _recheck_grant(
@@ -1385,12 +1909,17 @@ class EntitlementService:
             )
         except NotFoundError:
             return "kept"
-        except ConflictError:
+        except (ConflictError, DirectoryError):
             return "unchecked"
         return "revoked" if result.revocation is not None else "kept"
 
     async def _settle_rechecks(
-        self, actor: Actor, cost_center_id: str, left: dict[str, list[str]]
+        self,
+        actor: Actor,
+        cost_center_id: str,
+        left: dict[str, list[str]],
+        *,
+        verification_error: str | None = None,
     ) -> None:
         """Remove the rechecks that finished, and narrow the rest to the grants they have left.
 
@@ -1410,7 +1939,13 @@ class EntitlementService:
                     pending.append(recheck)
                 elif left[recheck.id]:
                     pending.append(
-                        recheck.model_copy(update={"entitlement_ids": sorted(left[recheck.id])})
+                        recheck.model_copy(
+                            update={
+                                "entitlement_ids": sorted(left[recheck.id]),
+                                "last_checked_at": utc_now(),
+                                "verification_error": verification_error,
+                            }
+                        )
                     )
             if pending == current.pending_rechecks:
                 return
@@ -1492,6 +2027,8 @@ class EntitlementService:
 
     async def delete_entitlement(self, actor: Actor, entitlement_ref: str) -> None:
         entitlement = await self.get_entitlement(actor, entitlement_ref)
+        if entitlement.managed_by == "costCenterAutomatic":
+            raise ConflictError("Managed Automatic grants are retained for reviewed gateway apply.")
         async with self._mutation(entitlement):
             entitlement = await self.get_entitlement(actor, entitlement_ref)
             publication = await entitlement_publication(self._gateways, entitlement)
@@ -1565,6 +2102,12 @@ class EntitlementService:
                 entitlement.subject.kind != EntitlementSubjectKind.SECURITY_GROUP
                 or entitlement.subject.id not in groups
                 or not (entitlement.enabled or include_disabled)
+            ):
+                continue
+            center = book.get(entitlement.cost_center_id)
+            if center is None or (
+                not center.is_general
+                and cost_center_intent(entitlement, groups[entitlement.subject.id], book) is None
             ):
                 continue
             item = ResolvedEntitlement(
@@ -1705,6 +2248,24 @@ class EntitlementService:
         for item in reached:
             if not item.entitlement.enabled and not include_disabled:
                 continue
+            center = book.get(item.entitlement.cost_center_id)
+            if center is None:
+                continue
+            if not center.is_general:
+                subject_principal = (
+                    security_groups_by_principal_id.get(item.entitlement.subject.id)
+                    if item.via == GrantPath.SECURITY_GROUP
+                    else principal
+                )
+                if cost_center_intent(item.entitlement, subject_principal, book) is None:
+                    continue
+                if group_object_ids is not None and not may_charge(
+                    center,
+                    principal=principal,
+                    settings=book.settings,
+                    group_object_ids=group_object_ids,
+                ):
+                    continue
             key = _grant_key(item.entitlement)
             current = winners.get(key)
             if current is None or _outranks(item, current):
@@ -1812,7 +2373,7 @@ class EntitlementService:
     async def caller_group_principal_ids(self, actor: Actor) -> list[str]:
         """The security groups MOSAIC records that the caller's own token says they're in."""
 
-        if not actor.group_ids:
+        if not actor.group_ids or actor.groups_overage:
             return []
         return [
             item.id
@@ -1844,6 +2405,20 @@ class EntitlementService:
         cost_center_id = request.cost_center_id or book.default_for(principal)
         cost_center = book.get(cost_center_id)
         groups = await self.caller_group_principal_ids(actor)
+        if cost_center is not None:
+            await self._require_resource_access(
+                actor, cost_center, request.resource, request_only=True
+            )
+            if not cost_center.is_general and actor.groups_overage:
+                raise ValidationError(
+                    "This token has group overage and cannot prove cost-center membership.",
+                    details={"reason": "groupClaimsOverage"},
+                )
+            if (
+                not cost_center.is_general
+                and await self._catalog_visible_resource(actor.tenant_id, request.resource) is None
+            ):
+                raise NotFoundError("That resource isn't in your catalog.")
         # Only the caller's own token decides which groups they're in, so a person can name only
         # a cost center they may charge.
         if cost_center is None or not may_charge(
@@ -1851,6 +2426,7 @@ class EntitlementService:
             principal=principal,
             settings=book.settings,
             group_principal_ids=groups,
+            group_object_ids=() if actor.groups_overage else actor.group_ids,
         ):
             raise ValidationError(
                 "You can't charge that cost center. Choose one of yours.",
@@ -1896,7 +2472,9 @@ class EntitlementService:
             requester_principal_id=principal.id if principal else None,
             resource=request.resource,
             cost_center_id=cost_center.id,
-            cost_center_group_ids=sorted(set(groups) & cost_center.member_ids()),
+            cost_center_group_ids=(
+                sorted(set(groups) & cost_center.member_ids()) if cost_center.is_general else []
+            ),
             justification=request.justification,
             requested_environment=summary.environment,
             resource_snapshot=self._snapshot_from_summary(summary),
@@ -2013,6 +2591,9 @@ class EntitlementService:
             book,
             approval.cost_center_id or access_request.cost_center_id or book.default_for(principal),
         )
+        await self._require_resource_access(
+            actor, cost_center, access_request.resource, request_only=True
+        )
         if principal is not None:
             existing = await self._repository.get_entitlement(
                 actor.tenant_id,
@@ -2034,7 +2615,9 @@ class EntitlementService:
         # counts only for the cost center they chose and only while it still lists those groups.
         trusted_groups = (
             sorted(set(access_request.cost_center_group_ids) & cost_center.member_ids())
-            if self._directory_lookup is None and cost_center.id == access_request.cost_center_id
+            if cost_center.is_general
+            and self._directory_lookup is None
+            and cost_center.id == access_request.cost_center_id
             else None
         )
         subject = _subject_for(principal)
@@ -2108,6 +2691,12 @@ class EntitlementService:
                 # Re-read eligibility and environment while coordinated with publish/apply.
                 await self._require_environment_confirmation(actor, access_request, approval)
                 fresh_book = await self.cost_center_book(actor.tenant_id)
+                await self._require_resource_access(
+                    actor,
+                    self._require_cost_center(fresh_book, cost_center.id),
+                    access_request.resource,
+                    request_only=True,
+                )
                 await self._require_may_charge(
                     actor,
                     subject,
@@ -2274,10 +2863,28 @@ class EntitlementService:
             block("costCenterMissing", "The selected cost center no longer exists.")
         else:
             groups: list[str] = []
+            try:
+                await self._require_resource_access(
+                    actor, center, request.resource, request_only=True
+                )
+            except ValidationError as error:
+                block(str(error.details.get("reason", "resourceUnavailable")), str(error))
             direct = may_charge(center, principal=principal, settings=book.settings)
             if not direct:
-                if principal and self._directory_lookup:
-                    groups = await self._group_principal_ids(actor, principal, center)
+                candidate = principal or Principal(
+                    id="preview",
+                    tenant_id=actor.tenant_id,
+                    object_id=request.requester_object_id,
+                    kind=PrincipalKind.USER,
+                )
+                if not center.is_general or (principal and self._directory_lookup):
+                    try:
+                        groups = await self._group_principal_ids(actor, candidate, center)
+                    except DirectoryError:
+                        block(
+                            "eligibilityUnverified",
+                            "Fresh complete directory membership evidence is unavailable.",
+                        )
                 elif not automation and center.id == request.cost_center_id:
                     groups = request.cost_center_group_ids
                 elif automation:
@@ -2286,7 +2893,11 @@ class EntitlementService:
                         "Fresh directory membership evidence is unavailable.",
                     )
             if not may_charge(
-                center, principal=principal, settings=book.settings, group_principal_ids=groups
+                center,
+                principal=principal,
+                settings=book.settings,
+                group_principal_ids=groups,
+                group_object_ids=groups,
             ):
                 block(
                     "notACostCenterMember", "The requester cannot charge the selected cost center."
@@ -2371,15 +2982,7 @@ class EntitlementService:
         )
 
     async def _requester_principal(self, actor: Actor, object_id: str) -> Principal | None:
-        principal = await self._directory.find_principal_by_object_id(actor.tenant_id, object_id)
-        if principal is None:
-            # Principal IDs derive from the case-folded object ID. That also finds a principal
-            # an administrator registered with different letter case, which would otherwise
-            # collide with the one registration would create.
-            principal = await self._directory.get_principal(
-                actor.tenant_id, deterministic_id("principal", actor.tenant_id, object_id)
-            )
-        return principal
+        return await find_unique_principal(self._directory, actor.tenant_id, object_id)
 
     async def _register_requester(self, actor: Actor, object_id: str) -> Principal:
         try:

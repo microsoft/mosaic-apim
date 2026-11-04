@@ -1,26 +1,28 @@
 """Cost centers: who every grant, and so every call, is charged to. See ADR 0022.
 
 A cost center spans gateways. Administrators author it as desired state: its name and unique code,
-its owners, its members, whether its grants may use keys, per-person default limits for each model
-or MCP server, and optional pooled monthly quotas. Every grant names one, so a call's cost center
-is decided by the grant the gateway matched, and a caller who holds grants under several names one
-with the ``x-mosaic-cost-center`` header.
+its owners, its Entra binding, whether its grants may use keys, per-person default limits for each
+model or MCP server, and optional pooled monthly quotas. Every grant names one, so a call's cost
+center is decided by the grant the gateway matched. A caller holding grants under several names
+one with the ``x-mosaic-cost-center`` header.
 
-Who may charge a cost center:
-
-- everyone may charge the tenant's default cost center;
-- a principal may charge its own default cost center;
-- a member may charge the cost center that lists it, and so may every member of a security group
-  it lists.
+Custom centers require a verified dedicated Entra group. General is exempt by its stable identity.
+Neither a legacy local ``groupId`` nor a default preference proves custom-center membership.
 """
 
 import re
 from collections.abc import Iterable, Mapping
 from datetime import datetime
+from enum import StrEnum
 from typing import Literal, Self
 
 from pydantic import Field, field_validator, model_validator
 
+from mosaic_api.cost_center_directory import (
+    CostCenterGroupSetup,
+    CostCenterSetupState,
+    EntraGroupBinding,
+)
 from mosaic_api.domain import (
     COST_CENTER_CODE_PATTERN,
     GENERAL_COST_CENTER_CODE,
@@ -49,6 +51,7 @@ _EMAIL = r"[^@\s]+@[^@\s]+\.[^@\s]+"
 MAX_OWNERS = 20
 MAX_MEMBERS = 500
 MAX_LIMITS = 200
+MAX_RESOURCE_ACCESS = 200
 # More pending rechecks than this become one recheck of every grant under the cost center.
 MAX_PENDING_RECHECKS = 50
 # The lease every change to cost centers, the tenant default or a principal's default holds, so
@@ -110,6 +113,8 @@ class PendingRecheck(MosaicModel):
     entitlement_ids: list[str] | None = None
     requested_at: datetime = Field(default_factory=utc_now)
     requested_by: str | None = None
+    last_checked_at: datetime | None = None
+    verification_error: str | None = None
 
     def covers(self, entitlement_id: str, subject_id: str) -> bool:
         if self.entitlement_ids is not None:
@@ -242,6 +247,47 @@ class CostCenterLimit(MosaicModel):
         return self
 
 
+def exact_resource_key(resource: EntitlementResource) -> tuple[str, str | None, str]:
+    """A pool-model offering is scoped to its pool even when another pool reuses its model ID."""
+
+    return str(resource.kind), resource.scope_id, resource.id
+
+
+class CostCenterResourceAccessMode(StrEnum):
+    AUTOMATIC = "automatic"
+    REQUEST_ONLY = "requestOnly"
+    NOT_AVAILABLE = "notAvailable"
+
+
+class CostCenterResourceAccess(MosaicModel):
+    resource: EntitlementResource
+    mode: CostCenterResourceAccessMode
+
+    @model_validator(mode="after")
+    def validate_resource(self) -> Self:
+        if self.resource.kind not in {
+            EntitlementResourceKind.MODEL_API,
+            EntitlementResourceKind.MCP_SERVER,
+            EntitlementResourceKind.POOL_MODEL,
+        }:
+            raise ValueError(
+                "Cost center access names an exact model API, MCP server or pool model"
+            )
+        if not self.resource.id.strip():
+            raise ValueError("Cost center access needs a resource ID")
+        if self.resource.kind != EntitlementResourceKind.POOL_MODEL and self.resource.scope_id:
+            raise ValueError("Only a pool-model access definition uses scopeId")
+        return self
+
+
+def _unique_resource_access(
+    values: list[CostCenterResourceAccess],
+) -> list[CostCenterResourceAccess]:
+    if len({exact_resource_key(item.resource) for item in values}) != len(values):
+        raise ValueError("Each exact resource appears once in cost center access")
+    return values
+
+
 class CostCenter(Entity):
     """Who calls are charged to. Desired state in ``desired-state``, saved with an audit event."""
 
@@ -250,15 +296,53 @@ class CostCenter(Entity):
     code: str
     description: str | None = None
     owners: list[str] = Field(default_factory=list)
+    entra_binding: EntraGroupBinding | None = None
+    setup_state: CostCenterSetupState = CostCenterSetupState.SETUP_REQUIRED
+    resource_access: list[CostCenterResourceAccess] = Field(
+        default_factory=list, max_length=MAX_RESOURCE_ACCESS
+    )
+    # Legacy local roster/projection only. New Entra centers never embed directory members here.
     members: list[CostCenterMember] = Field(default_factory=list)
     keys_allowed: bool = True
     limits: list[CostCenterLimit] = Field(default_factory=list)
     # General, which every tenant has. It can be renamed and recoded, never deleted.
     built_in: bool = False
-    group_id: str | None = None
+    group_id: str | None = None  # A MOSAIC local group ID, never an Entra object ID.
     membership_revision: int = Field(default=0, ge=0)
     # Grants to check again after a change that may have stopped their subjects charging it.
     pending_rechecks: list[PendingRecheck] = Field(default_factory=list)
+
+    _validate_resource_access = field_validator("resource_access")(_unique_resource_access)
+
+    @model_validator(mode="after")
+    def validate_setup(self) -> Self:
+        if self.is_general:
+            if self.entra_binding is not None:
+                raise ValueError("General is exempt from Entra group setup")
+            self.setup_state = CostCenterSetupState.EXEMPT
+        elif self.entra_binding is not None:
+            if self.group_id is not None or self.members:
+                raise ValueError(
+                    "An Entra-backed center cannot also use the legacy local group or roster; "
+                    "explicitly reconfigure or recreate the center"
+                )
+            self.setup_state = (
+                CostCenterSetupState.READY
+                if self.entra_binding.is_verified
+                else CostCenterSetupState.SETUP_REQUIRED
+            )
+        else:
+            self.setup_state = CostCenterSetupState.SETUP_REQUIRED
+        return self
+
+    @property
+    def is_general(self) -> bool:
+        return self.id == general_cost_center_id(self.tenant_id)
+
+    @property
+    def verified_group_object_id(self) -> str | None:
+        binding = self.entra_binding
+        return binding.group_object_id if binding is not None and binding.is_verified else None
 
     def ref(self) -> CostCenterRef:
         return CostCenterRef(id=self.id, name=self.name, code=self.code)
@@ -276,9 +360,23 @@ class CostCenter(Entity):
             (
                 limit
                 for limit in self.limits
-                if limit.resource.kind == resource.kind and limit.resource.id == resource.id
+                if exact_resource_key(limit.resource) == exact_resource_key(resource)
             ),
             None,
+        )
+
+    def access_mode_for(self, resource: EntitlementResource) -> CostCenterResourceAccessMode:
+        """Missing custom-center definitions are unavailable, never implicit automatic grants."""
+
+        if self.is_general:
+            return CostCenterResourceAccessMode.REQUEST_ONLY
+        return next(
+            (
+                item.mode
+                for item in self.resource_access
+                if exact_resource_key(item.resource) == exact_resource_key(resource)
+            ),
+            CostCenterResourceAccessMode.NOT_AVAILABLE,
         )
 
 
@@ -318,9 +416,14 @@ class CostCenterCreate(MosaicModel):
     description: str | None = Field(default=None, max_length=1000)
     owners: list[str] = Field(default_factory=list)
     keys_allowed: bool = True
+    group_setup: CostCenterGroupSetup | None = None
+    resource_access: list[CostCenterResourceAccess] = Field(
+        default_factory=list, max_length=MAX_RESOURCE_ACCESS
+    )
 
     _validate_code = field_validator("code")(normalize_code)
     _validate_owners = field_validator("owners")(_owners)
+    _validate_resource_access = field_validator("resource_access")(_unique_resource_access)
 
 
 class CostCenterUpdate(MosaicModel):
@@ -329,6 +432,17 @@ class CostCenterUpdate(MosaicModel):
     description: str | None = Field(default=None, max_length=1000)
     owners: list[str] | None = None
     keys_allowed: bool | None = None
+    group_setup: CostCenterGroupSetup | None = None
+    resource_access: list[CostCenterResourceAccess] | None = Field(
+        default=None, max_length=MAX_RESOURCE_ACCESS
+    )
+
+    @field_validator("resource_access")
+    @classmethod
+    def validate_resource_access(
+        cls, value: list[CostCenterResourceAccess] | None
+    ) -> list[CostCenterResourceAccess] | None:
+        return None if value is None else _unique_resource_access(value)
 
     @field_validator("code")
     @classmethod
@@ -348,9 +462,9 @@ class CostCenterLimitsUpdate(MosaicModel):
 
     @model_validator(mode="after")
     def validate_unique(self) -> Self:
-        seen: set[tuple[str, str]] = set()
+        seen: set[tuple[str, str | None, str]] = set()
         for limit in self.limits:
-            key = (str(limit.resource.kind), limit.resource.id)
+            key = exact_resource_key(limit.resource)
             if key in seen:
                 raise ValueError("Each model or MCP server appears once")
             seen.add(key)
@@ -414,14 +528,27 @@ def may_charge(
     principal: Principal | None,
     settings: CostCenterSettings | None,
     group_principal_ids: Iterable[str] = (),
+    group_object_ids: Iterable[str] = (),
 ) -> bool:
     """Whether a principal may charge a cost center. ``principal`` None is someone not onboarded.
 
-    ``group_principal_ids`` are the principal IDs of the security groups the principal is in, as
-    their token or Microsoft Graph says. A security group may charge only a cost center that lists
-    it, or the tenant's default.
+    Custom centers require the verified primary group's actual Entra object ID. Default settings
+    only choose between eligible centers, and local rosters never establish Entra membership.
+    General preserves its existing default/member rules.
     """
 
+    if not cost_center.is_general:
+        binding = cost_center.entra_binding
+        group_id = cost_center.verified_group_object_id
+        if (
+            binding is None
+            or group_id is None
+            or binding.directory_tenant_id.casefold() != cost_center.tenant_id.casefold()
+        ):
+            return False
+        if principal is not None and principal.kind == PrincipalKind.SECURITY_GROUP:
+            return principal.object_id.casefold() == group_id.casefold()
+        return group_id.casefold() in {item.casefold() for item in group_object_ids}
     if cost_center.id == tenant_default_id(settings, cost_center.tenant_id):
         return True
     if principal is None:
@@ -470,9 +597,14 @@ class CostCenterBook:
         return effective_default_id(principal, self.settings, self.tenant_id)
 
     def chargeable(
-        self, principal: Principal | None, group_principal_ids: Iterable[str] = ()
+        self,
+        principal: Principal | None,
+        group_principal_ids: Iterable[str] = (),
+        *,
+        group_object_ids: Iterable[str] = (),
     ) -> list[CostCenter]:
         groups = list(group_principal_ids)
+        objects = list(group_object_ids)
         return sorted(
             (
                 item
@@ -482,6 +614,7 @@ class CostCenterBook:
                     principal=principal,
                     settings=self.settings,
                     group_principal_ids=groups,
+                    group_object_ids=objects,
                 )
             ),
             key=lambda item: (item.name.casefold(), item.code.casefold()),

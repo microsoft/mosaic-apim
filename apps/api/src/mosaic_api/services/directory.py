@@ -7,12 +7,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from math import ceil
 from typing import Literal, Protocol
-from uuid import UUID
 
 from mosaic_api.cost_centers import (
     COST_CENTERS_BUSY,
     COST_CENTERS_SCOPE,
-    CostCenterView,
     RecheckReason,
 )
 from mosaic_api.domain import (
@@ -29,15 +27,16 @@ from mosaic_api.domain import (
     Group,
     GroupCreate,
     GroupMembership,
-    GroupPurpose,
     GroupUpdate,
     Principal,
     PrincipalCreate,
     PrincipalKind,
     PrincipalUpdate,
+    canonical_object_id,
     deterministic_id,
     general_cost_center_id,
     new_id,
+    principal_object_id_key,
     subject_kind_for,
     utc_now,
 )
@@ -52,7 +51,7 @@ from mosaic_api.errors import (
 )
 from mosaic_api.integrations.graph import DirectoryLookup, DirectoryPhoto
 from mosaic_api.integrations.graph.membership import verification_scope
-from mosaic_api.managed_cost_center_groups import group_membership, require_unmanaged_group
+from mosaic_api.managed_cost_center_groups import require_unmanaged_group
 from mosaic_api.repositories import (
     CostCenterRepository,
     DirectoryRepository,
@@ -78,6 +77,22 @@ class Actor:
     groups_overage: bool = False
 
 
+async def find_unique_principal(
+    repository: DirectoryRepository, tenant_id: str, object_id: str
+) -> Principal | None:
+    """Resolve all canonical matches; an exact lookup must not hide a legacy duplicate."""
+
+    wanted = principal_object_id_key(object_id)
+    matches = [
+        principal
+        for principal in await repository.list_principals(tenant_id)
+        if principal_object_id_key(principal.object_id) == wanted
+    ]
+    if len(matches) > 1:
+        raise ConflictError("Multiple principals map to this identity; resolve the duplicates")
+    return matches[0] if matches else None
+
+
 class CostCenterChecks(Protocol):
     """Revokes grants whose subjects may no longer charge their cost center; see ADR 0022."""
 
@@ -93,18 +108,6 @@ class CostCenterChecks(Protocol):
     async def resume_rechecks(
         self, actor: Actor, cost_center_id: str | None = None
     ) -> list[str]: ...
-
-
-class CostCenterMemberships(Protocol):
-    async def get_cost_center(self, actor: Actor, cost_center_id: str) -> CostCenterView: ...
-
-    async def add_member_with_status(
-        self, actor: Actor, cost_center_id: str, principal_id: str
-    ) -> tuple[CostCenterView, bool]: ...
-
-    async def remove_member(
-        self, actor: Actor, cost_center_id: str, principal_id: str, *, explicit_only: bool = False
-    ) -> CostCenterView: ...
 
 
 def _moves_default(principal: Principal, request: PrincipalUpdate) -> bool:
@@ -160,7 +163,6 @@ class DirectoryService:
         model_client_id: str | None = None,
         cost_center_repository: CostCenterRepository | None = None,
         cost_center_checks: CostCenterChecks | None = None,
-        cost_center_memberships: CostCenterMemberships | None = None,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._repository = repository
@@ -184,7 +186,6 @@ class DirectoryService:
         # The EntitlementService, which revokes a principal's grants under a former default
         # cost center it may no longer charge.
         self._cost_center_checks = cost_center_checks
-        self._cost_center_memberships = cost_center_memberships
         self._clock = clock
         self._directory_checks: dict[str, DirectoryVerificationStatus] = {}
         self._directory_check_locks: dict[str, asyncio.Lock] = {}
@@ -207,18 +208,28 @@ class DirectoryService:
             await self._require_cost_center(actor, requested)
             return requested
         settings = await self._cost_centers.get_settings(actor.tenant_id)
-        return settings.default_cost_center_id if settings else general_cost_center_id(
-            actor.tenant_id
+        selected = (
+            settings.default_cost_center_id if settings else general_cost_center_id(actor.tenant_id)
         )
+        await self._require_cost_center(actor, selected)
+        return selected
 
     async def _require_cost_center(self, actor: Actor, cost_center_id: str) -> None:
         if cost_center_id == general_cost_center_id(actor.tenant_id):
             return
-        if self._cost_centers is None or await self._cost_centers.get_cost_center(
-            actor.tenant_id, cost_center_id
-        ) is None:
+        center = (
+            await self._cost_centers.get_cost_center(actor.tenant_id, cost_center_id)
+            if self._cost_centers is not None
+            else None
+        )
+        if center is None:
             raise ValidationError(
                 "No cost center has that ID", details={"defaultCostCenterId": cost_center_id}
+            )
+        if center.verified_group_object_id is None:
+            raise ValidationError(
+                "Finish the cost center's Entra setup before making it a principal's default",
+                details={"reason": "setupRequired", "defaultCostCenterId": cost_center_id},
             )
 
     @asynccontextmanager
@@ -502,9 +513,7 @@ class DirectoryService:
             last_successful_at=current.last_successful_at,
             last_successful_group_object_id=current.last_successful_group_object_id,
             retry_at=(
-                completed_at + timedelta(seconds=retry_after)
-                if retry_after is not None
-                else None
+                completed_at + timedelta(seconds=retry_after) if retry_after is not None else None
             ),
             message=message,
         )
@@ -576,19 +585,7 @@ class DirectoryService:
         kind = request.kind
         requested_default = request.default_cost_center_id
         await self._onboarding_default(actor, kind, requested_default)
-        object_id = _normalize_object_id(
-            request.object_id,
-            request.kind,
-            require_guid=(
-                self._directory is not None
-                or request.kind
-                in {
-                    PrincipalKind.AGENT_USER,
-                    PrincipalKind.AGENT_IDENTITY,
-                    PrincipalKind.SECURITY_GROUP,
-                }
-            ),
-        )
+        object_id = request.object_id
         identity_parent_id = request.identity_parent_id
         verified = await self._verify_principal_request(request.kind, object_id)
         if verified:
@@ -613,13 +610,9 @@ class DirectoryService:
                 label=request.label,
                 identity_parent_id=None,
             )
-        existing = await self._repository.find_principal_by_object_id(
-            actor.tenant_id, request.object_id
+        existing = await find_unique_principal(
+            self._repository, actor.tenant_id, request.object_id
         )
-        if not existing:
-            existing = await self._find_principal_by_object_id_casefold(
-                actor.tenant_id, request.object_id
-            )
         if existing:
             raise ConflictError(
                 "A principal with this Entra object ID already exists",
@@ -663,23 +656,27 @@ class DirectoryService:
     async def update_principal(
         self, actor: Actor, principal_id: str, request: PrincipalUpdate
     ) -> Principal:
-        """Update a principal. Moving its default cost center rechecks its grants under the old one.
+        """Update a principal and conservatively recheck a former default outside the leases.
 
-        They may have charged the old default only because it was theirs. The recheck is recorded
-        before the move and runs once the locks are released, with any recheck an earlier attempt
-        left pending, so repeating the request finishes one that couldn't. If the update fails, the
-        recheck runs anyway and finds nothing changed.
+        Defaults are preferences, not custom-center membership. Directory kind verification also
+        happens before the short conditional-write boundary.
         """
 
         checks = self._cost_center_checks
         defaults = bool({"default_cost_center_id", "kind"} & request.model_fields_set)
         former: str | None = None
+        observed = await self.get_principal(actor, principal_id)
+        verified = None
+        if request.kind is not None and request.kind != observed.kind:
+            verified = await self._verify_principal_request(request.kind, observed.object_id)
         try:
             async with AsyncExitStack() as stack:
                 await stack.enter_async_context(self._principal_mutation(actor, principal_id))
                 if defaults:
                     await stack.enter_async_context(self._cost_centers_lease(actor))
                 before = await self.get_principal(actor, principal_id)
+                if before.etag != observed.etag:
+                    raise ConflictError("The principal changed during directory verification")
                 if (
                     checks is not None
                     and before.default_cost_center_id is not None
@@ -689,7 +686,9 @@ class DirectoryService:
                     await checks.request_recheck(
                         actor, former, reason="defaultChanged", subject_id=before.id
                     )
-                saved = await self._update_principal(actor, principal_id, request)
+                saved = await self._update_principal(
+                    actor, principal_id, request, verified=verified
+                )
         except Exception:
             if checks is not None and former is not None:
                 with suppress(Exception):
@@ -700,7 +699,12 @@ class DirectoryService:
         return saved
 
     async def _update_principal(
-        self, actor: Actor, principal_id: str, request: PrincipalUpdate
+        self,
+        actor: Actor,
+        principal_id: str,
+        request: PrincipalUpdate,
+        *,
+        verified: DirectoryObject | None,
     ) -> Principal:
         principal = await self.get_principal(actor, principal_id)
         changes = request.model_dump(by_alias=False, exclude_unset=True)
@@ -719,7 +723,6 @@ class DirectoryService:
             if subject_kind_for(new_kind) != subject_kind_for(principal.kind):
                 await self._require_no_grants(actor, principal_id, active_only=True)
                 await self._require_not_model_caller(actor, principal_id)
-            verified = await self._verify_principal_request(new_kind, principal.object_id)
             if verified:
                 changes.update(
                     {
@@ -888,42 +891,14 @@ class DirectoryService:
 
     async def list_memberships(self, actor: Actor, group_id: str) -> list[GroupMembership]:
         group = await self.get_group(actor, group_id)
-        if group.purpose == GroupPurpose.COST_CENTER:
-            center = await self._managed_center(actor, group)
-            return [group_membership(group, member) for member in center.members]
+        require_unmanaged_group(group)
         return await self._repository.list_memberships(actor.tenant_id, group_id=group_id)
-
-    def _membership_service(self) -> CostCenterMemberships:
-        if self._cost_center_memberships is None:
-            raise ConflictError("The managed cost-center membership service is not configured")
-        return self._cost_center_memberships
-
-    async def _managed_center(self, actor: Actor, group: Group) -> CostCenterView:
-        if group.purpose != GroupPurpose.COST_CENTER or not group.cost_center_id:
-            raise ConflictError("The group does not identify an owning cost center")
-        center = await self._membership_service().get_cost_center(actor, group.cost_center_id)
-        if center.group_id != group.id:
-            raise ConflictError("The cost center does not own this group")
-        return center
 
     async def add_membership(
         self, actor: Actor, group_id: str, principal_id: str
     ) -> tuple[GroupMembership, bool]:
         group = await self.get_group(actor, group_id)
-        if group.purpose == GroupPurpose.COST_CENTER:
-            center = await self._managed_center(actor, group)
-            updated, created = await self._membership_service().add_member_with_status(
-                actor, center.id, principal_id
-            )
-            member = next(
-                (item for item in updated.members if item.principal_id == principal_id), None
-            )
-            if member is None:
-                raise ConflictError(
-                    "The cost-center membership changed; reload it and try again",
-                    details={"costCenterId": center.id, "principalId": principal_id},
-                )
-            return group_membership(group, member), created
+        require_unmanaged_group(group)
         principal = await self.get_principal(actor, principal_id)
         if principal.kind == PrincipalKind.SECURITY_GROUP:
             raise ValidationError(
@@ -962,12 +937,7 @@ class DirectoryService:
 
     async def remove_membership(self, actor: Actor, group_id: str, principal_id: str) -> None:
         group = await self._repository.get_group(actor.tenant_id, group_id)
-        if group is not None and group.purpose == GroupPurpose.COST_CENTER:
-            center = await self._managed_center(actor, group)
-            await self._membership_service().remove_member(
-                actor, center.id, principal_id, explicit_only=True
-            )
-            return
+        require_unmanaged_group(group)
         membership = await self._repository.get_membership(actor.tenant_id, group_id, principal_id)
         if not membership:
             raise NotFoundError(
@@ -990,9 +960,7 @@ class DirectoryService:
         principals = await self._repository.list_principals(actor.tenant_id)
         by_object_id = {principal.object_id.casefold(): principal.id for principal in principals}
         return [
-            item.model_copy(
-                update={"principal_id": by_object_id.get(item.object_id.casefold())}
-            )
+            item.model_copy(update={"principal_id": by_object_id.get(item.object_id.casefold())})
             for item in objects
         ]
 
@@ -1018,35 +986,12 @@ class DirectoryService:
             )
         return found
 
-    async def _find_principal_by_object_id_casefold(
-        self, tenant_id: str, object_id: str
-    ) -> Principal | None:
-        wanted = object_id.casefold()
-        for principal in await self._repository.list_principals(tenant_id):
-            if principal.object_id.casefold() == wanted:
-                return principal
-        return None
-
 
 def _canonical_guid(value: str, field_name: str) -> str:
     try:
-        return str(UUID(value.strip()))
+        return canonical_object_id(value)
     except ValueError as exc:
         raise ValidationError(f"{field_name} must be a GUID") from exc
-
-
-def _normalize_object_id(value: str, kind: PrincipalKind, *, require_guid: bool) -> str:
-    if require_guid and kind in {
-        PrincipalKind.USER,
-        PrincipalKind.AGENT_USER,
-        PrincipalKind.AGENT_IDENTITY,
-        PrincipalKind.SECURITY_GROUP,
-    }:
-        return _canonical_guid(value, "objectId")
-    try:
-        return str(UUID(value.strip()))
-    except ValueError:
-        return value.strip()
 
 
 def _kind_label(kind: PrincipalKind) -> str:

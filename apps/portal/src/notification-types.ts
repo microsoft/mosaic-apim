@@ -1,4 +1,4 @@
-import type { EntitlementResource } from './types'
+import type { EntitlementResource, RequestKind } from './types'
 
 export type NotificationCategory = 'requestLifecycle' | 'accessLifecycle' | 'operationalIssues' | 'usageAndBudgets' | 'integrationHealth'
 export type DigestPeriod = 'daily' | 'weekly' | 'monthly'
@@ -44,6 +44,7 @@ export interface NotificationPreferences extends NotificationPreferencesInput {
 export interface NotificationSubject {
   resource?: EntitlementResource | null
   requestId?: string | null
+  requestKind?: RequestKind | null
   entitlementId?: string | null
   budgetId?: string | null
   costCenterId?: string | null

@@ -35,6 +35,7 @@ from mosaic_api.domain import (
     TokenEnforcement,
     model_access_subscription_name,
     new_id,
+    subject_kind_for,
 )
 from mosaic_api.errors import ConflictError, NotFoundError, UpstreamError
 from mosaic_api.main import create_app
@@ -279,6 +280,187 @@ async def test_other_subject_or_tenant_never_reads_keys(
     with pytest.raises(NotFoundError):
         await harness.service.reveal_key(Actor(object_id=oid, tenant_id=tenant), "grant", "primary")
     assert harness.reader.calls == 0
+
+
+@pytest.mark.parametrize("kind", [PrincipalKind.USER, PrincipalKind.SERVICE_PRINCIPAL])
+@pytest.mark.parametrize("object_id", [USER, USER.replace("-", ""), f"{{{USER}}}"])
+async def test_ambiguous_caller_never_lists_or_reads_keys(
+    harness: Harness, kind: PrincipalKind, object_id: str
+) -> None:
+    duplicate = harness.principal.model_copy(
+        update={"id": "legacy-duplicate", "kind": kind, "object_id": object_id}
+    )
+    await harness.directory.create_principal(duplicate, harness.audit())
+    with pytest.raises(ConflictError, match="Multiple principals"):
+        await harness.service.list_for_caller(ACTOR)
+    with pytest.raises(ConflictError, match="Multiple principals"):
+        await harness.service.reveal_key(ACTOR, "grant", "primary")
+    assert harness.reader.calls == 0
+    assert harness.repository.reveals[-1].action == "credential.reveal.denied"
+    assert KEY not in repr(harness.repository.reveals)
+
+
+async def test_legacy_case_variant_is_ambiguous_even_with_an_exact_match(
+    harness: Harness,
+) -> None:
+    object_id = "abcdef12-aaaa-bbbb-cccc-abcdefabcdef"
+    await harness.directory.save_principal(
+        harness.principal.model_copy(update={"object_id": object_id}), harness.audit()
+    )
+    await harness.directory.create_principal(
+        harness.principal.model_copy(
+            update={"id": "legacy-uppercase", "object_id": object_id.upper()}
+        ),
+        harness.audit(),
+    )
+    actor = Actor(object_id=object_id, tenant_id=TENANT)
+    with pytest.raises(ConflictError, match="Multiple principals"):
+        await harness.service.list_for_caller(actor)
+    with pytest.raises(ConflictError, match="Multiple principals"):
+        await harness.service.reveal_key(actor, "grant", "primary")
+    assert harness.reader.calls == 0
+
+
+async def test_same_object_id_in_another_tenant_does_not_make_ownership_ambiguous(
+    harness: Harness,
+) -> None:
+    await harness.directory.create_principal(
+        harness.principal.model_copy(
+            update={"id": "foreign-principal", "tenant_id": "other-tenant"}
+        ),
+        harness.audit(),
+    )
+    result = await harness.service.reveal_key(ACTOR, "grant", "primary")
+    assert result.key == KEY
+
+
+async def test_an_ambiguous_unrelated_caller_still_gets_not_found(harness: Harness) -> None:
+    for principal_id in ("stranger", "duplicate-stranger"):
+        await harness.directory.create_principal(
+            harness.principal.model_copy(
+                update={"id": principal_id, "object_id": OTHER_USER}
+            ),
+            harness.audit(),
+        )
+    with pytest.raises(NotFoundError):
+        await harness.service.reveal_key(
+            Actor(object_id=OTHER_USER, tenant_id=TENANT), "grant", "primary"
+        )
+    assert harness.reader.calls == 0
+
+
+async def test_duplicate_during_arm_round_trip_does_not_release_secret(harness: Harness) -> None:
+    async def duplicate() -> None:
+        await harness.directory.create_principal(
+            harness.principal.model_copy(
+                update={"id": "legacy-application", "kind": PrincipalKind.SERVICE_PRINCIPAL}
+            ),
+            harness.audit(),
+        )
+
+    harness.reader.on_read = duplicate
+    with pytest.raises(ConflictError, match="Multiple principals"):
+        await harness.service.reveal_key(ACTOR, "grant", "primary")
+    assert harness.reader.calls == 1
+    assert harness.repository.reveals[-1].action == "credential.reveal.denied"
+
+
+async def test_administrator_handoff_does_not_resolve_ambiguous_caller(
+    harness: Harness,
+) -> None:
+    await harness.directory.create_principal(
+        harness.principal.model_copy(update={"id": "legacy-duplicate"}), harness.audit()
+    )
+    result = await harness.service.reveal_key(ACTOR, "grant", "primary", administrator=True)
+    assert result.key == KEY
+    assert harness.reader.calls == 1
+
+
+@pytest.mark.parametrize(
+    "resource",
+    [
+        EntitlementResource(kind="modelApi", id="model-api"),
+        EntitlementResource(kind="poolModel", id="pool-model", scope_id="pool"),
+        EntitlementResource(kind="mcpServer", id="mcp-server"),
+    ],
+)
+async def test_all_resource_key_operations_reject_ambiguous_application_ownership(
+    harness: Harness, resource: EntitlementResource
+) -> None:
+    application = harness.principal.model_copy(
+        update={"kind": PrincipalKind.SERVICE_PRINCIPAL}
+    )
+    await harness.directory.save_principal(application, harness.audit())
+    await harness.directory.create_principal(
+        harness.principal.model_copy(update={"id": "legacy-user"}), harness.audit()
+    )
+    await harness.repository.save_entitlement(
+        harness.entitlement.model_copy(
+            update={
+                "subject": EntitlementSubject(kind="application", id=application.id),
+                "resource": resource,
+            }
+        ),
+        harness.audit(),
+    )
+    for operation in (
+        harness.service.reveal_key(ACTOR, "grant", "primary"),
+        harness.service.create_key(ACTOR, "grant"),
+        harness.service.rotate_key(ACTOR, "grant", "secondary"),
+        harness.service.delete_key(ACTOR, "grant"),
+    ):
+        with pytest.raises(ConflictError, match="Multiple principals"):
+            await operation
+    assert harness.reader.calls == 0
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        PrincipalKind.USER,
+        PrincipalKind.AGENT_USER,
+        PrincipalKind.SERVICE_PRINCIPAL,
+        PrincipalKind.MANAGED_IDENTITY,
+        PrincipalKind.AGENT_IDENTITY,
+    ],
+)
+async def test_unique_direct_owner_preserves_identity_kind_mapping(kind: PrincipalKind) -> None:
+    built = Harness()
+    built.principal = built.principal.model_copy(update={"kind": kind})
+    subject = EntitlementSubject(kind=subject_kind_for(kind), id=built.principal.id)
+    built.entitlement = built.entitlement.model_copy(update={"subject": subject})
+    snapshot = built.publication.applied_access
+    assert snapshot is not None
+    built.publication = built.publication.model_copy(
+        update={
+            "applied_access": snapshot.model_copy(
+                update={"grants": [snapshot.grants[0].model_copy(update={"subject": subject})]}
+            )
+        }
+    )
+    await built.seed()
+    result = await built.service.reveal_key(ACTOR, "grant", "primary")
+    assert result.key == KEY
+    assert built.reader.calls == 1
+
+
+async def test_canonical_owner_matches_a_legacy_guid_spelling(harness: Harness) -> None:
+    actor = Actor(object_id=f"{{{USER}}}", tenant_id=TENANT)
+    result = await harness.service.reveal_key(actor, "grant", "primary")
+    assert result.key == KEY
+
+
+async def test_legacy_non_guid_principal_remains_readable_and_case_insensitive(
+    harness: Harness,
+) -> None:
+    await harness.directory.save_principal(
+        harness.principal.model_copy(update={"object_id": "Legacy-Identity"}), harness.audit()
+    )
+    entitlement, principal = await harness.service._holder(
+        Actor(object_id="legacy-identity", tenant_id=TENANT), "grant", administrator=False
+    )
+    assert entitlement.id == "grant"
+    assert principal.object_id == "Legacy-Identity"
 
 
 @pytest.mark.parametrize("state", ["pending", "applying", "failed", "unknown"])
@@ -547,6 +729,33 @@ async def test_portal_routes_are_self_scoped_and_secret_responses_are_no_store(
         )
         assert denied.status_code == 404
         assert "no-store" in denied.headers["Cache-Control"]
+
+
+async def test_ambiguous_key_reveal_is_a_secret_free_non_cacheable_conflict(
+    harness: Harness,
+) -> None:
+    await harness.directory.create_principal(
+        harness.principal.model_copy(
+            update={"id": "legacy-application", "kind": PrincipalKind.SERVICE_PRINCIPAL}
+        ),
+        harness.audit(),
+    )
+    settings = Settings(
+        environment=Environment.TEST, auth_mode=AuthMode.LOCAL,
+        repository_backend=RepositoryBackend.MEMORY, tenant_id=TENANT,
+    )
+    with TestClient(create_app(settings)) as client:
+        client.app.state.authenticator = Caller()
+        client.app.state.portal_access_service = harness.service
+        response = client.post(
+            "/api/v1/me/entitlements/grant/keys/reveal", json={"slot": "primary"}
+        )
+    assert response.status_code == 409
+    assert "no-store" in response.headers["Cache-Control"]
+    assert response.headers["Pragma"] == "no-cache"
+    assert KEY not in response.text
+    assert "legacy-application" not in response.text
+    assert harness.reader.calls == 0
 
 
 def test_app_hands_the_configured_model_client_to_portal_access() -> None:

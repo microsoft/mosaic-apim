@@ -8,8 +8,11 @@ from collections.abc import AsyncIterator
 
 import httpx
 import pytest
-from mosaic_api.cost_centers import CostCenterCreate, CostCenterUpdate
+from mosaic_api.cost_center_directory import EntraGroupBinding
+from mosaic_api.cost_centers import CostCenter, CostCenterResourceAccess, CostCenterUpdate
 from mosaic_api.domain import (
+    AuditEvent,
+    DirectoryObject,
     Entitlement,
     EntitlementCreate,
     EntitlementResource,
@@ -18,8 +21,11 @@ from mosaic_api.domain import (
     PublishedResourceKind,
     PublishRunStatus,
     general_cost_center_id,
+    new_id,
+    utc_now,
 )
 from mosaic_api.errors import ConflictError, NotFoundError
+from mosaic_api.integrations.graph import FakeDirectoryLookup
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.model_access import grant_key_display_name
 from test_governed_lifecycle import ACTOR, APPLICATION, NEW_USER, TENANT, USER, Harness
@@ -184,28 +190,57 @@ async def test_keys_need_the_publication_and_the_cost_center_to_allow_them(
 async def test_leaving_a_cost_center_deletes_the_key_on_the_next_apply(
     harness: Harness,
 ) -> None:
-    research = await harness.cost_centers.create_cost_center(
-        ACTOR, CostCenterCreate(name="Research", code="RES")
+    group_id = "44444444-4444-4444-4444-444444444444"
+    graph = FakeDirectoryLookup(
+        [DirectoryObject(object_id=group_id, kind="securityGroup", display_name="Research")],
+        {group_id: [USER]},
+        tenant_id=TENANT,
+    )
+    harness.grants._directory_lookup = graph
+    await harness.govern()
+    resource = EntitlementResource(kind="modelApi", id=harness.model_id)
+    research = await harness.cost_center_records.create_cost_center(
+        CostCenter(
+            id="costCenter-research",
+            tenant_id=TENANT,
+            name="Research",
+            code="RES",
+            entra_binding=EntraGroupBinding(
+                directory_tenant_id=TENANT,
+                group_object_id=group_id,
+                provenance="attached",
+                verification_state="verified",
+                verified_at=utc_now(),
+            ),
+            resource_access=[CostCenterResourceAccess(resource=resource, mode="requestOnly")],
+        ),
+        AuditEvent(
+            id=new_id("audit"),
+            tenant_id=TENANT,
+            action="test.seed",
+            resource_type="costCenter",
+            resource_id="costCenter-research",
+            actor_object_id=ACTOR.object_id,
+        ),
     )
     principal = await harness.directory_service.create_principal(
         ACTOR, PrincipalCreate(object_id=USER, kind="user", label="Ana")
     )
-    await harness.cost_centers.add_member(ACTOR, research.id, principal.id)
     grant = await harness.grants.create_entitlement(
         ACTOR,
         EntitlementCreate(
             subject=EntitlementSubject(kind="user", id=principal.id),
-            resource=EntitlementResource(kind="modelApi", id=harness.model_id),
+            resource=resource,
             cost_center_id=research.id,
         ),
     )
-    await harness.govern()
     await _applied(harness)
     created = await harness.keys().create_key(OWNER, grant.id)
     assert created.cost_center is not None and created.cost_center.code == "RES"
     assert harness.apim.written[_path(harness, grant)]["properties"]["displayName"] == "Ana (RES)"
 
-    await harness.cost_centers.remove_member(ACTOR, research.id, principal.id)
+    graph.state.group_members[group_id].remove(USER)
+    await harness.grants.member_removed_from_cost_center(ACTOR, research.id, USER, principal.kind)
     revoked = await harness.grants.get_entitlement(ACTOR, grant.id)
     assert revoked.revocation is not None
     assert revoked.runtime is not None and revoked.runtime.status == "revocationPending"

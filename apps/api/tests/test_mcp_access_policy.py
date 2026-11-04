@@ -468,7 +468,7 @@ def test_group_grants_use_precedence_and_overage_denial() -> None:
     )
     assert "hasgroups" in _render(publication, _snapshot(grants=[limited])).fragment_xml
     assert (
-        "ask an administrator for a direct grant"
+        "ask an administrator to resolve group-claim overage"
         in _render(publication, _snapshot(grants=[limited])).fragment_xml
     )
 
