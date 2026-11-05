@@ -26,6 +26,7 @@ from mosaic_api.azure_connections_api import azure_connections_router
 from mosaic_api.budgets_api import budgets_router, portal_budgets_router
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings, get_settings
 from mosaic_api.cost_center_directory import directory_object_id
+from mosaic_api.cost_center_membership_requests_api import membership_requests_router
 from mosaic_api.cost_center_requests_api import cost_center_requests_router
 from mosaic_api.cost_centers_api import cost_centers_router, portal_cost_centers_router
 from mosaic_api.directory_api import directory_router
@@ -135,6 +136,7 @@ from mosaic_api.services.budget_gate import BlockedListGate
 from mosaic_api.services.budget_notification_bridge import BudgetNotificationBridge
 from mosaic_api.services.budgets import BudgetService
 from mosaic_api.services.capability_notification_sources import CapabilityNotificationSource
+from mosaic_api.services.cost_center_membership_requests import CostCenterMembershipService
 from mosaic_api.services.cost_center_requests import CostCenterRequestService
 from mosaic_api.services.cost_centers import CostCenterService
 from mosaic_api.services.directory import Actor
@@ -644,6 +646,13 @@ def create_app(
             cost_center_service,
             validate_access=entitlement_service.validate_cost_center_access,
         )
+        app.state.cost_center_membership_service = CostCenterMembershipService(
+            entitlement_repository,
+            cost_center_repository,
+            cost_center_service,
+            directory_lookup,
+        )
+        app.state.cost_center_membership_request_service = app.state.cost_center_membership_service
         environment_service = EnvironmentService(
             environment_repository,
             gateway_repository=gateway_repository,
@@ -1371,6 +1380,7 @@ def create_app(
     app.include_router(cost_centers_router)
     app.include_router(portal_cost_centers_router)
     app.include_router(cost_center_requests_router)
+    app.include_router(membership_requests_router)
     app.include_router(budgets_router)
     app.include_router(portal_budgets_router)
     app.include_router(portal_router)

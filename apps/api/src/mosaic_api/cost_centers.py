@@ -295,6 +295,8 @@ class CostCenter(Entity):
     name: str
     code: str
     description: str | None = None
+    discoverable: bool = False
+    public_purpose: str | None = Field(default=None, max_length=1000)
     owners: list[str] = Field(default_factory=list)
     entra_binding: EntraGroupBinding | None = None
     setup_state: CostCenterSetupState = CostCenterSetupState.SETUP_REQUIRED
@@ -385,6 +387,8 @@ class CostCenterSettings(Entity):
 
     entity_type: Literal["costCenterSettings"] = "costCenterSettings"
     default_cost_center_id: str
+    creation_requests_enabled: bool = True
+    membership_requests_enabled: bool = False
 
 
 def cost_center_settings_id(tenant_id: str) -> str:
@@ -430,6 +434,9 @@ class CostCenterUpdate(MosaicModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     code: str | None = Field(default=None, min_length=1, max_length=64)
     description: str | None = Field(default=None, max_length=1000)
+    discoverable: bool | None = None
+    public_purpose: str | None = Field(default=None, max_length=1000)
+    acknowledge_membership_changes: bool = False
     owners: list[str] | None = None
     keys_allowed: bool | None = None
     group_setup: CostCenterGroupSetup | None = None
@@ -472,7 +479,9 @@ class CostCenterLimitsUpdate(MosaicModel):
 
 
 class CostCenterSettingsUpdate(MosaicModel):
-    default_cost_center_id: str = Field(min_length=1, max_length=128)
+    default_cost_center_id: str | None = Field(default=None, min_length=1, max_length=128)
+    creation_requests_enabled: bool | None = None
+    membership_requests_enabled: bool | None = None
 
 
 class CostCenterMemberView(MosaicModel):

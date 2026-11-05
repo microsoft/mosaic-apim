@@ -136,6 +136,7 @@ def test_portal_routes_submit_list_get_withdraw_and_count_the_owned_kind(api: Ap
     assert counts.json() == {
         "pendingResourceCount": 0,
         "pendingCostCenterCount": 1,
+        "pendingMembershipCount": 0,
         "pendingCount": 1,
     }
     one = api.client.get(f"/api/v1/portal/cost-center-requests/{request_id}")

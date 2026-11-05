@@ -31,6 +31,7 @@ from mosaic_api.errors import (
 )
 from mosaic_api.integrations.graph.membership import (
     GroupMembershipEvidence,
+    UserMembershipEvidence,
     parse_object_id,
     validate_verification_timeout,
     verification_scope,
@@ -383,6 +384,59 @@ class GraphDirectoryLookup:
             *(self._group_contains_member(group_id, object_id.lower()) for group_id in wanted)
         )
         return {group_id for group_id, contains in zip(wanted, checks, strict=True) if contains}
+
+    async def verify_user_memberships(
+        self, object_id: str, group_object_ids: Sequence[str], *, timeout_seconds: float = 15
+    ) -> UserMembershipEvidence:
+        user_id, candidates = verification_scope(object_id, group_object_ids)
+        validate_verification_timeout(timeout_seconds)
+        if not self._tenant_id:
+            raise DirectoryForbiddenError("Membership verification requires a configured tenant")
+        checked_at = utc_now()
+        found: set[str] = set()
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                user = await self._json(
+                    "verify_membership_user",
+                    "GET",
+                    f"/users/{user_id}",
+                    permission="User.ReadBasic.All",
+                    params={"$select": "id"},
+                    not_found_none=False,
+                    app_only=True,
+                )
+                if parse_object_id(user.get("id")) != user_id or user.get("@odata.type") not in {
+                    None,
+                    "#microsoft.graph.user",
+                }:
+                    raise DirectoryError("The current ordinary user could not be verified")
+                wanted = sorted(candidates)
+                for start in range(0, len(wanted), 20):
+                    batch = wanted[start : start + 20]
+                    response = await self._json(
+                        "verify_user_memberships",
+                        "POST",
+                        f"/users/{user_id}/checkMemberGroups",
+                        permission="User.ReadBasic.All and GroupMember.Read.All",
+                        json={"groupIds": batch},
+                        app_only=True,
+                    )
+                    values = response.get("value")
+                    if not isinstance(values, list) or "@odata.nextLink" in response:
+                        raise DirectoryError("Incomplete membership verification response")
+                    normalized = [parse_object_id(value) for value in values]
+                    if any(value is None or value not in batch for value in normalized):
+                        raise DirectoryError("Invalid membership verification response")
+                    if len(set(normalized)) != len(normalized):
+                        raise DirectoryError("Repeated membership verification response")
+                    found.update(value for value in normalized if value is not None)
+        except TimeoutError as error:
+            raise DirectoryError("Membership verification timed out") from error
+        except _GraphNotFound as error:
+            raise DirectoryError("The current ordinary user could not be verified") from error
+        return UserMembershipEvidence(
+            self._tenant_id, user_id, candidates, frozenset(found), checked_at
+        )
 
     async def group_members(
         self, group_object_id: str, *, limit: int = 200

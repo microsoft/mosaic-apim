@@ -1359,6 +1359,7 @@ class Estate:
     # Cost center IDs by code.
     cost_centers: dict[str, str] = field(default_factory=dict)
     cost_center_requests: dict[str, str] = field(default_factory=dict)
+    cost_center_membership_requests: dict[str, str] = field(default_factory=dict)
 
 
 def _require_synced(run: Any, label: str) -> None:
@@ -2506,6 +2507,66 @@ async def seed_cost_center_requests(
     estate.cost_center_requests["approved"] = approved.id
 
 
+async def seed_cost_center_membership_requests(
+    app: FastAPI, estate: Estate, portal_origin: str
+) -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://screenshot-estate"
+    ) as client:
+        response = await client.put(
+            "/api/v1/cost-center-settings",
+            json={"creationRequestsEnabled": True, "membershipRequestsEnabled": True},
+        )
+        response.raise_for_status()
+        for code, purpose in (
+            (
+                "CI-204",
+                "Customer research, reviewed model experiments, and shared knowledge search.",
+            ),
+            ("CS-110", "Governed support-assistant evaluation and customer-service analysis."),
+            ("FIN-310", "Finance analysis and planning under a shared charging boundary."),
+            ("CLM-520", "Claims triage experiments and reviewed operational AI offerings."),
+        ):
+            response = await client.patch(
+                f"/api/v1/cost-centers/{estate.cost_centers[code]}",
+                json={
+                    "discoverable": True,
+                    "publicPurpose": purpose,
+                    "acknowledgeMembershipChanges": True,
+                },
+            )
+            response.raise_for_status()
+        for label, code, key in (
+            ("pending", "CS-110", "11111111-2222-4333-8444-555555555553"),
+            ("approved", "FIN-310", "11111111-2222-4333-8444-555555555554"),
+        ):
+            response = await client.post(
+                "/api/v1/portal/cost-center-membership-requests",
+                headers={"Origin": portal_origin},
+                json={
+                    "costCenterId": estate.cost_centers[code],
+                    "justification": (
+                        "Collaborate on reviewed analysis with this team and track shared usage."
+                    ),
+                    "idempotencyKey": key,
+                },
+            )
+            response.raise_for_status()
+            request_id = response.json()["id"]
+            estate.cost_center_membership_requests[label] = request_id
+            if label == "approved":
+                response = await client.post(
+                    f"/api/v1/cost-center-membership-requests/{request_id}/approve",
+                    json={
+                        "note": "Approved for the fictional finance collaboration pilot.",
+                        "acknowledgeMembershipChanges": True,
+                    },
+                )
+                response.raise_for_status()
+                if response.json()["membershipState"] != "succeeded":
+                    raise SeedError("The fictional approved membership was not confirmed")
+
+
 # -- Gateway traffic ------------------------------------------------------------------------------
 
 # Microsoft's public clients, which people sign in through to call the gateway. MOSAIC names them.
@@ -3262,6 +3323,9 @@ def build_demo_app(console_port: int, portal_port: int) -> FastAPI:
                 )
                 await seed_cost_center_requests(
                     demo_app.state.cost_center_request_service, estate, TENANT_ID
+                )
+                await seed_cost_center_membership_requests(
+                    demo_app, estate, f"http://127.0.0.1:{portal_port}"
                 )
                 await services.portal_access.resume_automatic_keys(TENANT_ID)
                 await seed_usage(services, estate, TENANT_ID)

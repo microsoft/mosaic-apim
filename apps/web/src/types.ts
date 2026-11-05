@@ -165,7 +165,11 @@ export interface CostCenterCreate {
   resourceAccess?: CostCenterResourceAccess[]
 }
 
-export type CostCenterUpdate = Partial<CostCenterCreate>
+export type CostCenterUpdate = Partial<CostCenterCreate> & {
+  discoverable?: boolean
+  publicPurpose?: string | null
+  acknowledgeMembershipChanges?: true
+}
 
 export interface CostCenterGroupCapabilities {
   available: boolean
@@ -242,6 +246,8 @@ export interface CostCenter {
   name: string
   code: string
   description: string | null
+  discoverable?: boolean
+  publicPurpose?: string | null
   owners: string[]
   entraBinding?: EntraGroupBinding | null
   /** Derived by the server from the stable General identity, never from its editable name. */
@@ -267,6 +273,8 @@ export interface CostCenter {
 }
 
 export interface CostCenterSettings {
+  creationRequestsEnabled?: boolean
+  membershipRequestsEnabled?: boolean
   id: string
   tenantId: string
   defaultCostCenterId: string
@@ -801,15 +809,36 @@ export interface AdminCostCenterRequest {
   needsAdministratorAttention: boolean
 }
 
+export type CostCenterSettingsUpdate = Partial<Pick<CostCenterSettings, 'defaultCostCenterId' | 'creationRequestsEnabled' | 'membershipRequestsEnabled'>>
+
+export interface AdminCostCenterMembershipRequest {
+  id: string
+  requestKind: 'costCenterMembership'
+  requesterObjectId: string
+  costCenter: CostCenterRef
+  justification: string
+  state: AccessRequestState
+  createdAt: string
+  updatedAt: string
+  decidedAt?: string | null
+  decisionNote?: string | null
+  membershipState?: 'pending' | 'succeeded' | 'failed' | 'unknown' | null
+  membershipError: string | null
+  operationId: string | null
+  needsAdministratorAttention: boolean
+}
+
 export interface RequestCounts {
   pendingResourceCount: number
   pendingCostCenterCount: number
+  pendingMembershipCount?: number
   pendingCount: number
 }
 
 export type AdminRequest =
   | { requestKind: 'resource'; request: AccessRequest }
   | { requestKind: 'costCenter'; request: AdminCostCenterRequest }
+  | { requestKind: 'costCenterMembership'; request: AdminCostCenterMembershipRequest }
 
 export interface PolicyPreview {
   contentSha256: string

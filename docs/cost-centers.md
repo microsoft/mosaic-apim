@@ -14,6 +14,7 @@ local-group experiment. See [workflow diagrams](workflows.md) for setup, access,
 
 - [What a cost center holds](#what-a-cost-center-holds)
 - [Set up cost centers](#set-up-cost-centers)
+- [My cost centers and self-service settings](#my-cost-centers-and-self-service-settings)
 - [Members and who may charge a cost center](#members-and-who-may-charge-a-cost-center)
 - [Resource access modes](#resource-access-modes)
 - [Grants, requests, and approvals](#grants-requests-and-approvals)
@@ -183,7 +184,8 @@ under two centers as two grants, each with its own limits, counters, and usage.
 
 ### Request a cost center
 
-A portal user can submit a proposed name, purpose/justification, and an optional existing Entra
+A portal user opens **My cost centers > Request a cost center** to submit a proposed name,
+purpose/justification, and an optional existing Entra
 group object ID. Submitting a suggestion gives the user no directory-wide group search or write
 permission.
 
@@ -195,6 +197,57 @@ chooses initial membership.
 Approval links the request to exactly one created center, even if directory setup remains
 incomplete. An approved center request is not evidence that the requester is a member, a resource
 grant exists, or a gateway apply succeeded. See [approvals](approvals-and-notifications.md).
+
+## My cost centers and self-service settings
+
+The portal's **My cost centers** area separates current membership from the resources in
+**My access**. **My memberships** shows the caller's own centers, including private ones.
+**Find cost centers** searches only centers an administrator explicitly published for discovery.
+General is shown as a built-in charging option, not as an Entra group membership to request.
+
+Administrators configure **Settings > Cost centers**:
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| Cost-center creation requests | On | Users may propose a new center for administrator review. |
+| Cost-center membership requests | Off | Users may request to join an administrator-published center. |
+
+These are persisted tenant settings, not environment variables or browser preferences. Turning
+one off prevents new submissions; it does not remove memberships, delete centers, cancel existing
+requests, change grants, or change the tenant/personal default charging preference. Existing
+reviews and recovery remain available to administrators.
+
+Each custom center starts private. After group setup is ready, an administrator can publish its
+name, code, and public purpose from its editor, acknowledging that adding members changes the
+real Entra group and may affect other applications that use it. Search does not expose private
+centers, directory-wide group lookup, owner email addresses, member rosters, directory IDs,
+credentials, or spending. Unpublishing stops new discovery/submission, not existing membership.
+
+### Request to join
+
+Find a published center, open its details, and choose **Request to join**. Explain why you need
+membership; submitting does not add you. **My requests** tracks resource access, center creation,
+and membership as distinct request kinds. There is at most one active join request per person
+and center, including submissions retried with another key. Administrators may still add someone
+directly through the center's Members view without requiring a request.
+
+An administrator reviews the requesting person, center, group readiness, and the real membership
+effect, then approves or denies. Approval uses MOSAIC's existing consented direct Entra addition,
+not a local roster or a fabricated resource grant. If the person already has effective membership,
+including through a nested group, the request can complete without another direct addition.
+Ordinary users request only their own membership; workload-identity joins are not offered here.
+
+Approval, the directory operation, and usable resource access have separate states. Missing
+consent or a failed write leaves **administrator action needed**. An uncertain outcome requires
+reconciliation of the retained operation, not a new blind addition. The portal distinguishes
+directory-confirmed membership from what the current token proves, and reports failed membership
+verification rather than claiming that the caller has no memberships.
+
+Joining can unlock already-applied **Automatic** offerings once a fresh runtime token includes
+the group. **Request-only** offerings still require individual approval; **Not available** remains
+unavailable. Joining creates no key, increases no budget or pooled quota, and changes no default.
+Graph membership reads in the portal are not a runtime authorization fallback, and do not bypass
+token group overage or gateway apply. The existing supported-cloud restriction remains in effect.
 
 ## Removing a member
 
@@ -336,7 +389,7 @@ success. Inspect the returned operation state, propagation warnings, and pending
 | POST | `/cost-centers/{id}/recheck` | Explicitly recheck affected individual-grant/key eligibility |
 | PUT | `/cost-centers/{id}/limits` | Replace default limits and pooled quotas for exact resources |
 | GET, PUT, DELETE | `/cost-centers/{id}/budget` | Manage the monthly budget |
-| GET, PUT | `/cost-center-settings` | Read/set the tenant's default selection preference |
+| GET, PUT | `/cost-center-settings` | Read/update the default selection preference and independent self-service switches |
 | GET | `/entitlements?costCenter={id}` | List grants charged to a center |
 | GET | `/portal/cost-centers` | Caller-scoped eligible centers |
 | POST | `/portal/access-requests` | Request an available Request-only resource under an eligible center |
@@ -348,7 +401,7 @@ Cost-center creation requests have their own routes and never stand in for resou
 
 | Method | Route under `/api/v1` | Purpose |
 | --- | --- | --- |
-| GET | `/request-counts` | Read separate resource-request and cost-center-request counts |
+| GET | `/request-counts` | Read separate resource, creation, and membership counts and their total |
 | GET | `/cost-center-requests` | Review cost-center proposals, optionally filtered by state |
 | GET | `/cost-center-requests/{id}` | Read the proposal, linked center, and setup attention state |
 | POST | `/cost-center-requests/{id}/approve` | Review the center configuration and explicitly choose whether to add the requester |
@@ -358,9 +411,30 @@ Cost-center creation requests have their own routes and never stand in for resou
 | GET | `/portal/cost-center-requests/{id}` | Track the caller's own proposal and incomplete setup |
 | POST | `/portal/cost-center-requests/{id}/withdraw` | Withdraw the caller's pending proposal |
 
+Membership discovery and requests use separate, owner-scoped routes:
+
+| Method | Route under `/api/v1` | Purpose |
+| --- | --- | --- |
+| GET | `/portal/cost-center-self-service-settings` | Read the two saved self-service switches without exposing administrator settings |
+| GET | `/portal/my-cost-centers` | Page/search the caller's current memberships with separate token eligibility |
+| GET | `/portal/cost-center-directory` | Page/search administrator-published centers using safe public fields |
+| GET | `/portal/cost-center-directory/{id}` | Read a published center or the caller's own private membership |
+| GET, POST | `/portal/cost-center-membership-requests` | List the caller's joins or submit a justified, idempotent request |
+| GET | `/portal/cost-center-membership-requests/{id}` | Track the caller's own decision and directory outcome |
+| POST | `/portal/cost-center-membership-requests/{id}/withdraw` | Withdraw the caller's pending join |
+| GET | `/cost-center-membership-requests` | Review joins, optionally filtered by decision state |
+| GET | `/cost-center-membership-requests/{id}` | Read the administrator view, including retained operation and recovery context |
+| POST | `/cost-center-membership-requests/{id}/approve` | Approve with explicit membership-change acknowledgment |
+| POST | `/cost-center-membership-requests/{id}/deny` | Decline a pending join |
+| POST | `/cost-center-membership-requests/{id}/resume` | Resume a recorded approval using its retained directory operation |
+
+Discovery lists accept `q`, `cursor`, and `limit`; membership-check failure is explicit rather
+than an authoritative empty roster. Submission uses an `idempotencyKey` UUID in the body.
+Approval and resume require `acknowledgeMembershipChanges: true`.
+
 Administrators use the non-`/me` entitlement credential routes for authorized workload handoff.
 Knowing a center, principal, group, request, or entitlement ID is not authorization to mutate it.
-Portal cost-center requests are a separate request kind from resource access requests.
+Creation, membership, and resource access requests are distinct request kinds.
 
 <a id="experimental-managed-groups"></a>
 

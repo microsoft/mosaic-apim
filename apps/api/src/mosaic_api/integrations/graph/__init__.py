@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from typing import Protocol
 
 from mosaic_api.domain import DirectoryMemberPage, DirectoryObject, DirectorySearchKind
-from mosaic_api.integrations.graph.membership import GroupMembershipEvidence
+from mosaic_api.integrations.graph.membership import GroupMembershipEvidence, UserMembershipEvidence
 from mosaic_api.integrations.graph.photos import DirectoryPhoto
 
 
@@ -49,9 +49,13 @@ class DirectoryLookup(Protocol):
         """The subset of ``group_object_ids`` this object belongs to, directly or by nesting."""
         ...
 
-    async def group_members(
-        self, group_object_id: str, *, limit: int = 200
-    ) -> DirectoryMemberPage:
+    async def verify_user_memberships(
+        self, object_id: str, group_object_ids: Sequence[str], *, timeout_seconds: float = 15
+    ) -> UserMembershipEvidence:
+        """Strict tenant-bound ordinary-user evidence for all requested group candidates."""
+        ...
+
+    async def group_members(self, group_object_id: str, *, limit: int = 200) -> DirectoryMemberPage:
         """The group's direct and nested members, up to ``limit``."""
         ...
 

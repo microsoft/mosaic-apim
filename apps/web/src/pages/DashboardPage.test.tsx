@@ -19,6 +19,7 @@ const api = {
   getAnalyticsStatus: vi.fn(),
   getBudgets: vi.fn(),
   listModelPoolSummaries: vi.fn(),
+  getRequestCounts: vi.fn().mockResolvedValue({ pendingResourceCount: 0, pendingCostCenterCount: 0, pendingMembershipCount: 0, pendingCount: 0 }),
 }
 vi.mock('../api', () => ({
   useMosaicApi: () => api,

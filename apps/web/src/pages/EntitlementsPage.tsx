@@ -36,6 +36,8 @@ import { ApprovalPolicies } from '../components/ApprovalPolicies'
 import { BulkApprovalWorkspace } from '../components/BulkApprovalWorkspace'
 import { BulkRequestSelection } from '../components/BulkRequestSelection'
 import { CostCenterRequestReview, CostCenterRequestSummary } from '../components/CostCenterRequestReview'
+import { CostCenterMembershipReview, CostCenterMembershipSummary, RequesterName } from '../components/CostCenterMembershipReview'
+import { membershipNeedsAttention } from '../request-queue'
 import { PublishModelDialog } from '../components/PublishModelDialog'
 import { ResourceWorkbench } from '../components/ResourceWorkbench'
 import { useWorkbenchLocation } from '../components/useWorkbenchLocation'
@@ -332,7 +334,8 @@ export function EntitlementsPage() {
   const [form, setForm] = useState<GrantForm>(emptyForm)
   const editBase = useRef<Entitlement | undefined>(undefined)
   const { selectedId, mode } = workbench
-  const selectedRequestKind = searchParams.get('requestKind') === 'costCenter' ? 'costCenter' : 'resource'
+  const kindParam = searchParams.get('requestKind')
+  const selectedRequestKind = kindParam === 'costCenter' || kindParam === 'costCenterMembership' ? kindParam : 'resource'
   const selectedPublicationId = activeSection === 'settings' ? selectedId ?? '' : ''
   const environmentFilter = searchParams.get('environment') ?? 'all'
   const directModelId = mode === 'new' ? searchParams.get('model') : null
@@ -413,6 +416,19 @@ export function EntitlementsPage() {
     queryKey: ['cost-center-requests', 'selected', selectedId],
     queryFn: () => api.getCostCenterRequest(selectedId!),
     enabled: activeSection === 'requests' && Boolean(selectedId) && selectedRequestKind === 'costCenter',
+    retry: false,
+  })
+  const membershipRequests = useQuery({
+    queryKey: ['cost-center-membership-requests', requestStatus],
+    queryFn: () => api.listCostCenterMembershipRequests(),
+    select: (items) => items.filter((item) => requestStatus === 'all' || item.state === requestStatus
+      || (requestStatus === 'pending' && membershipNeedsAttention(item))),
+    enabled: activeSection === 'requests',
+  })
+  const selectedMembershipRequest = useQuery({
+    queryKey: ['cost-center-membership-requests', 'selected', selectedId],
+    queryFn: () => api.getCostCenterMembershipRequest(selectedId!),
+    enabled: activeSection === 'requests' && Boolean(selectedId) && selectedRequestKind === 'costCenterMembership',
     retry: false,
   })
   const overlaps = useQuery({
@@ -813,15 +829,21 @@ export function EntitlementsPage() {
     ? (requestHistory.data ?? accessRequests.data ?? []).find((item) => item.id === selectedId) : undefined
   const selectedCostCenterRequest = selectedRequestKind === 'costCenter'
     ? selectedCenterRequest.data ?? costCenterRequests.data?.find((item) => item.id === selectedId) : undefined
+  const selectedMembership = selectedRequestKind === 'costCenterMembership'
+    ? selectedMembershipRequest.data ?? membershipRequests.data?.find((item) => item.id === selectedId) : undefined
+  const selectedRequestQuery = selectedRequestKind === 'costCenterMembership' ? selectedMembershipRequest
+    : selectedRequestKind === 'costCenter' ? selectedCenterRequest : requestHistory
   const queueItems = combineAdminRequests(
     selectedRequest && !accessRequests.data?.some((item) => item.id === selectedRequest.id)
       ? [...(accessRequests.data ?? []), selectedRequest] : accessRequests.data ?? [],
     selectedCostCenterRequest && !costCenterRequests.data?.some((item) => item.id === selectedCostCenterRequest.id)
       ? [...(costCenterRequests.data ?? []), selectedCostCenterRequest] : costCenterRequests.data ?? [],
+    selectedMembership && !membershipRequests.data?.some((item) => item.id === selectedMembership.id)
+      ? [...(membershipRequests.data ?? []), selectedMembership] : membershipRequests.data ?? [],
   )
   function selectQueueRecord(key: string | null) {
     const item = queueItems.find((entry) => adminRequestKey(entry.requestKind, entry.request.id) === key)
-    updateLocation({ selected: item?.request.id ?? null, requestKind: item?.requestKind === 'costCenter' ? 'costCenter' : null, mode: null })
+    updateLocation({ selected: item?.request.id ?? null, requestKind: item && item.requestKind !== 'resource' ? item.requestKind : null, mode: null })
   }
   useEffect(() => {
     if (activeSection !== 'requests' || mode !== 'review') {
@@ -880,6 +902,13 @@ export function EntitlementsPage() {
       recordRefreshing={selectedCenterRequest.isFetching} recordError={selectedCenterRequest.isError ? selectedCenterRequest.error : undefined}
       onBack={() => updateLocation({ mode: null })} />
   }
+  if (activeSection === 'requests' && selectedRequestKind === 'costCenterMembership' && mode === 'review'
+    && selectedMembership && selectedMembershipRequest.data) {
+    return <CostCenterMembershipReview key={selectedMembership.id} request={selectedMembership}
+      requester={requestingPrincipal(selectedMembership, principals.data)?.label}
+      recordRefreshing={selectedMembershipRequest.isFetching} recordError={selectedMembershipRequest.isError ? selectedMembershipRequest.error : undefined}
+      onBack={() => updateLocation({ mode: null })} />
+  }
 
   return (
     <section className={styles.page}>
@@ -902,7 +931,7 @@ export function EntitlementsPage() {
           {requestCounts.isSuccess ? `${requestCounts.data.pendingCount} pending requests` : 'Open requests'}
         </Button>
         {requestCounts.isPending && <Text role="status">Checking pending requests…</Text>}
-        {requestCounts.isSuccess && <Text>{requestCounts.data.pendingResourceCount} resource · {requestCounts.data.pendingCostCenterCount} cost-center creation</Text>}
+        {requestCounts.isSuccess && <Text>{requestCounts.data.pendingResourceCount} resource · {requestCounts.data.pendingCostCenterCount} cost-center creation · {requestCounts.data.pendingMembershipCount ?? 0} membership</Text>}
         {requestCounts.isError && <Button onClick={() => void requestCounts.refetch()}>Pending count unavailable — retry</Button>}
       </div>
       {banner && (
@@ -939,6 +968,7 @@ export function EntitlementsPage() {
       {activeSection === 'grants' && entitlements.isError && rows.length > 0 && <ErrorState error={entitlements.error} />}
       {activeSection === 'requests' && accessRequests.isError && Boolean(accessRequests.data?.length) && <ErrorState error={accessRequests.error} />}
       {activeSection === 'requests' && costCenterRequests.isError && <ErrorState title="Cost-center requests unavailable" error={costCenterRequests.error} />}
+      {activeSection === 'requests' && membershipRequests.isError && <ErrorState title="Membership requests unavailable" error={membershipRequests.error} />}
       {costCenters.isError && <ErrorState error={costCenters.error} />}
       {principals.isError && <ErrorState error={principals.error} />}
       {groups.isError && <ErrorState error={groups.error} />}
@@ -1386,26 +1416,26 @@ export function EntitlementsPage() {
       {activeSection === 'requests' &&
         <ResourceWorkbench<AdminRequest>
           title="Requests"
-          description="Resource approval creates exact grant intent. Cost-center approval reserves one center and may still need directory setup. Neither approval applies a gateway plan."
+          description="Resource approval creates grant intent; creation prepares one center. Membership requests require manual review of real group changes, not bulk or AI approval. No approval applies a gateway plan."
           items={queueItems}
           getId={(item) => adminRequestKey(item.requestKind, item.request.id)}
           selectedId={selectedId ? adminRequestKey(selectedRequestKind, selectedId) : null}
           onSelect={selectQueueRecord}
           listLabel="Requests"
-          detailLabel={selectedRequestKind === 'costCenter' ? 'Selected cost-center request' : 'Selected access request'}
-          emptyList={accessRequests.isPending || costCenterRequests.isPending ? <Loading label="Loading requests..." /> : accessRequests.isError || costCenterRequests.isError
-            ? <><ErrorState error={accessRequests.error ?? costCenterRequests.error} /><Button onClick={() => { void accessRequests.refetch(); void costCenterRequests.refetch() }}>Retry requests</Button></>
-            : <EmptyState title={requestStatus === 'pending' ? 'No pending requests' : 'No requests with this status'}>Requests appear when a portal user asks for individual resource access or a new cost center.</EmptyState>}
-          missingSelection={(selectedRequestKind === 'costCenter' ? selectedCenterRequest : requestHistory).isPending ? <Loading label="Loading selected request..." />
-            : (selectedRequestKind === 'costCenter' ? selectedCenterRequest : requestHistory).isError
-              ? <><ErrorState error={selectedRequestKind === 'costCenter' ? selectedCenterRequest.error : requestHistory.error} /><Button onClick={() => { if (selectedRequestKind === 'costCenter') void selectedCenterRequest.refetch(); else void requestHistory.refetch() }}>Retry selected request</Button></>
+          detailLabel={selectedRequestKind !== 'resource' ? 'Selected cost-center request' : 'Selected access request'}
+          emptyList={accessRequests.isPending || costCenterRequests.isPending || membershipRequests.isPending ? <Loading label="Loading requests..." /> : accessRequests.isError || costCenterRequests.isError || membershipRequests.isError
+            ? <><ErrorState error={accessRequests.error ?? costCenterRequests.error ?? membershipRequests.error} /><Button onClick={() => { void accessRequests.refetch(); void costCenterRequests.refetch(); void membershipRequests.refetch() }}>Retry requests</Button></>
+            : <EmptyState title={requestStatus === 'pending' ? 'No pending requests' : 'No requests with this status'}>Requests appear when a portal user asks for individual resource access, a new cost center, or center membership. Approved membership requests needing attention remain in Pending.</EmptyState>}
+          missingSelection={selectedRequestQuery.isPending ? <Loading label="Loading selected request..." />
+            : selectedRequestQuery.isError
+              ? <><ErrorState error={selectedRequestQuery.error} /><Button onClick={() => void selectedRequestQuery.refetch()}>Retry selected request</Button></>
               : <EmptyState title="Request unavailable">This exact request was removed or is inaccessible. <Button onClick={() => selectQueueRecord(null)}>Back to list</Button></EmptyState>}
           renderListItem={(item) => <div className={styles.listSummary}>
-            <Text weight="semibold">{requestingPrincipal(item.request, principals.data)?.label ?? 'Requester name unavailable'}</Text>
-            <Text className={styles.secondaryCell}>{item.requestKind === 'costCenter' ? item.request.name : requestResourceLabel(item.request, resourceLabel(item.request.resource))}</Text>
-            <Badge appearance="outline">{item.requestKind === 'costCenter' ? 'Cost-center creation' : 'Resource access'}</Badge>
+            <Text weight="semibold"><RequesterName objectId={item.request.requesterObjectId} name={requestingPrincipal(item.request, principals.data)?.label} retryButton={false} /></Text>
+            <Text className={styles.secondaryCell}>{item.requestKind === 'costCenter' ? item.request.name : item.requestKind === 'costCenterMembership' ? item.request.costCenter.name : requestResourceLabel(item.request, resourceLabel(item.request.resource))}</Text>
+            <Badge appearance="outline">{item.requestKind === 'costCenter' ? 'Cost-center creation' : item.requestKind === 'costCenterMembership' ? 'Cost-center membership' : 'Resource access'}</Badge>
             <Badge appearance="outline">{item.request.state}</Badge>
-            {item.requestKind === 'costCenter' && item.request.needsAdministratorAttention && <Badge appearance="tint" color="warning">Action needed</Badge>}
+            {(item.requestKind === 'costCenter' && item.request.needsAdministratorAttention || item.requestKind === 'costCenterMembership' && membershipNeedsAttention(item.request)) && <Badge appearance="tint" color="warning">Action needed</Badge>}
           </div>}
           toolbar={
             <>
@@ -1429,7 +1459,14 @@ export function EntitlementsPage() {
             </Field>
             </>
           }
-          renderDetail={(item) => item.requestKind === 'costCenter' ? <div className={styles.grantDetail}>
+          renderDetail={(item) => item.requestKind === 'costCenterMembership' ? <div className={styles.grantDetail}>
+            {selectedMembershipRequest.isFetching && <Text role="status">Refreshing recorded membership request…</Text>}
+            {selectedMembershipRequest.isError && <><ErrorState title="Recorded membership request unavailable" error={selectedMembershipRequest.error} />
+              <Button onClick={() => void selectedMembershipRequest.refetch()}>Retry selected request</Button></>}
+            <CostCenterMembershipSummary request={item.request} requester={requestingPrincipal(item.request, principals.data)?.label}
+              onReview={selectedMembershipRequest.isSuccess && !selectedMembershipRequest.isFetching
+                ? () => updateLocation({ tab: 'requests', selected: item.request.id, requestKind: 'costCenterMembership', mode: 'review' }) : undefined} />
+          </div> : item.requestKind === 'costCenter' ? <div className={styles.grantDetail}>
             {selectedCenterRequest.isFetching && <Text role="status">Refreshing the exact recorded request before review…</Text>}
             {selectedCenterRequest.isError && <><ErrorState title="Recorded cost-center request unavailable" error={selectedCenterRequest.error} />
               <Button onClick={() => void selectedCenterRequest.refetch()}>Retry selected request</Button></>}

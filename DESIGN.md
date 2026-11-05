@@ -24,8 +24,10 @@ panels, soft borders, and Fluent theme overrides keep those surfaces consistent.
 reduced transparency, and forced colors use solid navigation surfaces.
 
 Primary mobile navigation is modal, traps focus, restores the opener, and makes the underlying
-header/content inert. The portal opens on Usage & cost, followed by Catalog, My access, and My
-requests in its primary navigation. Portal details use a modal trailing-edge drawer at every
+header/content inert. The portal opens on Usage & cost, followed by Catalog, My access,
+My cost centers, and My requests in its primary navigation. My cost centers owns membership,
+published discovery, and creation/join entry points; My requests tracks the decisions.
+Portal details use a modal trailing-edge drawer at every
 width, without resizing the underlying list. Closing or switching grant details unmounts
 credential controls; secrets never persist in route state.
 

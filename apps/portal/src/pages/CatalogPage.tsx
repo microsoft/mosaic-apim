@@ -1,5 +1,5 @@
 import { Badge, Button, Input, Textarea, Text } from '@fluentui/react-components'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { usePortalApi } from '../api'
@@ -66,7 +66,8 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
   const profile = useQuery({ queryKey: ['portal', 'profile'], queryFn: api.getProfile })
   const entitlements = useQuery({ queryKey: ['portal', 'entitlements'], queryFn: api.listEntitlements })
   const [justification, setJustification] = useState('')
-  const [selectedCostCenterId, setSelectedCostCenterId] = useState<string | undefined>(undefined)
+  const [params] = useSearchParams()
+  const [selectedCostCenterId, setSelectedCostCenterId] = useState<string | undefined>(() => params.get('costCenter') ?? undefined)
   const resource = resourceFromCatalog(entry)
   const definitions = entry.costCenterAccess ?? []
   const choices = [...new Map([
@@ -196,7 +197,7 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
         <Text>{effectiveCostCenterId
           ? 'This offering has no eligible access definition for the selected cost center. Custom centers need verified group setup, membership claims, and resource availability.'
           : 'Choose an eligible cost center for this exact offering. If none are available, ask an administrator to review group setup, membership, resource mode, and caller-side token support.'}</Text>
-        <Link to="/requests/new-cost-center">Request a cost center</Link>
+        <Link to="/cost-centers">Find or request a cost center</Link>
       </div>}
       {!selectedUnavailable && selectedDefinition?.mode === 'requestOnly' && (
         <>
@@ -241,6 +242,14 @@ function CatalogCapacityBadge({ entry }: { entry: CatalogEntry }) {
 
 export function CatalogPage() {
   const api = usePortalApi()
+  const [params, setParams] = useSearchParams()
+  const costCenterFilter = params.get('costCenter') ?? 'all'
+  function setCostCenterFilter(value: string) {
+    const next = new URLSearchParams(params)
+    if (value === 'all') next.delete('costCenter')
+    else next.set('costCenter', value)
+    setParams(next)
+  }
   const catalog = useQuery({ queryKey: ['portal', 'catalog'], queryFn: api.listCatalog })
   const environments = usePortalEnvironments()
   const entitlements = useQuery({ queryKey: ['portal', 'entitlements'], queryFn: api.listEntitlements })
@@ -256,10 +265,13 @@ export function CatalogPage() {
       const matchesEnvironment =
         environmentFilter === 'all' ||
         (environmentFilter === 'unclassified' ? entry.environment === null : entry.environment === environmentFilter)
-      return matchesEnvironment && (cloudFilter === 'all' || (entry.azureCloud ?? 'commercial') === cloudFilter) && matchesKind(entry, kindFilter) &&
+      const matchesCenter = costCenterFilter === 'all' || entry.costCenterAccess?.some((access) => access.costCenter.id === costCenterFilter)
+      return matchesCenter && matchesEnvironment && (cloudFilter === 'all' || (entry.azureCloud ?? 'commercial') === cloudFilter) && matchesKind(entry, kindFilter) &&
         `${catalogTitle(entry)} ${entry.displayName} ${entry.summary ?? ''} ${entry.gatewayName ?? ''}`.toLowerCase().includes(search.trim().toLowerCase())
     })
-  }, [catalog.data, environmentFilter, cloudFilter, kindFilter, search])
+  }, [catalog.data, environmentFilter, cloudFilter, kindFilter, search, costCenterFilter])
+  const costCenterChoices = [...new Map((catalog.data ?? []).flatMap((entry) => entry.costCenterAccess ?? [])
+    .map((access) => [access.costCenter.id, access.costCenter])).values()]
   const groups = groupResources(filteredCatalog, (entry) => ({
     key: modelGroupKey(resourceFromCatalog(entry), entry.model), title: catalogTitle(entry),
   })).sort((a, b) => Number(!a.items.some((entry) => entry.model?.name.trim())) -
@@ -275,6 +287,7 @@ export function CatalogPage() {
     setEnvironmentFilter('all')
     setCloudFilter('all')
     setKindFilter('all')
+    setCostCenterFilter('all')
     setSearch('')
   }
 
@@ -319,6 +332,15 @@ export function CatalogPage() {
                 {filterOptions.hasUnclassified && (
                   <option value="unclassified">Unclassified</option>
                 )}
+              </select>
+            </label>
+            <label>
+              <span>Cost center</span>
+              <select value={costCenterFilter} onChange={(event) => setCostCenterFilter(event.currentTarget.value)}>
+                <option value="all">All eligible cost centers</option>
+                {costCenterFilter !== 'all' && !costCenterChoices.some((center) => center.id === costCenterFilter) &&
+                  <option value={costCenterFilter}>Selected cost center unavailable</option>}
+                {costCenterChoices.map((center) => <option key={center.id} value={center.id}>{costCenterLabel(center)}</option>)}
               </select>
             </label>
             <label>

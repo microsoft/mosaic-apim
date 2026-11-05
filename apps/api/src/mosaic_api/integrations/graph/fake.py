@@ -12,6 +12,7 @@ from mosaic_api.domain import (
 from mosaic_api.errors import DirectoryError, DirectoryForbiddenError
 from mosaic_api.integrations.graph.membership import (
     GroupMembershipEvidence,
+    UserMembershipEvidence,
     parse_object_id,
     validate_verification_timeout,
     verification_scope,
@@ -75,8 +76,7 @@ class FakeDirectoryLookup:
         matches = [
             item
             for item in self._objects.values()
-            if _matches_kind(kind, item.kind)
-            and _matches_query(kind, item, normalized)
+            if _matches_kind(kind, item.kind) and _matches_query(kind, item, normalized)
         ]
         return sorted(matches, key=lambda item: (item.display_name or "", item.object_id))[
             : min(max(limit, 1), 25)
@@ -109,9 +109,28 @@ class FakeDirectoryLookup:
             if self._contains(group_id.casefold(), target, seen=set())
         }
 
-    async def group_members(
-        self, group_object_id: str, *, limit: int = 200
-    ) -> DirectoryMemberPage:
+    async def verify_user_memberships(
+        self, object_id: str, group_object_ids: Sequence[str], *, timeout_seconds: float = 15
+    ) -> UserMembershipEvidence:
+        user_id, candidates = verification_scope(object_id, group_object_ids)
+        validate_verification_timeout(timeout_seconds)
+        self._raise_if_configured()
+        user = self._objects.get(user_id)
+        if user is None or user.kind != PrincipalKind.USER or user.object_id != user_id:
+            raise DirectoryError("The current ordinary user could not be verified")
+        for group_id in candidates:
+            group = self._objects.get(group_id)
+            if group is None or group.kind != PrincipalKind.SECURITY_GROUP:
+                raise DirectoryError("The candidate security group could not be verified")
+        return UserMembershipEvidence(
+            self._tenant_id.casefold(),
+            user_id,
+            candidates,
+            frozenset(await self.member_groups(user_id, sorted(candidates))),
+            utc_now(),
+        )
+
+    async def group_members(self, group_object_id: str, *, limit: int = 200) -> DirectoryMemberPage:
         self._raise_if_configured()
         found: list[DirectoryObject] = []
         for member_id in self._transitive_members(group_object_id.casefold(), seen=set()):

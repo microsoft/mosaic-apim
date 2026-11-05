@@ -36,6 +36,8 @@ import type {
   RequestCounts,
   CostCenterLimit,
   CostCenterSettings,
+  CostCenterSettingsUpdate,
+  AdminCostCenterMembershipRequest,
   DeclaredDeploymentInput,
   DirectoryMemberPage,
   DirectoryObject,
@@ -249,7 +251,12 @@ export interface MosaicApi extends AdminApi {
   updateCostCenterLimits(costCenterId: string, limits: CostCenterLimit[]): Promise<CostCenter>
   recheckCostCenter(costCenterId: string): Promise<CostCenter>
   getCostCenterSettings(): Promise<CostCenterSettings>
-  updateCostCenterSettings(payload: { defaultCostCenterId: string }): Promise<CostCenterSettings>
+  updateCostCenterSettings(payload: CostCenterSettingsUpdate): Promise<CostCenterSettings>
+  listCostCenterMembershipRequests(state?: string): Promise<AdminCostCenterMembershipRequest[]>
+  getCostCenterMembershipRequest(id: string): Promise<AdminCostCenterMembershipRequest>
+  approveCostCenterMembershipRequest(id: string, payload: { note?: string; acknowledgeMembershipChanges: true }): Promise<AdminCostCenterMembershipRequest>
+  denyCostCenterMembershipRequest(id: string, payload: { note?: string }): Promise<AdminCostCenterMembershipRequest>
+  resumeCostCenterMembershipRequest(id: string, payload: { acknowledgeMembershipChanges: true }): Promise<AdminCostCenterMembershipRequest>
   /** Every budget, worst first, and whether email can reach anyone. */
   getBudgets(): Promise<BudgetOverview>
   checkBudgets(): Promise<BudgetOverview>
@@ -783,6 +790,16 @@ export function useMosaicApi(): MosaicApi {
           method: 'POST',
         }),
       getCostCenterSettings: () => request<CostCenterSettings>('/api/v1/cost-center-settings'),
+      listCostCenterMembershipRequests: (state) =>
+        request<AdminCostCenterMembershipRequest[]>(`/api/v1/cost-center-membership-requests${state ? `?state=${encodeURIComponent(state)}` : ''}`, { cache: 'no-store' }),
+      getCostCenterMembershipRequest: (id) =>
+        request<AdminCostCenterMembershipRequest>(`/api/v1/cost-center-membership-requests/${encodeURIComponent(id)}`, { cache: 'no-store' }),
+      approveCostCenterMembershipRequest: (id, payload) =>
+        request<AdminCostCenterMembershipRequest>(`/api/v1/cost-center-membership-requests/${encodeURIComponent(id)}/approve`, { method: 'POST', body: payload }),
+      denyCostCenterMembershipRequest: (id, payload) =>
+        request<AdminCostCenterMembershipRequest>(`/api/v1/cost-center-membership-requests/${encodeURIComponent(id)}/deny`, { method: 'POST', body: payload }),
+      resumeCostCenterMembershipRequest: (id, payload) =>
+        request<AdminCostCenterMembershipRequest>(`/api/v1/cost-center-membership-requests/${encodeURIComponent(id)}/resume`, { method: 'POST', body: payload }),
       updateCostCenterSettings: (payload) =>
         request<CostCenterSettings>('/api/v1/cost-center-settings', {
           method: 'PUT',

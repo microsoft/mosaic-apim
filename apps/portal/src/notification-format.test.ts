@@ -38,6 +38,8 @@ describe('notification contracts', () => {
       .toEqual({ to: '/requests?request=center%2F1&requestKind=costCenter', label: 'View cost-center request' })
     expect(notificationLink(notificationItem({ subject: { requestId: 'resource/1', requestKind: 'resource' } }))?.to)
       .toBe('/requests?request=resource%2F1')
+    expect(notificationLink(notificationItem({ subject: { requestId: 'join/1', requestKind: 'costCenterMembership' } })))
+      .toEqual({ to: '/requests?request=join%2F1&requestKind=costCenterMembership', label: 'View membership request' })
     expect(notificationLink(notificationItem({ subject: { entitlementId: '../other?x=1' } }))?.to).toBe('/access?grant=..%2Fother%3Fx%3D1')
     expect(notificationLink(notificationItem({ category: 'usageAndBudgets', subject: { costCenterId: 'shared' } }))?.to).toBe('/usage')
     expect(notificationLink(notificationItem({ category: 'operationalIssues', subject: {} }))).toBeNull()

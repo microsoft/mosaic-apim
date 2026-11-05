@@ -14,11 +14,12 @@ vi.mock('../api', async (importOriginal) => ({
 }))
 
 function renderPage(createCostCenterRequest = vi.fn<PortalApi['createCostCenterRequest']>(async () => costCenterRequest())) {
-  mocks.api = { createCostCenterRequest }
+  mocks.api = { createCostCenterRequest, getCostCenterSelfServiceSettings: async () => ({ creationRequestsEnabled: true, membershipRequestsEnabled: false }) }
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const router = createMemoryRouter([
     { path: '/requests/new-cost-center', element: <RequestCostCenterPage /> },
     { path: '/requests', element: <h1>My requests</h1> },
+    { path: '/cost-centers', element: <h1>My cost centers</h1> },
   ], { initialEntries: ['/requests/new-cost-center'] })
   render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>)
   return { createCostCenterRequest, router }
@@ -26,7 +27,7 @@ function renderPage(createCostCenterRequest = vi.fn<PortalApi['createCostCenterR
 
 async function fillRequired() {
   const user = userEvent.setup()
-  await user.type(screen.getByRole('textbox', { name: 'Name' }), ' Research team ')
+  await user.type(await screen.findByRole('textbox', { name: 'Name' }), ' Research team ')
   await user.type(screen.getByRole('textbox', { name: 'Purpose / justification' }), ' Separate evaluation costs ')
   return user
 }
@@ -81,7 +82,7 @@ describe('RequestCostCenterPage', () => {
   it('shows required-field and group GUID validation without sending a request', async () => {
     const { createCostCenterRequest } = renderPage()
     const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: 'Submit request' }))
+    await user.click(await screen.findByRole('button', { name: 'Submit request' }))
     expect(await screen.findByText('Enter a name for the cost center.')).toBeVisible()
     expect(screen.getByText('Explain why you need this cost center.')).toBeVisible()
     await fillRequired()
@@ -128,6 +129,6 @@ describe('RequestCostCenterPage', () => {
     expect(router.state.location.pathname).toBe('/requests/new-cost-center')
     await user.click(cancel)
     await user.click(screen.getByRole('button', { name: 'Discard and leave' }))
-    expect(await screen.findByRole('heading', { name: 'My requests' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'My cost centers' })).toBeVisible()
   })
 })

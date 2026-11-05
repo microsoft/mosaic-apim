@@ -529,6 +529,10 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
             <div><dt>Contact owners</dt><dd>{ownerText(data)} · Does not assign group ownership or membership</dd></div>
             <div><dt>Defaults</dt><dd>{data.defaultFor} principal{data.defaultFor === 1 ? '' : 's'}</dd></div>
             <div><dt>Membership authority</dt><dd>{data.setupState === 'exempt' ? 'General is exempt from dedicated group setup' : 'Actual Entra membership, read one page at a time in Members. No local shadow roster.'}</dd></div>
+            {data.setupState !== 'exempt' && <>
+              <div><dt>Portal publication</dt><dd>{data.discoverable ? 'Discoverable in My cost centers' : 'Private — not discoverable for new join requests'}</dd></div>
+              <div><dt>Public purpose</dt><dd>{data.publicPurpose || 'Not supplied'}</dd></div>
+            </>}
             {data.entraBinding && <>
               <div><dt>Directory tenant</dt><dd className={styles.code}>{data.entraBinding.directoryTenantId}</dd></div>
               <div><dt>Entra group object ID</dt><dd className={styles.code}>{data.entraBinding.groupObjectId}</dd></div>

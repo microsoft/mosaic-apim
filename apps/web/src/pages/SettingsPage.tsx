@@ -50,6 +50,7 @@ import { PageHeader } from '../components/PageHeader'
 import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { ApprovalAiSettings } from '../components/ApprovalAiSettings'
 import { NotificationSettings } from '../components/NotificationSettings'
+import { CostCenterSettings } from '../components/CostCenterSettings'
 import { DirectoryConfiguration } from '../components/DirectoryConfiguration'
 import { AzureConnectionsPanel } from '../components/AzureConnectionsPanel'
 import {
@@ -626,6 +627,7 @@ export function SettingsPage() {
     { value: 'findings', label: 'Findings', icon: <WarningRegular />, description: 'Findings about environment classification and compatibility.' },
     { value: 'approvalAi', label: 'AI approval assistance', icon: <SettingsRegular />, description: 'Configure a governed model for advisory review. Saved intent, connection verification, and response-contract readiness are distinct.' },
     { value: 'notifications', label: 'Notifications', icon: <MailRegular />, description: 'Configure shared channels, administrator routing, Teams destinations, and inspect delivery evidence.' },
+    { value: 'costCenters', label: 'Cost centers', icon: <SettingsRegular />, description: 'Persisted portal request controls and separate directory capability status.' },
     { value: 'runtime', label: 'Runtime configuration', icon: <SettingsRegular />, description: 'Read-only deployed configuration. Change deployment settings outside this page.' },
     { value: 'appearance', label: 'Appearance', icon: <WeatherMoonRegular />, description: 'Preferences apply immediately and are saved only in this browser.' },
   ]
@@ -664,6 +666,7 @@ export function SettingsPage() {
       {section === 'findings' && <EnvironmentFindings title="Findings" />}
       {section === 'approvalAi' && <ApprovalAiSettings />}
       {section === 'notifications' && <NotificationSettings />}
+      {section === 'costCenters' && <CostCenterSettings />}
 
         {section === 'runtime' && <Card className={styles.card}>
           <div className={styles.cardHeader}>

@@ -4,7 +4,7 @@ import { useRef, useState } from 'react'
 import { ApiError, useMosaicApi } from '../api'
 import { COST_CENTER_SETUP_LABELS, costCenterSetupState } from '../cost-centers'
 import { COST_CENTER_CODE_PATTERN, costCenterDraftErrors, costCenterDraftPayload, newCostCenterDraft, useCostCenterCapabilities, type CostCenterDraft } from '../cost-center-setup'
-import type { CostCenter, CostCenterGroupCapabilities } from '../types'
+import type { CostCenter, CostCenterGroupCapabilities, CostCenterUpdate } from '../types'
 import { ErrorState } from './AsyncState'
 import { CostCenterDirectoryPicker } from './CostCenterDirectoryPicker'
 import { CostCenterResourceAccessFields } from './CostCenterResourceAccess'
@@ -190,16 +190,26 @@ export function CostCenterEditor({ costCenter, onCancel, onSaved }: {
   const queryClient = useQueryClient()
   const initial = useRef(newCostCenterDraft(costCenter))
   const [draft, setDraft] = useState(initial.current)
+  const [discoverable, setDiscoverable] = useState(costCenter?.discoverable ?? false)
+  const [publicPurpose, setPublicPurpose] = useState(costCenter?.publicPurpose ?? '')
+  const [publicationAcknowledged, setPublicationAcknowledged] = useState(false)
   const [savedCenterId, setSavedCenterId] = useState<string | null>(null)
   const capabilities = useCostCenterCapabilities()
   const exempt = costCenter?.setupState === 'exempt'
   const bound = costCenter?.entraBinding?.verificationState === 'verified' || costCenter?.directoryOperations?.some((item) => item.kind === 'createGroup')
   const errors = costCenterDraftErrors(draft, capabilities.data, { exempt, bound })
+  const publicationChanged = discoverable !== (costCenter?.discoverable ?? false) || publicPurpose !== (costCenter?.publicPurpose ?? '')
+  const canPublish = Boolean(costCenter && !costCenter.builtIn && costCenterSetupState(costCenter) === 'ready')
+  if (publicationChanged && discoverable && (!canPublish || !publicationAcknowledged)) errors.push('Acknowledge real membership changes before publishing a ready custom center.')
   const save = useMutation({
     mutationFn: () => {
-      const payload = costCenterDraftPayload(draft)
+      const payload: CostCenterUpdate = costCenterDraftPayload(draft)
       if (exempt || bound) delete payload.groupSetup
-      return costCenter ? api.updateCostCenter(costCenter.id, payload) : api.createCostCenter(payload)
+      if (costCenter && publicationChanged) Object.assign(payload, {
+        discoverable, publicPurpose: publicPurpose.trim() || null,
+        ...(publicationAcknowledged ? { acknowledgeMembershipChanges: true } : {}),
+      })
+      return costCenter ? api.updateCostCenter(costCenter.id, payload) : api.createCostCenter(costCenterDraftPayload(draft))
     },
     retry: false,
     onSuccess: async (saved) => {
@@ -228,7 +238,7 @@ export function CostCenterEditor({ costCenter, onCancel, onSaved }: {
   return <WorkspaceEditorFrame title={costCenter ? `Edit ${costCenter.name}` : 'New cost center'}
     description="Save center details, verify a dedicated Entra group now or later, and choose exact resource access. Directory membership and reviewed gateway apply remain separate."
     onBack={onCancel} onCancel={onCancel}
-    dirty={!savedCenterId && !transportUnknown && JSON.stringify(draft) !== JSON.stringify(initial.current)}
+    dirty={!savedCenterId && !transportUnknown && (publicationChanged || JSON.stringify(draft) !== JSON.stringify(initial.current))}
     pending={save.isPending} error={message}
     primaryAction={{
       label: costCenter ? 'Save changes' : 'Create cost center',
@@ -248,6 +258,21 @@ export function CostCenterEditor({ costCenter, onCancel, onSaved }: {
       </MessageBarBody></MessageBar>}
       {costCenter && <div><Badge appearance="tint" color={costCenterSetupState(costCenter) === 'setupRequired' ? 'warning' : 'informative'}>{COST_CENTER_SETUP_LABELS[costCenterSetupState(costCenter)]}</Badge></div>}
       <CostCenterSetupFields value={draft} onChange={setDraft} costCenter={costCenter} disabled={save.isPending || Boolean(savedCenterId) || transportUnknown} />
+      <section className={styles.section} aria-label="Portal publication">
+        <Title3 as="h3">Portal publication</Title3>
+        <Text>New centers start private. Publish only after saving and verifying a custom center. Turning publication off stops new join requests, not existing reviews or memberships.</Text>
+        {canPublish ? <>
+          <Switch label="Discoverable in My cost centers" checked={discoverable} disabled={save.isPending}
+            onChange={(_, data) => { setDiscoverable(data.checked); setPublicationAcknowledged(false) }} />
+          <Field label="Public purpose" hint="Visible to portal users. Do not include internal contacts, identifiers, or sensitive configuration.">
+            <Textarea value={publicPurpose} maxLength={1000} disabled={save.isPending}
+              onChange={(_, data) => { setPublicPurpose(data.value); setPublicationAcknowledged(false) }} />
+          </Field>
+          <Checkbox label="I acknowledge that approved join requests change this real Entra group and can affect other applications using it."
+            checked={publicationAcknowledged} disabled={save.isPending}
+            onChange={(_, data) => setPublicationAcknowledged(Boolean(data.checked))} />
+        </> : <Text>Publication is unavailable until an existing custom center is ready. General cannot accept membership requests.</Text>}
+      </section>
     </div>
   </WorkspaceEditorFrame>
 }

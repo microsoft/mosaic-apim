@@ -54,6 +54,44 @@ export interface PortalCostCenter extends CostCenterRef {
   keysAllowed: boolean
 }
 
+export interface CostCenterSelfServiceSettings {
+  creationRequestsEnabled: boolean
+  membershipRequestsEnabled: boolean
+}
+
+export interface MembershipCostCenter extends CostCenterRef {
+  publicPurpose: string | null
+  builtIn: boolean
+  membershipState: 'member' | 'notMember' | 'unknown' | 'exempt'
+  tokenEligible: boolean
+}
+
+export interface CostCenterDirectoryPage {
+  items: MembershipCostCenter[]
+  nextCursor: string | null
+  membershipError: string | null
+}
+
+export interface CostCenterMembershipRequestCreate {
+  costCenterId: string
+  justification: string
+  idempotencyKey: string
+}
+
+export interface PortalCostCenterMembershipRequest {
+  id: string
+  requestKind: 'costCenterMembership'
+  costCenter: CostCenterRef
+  justification: string
+  state: AccessRequestState
+  createdAt: string
+  updatedAt: string
+  decidedAt?: string | null
+  decisionNote?: string | null
+  membershipState?: 'pending' | 'succeeded' | 'failed' | 'unknown' | null
+  needsAdministratorAttention: boolean
+}
+
 export interface PortalModel {
   name: string
   format: string | null
@@ -125,11 +163,12 @@ export interface AccessRequestResourceSnapshot {
 
 export type AccessRequestState = 'pending' | 'approved' | 'denied' | 'withdrawn'
 
-export type RequestKind = 'resource' | 'costCenter'
+export type RequestKind = 'resource' | 'costCenter' | 'costCenterMembership'
 
 export interface PortalRequestCounts {
   pendingResourceCount: number
   pendingCostCenterCount: number
+  pendingMembershipCount?: number
   pendingCount: number
 }
 
@@ -166,6 +205,7 @@ export interface PortalCostCenterRequest {
 export type PortalRequest =
   | { requestKind: 'resource'; request: AccessRequest }
   | { requestKind: 'costCenter'; request: PortalCostCenterRequest }
+  | { requestKind: 'costCenterMembership'; request: PortalCostCenterMembershipRequest }
 
 export interface AccessRequest {
   id: string

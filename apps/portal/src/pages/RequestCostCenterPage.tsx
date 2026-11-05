@@ -1,12 +1,13 @@
 import { Button, Field, Input, MessageBar, MessageBarBody, MessageBarTitle, Textarea } from '@fluentui/react-components'
 import { ArrowLeftRegular } from '@fluentui/react-icons'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ApiError, usePortalApi } from '../api'
 import { PageHeader } from '../components/PageHeader'
 import { UnsavedChanges } from '../components/UnsavedChanges'
-import { invalidateRequests } from '../request-queries'
+import { costCenterPolicyKey, invalidateRequests } from '../request-queries'
+import { ErrorState, Loading } from '../components/AsyncState'
 import type { CostCenterRequestCreate } from '../types'
 
 type FormField = 'name' | 'code' | 'description' | 'justification' | 'suggestedGroupObjectId'
@@ -30,6 +31,7 @@ export function RequestCostCenterPage() {
   const api = usePortalApi()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const policy = useQuery({ queryKey: costCenterPolicyKey, queryFn: api.getCostCenterSelfServiceSettings })
   const [values, setValues] = useState<Record<FormField, string>>({
     name: '', code: '', description: '', justification: '', suggestedGroupObjectId: '',
   })
@@ -64,7 +66,7 @@ export function RequestCostCenterPage() {
   }
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (create.isPending) return
+    if (create.isPending || !policy.data?.creationRequestsEnabled) return
     const nextErrors: FormErrors = {}
     if (!values.name.trim()) nextErrors.name = 'Enter a name for the cost center.'
     if (!values.justification.trim()) nextErrors.justification = 'Explain why you need this cost center.'
@@ -89,10 +91,15 @@ export function RequestCostCenterPage() {
   return <>
     <UnsavedChanges dirty={dirty} title="Discard this cost-center request?" />
     <div className="workspace-back">
-      <Button appearance="subtle" icon={<ArrowLeftRegular />} onClick={() => navigate('/requests')}>Back to My requests</Button>
+      <Button appearance="subtle" icon={<ArrowLeftRegular />} onClick={() => navigate('/cost-centers')}>Back to My cost centers</Button>
     </div>
     <PageHeader title="Request a cost center" description="Propose a charging and access boundary for your team. An administrator reviews the request and configures its Entra group and resource access." />
-    <form ref={formRef} onSubmit={submit} className="cost-center-request-form" noValidate aria-label="Request a cost center">
+    {policy.isPending && <Loading label="Checking cost-center settings" />}
+    {policy.isError && <><ErrorState error={policy.error} /><Button onClick={() => void policy.refetch()}>Retry cost-center settings</Button></>}
+    {policy.data && !policy.data.creationRequestsEnabled && <MessageBar intent="info"><MessageBarBody>
+      Your administrator has turned off new cost-center creation requests. Existing requests are unchanged.
+    </MessageBarBody></MessageBar>}
+    {policy.data?.creationRequestsEnabled && <form ref={formRef} onSubmit={submit} className="cost-center-request-form" noValidate aria-label="Request a cost center">
       {create.isError && <div ref={errorRef} tabIndex={-1}>
         <MessageBar intent="error">
           <MessageBarBody>
@@ -131,9 +138,9 @@ export function RequestCostCenterPage() {
         <p>Submitting does not add you to the group. An administrator must explicitly choose whether to request your membership. Approval creates one cost center; group setup and gateway access may still be pending.</p>
         <div className="request-actions">
           <Button type="submit" appearance="primary" disabled={create.isPending}>{create.isPending ? 'Submitting request…' : 'Submit request'}</Button>
-          <Button type="button" onClick={() => navigate('/requests')} disabled={create.isPending}>Cancel</Button>
+          <Button type="button" onClick={() => navigate('/cost-centers')} disabled={create.isPending}>Cancel</Button>
         </div>
       </div>
-    </form>
+    </form>}
   </>
 }

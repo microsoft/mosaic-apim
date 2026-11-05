@@ -142,6 +142,7 @@ function AdminShell() {
     { label: 'Entitlements · Approval policies', to: '/entitlements?tab=approvalPolicies' },
     { label: 'Settings · AI approval assistance', to: '/settings?tab=approvalAi' },
     { label: 'Settings · Notifications', to: '/settings?tab=notifications' },
+    { label: 'Settings · Cost centers', to: '/settings?tab=costCenters' },
     { label: 'Notification inbox', to: '/notifications' },
     { label: 'Pricing · Unpriced deployments', to: '/pricing?tab=unpriced' },
     { label: 'Settings · Appearance', to: '/settings?tab=appearance' },

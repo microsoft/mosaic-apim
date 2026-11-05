@@ -9,6 +9,7 @@ from mosaic_api.cost_center_directory import (
     CostCenterDirectoryOperation,
     CostCenterGroupReservation,
 )
+from mosaic_api.cost_center_membership_requests import MembershipRequest
 from mosaic_api.cost_center_requests import CostCenterRequest
 from mosaic_api.cost_centers import CostCenter, CostCenterSettings
 from mosaic_api.domain import (
@@ -551,6 +552,34 @@ class EntitlementRepository(Protocol):
         requester_object_id: str | None = None,
         state: str | None = None,
     ) -> list[CostCenterRequest]: ...
+
+    async def list_membership_requests(
+        self,
+        tenant_id: str,
+        *,
+        requester_object_id: str | None = None,
+        state: str | None = None,
+    ) -> list[MembershipRequest]: ...
+
+    async def get_membership_request(
+        self,
+        tenant_id: str,
+        request_id: str,
+    ) -> MembershipRequest | None: ...
+
+    async def create_membership_request(
+        self,
+        request: MembershipRequest,
+        audit: AuditEvent,
+        events: Sequence[NotificationEvent],
+    ) -> MembershipRequest: ...
+
+    async def save_membership_request(
+        self,
+        request: MembershipRequest,
+        audit: AuditEvent,
+        events: Sequence[NotificationEvent],
+    ) -> MembershipRequest: ...
 
     async def get_cost_center_request(
         self, tenant_id: str, request_id: str

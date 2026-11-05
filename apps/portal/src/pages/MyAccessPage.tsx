@@ -46,7 +46,13 @@ export function MyAccessPage() {
   const [search, setSearch] = useState('')
   const [environmentFilter, setEnvironmentFilter] = useState('all')
   const [cloudFilter, setCloudFilter] = useState('all')
-  const [costCenterFilter, setCostCenterFilter] = useState('all')
+  const costCenterFilter = params.get('costCenter') ?? 'all'
+  function setCostCenterFilter(value: string) {
+    const next = new URLSearchParams(params)
+    if (value === 'all') next.delete('costCenter')
+    else next.set('costCenter', value)
+    setParams(next)
+  }
   const profile = useQuery({ queryKey: ['portal', 'profile'], queryFn: api.getProfile })
   const entitlements = useQuery({
     queryKey: ['portal', 'entitlements'],
@@ -152,6 +158,8 @@ export function MyAccessPage() {
             <label><span>Cost center</span>
               <select value={costCenterFilter} onChange={(event) => setCostCenterFilter(event.currentTarget.value)}>
                 <option value="all">All cost centers</option>
+                {costCenterFilter !== 'all' && !costCenters.some(([id]) => id === costCenterFilter) &&
+                  <option value={costCenterFilter}>Selected cost center unavailable</option>}
                 {costCenters.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
               </select>
             </label>

@@ -1,7 +1,7 @@
 import { renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useMosaicApi } from './api'
-import { centerCapabilities, costCenterCreationRequest, directoryMemberPage, memberOperation, readyCostCenter } from './test/cost-center-fixtures'
+import { centerCapabilities, costCenterCreationRequest, costCenterMembershipRequest, directoryMemberPage, memberOperation, readyCostCenter } from './test/cost-center-fixtures'
 import type { CostCenterRequestApproval } from './types'
 
 vi.mock('@azure/msal-react', () => ({
@@ -19,6 +19,33 @@ function respond(value: unknown, status = 200) {
 }
 
 describe('cost-center management API contract', () => {
+  it('updates self-service policy partially without resetting the default center', async () => {
+    const fetch = respond({ defaultCostCenterId: 'general', creationRequestsEnabled: true, membershipRequestsEnabled: true })
+    const { result } = renderHook(() => useMosaicApi())
+    await result.current.updateCostCenterSettings({ membershipRequestsEnabled: true })
+    expect(fetch.mock.calls[0][0]).toContain('/api/v1/cost-center-settings')
+    expect(fetch.mock.calls[0][1].method).toBe('PUT')
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ membershipRequestsEnabled: true })
+  })
+
+  it('uses distinct membership decision and durable resume contracts', async () => {
+    const fetch = respond(costCenterMembershipRequest)
+    const { result } = renderHook(() => useMosaicApi())
+    await result.current.listCostCenterMembershipRequests('approved')
+    await result.current.getCostCenterMembershipRequest('join/one')
+    await result.current.approveCostCenterMembershipRequest('join/one', { note: 'Reviewed', acknowledgeMembershipChanges: true })
+    await result.current.denyCostCenterMembershipRequest('join/one', { note: 'Not this team' })
+    await result.current.resumeCostCenterMembershipRequest('join/one', { acknowledgeMembershipChanges: true })
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      expect.stringContaining('/cost-center-membership-requests?state=approved'),
+      expect.stringContaining('/cost-center-membership-requests/join%2Fone'),
+      expect.stringContaining('/cost-center-membership-requests/join%2Fone/approve'),
+      expect.stringContaining('/cost-center-membership-requests/join%2Fone/deny'),
+      expect.stringContaining('/cost-center-membership-requests/join%2Fone/resume'),
+    ])
+    expect(JSON.parse(fetch.mock.calls[2][1].body)).toEqual({ note: 'Reviewed', acknowledgeMembershipChanges: true })
+    expect(JSON.parse(fetch.mock.calls[4][1].body)).toEqual({ acknowledgeMembershipChanges: true })
+  })
   it('reads capabilities without a directory mutation or cached capability response', async () => {
     const fetch = respond(centerCapabilities)
     const { result } = renderHook(() => useMosaicApi())

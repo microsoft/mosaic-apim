@@ -158,10 +158,15 @@ class AdminCostCenterRequest(CostCenterRequest):
 class RequestCounts(MosaicModel):
     pending_resource_count: int = Field(ge=0)
     pending_cost_center_count: int = Field(ge=0)
+    pending_membership_count: int = Field(default=0, ge=0)
     pending_count: int = Field(ge=0)
 
     @model_validator(mode="after")
     def validate_total(self) -> Self:
-        if self.pending_count != self.pending_resource_count + self.pending_cost_center_count:
-            raise ValueError("The pending total must include both request kinds")
+        if self.pending_count != (
+            self.pending_resource_count
+            + self.pending_cost_center_count
+            + self.pending_membership_count
+        ):
+            raise ValueError("The pending total must include all request kinds")
         return self

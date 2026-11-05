@@ -26,6 +26,7 @@ from typing import Literal
 
 import httpx
 from PIL import Image, ImageFilter
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Locator, Page, Route, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
@@ -534,6 +535,15 @@ def review_cost_center_request(page: Page) -> None:
     )
     page.goto(page.url + "&mode=review")
     page.get_by_role("heading", name="Review cost-center request", exact=True).wait_for()
+
+
+def review_cost_center_membership(page: Page) -> None:
+    click_button("Customer Support")(page)
+    page.wait_for_function(
+        "new URLSearchParams(location.search).get('requestKind') === 'costCenterMembership'"
+    )
+    page.goto(page.url + "&mode=review")
+    page.get_by_role("heading", name="Review membership request", exact=True).wait_for()
 
 
 def review_demo_changes(page: Page) -> None:
@@ -1055,6 +1065,23 @@ SHOTS: list[Shot] = [
         height=1950,
     ),
     Shot(
+        "console-cost-center-membership-review",
+        "console",
+        "/entitlements?tab=requests",
+        "light",
+        "Customer Support",
+        actions=(review_cost_center_membership,),
+        height=1400,
+    ),
+    Shot(
+        "console-cost-center-self-service",
+        "console",
+        "/settings?tab=costCenters",
+        "dark",
+        "Allow cost-center creation requests",
+        height=1200,
+    ),
+    Shot(
         "console-mcp-publish",
         "console",
         "/mcps",
@@ -1413,7 +1440,7 @@ SHOTS: list[Shot] = [
     Shot(
         "portal-cost-center-request",
         "portal",
-        "/requests/new-cost-center",
+        "/cost-centers/new",
         "light",
         "Suggest an existing Entra group",
         actions=(
@@ -1432,6 +1459,47 @@ SHOTS: list[Shot] = [
             ),
         ),
         height=1200,
+    ),
+    Shot(
+        "portal-my-cost-centers",
+        "portal",
+        "/cost-centers",
+        "light",
+        "Customer Insights",
+        height=1100,
+    ),
+    Shot(
+        "portal-find-cost-centers",
+        "portal",
+        "/cost-centers?view=discover",
+        "dark",
+        "Claims Operations",
+        height=1250,
+    ),
+    Shot(
+        "portal-cost-center-join",
+        "portal",
+        "/cost-centers?view=discover",
+        "light",
+        "Claims Operations",
+        actions=(
+            lambda page: page.get_by_role(
+                "link", name="Request to join", exact=True
+            ).first.click(),
+            fill_textbox(
+                "Purpose / justification",
+                "Review claims triage and evaluate the team's governed AI offerings.",
+            ),
+        ),
+        height=1100,
+    ),
+    Shot(
+        "portal-cost-center-membership-status",
+        "portal",
+        "/requests?kind=costCenterMembership&status=completed",
+        "dark",
+        "Membership confirmed",
+        height=1100,
     ),
     Shot(
         "portal-cost-center-request-status",
@@ -1546,6 +1614,14 @@ def _vite(app_dir: Path, port: int, preview: bool = False) -> list[str]:
 def _ensure_chromium() -> None:
     """Install Playwright's Chromium build if it is missing; a no-op once it is present."""
 
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            browser.close()
+        return
+    except PlaywrightError as error:
+        if "Executable doesn't exist" not in str(error):
+            raise
     subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
 
 
@@ -1734,6 +1810,12 @@ def _check_portal_appearance(page: Page, theme: Theme) -> None:
     expected = "rgb(255, 255, 255)" if theme == "light" else "rgb(28, 37, 49)"
     session = page.context.new_cdp_session(page)
     try:
+        page.goto(origin + "/cost-centers?view=discover")
+        _settle(page)
+        join_link = page.get_by_role("link", name="Request to join", exact=True).first
+        join_route = join_link.get_attribute("href")
+        if not join_route:
+            raise CaptureError("portal: the fictional published center has no join route")
         for width, height in ((1440, 900), (390, 844)):
             page.set_viewport_size({"width": width, "height": height})
             for route, surface in (
@@ -1741,12 +1823,40 @@ def _check_portal_appearance(page: Page, theme: Theme) -> None:
                 ("/catalog", ".resource-list"),
                 ("/access", ".resource-list"),
                 ("/requests", ".request-card"),
+                ("/cost-centers", ".cost-center-list"),
+                ("/cost-centers?view=discover", ".cost-center-list"),
+                ("/cost-centers/new", ".request-form-section"),
+                (join_route, ".request-form-section"),
             ):
                 page.goto(origin + route)
                 _settle(page)
                 page.locator(surface).first.wait_for()
                 if page.evaluate("document.documentElement.scrollWidth > window.innerWidth + 1"):
                     raise CaptureError(f"portal: {route} overflows at {width}px in {theme}")
+                if route == "/cost-centers?view=discover":
+                    contrast = page.get_by_role(
+                        "link", name="Request to join", exact=True
+                    ).first.evaluate(
+                        """element => {
+                          const luminance = color => {
+                            const [r, g, b] = color.match(/[\\d.]+/g).slice(0, 3).map(value => {
+                              const channel = Number(value) / 255;
+                              return channel <= 0.04045 ? channel / 12.92
+                                : ((channel + 0.055) / 1.055) ** 2.4;
+                            });
+                            return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                          };
+                          const style = getComputedStyle(element);
+                          const text = luminance(style.color);
+                          const background = luminance(style.backgroundColor);
+                          return (Math.max(text, background) + 0.05)
+                            / (Math.min(text, background) + 0.05);
+                        }"""
+                    )
+                    if contrast < 4.5:
+                        raise CaptureError(
+                            f"portal: join action contrast {contrast:.2f} is below 4.5 in {theme}"
+                        )
                 for selector in (".sidebar", ".topbar"):
                     chrome = page.locator(selector).evaluate(
                         """element => {

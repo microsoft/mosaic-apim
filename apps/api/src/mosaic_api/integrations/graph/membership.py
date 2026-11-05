@@ -23,6 +23,15 @@ class GroupMembershipEvidence:
     checked_at: datetime
 
 
+@dataclass(frozen=True)
+class UserMembershipEvidence:
+    tenant_id: str
+    user_object_id: str
+    candidate_group_ids: frozenset[str]
+    member_group_ids: frozenset[str]
+    checked_at: datetime
+
+
 def parse_object_id(value: object) -> str | None:
     if not isinstance(value, str) or not _OBJECT_ID.fullmatch(value):
         return None

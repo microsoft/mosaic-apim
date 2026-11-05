@@ -356,6 +356,7 @@ function InventoryCard({
 export function DashboardPage() {
   const api = useMosaicApi()
   const navigate = useNavigate()
+  const requestCounts = useQuery({ queryKey: ['request-counts'], queryFn: () => api.getRequestCounts() })
   const principals = useQuery({
     queryKey: ['principals'],
     queryFn: api.listPrincipals,
@@ -401,6 +402,16 @@ export function DashboardPage() {
         title="Overview"
         description="Monitor MOSAIC desired state and real gateway usage from the last 7 days."
       />
+      <div className={styles.sectionHeading}>
+        <div>
+          <Title3 as="h2">Administrator requests</Title3>
+          {requestCounts.isPending && <Text role="status">Loading request counts…</Text>}
+          {requestCounts.data && <Text block>{requestCounts.data.pendingCount} pending requests · {requestCounts.data.pendingResourceCount} resource · {requestCounts.data.pendingCostCenterCount} cost-center creation · {requestCounts.data.pendingMembershipCount ?? 0} membership</Text>}
+          <Text block>Approved membership requests with incomplete directory outcomes also need attention in the request queue.</Text>
+          {requestCounts.isError && <><ErrorState title="Request counts unavailable" error={requestCounts.error} /><Button onClick={() => void requestCounts.refetch()}>Retry request counts</Button></>}
+        </div>
+        <Button onClick={() => navigate('/entitlements?tab=requests')}>Review administrator requests</Button>
+      </div>
 
       <div className={styles.liveSection}>
         <div className={styles.sectionHeading}>

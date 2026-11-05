@@ -34,6 +34,8 @@ import { CatalogPage } from './pages/CatalogPage'
 import { MyAccessPage } from './pages/MyAccessPage'
 import { MyRequestsPage } from './pages/MyRequestsPage'
 import { RequestCostCenterPage } from './pages/RequestCostCenterPage'
+import { MyCostCentersPage } from './pages/MyCostCentersPage'
+import { RequestCostCenterMembershipPage } from './pages/RequestCostCenterMembershipPage'
 import { UsagePage } from './pages/UsagePage'
 import { runtimeConfig } from './runtime-config'
 import { MosaicThemeProvider } from './theme'
@@ -56,6 +58,7 @@ const navigation: NavigationItem[] = [
   { to: '/usage', label: 'Usage & cost', icon: <DataUsageRegular /> },
   { to: '/catalog', label: 'Catalog', icon: <BookInformationRegular /> },
   { to: '/access', label: 'My access', icon: <HomeRegular /> },
+  { to: '/cost-centers', label: 'My cost centers', icon: <PersonCircleRegular /> },
   { to: '/requests', label: 'My requests', icon: <PersonCircleRegular /> },
   { to: '/notifications', label: 'Notifications', icon: <AlertRegular /> },
 ]
@@ -178,7 +181,7 @@ function PortalShell() {
           {profile.isLoading && <Loading label="Loading profile" />}
           {profile.isSuccess && counts.data && counts.data.pendingCount > 0 &&
             <NavLink className="pending-link" to="/requests?status=pending"
-              aria-label={`${pendingRequests}: ${formatCount(counts.data.pendingResourceCount, 'resource request')}, ${formatCount(counts.data.pendingCostCenterCount, 'cost-center request')}`}>
+              aria-label={`${pendingRequests}: ${formatCount(counts.data.pendingResourceCount, 'resource request')}, ${formatCount(counts.data.pendingCostCenterCount, 'cost-center request')}, ${formatCount(counts.data.pendingMembershipCount ?? 0, 'membership request')}`}>
               <Badge appearance="tint">{pendingRequests}</Badge>
             </NavLink>}
         </div>
@@ -204,6 +207,9 @@ export default function App() {
             <Route path="/catalog" element={<CatalogPage />} />
             <Route path="/requests" element={<MyRequestsPage />} />
             <Route path="/requests/new-cost-center" element={<RequestCostCenterPage />} />
+            <Route path="/cost-centers" element={<MyCostCentersPage />} />
+            <Route path="/cost-centers/new" element={<RequestCostCenterPage />} />
+            <Route path="/cost-centers/:id/join" element={<RequestCostCenterMembershipPage />} />
             <Route path="/notifications" element={<NotificationsPage />} />
             <Route path="/notification-preferences" element={<NotificationPreferencesPage />} />
             <Route path="*" element={<Navigate to="/usage" replace />} />

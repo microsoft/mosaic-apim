@@ -30,6 +30,32 @@ describe('usePortalApi', () => {
     vi.unstubAllGlobals()
   })
 
+  it('keeps membership reads, search, and requests on encoded portal-scoped routes', async () => {
+    const fetchMock = stubFetch(() => jsonResponse({}))
+    const { result } = renderHook(() => usePortalApi())
+    await result.current.getCostCenterSelfServiceSettings()
+    await result.current.listMyCostCenters({ q: 'R & D', cursor: undefined })
+    await result.current.searchCostCenters({ cursor: 'page/+' })
+    await result.current.getDiscoverableCostCenter('center/1')
+    await result.current.listCostCenterMembershipRequests()
+    await result.current.getCostCenterMembershipRequest('request/1')
+    const payload = { costCenterId: 'cc-1', justification: 'Evaluation', idempotencyKey: '11111111-2222-4333-8444-555555555555' }
+    await result.current.createCostCenterMembershipRequest(payload)
+    await result.current.withdrawCostCenterMembershipRequest('request/1')
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      'http://localhost:8000/api/v1/portal/cost-center-self-service-settings',
+      'http://localhost:8000/api/v1/portal/my-cost-centers?limit=20&q=R+%26+D',
+      'http://localhost:8000/api/v1/portal/cost-center-directory?limit=20&cursor=page%2F%2B',
+      'http://localhost:8000/api/v1/portal/cost-center-directory/center%2F1',
+      'http://localhost:8000/api/v1/portal/cost-center-membership-requests',
+      'http://localhost:8000/api/v1/portal/cost-center-membership-requests/request%2F1',
+      'http://localhost:8000/api/v1/portal/cost-center-membership-requests',
+      'http://localhost:8000/api/v1/portal/cost-center-membership-requests/request%2F1/withdraw',
+    ])
+    expect(fetchMock.mock.calls[6][1]).toMatchObject({ method: 'POST', body: JSON.stringify(payload) })
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ cache: 'no-store' })
+  })
+
   it('reads and updates only the authenticated personal inbox with encoded filters and item IDs', async () => {
     const fetchMock = stubFetch(() => jsonResponse({ items: [], unreadCount: 0, continuationToken: null }))
     const { result } = renderHook(() => usePortalApi())
