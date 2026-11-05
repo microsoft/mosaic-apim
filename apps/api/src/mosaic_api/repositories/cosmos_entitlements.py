@@ -4,6 +4,11 @@ from typing import Any, TypeVar
 from azure.cosmos import exceptions
 
 from mosaic_api.approvals import ApprovalDecisionProvenance, ApprovalPolicy
+from mosaic_api.cost_center_membership_requests import (
+    MembershipRequest,
+    MembershipRequestGuard,
+    membership_guard_id,
+)
 from mosaic_api.cost_center_requests import CostCenterRequest
 from mosaic_api.domain import AccessRequest, AccessRequestState, AuditEvent, Entitlement, Principal
 from mosaic_api.errors import ChangeNotRecordedError, ConflictError
@@ -14,10 +19,14 @@ from mosaic_api.repositories.cost_center_request_writes import (
     require_request_change,
     validate_request_write,
 )
+from mosaic_api.repositories.membership_request_writes import (
+    MEMBERSHIP_CHANGED,
+    validate_membership_write,
+)
 from mosaic_api.services.approval_events import grant_event
 from mosaic_api.services.notification_events import access_request_event
 
-RequestT = TypeVar("RequestT", AccessRequest, CostCenterRequest)
+RequestT = TypeVar("RequestT", AccessRequest, CostCenterRequest, MembershipRequest)
 
 
 class CosmosEntitlementRepository(CosmosRepositoryBase):
@@ -203,6 +212,93 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
             CostCenterRequest, tenant_id, "costCenterRequest", extra, parameters
         )
         return sorted(items, key=lambda item: (item.created_at, item.id), reverse=True)
+
+    async def list_membership_requests(
+        self,
+        tenant_id: str,
+        *,
+        requester_object_id: str | None = None,
+        state: str | None = None,
+    ) -> list[MembershipRequest]:
+        extra = ""
+        parameters: list[dict[str, Any]] = []
+        if requester_object_id is not None:
+            extra += " AND c.requesterObjectId = @requesterObjectId"
+            parameters.append({"name": "@requesterObjectId", "value": requester_object_id})
+        if state is not None:
+            extra += " AND c.state = @state"
+            parameters.append({"name": "@state", "value": state})
+        items = await self._query(
+            MembershipRequest, tenant_id, "costCenterMembershipRequest", extra, parameters
+        )
+        return sorted(items, key=lambda item: (item.created_at, item.id), reverse=True)
+
+    async def get_membership_request(
+        self,
+        tenant_id: str,
+        request_id: str,
+    ) -> MembershipRequest | None:
+        return await self._read_request(MembershipRequest, tenant_id, request_id)
+
+    async def create_membership_request(
+        self,
+        request: MembershipRequest,
+        audit: AuditEvent,
+        events: Sequence[NotificationEvent],
+    ) -> MembershipRequest:
+        validated = validate_membership_write(request, audit, events)
+        guard = MembershipRequestGuard(
+            id=membership_guard_id(request),
+            tenant_id=request.tenant_id,
+            request_id=request.id,
+        )
+        await self._execute_batch(
+            [
+                ("create", (self._document(validated),)),
+                ("create", (self._document(guard),)),
+                ("create", (self._document(audit),)),
+                *(("create", (self._document(event),)) for event in events),
+            ],
+            audit,
+            conflict_message="An active membership request already exists for this center",
+        )
+        return await self._membership_result(request)
+
+    async def save_membership_request(
+        self,
+        request: MembershipRequest,
+        audit: AuditEvent,
+        events: Sequence[NotificationEvent],
+    ) -> MembershipRequest:
+        previous = await self.get_membership_request(request.tenant_id, request.id)
+        if not request.etag or previous is None or previous.etag != request.etag:
+            raise ConflictError(MEMBERSHIP_CHANGED)
+        validated = validate_membership_write(request, audit, events, previous)
+        operations = [
+            self._replace_operation(validated),
+            ("create", (self._document(audit),)),
+            *(("create", (self._document(event),)) for event in events),
+        ]
+        if previous.active and not request.active:
+            guard = await self._read(
+                MembershipRequestGuard,
+                request.tenant_id,
+                membership_guard_id(request),
+            )
+            if guard is None or guard.request_id != request.id:
+                raise ConflictError("The active membership guard changed; reload the request")
+            operations.append(self._delete_operation(guard.id, guard))
+        await self._execute_batch(operations, audit, conflict_message=MEMBERSHIP_CHANGED)
+        return await self._membership_result(request)
+
+    async def _membership_result(self, request: MembershipRequest) -> MembershipRequest:
+        saved = await self.get_membership_request(request.tenant_id, request.id)
+        if saved is None:
+            raise ChangeNotRecordedError(
+                "Membership request write completed but its result is unavailable. Reload "
+                "the existing request; do not submit another."
+            )
+        return saved
 
     async def get_cost_center_request(
         self, tenant_id: str, request_id: str

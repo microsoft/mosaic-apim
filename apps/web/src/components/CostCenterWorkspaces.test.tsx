@@ -80,6 +80,25 @@ async function verifyIdentity(user: ReturnType<typeof userEvent.setup>, label: '
 }
 
 describe('shared cost-center setup', () => {
+  it('publishes only an existing ready custom center with explicit group-impact acknowledgment', async () => {
+    const user = userEvent.setup()
+    mount(<CostCenterEditor costCenter={readyCostCenter} onCancel={vi.fn()} onSaved={vi.fn()} />)
+    await user.click(await screen.findByRole('switch', { name: 'Discoverable in My cost centers' }))
+    await user.type(screen.getByLabelText('Public purpose'), 'Shared research work')
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled()
+    await user.click(screen.getByRole('checkbox', { name: /approved join requests change this real Entra group/ }))
+    await user.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(api.updateCostCenter).toHaveBeenCalledWith(readyCostCenter.id, expect.objectContaining({
+      discoverable: true, publicPurpose: 'Shared research work', acknowledgeMembershipChanges: true,
+    })))
+  })
+
+  it('does not expose publication controls while creating a center', async () => {
+    mount(<CostCenterEditor onCancel={vi.fn()} onSaved={vi.fn()} />)
+    expect(screen.queryByRole('switch', { name: 'Discoverable in My cost centers' })).not.toBeInTheDocument()
+    expect(screen.getByText(/New centers start private/)).toBeVisible()
+  })
+
   it('saves incomplete setup without a directory write or implicit owner enrollment', async () => {
     const user = userEvent.setup()
     const saved = vi.fn()

@@ -104,5 +104,57 @@ class ScreenshotEstateTests(unittest.TestCase):
         response.raise_for_status()
         self.assertEqual(
             response.json(),
-            {"pendingResourceCount": 1, "pendingCostCenterCount": 1, "pendingCount": 2},
+            {
+                "pendingResourceCount": 1,
+                "pendingCostCenterCount": 1,
+                "pendingMembershipCount": 1,
+                "pendingCount": 3,
+            },
+        )
+
+    def test_self_service_fixture_uses_published_centers_and_real_fake_membership(self) -> None:
+        response = self.client.get(
+            "/api/v1/portal/cost-center-self-service-settings", headers=PORTAL_HEADERS
+        )
+        response.raise_for_status()
+        self.assertEqual(
+            response.json(),
+            {"creationRequestsEnabled": True, "membershipRequestsEnabled": True},
+        )
+        response = self.client.get(
+            "/api/v1/portal/cost-center-directory", headers=PORTAL_HEADERS
+        )
+        response.raise_for_status()
+        directory = response.json()
+        self.assertIsNone(directory["membershipError"])
+        self.assertEqual(
+            {item["code"] for item in directory["items"]},
+            {"CI-204", "CS-110", "FIN-310", "CLM-520"},
+        )
+        finance = next(item for item in directory["items"] if item["code"] == "FIN-310")
+        self.assertEqual(finance["membershipState"], "member")
+        self.assertFalse(finance["tokenEligible"])
+        self.assertTrue(all(item["publicPurpose"] for item in directory["items"]))
+        self.assertTrue(
+            all("verifiedGroupObjectId" not in item for item in directory["items"])
+        )
+        response = self.client.get(
+            "/api/v1/portal/cost-center-membership-requests", headers=PORTAL_HEADERS
+        )
+        response.raise_for_status()
+        joins = response.json()
+        self.assertEqual({item["state"] for item in joins}, {"pending", "approved"})
+        approved = next(item for item in joins if item["state"] == "approved")
+        self.assertEqual(approved["membershipState"], "succeeded")
+        self.assertFalse(approved["needsAdministratorAttention"])
+        response = self.client.get("/api/v1/portal/me", headers=PORTAL_HEADERS)
+        response.raise_for_status()
+        principal_id = response.json()["principalId"]
+        response = self.client.get("/api/v1/entitlements")
+        response.raise_for_status()
+        self.assertFalse(
+            any(
+                item["costCenterId"] == finance["id"] and item["subject"]["id"] == principal_id
+                for item in response.json()
+            )
         )

@@ -157,6 +157,25 @@ not a fabricated model/MCP resource. Approval links to exactly one created cente
 remains incomplete. Retries converge on that center rather than creating duplicate centers/groups.
 An approved center request does not itself create resource access.
 
+### Self-service discovery and membership requests
+
+The portal provides My cost centers for the caller's own memberships, administrator-published
+discovery, and creation/join entry points. My requests is the history of all three request kinds.
+Persisted tenant settings independently allow creation requests (default on) and membership
+requests (default off). Existing centers remain private until an administrator explicitly
+publishes a ready custom center with a public purpose and acknowledgment of real-group effects.
+Disabling requests or unpublishing does not remove membership or cancel existing reviews.
+
+A join has a distinct entity and immutable target identity, conditional active-request
+deduplication, and a manual administrator decision before the existing durable Graph addition.
+Approval, directory outcome, and token-visible runtime eligibility remain separate; failure and
+unknown outcomes retain recovery rather than manufacturing an entitlement or repeating a write.
+Current membership reads expose only the caller's own relationship, using bounded validated
+directory evidence, not a group roster or a runtime Graph authorization fallback.
+
+This extension does not introduce user self-approval, resource-policy/AI join approval,
+workload-identity join requests, self-service removal, or Government support.
+
 ### Reconfigure old MVP data explicitly
 
 Old local group IDs are never Entra object IDs. Centers without verified bindings remain

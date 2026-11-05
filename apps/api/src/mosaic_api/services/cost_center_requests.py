@@ -20,7 +20,7 @@ from mosaic_api.cost_center_requests import (
     RequestCounts,
     requested_cost_center_id,
 )
-from mosaic_api.cost_centers import CostCenter, CostCenterCreate, CostCenterUpdate
+from mosaic_api.cost_centers import CostCenter, CostCenterCreate, CostCenterUpdate, default_settings
 from mosaic_api.domain import (
     AccessRequestState,
     AuditEvent,
@@ -117,15 +117,28 @@ class CostCenterRequestService:
             requester_object_id=None if administrator else actor.object_id.casefold(),
             state="pending",
         )
+        membership_requests = await self._repository.list_membership_requests(
+            actor.tenant_id,
+            requester_object_id=None if administrator else actor.object_id.casefold(),
+        )
+        membership_count = sum(item.active for item in membership_requests)
         return RequestCounts(
             pending_resource_count=len(resource_requests),
             pending_cost_center_count=len(center_requests),
-            pending_count=len(resource_requests) + len(center_requests),
+            pending_membership_count=membership_count,
+            pending_count=len(resource_requests) + len(center_requests) + membership_count,
         )
 
     async def submit(
         self, actor: Actor, payload: CostCenterRequestCreate
     ) -> PortalCostCenterRequest:
+        settings = await self._cost_centers.get_settings(actor.tenant_id) or default_settings(
+            actor.tenant_id
+        )
+        if not settings.creation_requests_enabled:
+            raise ConflictError(
+                "Cost center creation requests are disabled by administrator policy"
+            )
         request = CostCenterRequest(
             id=(
                 deterministic_id(

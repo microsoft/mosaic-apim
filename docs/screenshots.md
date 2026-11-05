@@ -22,6 +22,13 @@ group grants remain resource-scaled rather than member-scaled. A pending creatio
 approved, setup-required center illustrate that approval, membership, and gateway apply are
 separate outcomes.
 
+The fixture explicitly enables both self-service switches and publishes Customer Insights,
+Customer Support, Finance, and Claims Operations with safe public purposes. A pending
+Customer Support join and an approved Finance join show manual review and confirmed
+directory membership separately; Claims Operations remains available for the join form.
+The demonstration does not change the production defaults: creation requests are on and
+membership requests are off until an administrator enables them.
+
 ## When to update them
 
 Regenerate the affected shots, and reread their gallery and any README descriptions, in the same change as any of
@@ -76,7 +83,7 @@ python -m scripts.screenshots.capture
 | `--logs-dir DIR` | Use a new dedicated project-local directory for server logs and unredacted failure captures, outside the PNG output directory. The default is an ignored `scripts\screenshots\__pycache__\capture-*` cache; a successful run removes it |
 | `--headed` | Show the browser while it captures |
 | `--preview` | Serve production assets after building both apps with `npm run build --prefix apps\web` and `npm run build --prefix apps\portal`; avoids cold dev-server dependency bundling |
-| `--check-navigation` | Also verify all four administrator rail combinations in both themes, full width recovery, single-line controls and document reflow, every Pool section and Pricing at exactly 1440px document width with local table scrolling and `scrollIntoView`, mobile focus/inert behavior, workspace drafts and section-change discard decisions, forced colors, usage-first portal landing, portal primary/section rail width recovery, expanded/compact appearance controls, unchanged portal list geometry, and drawer/credential teardown against the fictional estate. For each captured portal theme, check all four pages at desktop/mobile widths, glass chrome, opaque panels/drawers, panel spacing, and reduced-transparency/forced-colors/unsupported-blur fallbacks |
+| `--check-navigation` | Also verify all four administrator rail combinations in both themes, full width recovery, single-line controls and document reflow, every Pool section and Pricing at exactly 1440px document width with local table scrolling and `scrollIntoView`, mobile focus/inert behavior, workspace drafts and section-change discard decisions, forced colors, usage-first portal landing, portal primary/section rail width recovery, expanded/compact appearance controls, unchanged portal list geometry, and drawer/credential teardown against the fictional estate. For each captured portal theme, check resource, request, and cost-center pages at desktop/mobile widths, glass chrome, opaque panels/drawers, panel spacing, and reduced-transparency/forced-colors/unsupported-blur fallbacks |
 | `--reuse-servers` | Use a demo API and apps that are already running instead of starting them |
 | `--api-port`, `--console-port`, `--portal-port` | Change the ports, which default to 18000, 15173, and 15174 |
 
@@ -354,6 +361,8 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-cost-center-access` | Console | Customer Insights detail, **Resource access**, exact Automatic embeddings offering selected | Light | Cost-center resource access |
 | `console-cost-center-setup` | Console | Knowledge Engineering, **Finish group setup** editor, approved but still Setup required, never saved | Dark | Finish group setup |
 | `console-cost-center-request-review` | Console | `/entitlements?tab=requests`, pending Responsible AI evaluation request in full-workspace review, never approved | Light | Review a cost-center request |
+| `console-cost-center-membership-review` | Console | `/entitlements?tab=requests`, pending Customer Support join in full-workspace review, never approved | Light | Review membership |
+| `console-cost-center-self-service` | Console | `/settings?tab=costCenters`, saved creation-request and membership-request switches, both explicitly enabled for the fictional demo | Dark | Self-service controls |
 | `console-mcp-publish` | Console | `/mcps`, full-workspace **Review changes** for the published Docs MCP server, intended changes and impact with collapsed execution, never applied | Light | MCP publish review |
 | `console-model-change-review` | Console | `/entitlements?tab=settings`, GPT-4o key setting saved but never applied, current edit separated from an earlier pending grant | Light | Model change review |
 | `console-unpublish-review` | Console | `/models`, GPT-4o selected, detail **More actions > Unpublish**, recorded removals, impact and callers losing access, never confirmed | Light | Unpublish review |
@@ -387,8 +396,12 @@ to include both the daily trend and the complete last-24-hours chart.
 | `portal-mcp-connection` | Portal | `/access`, Automatic Customer Insights MCP access with token-only **Connection details** open | Dark | MCP connection |
 | `portal-government-connection` | Portal | `/access`, exact AzGov GPT-4o mini direct grant under General, **Connection details** open | Light | Government key access |
 | `portal-government-mcp-connection` | Portal | `/access`, exact AzGov MCP direct grant under General, custom-header **Connection details** open | Dark | Government MCP connection |
-| `portal-requests` | Portal | `/requests?status=pending`, mixed resource and cost-center creation requests | Dark | My requests |
-| `portal-cost-center-request` | Portal | `/requests/new-cost-center`, completed proposal and optional group suggestion, never submitted | Light | Request a cost center |
+| `portal-requests` | Portal | `/requests?status=pending`, mixed resource, cost-center creation, and membership requests | Dark | My requests |
+| `portal-my-cost-centers` | Portal | `/cost-centers`, own memberships and General charging option with creation entry point | Light | My cost centers |
+| `portal-find-cost-centers` | Portal | `/cost-centers?view=discover`, administrator-published centers with public purposes and caller membership states | Dark | Find cost centers |
+| `portal-cost-center-join` | Portal | Published Claims Operations join form with justification filled in, never submitted | Light | Request to join |
+| `portal-cost-center-membership-status` | Portal | `/requests?kind=costCenterMembership&status=completed`, approved Finance join with confirmed directory membership and distinct token/access guidance | Dark | Membership progress |
+| `portal-cost-center-request` | Portal | `/cost-centers/new`, completed proposal and optional group suggestion, never submitted | Light | Request a cost center |
 | `portal-cost-center-request-status` | Portal | `/requests?kind=costCenter&status=completed`, approved Knowledge Engineering with setup still required | Dark | Track incomplete setup |
 | `portal-automatic-access` | Portal | `/access`, exact Customer Insights MCP offering's inherited-access drawer | Light | Automatic access |
 | `portal-usage` | Portal | `/usage`, the default portal landing page with icon-based, collapsible section navigation | Light | Usage & cost |

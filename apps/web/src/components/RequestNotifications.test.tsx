@@ -4,10 +4,10 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AccessRequest } from '../types'
-import { costCenterCreationRequest } from '../test/cost-center-fixtures'
+import { costCenterCreationRequest, costCenterMembershipRequest } from '../test/cost-center-fixtures'
 import { RequestNotifications } from './RequestNotifications'
 
-const mocks = vi.hoisted(() => ({ listAccessRequests: vi.fn(), listPrincipals: vi.fn(), getDirectoryObject: vi.fn(), getRequestCounts: vi.fn(), listCostCenterRequests: vi.fn() }))
+const mocks = vi.hoisted(() => ({ listAccessRequests: vi.fn(), listPrincipals: vi.fn(), getDirectoryObject: vi.fn(), getRequestCounts: vi.fn(), listCostCenterRequests: vi.fn(), listCostCenterMembershipRequests: vi.fn() }))
 vi.mock('../api', () => ({ useMosaicApi: () => mocks }))
 function Page() {
   const location = useLocation()
@@ -24,6 +24,7 @@ function renderPage(initialPrincipals?: Array<{ id: string; objectId: string; la
 beforeEach(() => {
   mocks.listAccessRequests.mockReset()
   mocks.listCostCenterRequests.mockReset().mockResolvedValue([])
+  mocks.listCostCenterMembershipRequests.mockReset().mockResolvedValue([])
   mocks.getRequestCounts.mockReset().mockImplementation(async () => {
     const requests = await mocks.listAccessRequests('pending')
     const centers = await mocks.listCostCenterRequests('pending')
@@ -39,6 +40,17 @@ const request: AccessRequest = {
   createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
 }
 describe('RequestNotifications', () => {
+  it('includes membership counts, person names, center context and kind-aware links', async () => {
+    mocks.listAccessRequests.mockResolvedValue([])
+    mocks.listCostCenterMembershipRequests.mockResolvedValue([costCenterMembershipRequest])
+    mocks.getRequestCounts.mockResolvedValue({ pendingResourceCount: 0, pendingCostCenterCount: 0, pendingMembershipCount: 1, pendingCount: 1 })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Pending approvals, 1 pending request' }))
+    expect(await screen.findByText('0 resource · 0 cost-center creation · 1 membership')).toBeVisible()
+    fireEvent.click(await screen.findByRole('button', { name: /Demo analyst Requests to join Research/ }))
+    expect(document.querySelector('output')).toHaveTextContent(`requestKind=costCenterMembership`)
+    expect(document.querySelector('output')).toHaveTextContent(`selected=${costCenterMembershipRequest.id}`)
+  })
   it('shows pending requests and opens the actionable queue', async () => {
     const request: AccessRequest = {
       id: 'request-test', tenantId: 'tenant-test', requesterObjectId: 'person-test',

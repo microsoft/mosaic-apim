@@ -12,6 +12,11 @@ import type {
   ApiErrorBody,
   CatalogEntry,
   CostCenterRequestCreate,
+  CostCenterSelfServiceSettings,
+  CostCenterDirectoryPage,
+  MembershipCostCenter,
+  CostCenterMembershipRequestCreate,
+  PortalCostCenterMembershipRequest,
   GrantKey,
   KeyRevealResult,
   KeySlot,
@@ -57,6 +62,13 @@ function entitlementPath(entitlementId: string) {
   return `/api/v1/me/entitlements/${encodeURIComponent(entitlementId)}`
 }
 
+function costCenterSearchPath(path: string, filter: { q?: string; cursor?: string }) {
+  const params = new URLSearchParams({ limit: '20' })
+  if (filter.q) params.set('q', filter.q)
+  if (filter.cursor) params.set('cursor', filter.cursor)
+  return `${path}?${params}`
+}
+
 export interface PortalApi {
   listNotifications(filter?: NotificationInboxFilter): Promise<NotificationInboxPage>
   setNotificationRead(itemId: string, read: boolean): Promise<NotificationInboxItem>
@@ -72,6 +84,14 @@ export interface PortalApi {
   listEnvironments(): Promise<PortalEnvironment[]>
   listCatalog(): Promise<CatalogEntry[]>
   listCostCenters(): Promise<PortalCostCenter[]>
+  getCostCenterSelfServiceSettings(): Promise<CostCenterSelfServiceSettings>
+  listMyCostCenters(filter?: { q?: string; cursor?: string }): Promise<CostCenterDirectoryPage>
+  searchCostCenters(filter?: { q?: string; cursor?: string }): Promise<CostCenterDirectoryPage>
+  getDiscoverableCostCenter(id: string): Promise<MembershipCostCenter>
+  listCostCenterMembershipRequests(): Promise<PortalCostCenterMembershipRequest[]>
+  getCostCenterMembershipRequest(id: string): Promise<PortalCostCenterMembershipRequest>
+  createCostCenterMembershipRequest(payload: CostCenterMembershipRequestCreate): Promise<PortalCostCenterMembershipRequest>
+  withdrawCostCenterMembershipRequest(id: string): Promise<PortalCostCenterMembershipRequest>
   listAccessRequests(): Promise<AccessRequest[]>
   getRequestCounts(): Promise<PortalRequestCounts>
   listCostCenterRequests(): Promise<PortalCostCenterRequest[]>
@@ -169,6 +189,22 @@ export function usePortalApi(): PortalApi {
       listEnvironments: () => request<PortalEnvironment[]>('/api/v1/portal/environments'),
       listCatalog: () => request<CatalogEntry[]>('/api/v1/portal/catalog'),
       listCostCenters: () => request<PortalCostCenter[]>('/api/v1/portal/cost-centers'),
+      getCostCenterSelfServiceSettings: () =>
+        request<CostCenterSelfServiceSettings>('/api/v1/portal/cost-center-self-service-settings', { cache: 'no-store' }),
+      listMyCostCenters: (filter = {}) => request<CostCenterDirectoryPage>(
+        costCenterSearchPath('/api/v1/portal/my-cost-centers', filter), { cache: 'no-store' }),
+      searchCostCenters: (filter = {}) => request<CostCenterDirectoryPage>(
+        costCenterSearchPath('/api/v1/portal/cost-center-directory', filter), { cache: 'no-store' }),
+      getDiscoverableCostCenter: (id) => request<MembershipCostCenter>(
+        `/api/v1/portal/cost-center-directory/${encodeURIComponent(id)}`, { cache: 'no-store' }),
+      listCostCenterMembershipRequests: () =>
+        request<PortalCostCenterMembershipRequest[]>('/api/v1/portal/cost-center-membership-requests', { cache: 'no-store' }),
+      getCostCenterMembershipRequest: (id) => request<PortalCostCenterMembershipRequest>(
+        `/api/v1/portal/cost-center-membership-requests/${encodeURIComponent(id)}`, { cache: 'no-store' }),
+      createCostCenterMembershipRequest: (payload) => request<PortalCostCenterMembershipRequest>(
+        '/api/v1/portal/cost-center-membership-requests', { method: 'POST', body: payload }),
+      withdrawCostCenterMembershipRequest: (id) => request<PortalCostCenterMembershipRequest>(
+        `/api/v1/portal/cost-center-membership-requests/${encodeURIComponent(id)}/withdraw`, { method: 'POST' }),
       listAccessRequests: () => request<AccessRequest[]>('/api/v1/portal/access-requests'),
       getRequestCounts: () => request<PortalRequestCounts>('/api/v1/portal/request-counts', { cache: 'no-store' }),
       listCostCenterRequests: () => request<PortalCostCenterRequest[]>('/api/v1/portal/cost-center-requests'),

@@ -351,7 +351,13 @@ class CostCenterService:
     async def update_cost_center(
         self, actor: Actor, cost_center_id: str, request: CostCenterUpdate
     ) -> CostCenterManagementView:
-        changes = request.model_dump(by_alias=False, exclude_unset=True, exclude={"group_setup"})
+        changes = request.model_dump(
+            by_alias=False,
+            exclude_unset=True,
+            exclude={"group_setup", "acknowledge_membership_changes"},
+        )
+        if changes.get("discoverable") is None:
+            changes.pop("discoverable", None)
         for field in ("name", "code", "owners", "keys_allowed", "resource_access"):
             if field in changes and changes[field] is None:
                 changes.pop(field)
@@ -360,6 +366,22 @@ class CostCenterService:
             if not changes["name"]:
                 raise ValidationError("A cost center name cannot be blank")
         before = await self._stored(actor, cost_center_id)
+        if changes.get("discoverable") is True:
+            if not request.acknowledge_membership_changes:
+                raise ValidationError(
+                    "Publishing requires acknowledgment of group membership changes"
+                )
+            if request.group_setup is not None:
+                raise ValidationError("Finish group setup before publishing a cost center")
+            target = await self._directory_groups._bound_center(actor, cost_center_id)
+            management = self._directory_groups._management_for(actor)
+            assert target.entra_binding is not None
+            group = await management.validate_group(target.entra_binding.group_object_id)
+            self._directory_groups._assert_group(
+                group,
+                target.entra_binding.directory_tenant_id,
+                target.entra_binding.group_object_id,
+            )
         if request.group_setup is not None:
             self._directory_groups.require_custom_center(before)
         proposed = CostCenter.model_validate(
@@ -675,28 +697,51 @@ class CostCenterService:
                 COST_CENTERS_SCOPE,
                 busy_message=COST_CENTERS_BUSY,
             ):
+                current = await self._repository.get_settings(actor.tenant_id)
+                changes = {
+                    key: value
+                    for key, value in request.model_dump(by_alias=False, exclude_unset=True).items()
+                    if value is not None
+                }
+                previous = tenant_default_id(current, actor.tenant_id)
+                if "default_cost_center_id" not in changes:
+                    settings = (current or default_settings(actor.tenant_id)).model_copy(
+                        update={**changes, "updated_at": utc_now()}
+                    )
+                    await self._repository.save_settings(
+                        settings,
+                        self._audit(
+                            actor,
+                            "costCenter.settingsUpdated",
+                            settings.id,
+                            {"fields": sorted(changes)},
+                            resource_type="costCenterSettings",
+                        ),
+                    )
+                    return settings
+                desired_default = request.default_cost_center_id or previous
                 book = await self.book(actor.tenant_id)
-                if book.get(request.default_cost_center_id) is None:
+                if book.get(desired_default) is None:
                     raise ValidationError(
                         "No cost center has that ID",
                         details={"defaultCostCenterId": request.default_cost_center_id},
                     )
-                chosen = await self._stored(actor, request.default_cost_center_id)
-                if not chosen.is_general and chosen.verified_group_object_id is None:
+                chosen = await self._stored(actor, desired_default)
+                if "default_cost_center_id" in changes and (
+                    not chosen.is_general and chosen.verified_group_object_id is None
+                ):
                     raise ValidationError(
                         "A setup-required cost center cannot become the tenant default",
                         details={"reason": "setupRequired", "costCenterId": chosen.id},
                     )
-                current = await self._repository.get_settings(actor.tenant_id)
-                previous = tenant_default_id(current, actor.tenant_id)
-                if previous != request.default_cost_center_id:
+                if previous != desired_default:
                     await self._entitlements.request_recheck(
                         actor, previous, reason="tenantDefaultChanged"
                     )
                     recorded = previous
                 settings = (current or default_settings(actor.tenant_id)).model_copy(
                     update={
-                        "default_cost_center_id": request.default_cost_center_id,
+                        **changes,
                         "updated_at": utc_now(),
                         "etag": current.etag if current else None,
                     }
@@ -708,7 +753,8 @@ class CostCenterService:
                         "costCenter.settingsUpdated",
                         settings.id,
                         {
-                            "defaultCostCenterId": request.default_cost_center_id,
+                            "defaultCostCenterId": desired_default,
+                            "fields": sorted(changes),
                             "previousDefaultCostCenterId": previous,
                         },
                         resource_type="costCenterSettings",
@@ -719,12 +765,14 @@ class CostCenterService:
                 with suppress(Exception):
                     await self._entitlements.resume_rechecks(actor, recorded)
             raise
-        revoked = await self._entitlements.resume_rechecks(actor)
-        if previous != request.default_cost_center_id:
+        revoked = (
+            await self._entitlements.resume_rechecks(actor) if previous != desired_default else []
+        )
+        if previous != desired_default:
             logger.info(
                 "cost_center_tenant_default_changed",
                 previous_cost_center_id=previous,
-                cost_center_id=request.default_cost_center_id,
+                cost_center_id=desired_default,
                 revoked_grants=len(revoked),
                 tenant_id=actor.tenant_id,
             )

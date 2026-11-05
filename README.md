@@ -41,7 +41,9 @@ Start with the [architecture](docs/architecture.md), [workflow diagrams](docs/wo
   center uses a dedicated Entra group for membership and chooses Automatic, Request-only, or
   Not available for each exact model, pool-model offering, or MCP server.
 - **Make access usable:** provide a catalog, access requests, approvals, and caller-scoped
-  connection details, including inherited access and requests for a new cost center. Approval
+  connection details, including inherited access and **My cost centers** for membership,
+  administrator-published discovery, and creation/join requests. Administrator Settings controls
+  those request capabilities; discovery is opt-in for each center. Approval
   saves intent; a separate gateway apply makes resource access effective.
 - **Operate the estate:** pool compatible model deployments, inspect health, and report usage,
   sourced price estimates, cost-center spend, and asynchronous budget alerts or blocking.
@@ -109,7 +111,7 @@ identifiers and secrets blurred. Directory data and checks are simulated, not li
     <td><img src="docs/images/screenshots/portal-catalog-dark.png" alt="The end-user model catalog in the dark theme"></td>
   </tr>
   <tr>
-    <td colspan="2"><b>Portal catalog.</b> Find model offerings by cloud, environment, and type, and
+    <td colspan="2"><b>Portal catalog.</b> Find model offerings by cloud, environment, eligible cost center, and type, and
     inspect existing access. Open an exact offering's access options without leaving the catalog.</td>
   </tr>
 </table>
@@ -117,7 +119,8 @@ identifiers and secrets blurred. Directory data and checks are simulated, not li
 The [full gallery](docs/gallery.md) includes publishing reviews, model pools, Entra directory
 lookups, grants, cost centers, budgets, analytics, notifications, and Government connections.
 It also shows [cost-center requests and Automatic access](docs/gallery.md#cost-center-requests-and-automatic-access),
-including incomplete setup rather than treating approval as usable access.
+including membership discovery and requests, administrator controls, and incomplete setup
+rather than treating approval as usable access.
 [Screenshot maintenance](docs/screenshots.md) explains capture, redaction, and the shot inventory.
 
 ## Important boundaries

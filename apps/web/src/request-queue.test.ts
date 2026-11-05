@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { adminRequestKey, adminRequestLink, combineAdminRequests } from './request-queue'
-import { costCenterCreationRequest } from './test/cost-center-fixtures'
+import { costCenterCreationRequest, costCenterMembershipRequest } from './test/cost-center-fixtures'
 import type { AccessRequest } from './types'
 
 const resource: AccessRequest = {
@@ -11,6 +11,15 @@ const resource: AccessRequest = {
 }
 
 describe('kind-aware administrative request queue', () => {
+  it('keeps all three kinds independent even when raw IDs collide', () => {
+    const membership = { ...costCenterMembershipRequest, id: resource.id }
+    const queue = combineAdminRequests([resource], [costCenterCreationRequest], [membership])
+    expect(queue).toHaveLength(3)
+    expect(new Set(queue.map((item) => adminRequestKey(item.requestKind, item.request.id))).size).toBe(3)
+    expect(queue.find((item) => item.requestKind === 'costCenterMembership')?.request).toBe(membership)
+    expect(membership).not.toHaveProperty('resource')
+    expect(adminRequestLink('costCenterMembership', 'join/one')).toBe('/entitlements?tab=requests&selected=join%2Fone&requestKind=costCenterMembership')
+  })
   it('preserves two kinds with the same raw ID, without inventing a resource for center creation', () => {
     const queue = combineAdminRequests([resource], [costCenterCreationRequest])
     expect(queue).toHaveLength(2)

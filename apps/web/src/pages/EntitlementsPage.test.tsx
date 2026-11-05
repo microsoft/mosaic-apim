@@ -10,7 +10,7 @@ import { EntitlementsPage } from './EntitlementsPage'
 import { accessPlan, connectionInfo, directGrant, modelPublication, publishedModelApi } from '../test/model-access'
 import { ApiError } from '../api'
 import { anthropicPool, governedAnthropicPool } from '../test/pool-fixtures'
-import { costCenterCreationRequest, readyCostCenter } from '../test/cost-center-fixtures'
+import { costCenterCreationRequest, costCenterMembershipRequest, readyCostCenter } from '../test/cost-center-fixtures'
 
 const entitlement: Entitlement = {
   id: 'entitlement_1', tenantId: 'tenant',
@@ -56,6 +56,9 @@ const api = {
   getRequestCounts: vi.fn(), listCostCenterRequests: vi.fn(), getCostCenterRequest: vi.fn(),
   approveCostCenterRequest: vi.fn(), denyCostCenterRequest: vi.fn(),
   getCostCenterGroupCapabilities: vi.fn(),
+  listCostCenterMembershipRequests: vi.fn(), getCostCenterMembershipRequest: vi.fn(),
+  approveCostCenterMembershipRequest: vi.fn(), denyCostCenterMembershipRequest: vi.fn(), resumeCostCenterMembershipRequest: vi.fn(),
+  getCostCenter: vi.fn(), getDirectoryObject: vi.fn(),
 }
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
@@ -107,6 +110,9 @@ describe('Entitlements workbench', () => {
     api.listAccessRequests.mockResolvedValue([])
     api.getRequestCounts.mockResolvedValue({ pendingResourceCount: 0, pendingCostCenterCount: 0, pendingCount: 0 })
     api.listCostCenterRequests.mockResolvedValue([])
+    api.listCostCenterMembershipRequests.mockResolvedValue([])
+    api.getDirectoryObject.mockResolvedValue({ displayName: 'Fictional analyst', kind: 'user' })
+    api.getCostCenter.mockResolvedValue(readyCostCenter)
     api.getCostCenterRequest.mockResolvedValue(costCenterCreationRequest)
     api.getCostCenterGroupCapabilities.mockResolvedValue({ available: false, canReadGroups: false, canCreateGroups: false })
     api.listPublications.mockResolvedValue([])
@@ -117,6 +123,33 @@ describe('Entitlements workbench', () => {
     api.createEntitlement.mockResolvedValue({ ...entitlement, id: 'saved_grant' })
     api.updateEntitlement.mockResolvedValue(entitlement)
     api.approveAccessRequest.mockResolvedValue({ ...request, state: 'approved' })
+  })
+
+  it('deep-links to membership review independently from resource and creation requests', async () => {
+    const user = userEvent.setup()
+    const membership = { ...costCenterMembershipRequest, id: costCenterCreationRequest.id }
+    api.listCostCenterRequests.mockResolvedValue([costCenterCreationRequest])
+    api.listCostCenterMembershipRequests.mockResolvedValue([membership])
+    api.getCostCenterMembershipRequest.mockResolvedValue(membership)
+    const { params } = renderPage(`/entitlements?tab=requests&selected=${membership.id}&requestKind=costCenterMembership`)
+    const detail = await screen.findByRole('region', { name: 'Selected cost-center request' })
+    expect(await within(detail).findByRole('heading', { name: 'Join Research' })).toBeVisible()
+    await user.click(within(detail).getByRole('button', { name: 'Review membership request' }))
+    expect(params().get('mode')).toBe('review')
+    expect(params().get('requestKind')).toBe('costCenterMembership')
+    expect(await screen.findByRole('heading', { name: 'Review membership request' })).toBeVisible()
+    expect(api.approveAccessRequest).not.toHaveBeenCalled()
+  })
+
+  it('retains approved membership requests with unknown outcomes in Pending for recovery', async () => {
+    const membership = { ...costCenterMembershipRequest, state: 'approved', membershipState: 'unknown', operationId: 'recorded-operation' }
+    api.listCostCenterMembershipRequests.mockResolvedValue([membership])
+    api.getCostCenterMembershipRequest.mockResolvedValue(membership)
+    renderPage(`/entitlements?tab=requests&selected=${membership.id}&requestKind=costCenterMembership`)
+    const list = await screen.findByRole('list', { name: 'Requests' })
+    expect(await within(list).findByText('Cost-center membership')).toBeVisible()
+    expect(within(list).getByText('Action needed')).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Resume recorded membership approval' })).toBeVisible()
   })
 
   it('keeps the list slim and moves limits, bindings, notes and actions into the selected detail', async () => {
@@ -592,6 +625,7 @@ describe('Entitlements workbench', () => {
 
   it('does not fabricate requester names when principals fail', async () => {
     api.listPrincipals.mockRejectedValue(new Error('Directory unavailable'))
+    api.getDirectoryObject.mockRejectedValue(new Error('Directory unavailable'))
     api.listAccessRequests.mockResolvedValue([request])
     renderPage('/entitlements?tab=requests&selected=request_1')
     expect(await screen.findByText('Directory unavailable')).toBeVisible()

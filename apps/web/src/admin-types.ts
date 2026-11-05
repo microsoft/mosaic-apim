@@ -78,7 +78,7 @@ export interface NotificationPreferencesPreview {
   checks: CapabilityCheck[]
 }
 export interface NotificationSubject {
-  requestKind?: 'resource' | 'costCenter' | null
+  requestKind?: 'resource' | 'costCenter' | 'costCenterMembership' | null
   resource?: EntitlementResource | null; requestId?: string | null; entitlementId?: string | null
   budgetId?: string | null; costCenterId?: string | null; integration?: string | null
   gatewayId?: string | null; runId?: string | null; endpointId?: string | null

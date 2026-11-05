@@ -28,14 +28,14 @@ function RequestItem({ item, principals, principalsReady, onSelect }: {
     staleTime: 300_000,
   })
   const name = principal?.label?.trim() || directory.data?.displayName?.trim()
-  const resource = item.requestKind === 'costCenter' ? item.request.name
+  const resource = item.requestKind === 'costCenter' ? item.request.name : item.requestKind === 'costCenterMembership' ? item.request.costCenter.name
     : item.request.resourceSummary?.displayName ?? item.request.resourceSnapshot?.displayName ?? 'Resource details unavailable'
   return (
     <li>
       <Button appearance="subtle" className={styles.request} onClick={onSelect}>
         <span className={styles.requestName}>{name || (!principalsReady || directory.isPending ? 'Loading requester name...' : 'Requester name unavailable')}</span>
-        <span className={styles.resource}>{item.requestKind === 'costCenter' ? 'Requests cost center' : 'Requests access to'} {resource}</span>
-        <span className={styles.context}>{item.requestKind === 'costCenter' ? 'Cost-center creation' : 'Resource access'}</span>
+        <span className={styles.resource}>{item.requestKind === 'costCenter' ? 'Requests cost center' : item.requestKind === 'costCenterMembership' ? 'Requests to join' : 'Requests access to'} {resource}</span>
+        <span className={styles.context}>{item.requestKind === 'costCenter' ? 'Cost-center creation' : item.requestKind === 'costCenterMembership' ? 'Cost-center membership' : 'Resource access'}</span>
         <span className={styles.context}>
           {item.requestKind === 'resource' && item.request.costCenter?.name && <span>{item.request.costCenter.name} · </span>}
           <time dateTime={request.createdAt}>{new Date(request.createdAt).toLocaleString()}</time>
@@ -79,7 +79,14 @@ export function RequestNotifications() {
     refetchIntervalInBackground: false,
     enabled: open,
   })
-  const queue = combineAdminRequests(requests.data ?? [], centers.data ?? [])
+  const memberships = useQuery({
+    queryKey: ['cost-center-membership-requests', 'notifications'],
+    queryFn: () => api.listCostCenterMembershipRequests(),
+    throwOnError: false, refetchInterval: 60_000, refetchIntervalInBackground: false, enabled: open,
+  })
+  const queue = combineAdminRequests(requests.data ?? [], centers.data ?? [],
+    (memberships.data ?? []).filter((item) => item.state === 'pending'
+      || (item.state === 'approved' && (item.needsAdministratorAttention || item.membershipState !== 'succeeded'))))
   const principals = useQuery({
     queryKey: ['principals'],
     queryFn: api.listPrincipals,
@@ -102,11 +109,11 @@ export function RequestNotifications() {
       </PopoverTrigger>
       <PopoverSurface className={styles.popover} aria-labelledby={headingId}>
         <h2 id={headingId}>Requests</h2>
-        {counts.isSuccess && <Text>{counts.data.pendingResourceCount} resource · {counts.data.pendingCostCenterCount} cost-center creation</Text>}
+        {counts.isSuccess && <Text>{counts.data.pendingResourceCount} resource · {counts.data.pendingCostCenterCount} cost-center creation · {counts.data.pendingMembershipCount ?? 0} membership</Text>}
         {counts.isError && <Button onClick={() => void counts.refetch()}>Pending count unavailable — retry</Button>}
-        {(requests.isPending || centers.isPending) && <Spinner size="tiny" label="Checking pending requests" />}
-        {(requests.isError || centers.isError) && <Button onClick={() => { void requests.refetch(); void centers.refetch() }}>Requests unavailable — retry</Button>}
-        {requests.isSuccess && centers.isSuccess && queue.length === 0 && <Text>No pending requests</Text>}
+        {(requests.isPending || centers.isPending || memberships.isPending) && <Spinner size="tiny" label="Checking pending requests" />}
+        {(requests.isError || centers.isError || memberships.isError) && <Button onClick={() => { void requests.refetch(); void centers.refetch(); void memberships.refetch() }}>Requests unavailable — retry</Button>}
+        {requests.isSuccess && centers.isSuccess && memberships.isSuccess && queue.length === 0 && <Text>No pending requests</Text>}
         {principals.isError && <Text className={styles.lookupError}>Registered names unavailable; checking the directory for visible requests.</Text>}
         {queue.length > 0 && <ul className={styles.list}>
           {queue.slice(0, 5).map((item) => (

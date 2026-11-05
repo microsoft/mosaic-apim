@@ -1,4 +1,4 @@
-import type { AdminCostCenterRequest, CostCenter, CostCenterDirectoryMembers, CostCenterDirectoryOperationView, CostCenterGroupCapabilities } from '../types'
+import type { AdminCostCenterRequest, AdminCostCenterMembershipRequest, CostCenter, CostCenterDirectoryMembers, CostCenterDirectoryOperationView, CostCenterGroupCapabilities } from '../types'
 
 export const directoryTenant = '11111111-1111-4111-8111-111111111111'
 export const centerGroupObjectId = '22222222-2222-4222-8222-222222222222'
@@ -47,4 +47,13 @@ export const costCenterCreationRequest: AdminCostCenterRequest = {
   justification: 'Separate research accounting and resource availability.',
   state: 'pending', needsAdministratorAttention: false,
   createdAt: '2026-11-02T09:00:00Z', updatedAt: '2026-11-02T09:00:00Z',
+}
+
+export const costCenterMembershipRequest: AdminCostCenterMembershipRequest = {
+  id: 'request_fictional_join', requestKind: 'costCenterMembership',
+  requesterObjectId: memberObjectId, costCenter: { id: readyCostCenter.id, name: readyCostCenter.name, code: readyCostCenter.code },
+  justification: 'Join the research team for shared inference accounting.',
+  state: 'pending', membershipState: null, membershipError: null, operationId: null,
+  needsAdministratorAttention: false,
+  createdAt: '2026-11-03T09:00:00Z', updatedAt: '2026-11-03T09:00:00Z',
 }

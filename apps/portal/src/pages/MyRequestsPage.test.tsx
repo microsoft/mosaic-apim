@@ -71,6 +71,7 @@ function renderPage(requests: AccessRequest[], withdrawAccessRequest = vi.fn(), 
       return costCenterRequests
     },
     getCostCenterRequest,
+    listCostCenterMembershipRequests: async () => [],
     withdrawCostCenterRequest,
     getRequestCounts: async () => ({
       pendingResourceCount: requests.filter((request) => request.state === 'pending').length,
@@ -99,7 +100,7 @@ describe('MyRequestsPage', () => {
     expect(await screen.findByRole('heading', { name: 'Research team' })).toBeVisible()
     expect(screen.getByRole('heading', { name: 'Chat completions' })).toBeVisible()
     expect(screen.getByText('1 resource request pending · 1 cost-center request pending')).toBeVisible()
-    expect(screen.getByRole('link', { name: 'Request a cost center' })).toHaveAttribute('href', '/requests/new-cost-center')
+    expect(screen.getByRole('link', { name: 'My cost centers' })).toHaveAttribute('href', '/cost-centers')
     await userEvent.selectOptions(screen.getByLabelText('Request type'), 'costCenter')
     expect(screen.queryByRole('heading', { name: 'Chat completions' })).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Research team' })).toBeVisible()

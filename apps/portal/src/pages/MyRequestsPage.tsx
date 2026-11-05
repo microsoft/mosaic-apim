@@ -7,10 +7,11 @@ import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader } from '../components/PageHeader'
 import { CostCenterRequestDetails } from '../components/CostCenterRequestDetails'
+import { CostCenterMembershipDetails } from '../components/CostCenterMembershipDetails'
 import { gatewayLabel, requestStateLabel, withResourceKind } from '../entitlement-format'
 import { modelTitle } from '../model-presentation'
 import { usePortalEnvironments } from '../environments'
-import { costCenterRequestsKey, invalidateRequests, requestCountsKey, resourceRequestsKey } from '../request-queries'
+import { costCenterRequestsKey, membershipRequestsKey, invalidateRequests, requestCountsKey, resourceRequestsKey } from '../request-queries'
 import { formatCount } from '../usage-format'
 import type { AccessRequest, PortalRequest, RequestKind, ResourceSummary } from '../types'
 
@@ -53,13 +54,15 @@ export function MyRequestsPage() {
   const api = usePortalApi()
   const [params, setParams] = useSearchParams()
   const filter = ['pending', 'completed', 'withdrawn'].includes(params.get('status') ?? '') ? params.get('status')! : 'all'
-  const kindFilter = ['resource', 'costCenter'].includes(params.get('kind') ?? '') ? params.get('kind')! : 'all'
+  const kindFilter = ['resource', 'costCenter', 'costCenterMembership'].includes(params.get('kind') ?? '') ? params.get('kind')! : 'all'
   const selectedRequest = params.get('request')
-  const selectedKind: RequestKind = params.get('requestKind') === 'costCenter' ? 'costCenter' : 'resource'
+  const selectedKind: RequestKind = params.get('requestKind') === 'costCenter' ? 'costCenter'
+    : params.get('requestKind') === 'costCenterMembership' ? 'costCenterMembership' : 'resource'
   const [withdrawingId, setWithdrawingId] = useState<string | null>(null)
   const queryClient = useQueryClient()
   const requests = useQuery({ queryKey: resourceRequestsKey, queryFn: api.listAccessRequests })
   const costCenterRequests = useQuery({ queryKey: costCenterRequestsKey, queryFn: api.listCostCenterRequests })
+  const membershipRequests = useQuery({ queryKey: membershipRequestsKey, queryFn: api.listCostCenterMembershipRequests })
   const counts = useQuery({ queryKey: requestCountsKey, queryFn: api.getRequestCounts })
   const linkedCostCenter = useQuery({
     queryKey: [...costCenterRequestsKey, 'detail', selectedRequest],
@@ -71,9 +74,19 @@ export function MyRequestsPage() {
     retry: false,
   })
   const environments = usePortalEnvironments()
+  const linkedMembership = useQuery({
+    queryKey: [...membershipRequestsKey, 'detail', selectedRequest],
+    queryFn: () => {
+      if (!selectedRequest) throw new Error('No request selected')
+      return api.getCostCenterMembershipRequest(selectedRequest)
+    },
+    enabled: Boolean(selectedRequest && selectedKind === 'costCenterMembership'),
+    retry: false,
+  })
   const withdraw = useMutation({
     mutationFn: async (row: PortalRequest) => row.requestKind === 'costCenter'
-      ? api.withdrawCostCenterRequest(row.request.id) : api.withdrawAccessRequest(row.request.id),
+      ? api.withdrawCostCenterRequest(row.request.id) : row.requestKind === 'costCenterMembership'
+        ? api.withdrawCostCenterMembershipRequest(row.request.id) : api.withdrawAccessRequest(row.request.id),
     onSuccess: async () => {
       setWithdrawingId(null)
       await invalidateRequests(queryClient)
@@ -82,26 +95,32 @@ export function MyRequestsPage() {
   const rows: PortalRequest[] = [
     ...(requests.data ?? []).map((request): PortalRequest => ({ requestKind: 'resource', request })),
     ...(costCenterRequests.data ?? []).map((request): PortalRequest => ({ requestKind: 'costCenter', request })),
+    ...(membershipRequests.data ?? []).map((request): PortalRequest => ({ requestKind: 'costCenterMembership', request })),
   ]
   const visible: PortalRequest[] = selectedRequest && selectedKind === 'costCenter'
     ? linkedCostCenter.isSuccess ? [{ requestKind: 'costCenter', request: linkedCostCenter.data }] : []
-    : rows.filter((row) => selectedRequest ? row.requestKind === selectedKind && row.request.id === selectedRequest :
+    : selectedRequest && selectedKind === 'costCenterMembership'
+      ? linkedMembership.isSuccess ? [{ requestKind: 'costCenterMembership', request: linkedMembership.data }] : []
+      : rows.filter((row) => selectedRequest ? row.requestKind === selectedKind && row.request.id === selectedRequest :
       (kindFilter === 'all' || row.requestKind === kindFilter) &&
       (filter === 'all' || row.request.state === filter ||
         (filter === 'completed' && (row.request.state === 'approved' || row.request.state === 'denied'))))
   visible.sort((a, b) => b.request.createdAt.localeCompare(a.request.createdAt))
-  const loading = selectedRequest ? selectedKind === 'costCenter' ? linkedCostCenter.isLoading : requests.isLoading :
-    requests.isLoading || costCenterRequests.isLoading
-  const loadComplete = selectedRequest ? selectedKind === 'costCenter' ? linkedCostCenter.isSuccess : requests.isSuccess :
-    requests.isSuccess && costCenterRequests.isSuccess
+  const loading = selectedRequest ? selectedKind === 'costCenter' ? linkedCostCenter.isLoading
+    : selectedKind === 'costCenterMembership' ? linkedMembership.isLoading : requests.isLoading :
+    requests.isLoading || costCenterRequests.isLoading || membershipRequests.isLoading
+  const loadComplete = selectedRequest ? selectedKind === 'costCenter' ? linkedCostCenter.isSuccess
+    : selectedKind === 'costCenterMembership' ? linkedMembership.isSuccess : requests.isSuccess :
+    requests.isSuccess && costCenterRequests.isSuccess && membershipRequests.isSuccess
   const linkedUnavailable = linkedCostCenter.error instanceof ApiError && [403, 404].includes(linkedCostCenter.error.status)
+  const membershipUnavailable = linkedMembership.error instanceof ApiError && [403, 404].includes(linkedMembership.error.status)
 
   return (
     <>
       <PageHeader
         title="My requests"
-        description="Track resource access and cost-center creation requests. Approval does not mean gateway access is ready."
-        actions={<Link className="workspace-primary-link" to="/requests/new-cost-center">Request a cost center</Link>}
+        description="Track resource access, cost-center creation, and membership requests. Approval and usable access are separate."
+        actions={<Link to="/cost-centers">My cost centers</Link>}
       />
       {selectedRequest && <p className="request-filters">Showing the linked request.
         <Button onClick={() => {
@@ -114,6 +133,7 @@ export function MyRequestsPage() {
       {!selectedRequest && <>
         {counts.isSuccess && <p className="request-counts">
           {formatCount(counts.data.pendingResourceCount, 'resource request')} pending · {formatCount(counts.data.pendingCostCenterCount, 'cost-center request')} pending
+          {(counts.data.pendingMembershipCount ?? 0) > 0 && <> · {formatCount(counts.data.pendingMembershipCount!, 'membership request')} pending</>}
         </p>}
         {counts.isError && <p className="connection-note">Pending counts are unavailable. <Button appearance="transparent" onClick={() => void counts.refetch()}>Retry counts</Button></p>}
         <div className="request-filters">
@@ -137,6 +157,7 @@ export function MyRequestsPage() {
             <option value="all">All request types</option>
             <option value="resource">Resource access</option>
             <option value="costCenter">Cost center</option>
+            <option value="costCenterMembership">Cost-center membership</option>
           </select>
         </div>
       </>}
@@ -149,18 +170,25 @@ export function MyRequestsPage() {
         <ErrorState error={costCenterRequests.error} />
         <Button onClick={() => void costCenterRequests.refetch()}>Retry cost-center requests</Button>
       </div>}
+      {!selectedRequest && membershipRequests.isError && <div className="request-load-error">
+        <ErrorState error={membershipRequests.error} />
+        <Button onClick={() => void membershipRequests.refetch()}>Retry membership requests</Button>
+      </div>}
       {selectedRequest && selectedKind === 'costCenter' && linkedCostCenter.isError && (linkedUnavailable
         ? <EmptyState title="Request unavailable">This request is no longer available to your account. Show all requests to continue.</EmptyState>
         : <div className="request-load-error"><ErrorState error={linkedCostCenter.error} /><Button onClick={() => void linkedCostCenter.refetch()}>Retry request</Button></div>)}
+      {selectedRequest && selectedKind === 'costCenterMembership' && linkedMembership.isError && (membershipUnavailable
+        ? <EmptyState title="Request unavailable">This request is no longer available to your account. Show all requests to continue.</EmptyState>
+        : <div className="request-load-error"><ErrorState error={linkedMembership.error} /><Button onClick={() => void linkedMembership.refetch()}>Retry request</Button></div>)}
       {loadComplete && visible.length === 0 && <EmptyState title={selectedRequest ? 'Request unavailable' : rows.length === 0 ? 'No requests opened' : 'No requests match these filters'}>
           {selectedRequest ? 'This request is no longer available to your account. Show all requests to continue.' :
-            rows.length === 0 ? 'Request a resource from the catalog or propose a cost center. Track each decision here.' : 'Choose another status or request type to see your requests.'}
+            rows.length === 0 ? <>Request a resource from the catalog or visit <Link to="/cost-centers">My cost centers</Link> to propose a center or request membership. Track each decision here.</> : 'Choose another status or request type to see your requests.'}
         </EmptyState>}
         <div className="request-list">
           {visible.map((row) => {
             const request = row.request
             const key = `${row.requestKind}:${request.id}`
-            const canWithdraw = request.state === 'pending' && (row.requestKind === 'resource' || !row.request.preparationStarted)
+            const canWithdraw = request.state === 'pending' && (row.requestKind !== 'costCenter' || !row.request.preparationStarted)
             return <Card key={key} className="request-card">
               {row.requestKind === 'costCenter' ? <>
                 <CardHeader
@@ -169,6 +197,11 @@ export function MyRequestsPage() {
                   action={<Badge appearance="tint">{requestStateLabel(row.request.state)}</Badge>}
                 />
                 <CostCenterRequestDetails request={row.request} />
+              </> : row.requestKind === 'costCenterMembership' ? <>
+                <CardHeader header={<h2>{row.request.costCenter.name}</h2>}
+                  description={`Cost-center membership · Opened ${new Date(row.request.createdAt).toLocaleDateString()}`}
+                  action={<Badge appearance="tint">{requestStateLabel(row.request.state)}</Badge>} />
+                <CostCenterMembershipDetails request={row.request} />
               </> : <>
               <CardHeader
                 header={

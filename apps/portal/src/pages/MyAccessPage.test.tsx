@@ -126,6 +126,17 @@ function renderPage(
 }
 
 describe('MyAccessPage', () => {
+  it('honors a cost-center link without falling back when no matching grant is available', async () => {
+    renderPage([{ ...directResolved, costCenter: research }], {}, [], '/access?costCenter=cc-finance&view=all')
+    const filter = await screen.findByRole('combobox', { name: 'Cost center' })
+    expect(filter).toHaveValue('cc-finance')
+    expect(screen.getByRole('option', { name: 'Selected cost center unavailable' })).toBeVisible()
+    expect(screen.getByText('No access matches these filters')).toBeVisible()
+    await userEvent.selectOptions(filter, 'cc-research')
+    expect(screen.getByTestId('route')).toHaveAttribute('data-search', '?costCenter=cc-research&view=all')
+    expect(screen.getByText('1 resource · 1 grant')).toBeVisible()
+  })
+
   it('distinguishes automatic cost-center access from an individual approval and retains pending gateway apply', async () => {
     renderPage([
       {

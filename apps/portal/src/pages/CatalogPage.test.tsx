@@ -242,8 +242,8 @@ describe('CatalogPage', () => {
     await openAccessOptions()
     const selector = await screen.findByRole('combobox', { name: 'Cost center for Weather tools' })
     expect(selector).toHaveValue('cc-general')
-    expect(screen.getByRole('option', { name: 'General (GEN)' })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: 'Research (RES)' })).toBeInTheDocument()
+    expect(within(selector).getByRole('option', { name: 'General (GEN)' })).toBeInTheDocument()
+    expect(within(selector).getByRole('option', { name: 'Research (RES)' })).toBeInTheDocument()
 
     await user.selectOptions(selector, 'cc-research')
     await user.click(screen.getByRole('button', { name: 'Request access' }))

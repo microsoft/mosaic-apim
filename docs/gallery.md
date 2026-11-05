@@ -48,7 +48,7 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   </tr>
   <tr>
     <td colspan="2"><b>Portal catalog.</b> Model-first rows group known offerings and show their
-    clouds, environments, and existing access. Search and cloud/environment/type filters narrow the list;
+    clouds, environments, and existing access. Search and cloud/environment/cost-center/type filters narrow the list;
     access options open in an overlay drawer without rearranging the catalog.</td>
   </tr>
 </table>
@@ -523,8 +523,8 @@ resource lists, forms, and connection drawers remain solid for readability.
       header lets the caller charge that grant instead of their default cost center.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="images/screenshots/portal-requests.png" alt="Resource-access and cost-center creation requests with type and status filters">
-      <p><b>My requests.</b> Resource-access and cost-center creation requests share a typed,
+      <img src="images/screenshots/portal-requests.png" alt="Resource-access, cost-center creation, and membership requests with type and status filters">
+      <p><b>My requests.</b> Resource-access, cost-center creation, and membership requests share a typed,
       filterable history showing each request's context and status. Withdrawing a pending
       request requires confirmation.</p>
     </td>
@@ -598,6 +598,42 @@ resource lists, forms, and connection drawers remain solid for readability.
 ### Cost-center requests and Automatic access
 
 <table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/portal-my-cost-centers.png" alt="My cost centers with the caller's memberships, General charging option, and creation entry point">
+      <p><b>My cost centers.</b> See your own cost-center memberships separately from resource
+      access. General is a charging option, and new center proposals start in this area.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/portal-find-cost-centers.png" alt="Find cost centers with administrator-published public purposes, membership states, and join-request actions">
+      <p><b>Find cost centers.</b> Search centers an administrator explicitly published, without
+      exposing private centers or directory rosters. Existing join requests show their progress.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/portal-cost-center-join.png" alt="A join-request form explaining the real membership effect and requesting a justification">
+      <p><b>Request to join.</b> Explain why you need membership before administrator review.
+      Submission does not add you, create a key, or increase the center's budget.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/console-cost-center-membership-review.png" alt="Administrator review of a cost-center join request with the actual Entra-group effect and explicit decision controls">
+      <p><b>Review membership.</b> Review the person, target center, and real-group effect before
+      approving or denying. The decision is separate from directory completion and usable access.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/console-cost-center-self-service.png" alt="Saved administrator settings controlling creation and membership requests, separately from directory permissions">
+      <p><b>Self-service controls.</b> Administrators save independent creation-request and
+      membership-request switches. Enabling a feature does not grant Microsoft Graph permissions.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/portal-cost-center-membership-status.png" alt="An approved cost-center join with confirmed membership and separate token and resource-access guidance">
+      <p><b>Membership progress.</b> Track a join decision and its directory outcome independently.
+      Confirmed membership still requires token propagation and the appropriate applied resource grants.</p>
+    </td>
+  </tr>
   <tr>
     <td width="50%" valign="top">
       <img src="images/screenshots/portal-cost-center-request.png" alt="A cost-center proposal form with purpose, optional code, and an optional existing Entra group object ID">

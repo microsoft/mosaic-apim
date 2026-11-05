@@ -119,6 +119,8 @@ class NotificationDispatcher(Protocol):
 
 
 def notification_title(event: NotificationEvent) -> str:
+    if event.subject.request_kind == "costCenterMembership":
+        return "MOSAIC: Cost center membership " + str(event.event_type).replace(".", " ")
     if event.subject.request_kind == "costCenter":
         return "MOSAIC: Cost center " + str(event.event_type).replace(".", " ")
     return "MOSAIC: " + str(event.event_type).replace(".", " · ").replace("_", " ")

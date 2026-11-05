@@ -113,7 +113,10 @@ def _subject_path(event: NotificationEvent, persona: NotificationPersona) -> str
         prefix = (
             "/entitlements?tab=requests&selected=" if persona == "admin" else "/requests?request="
         )
-        kind_query = "&requestKind=costCenter" if subject.request_kind == "costCenter" else ""
+        kind_query = (
+            "&requestKind=" + subject.request_kind
+            if subject.request_kind in {"costCenter", "costCenterMembership"} else ""
+        )
         return prefix + quote(subject.request_id, safe="") + kind_query
     if subject.entitlement_id:
         prefix = "/entitlements?tab=grants&selected=" if persona == "admin" else "/access?grant="
