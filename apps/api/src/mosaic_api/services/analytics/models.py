@@ -115,8 +115,8 @@ class AnalyticsKpis(MosaicModel):
     active_grants: int | None
     active_apis: int | None
     unattributed_requests: int | None
-    # US dollars, at list prices. None when nothing in the window could be priced, or when the
-    # window is by the hour, which MOSAIC can't price.
+    # US dollars, from MOSAIC's price list. None when nothing in the window could be priced, or
+    # when the window is by the hour, which MOSAIC can't price.
     cost: float | None = None
 
 
@@ -194,9 +194,10 @@ class AnalyticsUnpricedUse(MosaicModel):
 
 
 class AnalyticsCostSummary(MosaicModel):
-    """What a report's usage cost at list prices, in US dollars, and what was left out."""
+    """What a report's usage cost from MOSAIC's price list, in US dollars, and what was left out."""
 
     currency: Literal["USD"] = "USD"
+    pricing_basis: Literal["publicSeed", "customManual", "billingDerived", "mixed"] = "publicSeed"
     # None when nothing could be priced. Never zero for usage MOSAIC couldn't price.
     total: float | None
     # The part of the total that provisioned deployments' reserved capacity makes up.
@@ -656,7 +657,9 @@ class AnalyticsCostDeploymentRow(MosaicModel):
     # How the deployment is charged today.
     pricing: Literal["tokens", "provisioned", "unpriced"]
     price_id: str | None = None
-    price_origin: Literal["seed", "admin"] | None = None
+    price_origin: Literal["seed", "admin", "billing"] | None = None
+    price_source_month: str | None = None
+    price_billing_provider: str | None = None
     input_per_million: float | None = None
     cached_input_per_million: float | None = None
     output_per_million: float | None = None

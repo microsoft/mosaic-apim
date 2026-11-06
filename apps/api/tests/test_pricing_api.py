@@ -221,6 +221,10 @@ async def test_an_override_adds_a_version_and_keeps_the_history(admin: TestClien
             "title": "Entered by an administrator",
             "url": "https://contoso.example/agreement",
             "retrievedOn": None,
+            "reference": None,
+            "kind": "external",
+            "runId": None,
+            "sourceMonth": None,
         }
     ]
     after = admin.get("/api/v1/pricing/prices", params={"cloud": "commercial"}).json()

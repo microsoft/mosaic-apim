@@ -313,17 +313,30 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   <tr>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-analytics-cost.png" alt="The Cost section with this month's spend, the month-end forecast, the range's cost, a cost and token trend, and cost by model, consumer, and cost center">
-      <p><b>Cost.</b> What measured usage cost at list price: this month's spend and its month-end
+      <p><b>Cost.</b> Estimated spend from MOSAIC's applicable approved/manual/public rates: this month's spend and its month-end
       forecast, the range's cost and trend, and cost by model, consumer, cost center, API, and
       deployment, with a chargeback export that names each row's cost center. Usage MOSAIC can't
       price shows <b>No price</b>, never $0.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/console-pricing.png" alt="The Pricing page listing one GPT-4o version's input, cached-input, and output prices by deployment type and region">
-      <p><b>Pricing.</b> The list prices MOSAIC turns usage into cost with, for each cloud, each
-      linked to its source. Administrators add prices for other clouds and providers, or override
-      one from a date without changing the days before it, and see which deployments have no price
-      and why.</p>
+      <p><b>Pricing.</b> Public, manual, and approved billing-derived rates with dated history
+      and source evidence. Administrators inspect model and deployment prices, scheduled changes,
+      and coverage without changing earlier days unless they explicitly backdate a correction.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-billing-data.png" alt="Pricing Billing data with fictional Azure, AWS and GCP source configurations and draft or published billing runs">
+      <p><b>Billing data.</b> Configure read-only billing sources or import a completed month's
+      USD extraction, then track acquisitions and reviews. Monthly refresh is opt-in and
+      prepares drafts only; the fictional connections shown are untested.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/console-billing-review.png" alt="A fictional billing draft review showing source month, eligible spend, quantities, existing and proposed rates, mapping decisions and publication controls">
+      <p><b>Billing rate review.</b> Compare quantity-weighted effective rates and evidence,
+      confirm deployment bindings, and review exclusions before publishing. The effective date
+      controls when estimates change; backdating can also change historical reports and budgets.</p>
     </td>
   </tr>
   <tr>
@@ -761,14 +774,18 @@ explicit local/test modes and application startup rejects them when `MOSAIC_ENVI
   Telemetry section checks that its usage can be measured and says how to fix what's missing. See
   [Usage analytics](docs/usage-analytics.md) and
   [ADR 0019](docs/adr/0019-usage-telemetry.md)
-- Pricing: a sourced, dated price list turns measured usage into cost. MOSAIC ships list prices for
+- Pricing: a sourced, dated price list turns measured usage into estimated cost. MOSAIC ships list prices for
   Azure Commercial and Azure Government from the Azure Retail Prices API, each citing its source.
   Administrators add prices for custom clouds and other providers, or override one from a date, as
-  audited versions that never rewrite the days before them. Analytics, the Dashboard, and the
-  portal show cost at list price, with this month's spend and a month-end forecast, provisioned
+  audited versions that never rewrite the days before them. Supported Azure/AWS/GCP billing
+  uploads or read-only connections derive USD contract-amortized candidates; administrators review
+  evidence and mappings before publication. Monthly refresh only prepares drafts. Analytics, the
+  Dashboard, budgets, and the portal use the applicable approved/manual/public rates, with this
+  month's spend and a month-end forecast, provisioned
   throughput shared by each caller's share of its tokens, and a chargeback export. Usage MOSAIC
   can't price shows **No price**, never $0. See [Pricing](docs/pricing.md) and
-  [ADR 0020](docs/adr/0020-price-list.md)
+  [ADR 0020](docs/adr/0020-price-list.md), extended by
+  [ADR 0031](docs/adr/0031-billing-derived-pricing.md)
 - Cost centers: every grant, and so every call, is charged to a cost center that spans gateways,
   with owners, members (people, applications, agents, and Entra security groups), a keys allowed
   switch, per-person default limits, and pooled monthly quotas per model, including a pool's models
@@ -907,6 +924,8 @@ Budgets and their email have these. See [Budgets and alerts](docs/budgets-and-al
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `MOSAIC_BUDGETS_ENABLED` | `true` | Runs the background check that judges budgets, emails at thresholds, and blocks cost centers. It runs only where usage comes from rollups. Off, budgets are kept but never judged. |
+| `MOSAIC_BILLING_REFRESH_ENABLED` | `true` | Poll in-flight billing acquisitions and run explicitly opted-in monthly draft schedules. Never publishes rates. |
+| `MOSAIC_BILLING_REFRESH_INTERVAL_SECONDS` | `300` | Billing worker tick, 30–86,400 seconds. Durable schedules also need an always-on API host; see [billing operations](docs/pricing.md#schedules-late-data-and-recovery). |
 | `MOSAIC_BUDGET_INTERVAL_SECONDS` | `900` | How often every budget is checked, from 60 to 86,400 seconds. |
 | `MOSAIC_BUDGET_FAST_INTERVAL_SECONDS` | `300` | How often a budget at 90% or more, with a threshold or a block to come, is checked, from 60 to 3,600 seconds. |
 
@@ -2619,7 +2638,7 @@ The administrator routes need `Admin`. Grants list with `GET /entitlements?costC
 
 ## Budgets and alerts
 
-A cost center can have a monthly budget in US dollars, across every gateway, at the list price the
+A cost center can have a monthly budget in US dollars, across every gateway, at the applicable price the
 Cost tab uses. It emails the cost center's owners and up to 20 other addresses, which needn't
 belong to MOSAIC users, at 80% and 100% by default, and at 100% either lets calls continue or
 blocks them at the gateway. An organization budget counts every priced call and only warns.
@@ -2718,7 +2737,7 @@ API, [model pool](#model-pools), or MCP server), kind of subject, and [cost cent
 | Tab | What it shows |
 | --- | --- |
 | Overview | Requests, tokens, active callers, errors, p95 latency, and cost against the previous period, the trend, and the top models, callers, and APIs |
-| Cost | What usage cost at list price: the total and trend, spend this month and the month-end forecast, and cost by model, deployment, caller, and API, with each provisioned deployment's monthly cost and utilization |
+| Cost | Estimated cost at the applicable approved/manual/public rates: total and trend, spend this month and month-end forecast, and cost by model, deployment, caller, and API, with provisioned monthly cost and utilization |
 | Consumers | Each person, agent, application, and Entra security group, with requests, tokens, cost, grants, resources, and when they were last seen; the model calls MCP servers' applications made for each person, which those applications already count; then each grant, and each client application |
 | Models | Each model, each deployment's busiest minute against its capacity, and each API and MCP server, with their cost |
 | Reliability | Successful, gateway-throttled, backend 429, and denied calls, an estimated latency histogram, denials by reason, and each API's reliability |
@@ -2744,11 +2763,20 @@ cost center. These routes need `Admin`:
 
 ### Pricing
 
-MOSAIC prices usage from a sourced, dated price list, at list price, each time a view is read. It
+MOSAIC prices usage from a sourced, dated price list each time a view is read. It
 ships list prices for Azure Commercial and Azure Government, read from the public Azure Retail
 Prices API, and every price cites its source. On the console's **Pricing** page, administrators add
 prices for custom clouds and other providers, such as an OpenAI-compatible endpoint or AWS Bedrock,
 or override one from a date. Each is a new version, audited, and never changes the days before it.
+**Billing data** also accepts supported Azure Cost Details, AWS CUR/CUR 2.0, and GCP BigQuery
+extractions or read-only connections. It derives quantity-weighted USD rates from a completed
+month's contract-discounted, amortized consumption, excluding tax and one-off credits.
+Administrators review evidence and deployment bindings before **Publish rates**; monthly
+refreshes create drafts, never approvals. Activation defaults to the UTC approval date, while
+explicitly acknowledged backdating can revise reports and budget blocking at the next check.
+Provider queries/object reads can cost money; customers configure exports, least-privilege
+permissions, federation or API-only management-vault credentials. This is not invoice
+reconciliation, FX, or an administrator percentage/fixed-dollar markup feature.
 
 A managed Azure deployment's default pricing cloud comes from its explicit resource cloud; a
 URL-only endpoint uses its verified host family, where `.azure.us` means Azure Government.
@@ -2760,7 +2788,9 @@ monthly amount, shared among its callers by their share of its tokens. A
 MOSAIC can't price shows **No price**, never $0, and the **Unpriced deployments** tab says what
 would price it, including a pool's calls MOSAIC couldn't place on a member.
 [Pricing](docs/pricing.md) covers sources, matching, overrides, PTUs, chargeback, and refreshing the
-seed. [ADR 0020](docs/adr/0020-price-list.md) records the design. These routes need `Admin`:
+seed, billing setup and its [limits](docs/pricing.md#limits).
+[ADR 0020](docs/adr/0020-price-list.md) records the original design and
+[ADR 0031](docs/adr/0031-billing-derived-pricing.md) extends it. These routes need `Admin`:
 
 | Method | Route under `/api/v1` | Result |
 | --- | --- | --- |
@@ -2771,6 +2801,16 @@ seed. [ADR 0020](docs/adr/0020-price-list.md) records the design. These routes n
 | GET | `/pricing/unpriced` | Deployments with no price today, and adopted model APIs with calls, with why |
 | GET | `/pricing/endpoints` | Each endpoint's cloud, region, and deployments, as MOSAIC prices them |
 | PATCH | `/pricing/endpoints/{id}` | Override an endpoint's cloud or region, or set a declared deployment's type and PTUs; audited, and refused with 409 if the facts changed since the `version` sent |
+| GET | `/pricing/billing/templates` | Supported source schemas, sample CSV, and GCP extraction SQL |
+| POST | `/pricing/billing/imports` | Normalize a supported upload into a draft; no rate activation |
+| GET | `/pricing/billing/connections`, `/pricing/billing/connections/{id}` | Read-only billing source configuration, never secret values |
+| POST / PATCH / DELETE | `/pricing/billing/connections` (POST), `/pricing/billing/connections/{id}` (PATCH/DELETE) | Manage a connection and opt-in schedule; audited, version-protected updates |
+| POST | `/pricing/billing/connections/{id}/check`, `/pricing/billing/connections/{id}/runs` | Check dataset access or start a completed month's retrieval |
+| GET | `/pricing/billing/runs`, `/pricing/billing/runs/{id}` | Acquisition history, normalized evidence, candidates and issues |
+| POST | `/pricing/billing/runs/{id}/poll` | Advance a queued/running provider operation |
+| PATCH | `/pricing/billing/runs/{id}/mappings` | Save reviewed candidate bindings/exclusions against the preview revision |
+| POST | `/pricing/billing/runs/{id}/publish` | Explicitly approve dated rates; stale previews fail and backdating requires acknowledgement |
+| GET | `/pricing/billing/publications`, `/pricing/billing/scheduler` | Published-list provenance or worker readiness/status |
 
 ### Usage and cost in the portal
 
@@ -2794,7 +2834,7 @@ shows the application's own calls or anyone else's, and it's left out of the per
 
 In Azure the figures are measured, and the page says how current they are. The gateway applies
 limits as calls arrive, so someone can reach one before the page shows it. A row with nothing to
-link its calls has null figures, not zero. Cost is the person's own calls at list price, from the
+link its calls has null figures, not zero. Cost is the person's own calls at the applicable rates from the
 [price list](#pricing). A resource MOSAIC can't price shows **No price**, and the totals say how
 many resources they exclude.
 
@@ -2872,7 +2912,7 @@ for the pool is missing, or when its API policy or policy fragment changed after
    Analytics into Cosmos, attributed to each grant, member, and client application, and shown in
    the portal against each grant's own limits and in the console's Dashboard and Analytics; see
    [ADR 0019](docs/adr/0019-usage-telemetry.md). A sourced, dated price list turns that usage into
-   cost at list price, with a month-end forecast and a chargeback export; see
+   estimated cost at the applicable approved/manual/public rates, with a month-end forecast and a chargeback export; see
    [ADR 0020](docs/adr/0020-price-list.md). Cost centers charge every grant and call to a team or
    budget line, with pooled quotas and spend per cost center; see
    [ADR 0022](docs/adr/0022-cost-centers.md). Monthly budgets warn by email at 80% and 100%, and

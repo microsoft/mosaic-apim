@@ -117,6 +117,14 @@ class Settings(BaseSettings):
         description="Evaluate explicitly enabled approval policies; never applies gateway plans.",
     )
     approval_interval_seconds: int = Field(default=60, ge=10, le=3600)
+    billing_refresh_enabled: bool = Field(
+        default=True,
+        description=(
+            "Run the background worker that polls in-flight billing retrievals and executes "
+            "opt-in monthly draft refreshes."
+        ),
+    )
+    billing_refresh_interval_seconds: int = Field(default=300, ge=30, le=86_400)
     scheduled_workers_always_on: bool = Field(
         default=False,
         description=(

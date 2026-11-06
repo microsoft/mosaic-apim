@@ -23,6 +23,7 @@ from mosaic_api.azure_connections import (
     InMemoryAzureConnectionRepository,
 )
 from mosaic_api.azure_connections_api import azure_connections_router
+from mosaic_api.billing_pricing import BillingConnector
 from mosaic_api.budgets_api import budgets_router, portal_budgets_router
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings, get_settings
 from mosaic_api.cost_centers_api import cost_centers_router, portal_cost_centers_router
@@ -43,6 +44,9 @@ from mosaic_api.integrations.aoai.writer import ModelDeploymentWriter
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient, ApimKeyManager
 from mosaic_api.integrations.azure_connections import AzureClientRegistry
+from mosaic_api.integrations.billing_aws import AwsBillingConnector
+from mosaic_api.integrations.billing_azure import AzureBillingConnector
+from mosaic_api.integrations.billing_gcp import GcpBillingConnector
 from mosaic_api.integrations.email import GraphEmailClient
 from mosaic_api.integrations.graph import DirectoryLookup, GraphDirectoryLookup
 from mosaic_api.integrations.graph.notifications import GraphNotificationDirectory
@@ -124,6 +128,7 @@ from mosaic_api.services.analytics import AnalyticsService
 from mosaic_api.services.approval_ai import ApprovalAiService, HttpGovernedApprovalModel
 from mosaic_api.services.approval_events import GrantNotificationRecipientResolver
 from mosaic_api.services.approvals import ApprovalService
+from mosaic_api.services.billing_scheduler import BillingPricingScheduler
 from mosaic_api.services.budget_gate import BlockedListGate
 from mosaic_api.services.budget_notification_bridge import BudgetNotificationBridge
 from mosaic_api.services.budgets import BudgetService
@@ -701,15 +706,47 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if uses_rollups
             else SimulatedUsageSource(environment_repository=environment_repository)
         )
+        azure_billing_connector = AzureBillingConnector(
+            http_client=feature_http_client,
+            connection_service=connection_service,
+            host_credential=credential,
+        )
+        aws_billing_connector = AwsBillingConnector(
+            azure_credential=credential,
+            client=feature_http_client,
+        )
+        gcp_billing_connector = GcpBillingConnector(
+            client=feature_http_client,
+            credential=credential,
+        )
+        billing_connectors: dict[str, BillingConnector] = {
+            azure_billing_connector.provider: azure_billing_connector,
+            aws_billing_connector.provider: aws_billing_connector,
+            gcp_billing_connector.provider: gcp_billing_connector,
+        }
         pricing_service = PricingService(
             pricing_repository,
             endpoint_repository=endpoint_repository,
             gateway_repository=gateway_repository,
             rollup_repository=rollup_repository,
             seed=load_seed(),
+            billing_connectors=billing_connectors,
+            secret_store=management_vault_writer,
+            secret_reader=management_vault_reader,
+            scheduled_workers_always_on=app_settings.scheduled_workers_always_on,
+        )
+        billing_pricing_scheduler = BillingPricingScheduler(
+            pricing_repository,
+            gateway_repository,
+            pricing_service,
+            tenant_id=app_settings.tenant_id,
+            interval_seconds=app_settings.billing_refresh_interval_seconds,
+            enabled=app_settings.billing_refresh_enabled,
+            scheduled_workers_always_on=app_settings.scheduled_workers_always_on,
         )
         app.state.pricing_repository = pricing_repository
         app.state.pricing_service = pricing_service
+        app.state.billing_pricing_scheduler = billing_pricing_scheduler
         app.state.usage_rollup_repository = rollup_repository
         app.state.telemetry_service = telemetry_service
         app.state.pool_health_service = pool_health_service
@@ -1140,6 +1177,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if app_settings.approval_evaluator_enabled
             else None
         )
+        if (
+            app_settings.billing_refresh_enabled
+            and app_settings.environment is not Environment.TEST
+        ):
+            billing_pricing_scheduler.start()
         logger.info(
             "application_started",
             environment=app_settings.environment,
@@ -1148,6 +1190,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
+            await billing_pricing_scheduler.aclose()
             automatic_keys_task.cancel()
             with suppress(asyncio.CancelledError):
                 await automatic_keys_task

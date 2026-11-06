@@ -2,6 +2,12 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Protocol
 
+from mosaic_api.billing_pricing import (
+    BillingAcquisitionRun,
+    BillingConnection,
+    BillingEvidenceChunk,
+    BillingPublication,
+)
 from mosaic_api.budget_notifications import BudgetNotificationOutbox
 from mosaic_api.budgets import Budget, BudgetState, EmailSettings, GateState
 from mosaic_api.clouds import AzureCloud
@@ -668,6 +674,63 @@ class PricingRepository(Protocol):
         someone else saved or created them since they were read.
         """
         ...
+
+    async def list_billing_connections(self, tenant_id: str) -> list[BillingConnection]: ...
+
+    async def get_billing_connection(
+        self, tenant_id: str, connection_id: str
+    ) -> BillingConnection | None: ...
+
+    async def create_billing_connection(
+        self, connection: BillingConnection, audit_event: AuditEvent
+    ) -> BillingConnection: ...
+
+    async def save_billing_connection(
+        self, connection: BillingConnection, audit_event: AuditEvent
+    ) -> BillingConnection: ...
+
+    async def delete_billing_connection(
+        self, connection: BillingConnection, audit_event: AuditEvent
+    ) -> None: ...
+
+    async def list_billing_runs(
+        self, tenant_id: str, *, connection_id: str | None = None
+    ) -> list[BillingAcquisitionRun]: ...
+
+    async def get_billing_run(
+        self, tenant_id: str, run_id: str
+    ) -> BillingAcquisitionRun | None: ...
+
+    async def create_billing_run(
+        self, run: BillingAcquisitionRun, audit_event: AuditEvent
+    ) -> BillingAcquisitionRun: ...
+
+    async def save_billing_run(
+        self, run: BillingAcquisitionRun, audit_event: AuditEvent
+    ) -> BillingAcquisitionRun: ...
+
+    async def save_billing_evidence_chunks(
+        self, tenant_id: str, run_id: str, chunks: Sequence[BillingEvidenceChunk]
+    ) -> None: ...
+
+    async def list_billing_evidence_chunks(
+        self, tenant_id: str, run_id: str
+    ) -> list[BillingEvidenceChunk]: ...
+
+    async def list_billing_publications(self, tenant_id: str) -> list[BillingPublication]: ...
+
+    async def get_billing_publication(
+        self, tenant_id: str, publication_id: str
+    ) -> BillingPublication | None: ...
+
+    async def create_prepared_price_versions(self, versions: Sequence[PriceVersion]) -> None: ...
+
+    async def create_billing_publication(
+        self,
+        publication: BillingPublication,
+        run: BillingAcquisitionRun,
+        audit_event: AuditEvent,
+    ) -> BillingPublication: ...
 
 
 class CostCenterRepository(Protocol):

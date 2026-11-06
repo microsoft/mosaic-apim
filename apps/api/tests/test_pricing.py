@@ -811,6 +811,56 @@ def test_an_administrator_version_is_matched_like_a_seeded_one() -> None:
     assert "openai" in book.clouds()
 
 
+def test_billing_derived_versions_preserve_provenance_and_gate_on_published_ids() -> None:
+    prepared = PriceVersion(
+        id="price_billing_1",
+        tenant_id=TENANT,
+        origin="billing",
+        cloud="commercial",
+        publisher="OpenAI",
+        model="gpt-4o",
+        version="2024-11-20",
+        deployment_type="GlobalStandard",
+        deployment="endpoint-1/chat",
+        input_per_million=1.8,
+        output_per_million=7.2,
+        effective_from=date(2026, 9, 1),
+        source_url=None,
+        note="Derived from September billing",
+        recorded_by="admin-oid",
+        publication_id="pub_sep",
+        billing_run_id="run_sep",
+        billing_provider="azure",
+        source_month="2026-09",
+        source_title="Azure Cost Details (2026-09)",
+        source_reference="mosaic://pricing/billing-runs/run_sep#candidate=cand_1",
+    )
+    entry = version_entry(prepared)
+    assert entry.origin == "billing"
+    assert entry.publication_id == "pub_sep"
+    assert entry.billing_run_id == "run_sep"
+    assert entry.billing_provider == "azure"
+    assert entry.source_month == "2026-09"
+    assert entry.sources[0].kind == "billingRun"
+    assert entry.sources[0].url is None
+    assert entry.sources[0].reference == "mosaic://pricing/billing-runs/run_sep#candidate=cand_1"
+    assert entry.sources[0].run_id == "run_sep"
+    assert entry.sources[0].source_month == "2026-09"
+
+    # Prepared versions with a publication_id stay invisible until their publication is committed.
+    unpublished_book = build_book([prepared], published_ids=set())
+    assert _matched(unpublished_book, _facts(), date(2026, 9, 15)).origin == "seed"
+
+    default_book = build_book([prepared])
+    assert _matched(default_book, _facts(), date(2026, 9, 15)).origin == "seed"
+
+    published_book = build_book([prepared], published_ids={"pub_sep"})
+    matched = _matched(published_book, _facts(), date(2026, 9, 15))
+    assert matched.id == "price_billing_1"
+    assert matched.origin == "billing"
+    assert matched.input_per_million == pytest.approx(1.8)
+
+
 def test_endpoint_pricing_updates_are_cleaned_up() -> None:
     update = EndpointPricingUpdate.model_validate(
         {

@@ -1,4 +1,6 @@
-/** Money in the console: US dollars at list price, and never $0 for something MOSAIC can't price. */
+/** Money in the console: US dollars from MOSAIC's price list, and never $0 for something MOSAIC can't price. */
+
+export type PricingBasis = 'publicSeed' | 'customManual' | 'billingDerived' | 'mixed'
 
 const dollars = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' })
 const compactDollars = new Intl.NumberFormat('en-US', {

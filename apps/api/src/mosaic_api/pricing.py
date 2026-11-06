@@ -82,8 +82,22 @@ UnpricedReason = Literal[
     "noOutputPrice",
     "beforeDeployment",
 ]
-PriceOrigin = Literal["seed", "admin"]
+PriceOrigin = Literal["seed", "admin", "billing"]
+PricingBasis = Literal["publicSeed", "customManual", "billingDerived", "mixed"]
 CloudSource = Literal["detected", "override"]
+
+
+def pricing_basis_for_origins(origins: Iterable[PriceOrigin]) -> PricingBasis:
+    """Summarize the pricing basis for a set of matched or active price origins."""
+
+    found = {origin for origin in origins}
+    if not found or found == {"seed"}:
+        return "publicSeed"
+    if found == {"billing"}:
+        return "billingDerived"
+    if found == {"admin"}:
+        return "customManual"
+    return "mixed"
 
 
 def cloud_label(cloud: str | None) -> str:
@@ -304,6 +318,7 @@ class PriceVersion(Entity):
     """
 
     entity_type: Literal["priceVersion"] = "priceVersion"
+    origin: Literal["admin", "billing"] = "admin"
     cloud: str
     publisher: str | None = None
     model: str
@@ -318,11 +333,18 @@ class PriceVersion(Entity):
     ptu_hourly: float | None = None
     monthly_amount: float | None = None
     effective_from: date
-    source_url: str
+    source_url: str | None = None
     note: str
     # The seeded or earlier price this version was entered as an override of, for the history.
     overrides: str | None = None
     recorded_by: str
+    # Billing-derived provenance fields; set when origin == "billing".
+    publication_id: str | None = None
+    billing_run_id: str | None = None
+    billing_provider: str | None = None
+    source_month: str | None = None
+    source_title: str | None = None
+    source_reference: str | None = None
 
 
 class DeploymentPricing(MosaicModel):
@@ -490,8 +512,12 @@ class EndpointPricingUpdate(MosaicModel):
 @dataclass(frozen=True)
 class SourceRef:
     title: str
-    url: str
+    url: str | None = None
     retrieved_on: date | None = None
+    reference: str | None = None
+    kind: Literal["external", "billingRun"] = "external"
+    run_id: str | None = None
+    source_month: str | None = None
 
 
 @dataclass(frozen=True)
@@ -521,6 +547,10 @@ class PriceEntry:
     overrides: str | None = None
     # Only seeded prices a refresh replaced end. Every other version lasts until the next one.
     effective_until: date | None = None
+    publication_id: str | None = None
+    billing_run_id: str | None = None
+    billing_provider: str | None = None
+    source_month: str | None = None
 
     @property
     def provisioned(self) -> bool:
@@ -537,7 +567,11 @@ class PriceEntry:
         over a seeded one, then the one recorded later. So a correction keeps beating the price
         it corrects, whatever seed a later release ships."""
 
-        return (self.effective_from, 1 if self.origin == "admin" else 0, self.recorded_at)
+        return (
+            self.effective_from,
+            1 if self.origin in ("admin", "billing") else 0,
+            self.recorded_at,
+        )
 
     @property
     def line_key(self) -> tuple[str, ...]:
@@ -599,9 +633,21 @@ def seed_entries(seed: PriceSeed) -> list[PriceEntry]:
 
 
 def version_entry(version: PriceVersion) -> PriceEntry:
+    if version.origin == "billing":
+        source = SourceRef(
+            title=version.source_title
+            or f"Billing import ({version.source_month or 'prior month'})",
+            url=version.source_url,
+            reference=version.source_reference,
+            kind="billingRun" if version.billing_run_id else "external",
+            run_id=version.billing_run_id,
+            source_month=version.source_month,
+        )
+    else:
+        source = SourceRef("Entered by an administrator", version.source_url)
     return PriceEntry(
         id=version.id,
-        origin="admin",
+        origin=version.origin,
         cloud=version.cloud,
         publisher=version.publisher,
         model=version.model,
@@ -618,9 +664,13 @@ def version_entry(version: PriceVersion) -> PriceEntry:
         effective_from=version.effective_from,
         recorded_at=version.created_at,
         recorded_by=version.recorded_by,
-        sources=(SourceRef("Entered by an administrator", version.source_url),),
+        sources=(source,),
         note=version.note,
         overrides=version.overrides,
+        publication_id=version.publication_id,
+        billing_run_id=version.billing_run_id,
+        billing_provider=version.billing_provider,
+        source_month=version.source_month,
     )
 
 
@@ -649,6 +699,8 @@ class DeploymentFacts:
     declared: bool = False
     # When Azure created the deployment, if MOSAIC read it.
     deployed_on: date | None = None
+    azure_resource_id: str | None = None
+    account_name: str | None = None
 
     @property
     def provisioned(self) -> bool:
@@ -657,6 +709,29 @@ class DeploymentFacts:
 
 def deployment_key(endpoint_id: str, deployment_name: str) -> str:
     return f"{endpoint_id}/{deployment_name}"
+
+
+def _endpoint_account_name(endpoint: ModelEndpoint) -> str | None:
+    if endpoint.account_name:
+        return endpoint.account_name
+    if endpoint.azure_resource_id:
+        match = re.search(r"/accounts/([^/]+)", endpoint.azure_resource_id, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    host = (urlsplit(str(endpoint.endpoint)).hostname or "").casefold().rstrip(".")
+    for suffix in (
+        ".openai.azure.com",
+        ".openai.azure.us",
+        ".cognitiveservices.azure.com",
+        ".cognitiveservices.azure.us",
+        ".services.ai.azure.com",
+        ".services.ai.azure.us",
+    ):
+        if host.endswith(suffix):
+            prefix = host[: -len(suffix)]
+            if prefix and "." not in prefix:
+                return prefix
+    return None
 
 
 def deployment_facts(
@@ -716,6 +791,8 @@ def deployment_facts(
         deployed_on=(
             observed.deployed_at.date() if observed and observed.deployed_at else None
         ),
+        azure_resource_id=endpoint.azure_resource_id,
+        account_name=_endpoint_account_name(endpoint),
     )
 
 
@@ -752,8 +829,10 @@ def _model_score(entry: PriceEntry, model: str) -> int:
 
 
 def _specificity(entry: PriceEntry, model_score: int) -> tuple[int, ...]:
+    if entry.deployment:
+        return (1, 3, 0, 0, 0, 0)
     return (
-        1 if entry.deployment else 0,
+        0,
         model_score,
         1 if entry.version else 0,
         1 if entry.regions else 0,
@@ -826,7 +905,13 @@ class PriceBook:
             facts.deployment_type
         ):
             return None
-        if entry.regions and (facts.region is None or facts.region not in entry.regions):
+        if entry.regions and (
+            facts.region is None
+            or (
+                _fold(facts.region) not in {_fold(r) for r in entry.regions}
+                and _compact(facts.region) not in {_compact(r) for r in entry.regions}
+            )
+        ):
             return None
         return score
 
@@ -895,13 +980,46 @@ class PriceBook:
         general = [item for item in matches if not item.version]
         return general[0] if general else None
 
+    def pricing_basis(
+        self,
+        *,
+        day: date | None = None,
+        origins: Iterable[PriceOrigin] | None = None,
+    ) -> PricingBasis:
+        """The pricing basis for observed origins or active lines in this price book."""
+
+        if origins is not None:
+            observed = {origin for origin in origins}
+            if observed:
+                return pricing_basis_for_origins(observed)
+        if not self.entries:
+            return "publicSeed"
+        lines: dict[str, list[PriceEntry]] = {}
+        for entry in self.entries:
+            if day is None or entry.in_effect(day):
+                lines.setdefault(entry.line_id, []).append(entry)
+        active_origins = {
+            max(versions, key=lambda item: item.precedence).origin
+            for versions in lines.values()
+            if versions
+        }
+        return pricing_basis_for_origins(active_origins)
+
 
 def build_book(
-    versions: Iterable[PriceVersion] = (), seed: PriceSeed | None = None
+    versions: Iterable[PriceVersion] = (),
+    seed: PriceSeed | None = None,
+    published_ids: set[str] | None = None,
 ) -> PriceBook:
     shipped = seed or load_seed()
+    visible_versions = [
+        version
+        for version in versions
+        if version.publication_id is None
+        or (published_ids is not None and version.publication_id in published_ids)
+    ]
     return PriceBook(
-        [*seed_entries(shipped), *(version_entry(version) for version in versions)],
+        [*seed_entries(shipped), *(version_entry(version) for version in visible_versions)],
         shipped.ptu_throughput,
     )
 
@@ -1031,6 +1149,33 @@ class Pricer:
 
     def provisioned_keys(self) -> list[str]:
         return sorted(key.casefold() for key, facts in self.facts.items() if facts.provisioned)
+
+    def pricing_basis(
+        self,
+        *,
+        day: date | None = None,
+        origins: Iterable[PriceOrigin] | None = None,
+    ) -> PricingBasis:
+        """The pricing basis for the rates evaluated by this pricer or matched on ``day``."""
+
+        if origins is not None:
+            observed = {origin for origin in origins}
+            if observed:
+                return pricing_basis_for_origins(observed)
+        cached_origins = {
+            rate.entry.origin for rate in self._rates.values() if rate.entry is not None
+        }
+        if cached_origins:
+            return pricing_basis_for_origins(cached_origins)
+        if day is not None and self.facts:
+            matched_origins = {
+                match.entry.origin
+                for facts in self.facts.values()
+                if isinstance(match := self.book.match(facts, day), PriceMatch)
+            }
+            if matched_origins:
+                return pricing_basis_for_origins(matched_origins)
+        return self.book.pricing_basis(day=day)
 
 
 def round_cost(value: float | None) -> float | None:

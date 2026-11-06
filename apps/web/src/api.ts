@@ -20,6 +20,18 @@ import type {
   AnalyticsStatus,
   AnalyticsUnattributed,
   ApiErrorBody,
+  BillingConnectionCheckResult,
+  BillingConnectionCreate,
+  BillingConnectionUpdate,
+  BillingConnectionView,
+  BillingImportPayload,
+  BillingMappingsUpdateRequest,
+  BillingPublicationView,
+  BillingPublishRequest,
+  BillingRunDetailView,
+  BillingRunSummaryView,
+  BillingRunTriggerRequest,
+  BillingSourceTemplateView,
   BudgetOverview,
   BudgetUpdate,
   BudgetView,
@@ -211,6 +223,21 @@ export interface MosaicApi extends AdminApi {
   getUnpricedDeployments(): Promise<UnpricedReport>
   listEndpointPricing(): Promise<EndpointPricingView[]>
   updateEndpointPricing(endpointId: string, payload: EndpointPricingUpdate): Promise<EndpointPricingView>
+  listBillingTemplates(): Promise<BillingSourceTemplateView[]>
+  importBillingData(payload: BillingImportPayload): Promise<BillingRunDetailView>
+  listBillingRuns(connectionId?: string): Promise<BillingRunSummaryView[]>
+  getBillingRun(runId: string): Promise<BillingRunDetailView>
+  updateBillingMappings(runId: string, payload: BillingMappingsUpdateRequest): Promise<BillingRunDetailView>
+  publishBillingRun(runId: string, payload: BillingPublishRequest): Promise<BillingPublicationView>
+  pollBillingRun(runId: string): Promise<BillingRunDetailView>
+  listBillingPublications(): Promise<BillingPublicationView[]>
+  listBillingConnections(): Promise<BillingConnectionView[]>
+  getBillingConnection(connectionId: string): Promise<BillingConnectionView>
+  createBillingConnection(payload: BillingConnectionCreate): Promise<BillingConnectionView>
+  updateBillingConnection(connectionId: string, payload: BillingConnectionUpdate): Promise<BillingConnectionView>
+  deleteBillingConnection(connectionId: string, version?: string | null): Promise<void>
+  checkBillingConnection(connectionId: string): Promise<BillingConnectionCheckResult>
+  startBillingConnectionRun(connectionId: string, payload?: BillingRunTriggerRequest): Promise<BillingRunDetailView>
   getEnvironmentCatalog(): Promise<EnvironmentCatalogView>
   createEnvironment(payload: EnvironmentCreate): Promise<EnvironmentCatalogView>
   updateEnvironment(key: string, payload: EnvironmentUpdate): Promise<EnvironmentCatalogView>
@@ -676,6 +703,67 @@ export function useMosaicApi(): MosaicApi {
           method: 'PATCH',
           body: payload,
         }),
+      listBillingTemplates: () =>
+        request<BillingSourceTemplateView[]>('/api/v1/pricing/billing/templates'),
+      importBillingData: (payload) =>
+        request<BillingRunDetailView>('/api/v1/pricing/billing/imports', {
+          method: 'POST',
+          body: payload,
+        }),
+      listBillingRuns: (connectionId) =>
+        request<BillingRunSummaryView[]>(
+          `/api/v1/pricing/billing/runs${connectionId ? `?connectionId=${encodeURIComponent(connectionId)}` : ''}`,
+        ),
+      getBillingRun: (runId) =>
+        request<BillingRunDetailView>(`/api/v1/pricing/billing/runs/${encodeURIComponent(runId)}`),
+      updateBillingMappings: (runId, payload) =>
+        request<BillingRunDetailView>(
+          `/api/v1/pricing/billing/runs/${encodeURIComponent(runId)}/mappings`,
+          { method: 'PATCH', body: payload },
+        ),
+      publishBillingRun: (runId, payload) =>
+        request<BillingPublicationView>(
+          `/api/v1/pricing/billing/runs/${encodeURIComponent(runId)}/publish`,
+          { method: 'POST', body: payload },
+        ),
+      pollBillingRun: (runId) =>
+        request<BillingRunDetailView>(
+          `/api/v1/pricing/billing/runs/${encodeURIComponent(runId)}/poll`,
+          { method: 'POST' },
+        ),
+      listBillingPublications: () =>
+        request<BillingPublicationView[]>('/api/v1/pricing/billing/publications'),
+      listBillingConnections: () =>
+        request<BillingConnectionView[]>('/api/v1/pricing/billing/connections'),
+      getBillingConnection: (connectionId) =>
+        request<BillingConnectionView>(
+          `/api/v1/pricing/billing/connections/${encodeURIComponent(connectionId)}`,
+        ),
+      createBillingConnection: (payload) =>
+        request<BillingConnectionView>('/api/v1/pricing/billing/connections', {
+          method: 'POST',
+          body: payload,
+        }),
+      updateBillingConnection: (connectionId, payload) =>
+        request<BillingConnectionView>(
+          `/api/v1/pricing/billing/connections/${encodeURIComponent(connectionId)}`,
+          { method: 'PATCH', body: payload },
+        ),
+      deleteBillingConnection: (connectionId, version) =>
+        request<void>(
+          `/api/v1/pricing/billing/connections/${encodeURIComponent(connectionId)}${version ? `?version=${encodeURIComponent(version)}` : ''}`,
+          { method: 'DELETE' },
+        ),
+      checkBillingConnection: (connectionId) =>
+        request<BillingConnectionCheckResult>(
+          `/api/v1/pricing/billing/connections/${encodeURIComponent(connectionId)}/check`,
+          { method: 'POST' },
+        ),
+      startBillingConnectionRun: (connectionId, payload) =>
+        request<BillingRunDetailView>(
+          `/api/v1/pricing/billing/connections/${encodeURIComponent(connectionId)}/runs`,
+          { method: 'POST', body: payload ?? {} },
+        ),
       getEnvironmentCatalog: () => request<EnvironmentCatalogView>('/api/v1/environment-catalog'),
       createEnvironment: (payload) =>
         request<EnvironmentCatalogView>('/api/v1/environment-catalog/environments', {

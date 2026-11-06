@@ -9,6 +9,7 @@ from html import escape
 from mosaic_api.budgets import Budget, BudgetNotification, BudgetState
 from mosaic_api.domain import CostCenterRef
 from mosaic_api.integrations.email import EmailMessage
+from mosaic_api.pricing import PricingBasis
 
 _UNBLOCKED_WHY: dict[str, str] = {
     "newMonth": "A new month has started, so its budget starts again.",
@@ -89,6 +90,8 @@ def budget_email(
     cost_center: CostCenterRef | None,
     to: list[str],
     enforcement: Enforcement | None = None,
+    *,
+    pricing_basis: PricingBasis | None = None,
 ) -> EmailMessage:
     who = _subject_name(budget, cost_center)
     month = _month(state.month)
@@ -99,10 +102,21 @@ def budget_email(
         if state.forecast is not None
         else "MOSAIC projects the month's end once it has a day of figures."
     )
-    estimate = (
-        "Figures are list-price estimates from gateway usage, before any discount, and trail "
-        "calls by up to about half an hour."
-    )
+    if pricing_basis == "publicSeed":
+        estimate = (
+            "Figures are list-price estimates from gateway usage, before any discount, and trail "
+            "calls by up to about half an hour."
+        )
+    elif pricing_basis == "billingDerived":
+        estimate = (
+            "Figures are estimates from gateway usage using approved billing-derived rates in "
+            "MOSAIC's price list, and trail calls by up to about half an hour."
+        )
+    else:
+        estimate = (
+            "Figures are estimates from gateway usage priced from MOSAIC's price list, and trail "
+            "calls by up to about half an hour."
+        )
     if notice.kind == "threshold":
         threshold = notice.threshold or 100
         if budget.scope == "organization":
