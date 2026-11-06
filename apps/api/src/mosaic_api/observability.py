@@ -93,7 +93,12 @@ def configure_telemetry(settings: Settings) -> None:
         "connection_string": settings.applicationinsights_connection_string,
         "resource_attributes": {"service.name": "mosaic-api"},
         # instrument_requests instruments the API's app instead. See there.
-        "instrumentation_options": {"fastapi": {"enabled": False}},
+        "instrumentation_options": {
+            "fastapi": {"enabled": False},
+            # The server hook's query redaction does not cover outbound HTTPX URLs.
+            "httpx": {"enabled": False},
+            "httpx2": {"enabled": False},
+        },
     }
     if settings.environment is Environment.TEST:
         options["disable_offline_storage"] = True

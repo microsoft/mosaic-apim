@@ -1,5 +1,6 @@
 # M-tools' direct dependencies. requirements.txt pins them and everything they need, with hashes.
 # Regenerate it with ../compile_requirements.py; the README explains how.
+certifi==2026.10.19
 mcp==1.30.0
 pydantic==2.13.5
 starlette==1.7.0

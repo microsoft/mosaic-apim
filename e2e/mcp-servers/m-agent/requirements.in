@@ -1,8 +1,10 @@
 # M-agent's direct dependencies. requirements.txt pins them and everything they need, with hashes.
 # Regenerate it with ../compile_requirements.py; the README explains how.
 # The aio extra brings aiohttp, the transport azure.identity.aio uses for managed identity.
+aiohttp==3.14.4
 azure-core[aio]==1.41.0
 azure-identity==1.25.3
+certifi==2026.10.19
 httpx==0.28.1
 mcp==1.30.0
 pydantic==2.13.5
