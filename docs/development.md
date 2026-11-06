@@ -122,6 +122,8 @@ empty `200` that needs no sign-in. A request to any other path is recorded, even
 `404`. No header or body of a request or response is recorded, so no bearer token or API key
 reaches Application Insights; don't set OpenTelemetry's
 `OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_*` variables, which would record the headers they name.
+HTTPX client auto-instrumentation remains disabled: outbound URLs do not pass through the API's
+request-redaction hook.
 Without the connection string, nothing is instrumented.
 
 In a second terminal, from the repository root:

@@ -9,6 +9,11 @@ members = ["apps/api"]
 
 [tool.uv]
 exclude-newer = "2026-08-01T00:00:00Z"
+constraint-dependencies = [
+  "certifi>=2026.10.19",
+  "multidict>=6.9.1",
+  "opentelemetry-api>=1.45.1",
+]
 
 # These security releases are newer than the cutoff above, so each of these packages alone gets a
 # cutoff of the day after its release. Every other package keeps the global cutoff.
@@ -21,6 +26,33 @@ pyjwt = "2026-09-24T00:00:00Z"
 # urllib3 2.8.0 (published 2026-09-15) fixes GHSA-8988-9cw3-xx77, GHSA-vxq7-64xx-v4gw and
 # GHSA-gh4c-6fx4-qh6g.
 urllib3 = "2026-09-16T00:00:00Z"
+# Security releases and their required transport/image dependencies.
+aiohttp = "2026-10-06T00:00:00Z"
+certifi = "2026-10-21T00:00:00Z"
+multidict = "2026-09-22T00:00:00Z"
+pillow = "2026-10-17T00:00:00Z"
+yarl = "2026-09-16T00:00:00Z"
+# The patched OpenTelemetry API requires a matching SDK/instrumentation family and Azure distro.
+azure-monitor-opentelemetry = "2026-10-08T00:00:00Z"
+azure-monitor-opentelemetry-exporter = "2026-10-08T00:00:00Z"
+opentelemetry-resource-detector-azure = "2026-09-30T00:00:00Z"
+opentelemetry-api = "2026-10-07T00:00:00Z"
+opentelemetry-sdk = "2026-10-07T00:00:00Z"
+opentelemetry-semantic-conventions = "2026-10-07T00:00:00Z"
+opentelemetry-instrumentation = "2026-10-07T00:00:00Z"
+opentelemetry-instrumentation-asgi = "2026-10-07T00:00:00Z"
+opentelemetry-instrumentation-dbapi = "2026-10-07T00:00:00Z"
+opentelemetry-instrumentation-django = "2026-10-07T00:00:00Z"
+opentelemetry-instrumentation-fastapi = "2026-10-07T00:00:00Z"
+opentelemetry-instrumentation-flask = "2026-10-07T00:00:00Z"
+opentelemetry-instrumentation-httpx = "2026-10-07T00:00:00Z"
+opentelemetry-instrumentation-logging = "2026-10-07T00:00:00Z"
+opentelemetry-instrumentation-psycopg2 = "2026-10-07T00:00:00Z"
+opentelemetry-instrumentation-requests = "2026-10-07T00:00:00Z"
+opentelemetry-instrumentation-urllib = "2026-10-07T00:00:00Z"
+opentelemetry-instrumentation-urllib3 = "2026-10-07T00:00:00Z"
+opentelemetry-instrumentation-wsgi = "2026-10-07T00:00:00Z"
+opentelemetry-util-http = "2026-10-07T00:00:00Z"
 
 [dependency-groups]
 dev = [
