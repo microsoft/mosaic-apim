@@ -1744,7 +1744,10 @@ function BillingConnectionWorkspace({
                   placeholder="us-east-1"
                 />
               </Field>
-              <Field label="External ID">
+              <Field
+                label="External ID"
+                hint="Leave blank for built-in OIDC authentication. External IDs require a custom signed AssumeRole session provider."
+              >
                 <Input value={awsExternalId} onChange={(_, data) => setAwsExternalId(data.value)} />
               </Field>
               <Field label="OIDC Audience">
@@ -2034,7 +2037,7 @@ function BillingRunReviewWorkspace({
     const m = mappings[cand.candidateId]
     if (!m) return false
     if (m.scope === 'deployment' && !m.deploymentKey?.trim()) return false
-    if ((cand.mappingConfidence === 'ambiguous' || cand.ambiguousDeploymentKeys.length > 0) && !m.confirmed) {
+    if ((m.scope === 'cloudModel' || cand.mappingConfidence !== 'exact' || cand.ambiguousDeploymentKeys.length > 0) && !m.confirmed) {
       return false
     }
     if ((cand.conflictsWithManualOverride || cand.existingOrigin === 'admin') && !m.replaceManualOverride) {
@@ -2046,6 +2049,7 @@ function BillingRunReviewWorkspace({
   const canPublish =
     run.status === 'readyForReview' &&
     !publication &&
+    !mappingsDirty &&
     includedCandidates.length > 0 &&
     allIncludedValid &&
     (!isBackdated || acknowledgeBackdateImpact) &&
@@ -2371,11 +2375,13 @@ function BillingRunReviewWorkspace({
                               </Field>
                             )}
 
-                            {mapping.scope !== 'excluded' && isAmbiguous && (
+                            {mapping.scope !== 'excluded' && (isAmbiguous || mapping.scope === 'cloudModel' || cand.mappingConfidence !== 'exact') && (
                               <div>
-                                <Badge appearance="tint" color="warning">
-                                  Ambiguous deployment mapping
-                                </Badge>
+                                {isAmbiguous && (
+                                  <Badge appearance="tint" color="warning">
+                                    Ambiguous deployment mapping
+                                  </Badge>
+                                )}
                                 {cand.ambiguousDeploymentKeys.length > 0 && (
                                   <Text block size={200} className={styles.muted}>
                                     Candidates: {cand.ambiguousDeploymentKeys.join(', ')}
@@ -2383,7 +2389,9 @@ function BillingRunReviewWorkspace({
                                 )}
                                 <Checkbox
                                   aria-label={`Confirm mapping for ${cand.model}`}
-                                  label="Confirm deployment mapping"
+                                  label={mapping.scope === 'cloudModel'
+                                    ? 'Confirm applying to all matching deployments in this cloud'
+                                    : 'Confirm deployment mapping'}
                                   disabled={readOnly}
                                   checked={Boolean(mapping.confirmed)}
                                   onChange={(_, data) => {

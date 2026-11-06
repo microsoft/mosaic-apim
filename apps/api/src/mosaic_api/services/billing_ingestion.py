@@ -579,29 +579,23 @@ def _decompress_gzip_bounded(data: bytes, *, max_decompressed_bytes: int, file_n
     try:
         for offset in range(0, len(data), chunk_size):
             piece = data[offset : offset + chunk_size]
-            remaining = max_decompressed_bytes - len(out) + 1
-            decompressed = decompressor.decompress(piece, remaining)
-            out.extend(decompressed)
-            if len(out) > max_decompressed_bytes or decompressor.unconsumed_tail:
-                raise BillingPayloadTooLargeError(
-                    f"Decompressed billing file {file_name!r} exceeds the maximum allowed size "
-                    f"({max_decompressed_bytes:,} bytes).",
-                    details={
-                        "fileName": file_name,
-                        "maxDecompressedBytes": max_decompressed_bytes,
-                    },
-                )
-        tail = decompressor.flush()
-        out.extend(tail)
-        if len(out) > max_decompressed_bytes:
-            raise BillingPayloadTooLargeError(
-                f"Decompressed billing file {file_name!r} exceeds the maximum allowed size "
-                f"({max_decompressed_bytes:,} bytes).",
-                details={
-                    "fileName": file_name,
-                    "maxDecompressedBytes": max_decompressed_bytes,
-                },
-            )
+            while piece:
+                if decompressor.eof:
+                    decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+                remaining = max_decompressed_bytes - len(out) + 1
+                out.extend(decompressor.decompress(piece, remaining))
+                if len(out) > max_decompressed_bytes or decompressor.unconsumed_tail:
+                    raise BillingPayloadTooLargeError(
+                        f"Decompressed billing file {file_name!r} exceeds the maximum allowed size "
+                        f"({max_decompressed_bytes:,} bytes).",
+                        details={
+                            "fileName": file_name,
+                            "maxDecompressedBytes": max_decompressed_bytes,
+                        },
+                    )
+                piece = decompressor.unused_data
+        if not decompressor.eof:
+            raise zlib.error("Incomplete GZIP stream.")
     except BillingPayloadTooLargeError:
         raise
     except Exception as exc:
@@ -1754,8 +1748,12 @@ def _normalize_aws_rows(
             "line_item_unblended_cost",
             "lineitem/netunblendedcost",
             "line_item_net_unblended_cost",
+            "reservation/effectivecost",
+            "reservation_effective_cost",
             "savingsplan/savingsplaneffectivecost",
             "savings_plan_savings_plan_effective_cost",
+            "savingsplan/netsavingsplaneffectivecost",
+            "savings_plan_net_savings_plan_effective_cost",
         }
     )
     has_currency = bool(
@@ -1841,14 +1839,17 @@ def _normalize_aws_rows(
         ).strip()
         lit_folded = line_item_type.casefold()
 
+        net_unblended_raw = _get_ci(
+            row, "lineItem/NetUnblendedCost", "line_item_net_unblended_cost"
+        )
         unblended = _parse_decimal(
             _get_ci(row, "lineItem/UnblendedCost", "line_item_unblended_cost"),
             field_name="line_item_unblended_cost",
             row_number=idx,
-            required=False,
-        )
-        net_unblended_raw = _get_ci(
-            row, "lineItem/NetUnblendedCost", "line_item_net_unblended_cost"
+            required=(
+                net_unblended_raw is None
+                and lit_folded not in {"discountedusage", "savingsplancoveredusage"}
+            ),
         )
         net_unblended = (
             _parse_decimal(
@@ -2803,7 +2804,12 @@ def _match_deployment_and_existing_price(
         if res_match:
             resource_matched.append(facts)
 
-    suggested_scope: BillingMappingScope = "cloudModel" if candidate.publishable else "excluded"
+    has_source_identity = bool(
+        candidate.source_resource_id or candidate.source_account_id or cand_account
+    )
+    suggested_scope: BillingMappingScope = (
+        "cloudModel" if candidate.publishable and not has_source_identity else "excluded"
+    )
     suggested_deployment_key: str | None = None
     ambiguous_keys: list[str] = []
     confidence: BillingMappingConfidence = "unmatched"
@@ -2836,7 +2842,7 @@ def _match_deployment_and_existing_price(
                 details={"ambiguousDeploymentKeys": ambiguous_keys},
             )
         )
-    elif not candidate.source_resource_id and not cand_account:
+    elif not has_source_identity:
         if len(compatible) == 1:
             confidence = "suggested"
             suggested_scope = "deployment"
@@ -2862,17 +2868,6 @@ def _match_deployment_and_existing_price(
                     details={"ambiguousDeploymentKeys": ambiguous_keys},
                 )
             )
-    else:
-        # Candidate names a specific resource/account that didn't match any registered endpoint's
-        # resource/account. Check if compatible endpoints exist without resource identity.
-        unanchored = [
-            f for f in compatible if not f.azure_resource_id and not f.account_name
-        ]
-        if len(unanchored) == 1 and len(compatible) == 1:
-            confidence = "suggested"
-            suggested_scope = "deployment"
-            suggested_deployment_key = unanchored[0].key
-            matched_facts_for_price = unanchored[0]
 
     # Compare against existing applicable price in PriceBook
     existing_entry: PriceEntry | None = None

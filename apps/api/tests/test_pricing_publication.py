@@ -702,9 +702,7 @@ async def test_publish_validations_for_manual_conflict_backdating_and_blockers()
     assert len(pub.price_version_ids) == 1
 
     # 6. Idempotent repeat call with same effective_from (or None) returns identical publication
-    pub_repeat_none = await service.publish_billing_run(
-        actor, detail.id, BillingPublishRequest()
-    )
+    pub_repeat_none = await service.publish_billing_run(actor, detail.id, BillingPublishRequest())
     assert pub_repeat_none.id == pub.id
     pub_repeat_same = await service.publish_billing_run(
         actor,
@@ -900,6 +898,251 @@ async def test_later_seed_refresh_never_displaces_deployment_bound_billing_rate(
     assert west_rate.entry.input_per_million == pytest.approx(3.00)
 
 
+async def test_failed_approval_retry_cannot_activate_old_dates_or_excluded_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, repository, _, _ = await _build_estate()
+    actor = _actor()
+    detail = await service.import_billing_data(
+        actor,
+        provider="azure",
+        pricing_cloud="commercial",
+        source_month="2026-09",
+        file_name="retry.csv",
+        content=_sample_azure_csv(include_mini=True),
+    )
+    mini = next(c for c in detail.candidates if c.model == "gpt-4o-mini")
+    detail = await service.update_billing_mappings(
+        actor,
+        detail.id,
+        BillingMappingsUpdateRequest(
+            mappings=[
+                BillingCandidateMapping(
+                    candidate_id=mini.candidate_id,
+                    scope="deployment",
+                    deployment_key="endpoint-east/mini-b",
+                    confirmed=True,
+                )
+            ],
+            version=detail.version,
+            preview_revision=detail.preview_revision,
+        ),
+    )
+    commit = repository.create_billing_publication
+
+    async def fail_commit(*args: Any) -> BillingPublication:
+        raise ConflictError("Injected publication failure")
+
+    monkeypatch.setattr(repository, "create_billing_publication", fail_commit)
+    with pytest.raises(ConflictError, match="Injected"):
+        await service.publish_billing_run(actor, detail.id)
+    failed_ids = {v.id for v in await repository.list_price_versions(TENANT)}
+    assert len(failed_ids) == 2
+    monkeypatch.setattr(repository, "create_billing_publication", commit)
+
+    detail = await service.update_billing_mappings(
+        actor,
+        detail.id,
+        BillingMappingsUpdateRequest(
+            mappings=[BillingCandidateMapping(candidate_id=mini.candidate_id, scope="excluded")],
+            version=detail.version,
+            preview_revision=detail.preview_revision,
+        ),
+    )
+    tomorrow = TODAY + timedelta(days=1)
+    publication = await service.publish_billing_run(
+        actor, detail.id, BillingPublishRequest(effective_from=tomorrow)
+    )
+    assert not failed_ids.intersection(publication.price_version_ids)
+    book = await service.book(TENANT)
+    assert {e.id for e in book.entries if e.origin == "billing"} == set(
+        publication.price_version_ids
+    )
+    pricer = await service.pricer(TENANT)
+    assert pricer.rate("endpoint-east/chat", TODAY).entry.origin == "seed"
+    assert pricer.rate("endpoint-east/chat", tomorrow).entry.origin == "billing"
+    assert pricer.rate("endpoint-east/mini-b", tomorrow).entry.origin == "seed"
+
+
+async def test_book_snapshots_markers_before_reading_prepared_versions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, repository, _, _ = await _build_estate()
+    detail = await service.import_billing_data(
+        _actor(),
+        provider="azure",
+        pricing_cloud="commercial",
+        source_month="2026-09",
+        file_name="interleaved.csv",
+        content=_sample_azure_csv(),
+    )
+    publication = await service.publish_billing_run(_actor(), detail.id)
+    committed = await repository.get_billing_publication(TENANT, publication.id)
+    assert committed is not None
+    repository.billing_publications.clear()
+    read_versions = repository.list_price_versions
+
+    async def interleaved_versions(tenant_id: str) -> list[Any]:
+        versions = await read_versions(tenant_id)
+        repository.billing_publications[(TENANT, committed.id)] = committed
+        return versions
+
+    monkeypatch.setattr(repository, "list_price_versions", interleaved_versions)
+    book = await service.book(TENANT)
+    assert not any(e.origin == "billing" for e in book.entries)
+    book_after = await service.book(TENANT)
+    assert any(e.origin == "billing" for e in book_after.entries)
+
+    async def missing_versions(tenant_id: str) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(repository, "list_price_versions", missing_versions)
+    with pytest.raises(ConflictError, match="not fully readable"):
+        await service.book(TENANT)
+
+
+async def test_cloud_model_billing_scope_requires_deliberate_confirmation() -> None:
+    service, _, _, _ = await _build_estate()
+    detail = await service.import_billing_data(
+        _actor(),
+        provider="azure",
+        pricing_cloud="commercial",
+        source_month="2026-09",
+        file_name="unmatched.csv",
+        content=_sample_azure_csv().replace(b"contoso-aoai-east", b"unregistered-account"),
+    )
+    candidate = detail.candidates[0]
+    with pytest.raises(ValidationError, match="At least one"):
+        await service.publish_billing_run(_actor(), detail.id)
+    with pytest.raises(ValidationError, match="explicit confirmation"):
+        await service.update_billing_mappings(
+            _actor(),
+            detail.id,
+            BillingMappingsUpdateRequest(
+                mappings=[
+                    BillingCandidateMapping(
+                        candidate_id=candidate.candidate_id, scope="cloudModel", confirmed=False
+                    )
+                ]
+            ),
+        )
+    detail = await service.update_billing_mappings(
+        _actor(),
+        detail.id,
+        BillingMappingsUpdateRequest(
+            mappings=[
+                BillingCandidateMapping(
+                    candidate_id=candidate.candidate_id, scope="cloudModel", confirmed=True
+                )
+            ]
+        ),
+    )
+    await service.publish_billing_run(_actor(), detail.id)
+    pricer = await service.pricer(TENANT)
+    assert pricer.rate("endpoint-west/chat", TODAY).entry.origin == "billing"
+
+
+@pytest.mark.parametrize("operation", ["rotate", "clear", "delete"])
+async def test_external_billing_credentials_are_never_deleted(operation: str) -> None:
+    service, _, _, vault = await _build_estate()
+    external = vault.new_secret("externally-owned-shared")
+    await vault.put(external, SecretStr("external-value"), tags={})
+    connection = await service.create_billing_connection(
+        _actor(),
+        BillingConnectionCreate(
+            name="Externally managed credential",
+            provider="azure",
+            pricing_cloud="commercial",
+            azure_scope="/subscriptions/00000000-0000-0000-0000-000000000001",
+            credential_secret_uri=external.versionless,
+        ),
+    )
+    if operation != "delete":
+        await service.update_billing_connection(
+            _actor(),
+            connection.id,
+            BillingConnectionUpdate(
+                credential_secret=SecretStr("new-owned-value") if operation == "rotate" else None,
+                clear_stored_secret=operation == "clear",
+            ),
+        )
+    await service.delete_billing_connection(_actor(), connection.id)
+    assert vault.values == {external.versionless: "external-value"}
+    assert external.versionless not in vault.deleted
+
+
+async def test_failed_connection_delete_cas_preserves_owned_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, repository, _, vault = await _build_estate()
+    connection = await service.create_billing_connection(
+        _actor(),
+        BillingConnectionCreate(
+            name="Owned credential",
+            provider="azure",
+            pricing_cloud="commercial",
+            azure_scope="/subscriptions/00000000-0000-0000-0000-000000000001",
+            credential_secret=SecretStr("owned-value"),
+        ),
+    )
+
+    async def fail_delete(*args: Any) -> None:
+        raise ConflictError("Concurrent connection update")
+
+    monkeypatch.setattr(repository, "delete_billing_connection", fail_delete)
+    with pytest.raises(ConflictError, match="Concurrent"):
+        await service.delete_billing_connection(_actor(), connection.id)
+    assert list(vault.values.values()) == ["owned-value"]
+    assert vault.deleted == []
+
+
+async def test_secret_cleanup_failure_retains_owned_retirement_for_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, repository, _, vault = await _build_estate()
+    connection = await service.create_billing_connection(
+        _actor(),
+        BillingConnectionCreate(
+            name="Retry cleanup",
+            provider="azure",
+            pricing_cloud="commercial",
+            azure_scope="/subscriptions/00000000-0000-0000-0000-000000000001",
+            credential_secret=SecretStr("old-value"),
+        ),
+    )
+    old_uri = next(iter(vault.values))
+    delete = vault.delete
+
+    async def unavailable_delete(secret: KeyVaultSecretId) -> bool:
+        raise RuntimeError("Injected vault outage")
+
+    monkeypatch.setattr(vault, "delete", unavailable_delete)
+    with pytest.raises(RuntimeError, match="Injected vault outage"):
+        await service.update_billing_connection(
+            _actor(),
+            connection.id,
+            BillingConnectionUpdate(credential_secret=SecretStr("new-value")),
+        )
+    stored = await repository.get_billing_connection(TENANT, connection.id)
+    assert stored is not None
+    assert stored.credential_secret_uri != old_uri
+    assert stored.retired_secret_uris == [old_uri]
+    assert old_uri in stored.owned_secret_uris
+    with pytest.raises(ValidationError, match="retired that credential"):
+        await service.update_billing_connection(
+            _actor(),
+            connection.id,
+            BillingConnectionUpdate(credential_secret_uri=old_uri),
+        )
+
+    monkeypatch.setattr(vault, "delete", delete)
+    await service.update_billing_connection(
+        _actor(), connection.id, BillingConnectionUpdate(name="Cleanup retried")
+    )
+    assert old_uri not in vault.values
+    assert list(vault.values.values()) == ["new-value"]
+
+
 # -- 4. Internal evidence references in PriceListView and PriceHistoryView ----------------------
 
 
@@ -983,9 +1226,7 @@ async def test_connected_billing_crud_secret_rotation_check_and_async_polling() 
                         content_type="text/csv",
                     )
                 ],
-                source_scope=(
-                    "/subscriptions/00000000-0000-0000-0000-000000000001"
-                ),
+                source_scope=("/subscriptions/00000000-0000-0000-0000-000000000001"),
                 source_manifest_id="manifest-2026-09-v1",
                 total_read_bytes=len(_sample_azure_csv()),
                 warnings=["Partition 1 of 1 downloaded."],
@@ -1089,12 +1330,8 @@ async def test_connected_billing_crud_secret_rotation_check_and_async_polling() 
 
     # 6. Delete connection -> CAS check + deletes secret from vault
     with pytest.raises(ConflictError):
-        await service.delete_billing_connection(
-            actor, created.id, version="wrong-version"
-        )
-    await service.delete_billing_connection(
-        actor, created.id, version=updated.version
-    )
+        await service.delete_billing_connection(actor, created.id, version="wrong-version")
+    await service.delete_billing_connection(actor, created.id, version=updated.version)
     assert vault.values == {}
     with pytest.raises(NotFoundError):
         await service.get_billing_connection(actor, created.id)
@@ -1162,9 +1399,7 @@ def test_pricing_billing_http_routes_end_to_end(admin_client: TestClient) -> Non
     assert len(list_resp.json()) == 1
 
     # 3. Check connection via POST /api/v1/pricing/billing/connections/{id}/check
-    check_resp = admin_client.post(
-        f"/api/v1/pricing/billing/connections/{conn_id}/check"
-    )
+    check_resp = admin_client.post(f"/api/v1/pricing/billing/connections/{conn_id}/check")
     assert check_resp.status_code == 200, check_resp.text
     assert check_resp.json()["status"] == "ready"
 
@@ -1220,9 +1455,7 @@ def test_pricing_billing_http_routes_end_to_end(admin_client: TestClient) -> Non
     assert [item["id"] for item in pubs_resp.json()] == [pub_json["id"]]
 
     # 8. Verify AWS price line appears in GET /api/v1/pricing/prices?cloud=aws-bedrock
-    aws_prices = admin_client.get(
-        "/api/v1/pricing/prices", params={"cloud": "aws-bedrock"}
-    ).json()
+    aws_prices = admin_client.get("/api/v1/pricing/prices", params={"cloud": "aws-bedrock"}).json()
     assert len(aws_prices["lines"]) == 1
     aws_current = aws_prices["lines"][0]["current"]
     assert aws_current["origin"] == "billing"
@@ -1235,9 +1468,7 @@ def test_pricing_billing_http_routes_end_to_end(admin_client: TestClient) -> Non
     )
 
     # 9. Delete connection via DELETE /api/v1/pricing/billing/connections/{id}
-    latest_conn = admin_client.get(
-        f"/api/v1/pricing/billing/connections/{conn_id}"
-    ).json()
+    latest_conn = admin_client.get(f"/api/v1/pricing/billing/connections/{conn_id}").json()
     del_resp = admin_client.delete(
         f"/api/v1/pricing/billing/connections/{conn_id}",
         params={"version": latest_conn["version"]},

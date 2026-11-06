@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import gzip
+import json
 from datetime import UTC, datetime
-from typing import Any
+from types import TracebackType
+from typing import Any, Self
 
 import httpx
 import pytest
@@ -19,6 +21,7 @@ from mosaic_api.billing_pricing import (
     BillingConnection,
     BillingConnector,
 )
+from mosaic_api.clouds import AzureCloud, cloud_profile
 from mosaic_api.domain import (
     AuditEvent,
     ModelEndpoint,
@@ -32,6 +35,7 @@ from mosaic_api.errors import (
     ValidationError,
 )
 from mosaic_api.integrations.billing_azure import (
+    AZURE_STORAGE_SCOPE,
     AzureBillingConnector,
     parse_azure_billing_scope,
     redact_azure_url,
@@ -609,6 +613,241 @@ async def test_azure_government_routing_and_connection_service_integration() -> 
 # -- 5. SSRF protection and SAS token redaction -------------------------------------------------
 
 
+@pytest.mark.parametrize("cloud", ["commercial", "government"])
+@pytest.mark.parametrize(
+    "source", ["blob", "arm", "armTrailingDot", "costDetailsSync", "costDetailsPoll"]
+)
+@pytest.mark.parametrize("unsigned_partitions", [False, True])
+async def test_configured_identity_uses_resource_specific_tokens(
+    cloud: AzureCloud, source: str, unsigned_partitions: bool
+) -> None:
+    profile = cloud_profile(cloud)
+    blob_host = (
+        "billingexport.blob.core.windows.net"
+        if cloud == "commercial"
+        else "billingexport.blob.core.usgovcloudapi.net"
+    )
+    blob_base = f"https://{blob_host}/exports/"
+    manifest_url = (
+        f"{blob_base}manifest.json"
+        if source == "blob"
+        else f"{profile.arm_endpoint}{SUB_SCOPE}/manifest?api-version=2022-05-01"
+    )
+    if source == "armTrailingDot":
+        manifest_url = manifest_url.replace(f"{profile.arm_endpoint}/", f"{profile.arm_endpoint}./")
+    operation_url = f"{profile.arm_endpoint}{SUB_SCOPE}/operation?api-version=2022-05-01"
+    blobs = [{"blobLink": f"{blob_base}signed.csv?sv=2022-11-02&sig=test-sas-secret"}]
+    if unsigned_partitions:
+        blobs.extend({"blobLink": f"{blob_base}unsigned-{index}.csv"} for index in range(2))
+    payload = {
+        "status": "Completed",
+        "manifestVersion": "2022-05-01",
+        "dataFormat": "Csv",
+        "requestContext": {
+            "requestBody": {
+                "metric": "AmortizedCost",
+                "timePeriod": {"start": "2026-09-01", "end": "2026-09-30"},
+            }
+        },
+        "blobs": blobs,
+    }
+
+    repository = InMemoryAzureConnectionRepository()
+    identity = AzureConnection(
+        id="billing-reader",
+        tenant_id=TENANT,
+        name="Billing reader",
+        azure_cloud=cloud,
+        azure_tenant_id="00000000-0000-0000-0000-000000000099",
+        client_id="00000000-0000-0000-0000-000000000088",
+        credential_secret_uri="https://fictional-vault/secrets/billing-reader",
+    )
+    identity = await repository.create_connection(
+        identity,
+        AuditEvent(
+            id=new_id("audit"),
+            tenant_id=TENANT,
+            action="azureConnection.created",
+            resource_type="azureConnection",
+            resource_id=identity.id,
+            actor_object_id="admin-1",
+        ),
+    )
+    issued_scopes: list[tuple[str, ...]] = []
+
+    async def secret_reader(uri: str) -> str:
+        assert uri == identity.credential_secret_uri
+        return "configured-identity-secret"
+
+    async def token_issuer(
+        configured: AzureConnection, secret: str, scopes: tuple[str, ...]
+    ) -> AccessToken:
+        assert configured == identity
+        assert secret == "configured-identity-secret"
+        issued_scopes.append(scopes)
+        assert scopes in {(profile.arm_scope,), ("https://storage.azure.com/.default",)}
+        token = (
+            "storage-audience-token" if scopes == (AZURE_STORAGE_SCOPE,) else "arm-audience-token"
+        )
+        return AccessToken(token, 9999999999)
+
+    service = AzureConnectionService(
+        repository,
+        tenant_id=TENANT,
+        gateways=InMemoryGatewayRepository(),
+        endpoints=InMemoryModelEndpointRepository(),
+        mcps=InMemoryMcpEndpointRepository(),
+        secret_reader=secret_reader,
+        secret_store=None,
+        token_issuer=token_issuer,
+    )
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.host == blob_host:
+            assert request.headers["x-ms-version"] == "2023-11-03"
+            if "sig" in request.url.params:
+                assert "Authorization" not in request.headers
+            else:
+                assert request.headers["Authorization"] == "Bearer storage-audience-token"
+            if request.url.path.endswith("manifest.json"):
+                return httpx.Response(200, json=payload)
+            return httpx.Response(200, content=b"Date,CostInBillingCurrency\n2026-09-01,1\n")
+        assert request.url.host.rstrip(".") == httpx.URL(profile.arm_endpoint).host
+        assert request.headers["Authorization"] == "Bearer arm-audience-token"
+        return httpx.Response(200, json=payload)
+
+    export_mode = source in {"blob", "arm", "armTrailingDot"}
+    connection = _make_connection(
+        azure_cloud=cloud,
+        azure_connection_id=identity.id,
+        mode="exportManifest" if export_mode else "costDetailsApi",
+        manifest_url=manifest_url if export_mode else None,
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        connector = AzureBillingConnector(
+            http_client=client, connection_service=service, clock=_clock
+        )
+        if export_mode:
+            check = await connector.check_access(connection)
+            assert check.status == "ready", check.message
+        run = _make_run(
+            operation_location=operation_url if source == "costDetailsPoll" else None
+        )
+        step = await connector.start_or_poll_acquisition(connection, run)
+
+    assert step.status == "completed"
+    assert len(step.parts) == (3 if unsigned_partitions else 1)
+    expected_scopes = (
+        [(AZURE_STORAGE_SCOPE,), (AZURE_STORAGE_SCOPE,)]
+        if source == "blob"
+        else [(profile.arm_scope,)] * (2 if export_mode else 1)
+    )
+    if unsigned_partitions and source != "blob":
+        expected_scopes.append((AZURE_STORAGE_SCOPE,))
+    assert issued_scopes == expected_scopes
+    assert len(requests) == (2 if export_mode else 1) + len(step.parts)
+    assert "test-sas-secret" not in step.model_dump_json()
+
+
+@pytest.mark.parametrize(
+    ("identity_source", "cloud"),
+    [
+        ("host", "commercial"),
+        ("secret", "commercial"),
+        ("secret", "government"),
+        ("default", "commercial"),
+        ("default", "government"),
+    ],
+)
+async def test_storage_scope_requested_from_direct_azure_credentials(
+    identity_source: str, cloud: AzureCloud, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scopes: list[tuple[str, ...]] = []
+    credential_options: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    class Credential:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            credential_options.append((args, kwargs))
+
+        async def get_token(self, *requested: str, **kwargs: Any) -> AccessToken:
+            scopes.append(requested)
+            return AccessToken("direct-storage-token", 9999999999)
+
+        async def close(self) -> None:
+            pass
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None = None,
+            exc_value: BaseException | None = None,
+            traceback: TracebackType | None = None,
+        ) -> None:
+            pass
+
+    monkeypatch.setattr("mosaic_api.integrations.billing_azure.ClientSecretCredential", Credential)
+    monkeypatch.setattr("mosaic_api.integrations.billing_azure.DefaultAzureCredential", Credential)
+    connector = AzureBillingConnector(
+        host_credential=Credential() if identity_source == "host" else None
+    )
+    secret = (
+        json.dumps({"tenantId": "tenant", "clientId": "client", "clientSecret": "secret"})
+        if identity_source == "secret"
+        else None
+    )
+    token = await connector._acquire_token(
+        _make_connection(azure_cloud=cloud), secret_value=secret, scope=AZURE_STORAGE_SCOPE
+    )
+    assert token == "direct-storage-token"
+    assert scopes == [("https://storage.azure.com/.default",)]
+    if identity_source != "host":
+        args, options = credential_options[0]
+        assert options["authority"] == cloud_profile(cloud).authority
+        if identity_source == "secret":
+            assert args == ("tenant", "client", "secret")
+
+
+@pytest.mark.parametrize("redirect_partition", [False, True])
+async def test_export_downloads_do_not_follow_redirects_even_with_injected_client(
+    redirect_partition: bool,
+) -> None:
+    requests: list[httpx.Request] = []
+    manifest_url = "https://billingexport.blob.core.windows.net/exports/manifest.json"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.url.host == "billingexport.blob.core.windows.net"
+        if redirect_partition and request.url.path.endswith("manifest.json"):
+            return httpx.Response(
+                200,
+                json={
+                    "metric": "AmortizedCost",
+                    "blobs": [{"blobName": "part.csv"}],
+                },
+            )
+        return httpx.Response(
+            307, headers={"Location": "https://untrusted.example/collect-bearer"}
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), follow_redirects=True
+    ) as client:
+        connector = AzureBillingConnector(http_client=client, clock=_clock)
+        connection = _make_connection(mode="exportManifest", manifest_url=manifest_url)
+        if redirect_partition:
+            with pytest.raises(UpstreamError, match="Failed to download"):
+                await connector.start_or_poll_acquisition(connection, _make_run())
+        else:
+            check = await connector.check_access(connection)
+            assert check.status == "failed"
+            assert check.details["reason"] == "manifestFetchFailed"
+    assert len(requests) == (2 if redirect_partition else 1)
+
+
 async def test_ssrf_untrusted_host_rejection_and_complete_sas_redaction() -> None:
     # 1. Direct URL validators block IMDS, loopback, private IPs, HTTP, and untrusted hosts
     for unsafe_url in (
@@ -910,4 +1149,3 @@ async def test_acquisition_permission_and_throttling_errors() -> None:
         with pytest.raises(UpstreamError) as throttle_exc:
             await connector.start_or_poll_acquisition(throttled_conn, _make_run())
         assert throttle_exc.value.details.get("retryAfter") == 45
-

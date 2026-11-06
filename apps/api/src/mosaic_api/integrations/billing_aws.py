@@ -575,17 +575,12 @@ def _s3_permission_guidance(bucket: str, prefix: str, role_arn: str) -> str:
 def _sts_permission_guidance(connection: BillingConnection) -> str:
     role_arn = connection.aws_role_arn or "<aws-role-arn>"
     audience = connection.aws_audience or DEFAULT_AWS_OIDC_AUDIENCE
-    ext_note = (
-        " and sts:ExternalId matching the configured external ID"
-        if connection.aws_external_id
-        else ""
-    )
     bucket = connection.aws_cur_bucket or "<cur-bucket>"
     prefix = _normalize_cur_prefix(connection.aws_cur_prefix)
     return (
         f"AWS STS refused AssumeRoleWithWebIdentity for {role_arn}. Grant "
-        f"sts:AssumeRoleWithWebIdentity in the role trust policy for audience {audience!r}"
-        f"{ext_note}, plus s3:ListBucket on arn:aws:s3:::{bucket} and "
+        f"sts:AssumeRoleWithWebIdentity in the role trust policy for audience {audience!r}, "
+        f"plus s3:ListBucket on arn:aws:s3:::{bucket} and "
         f"s3:GetObject on arn:aws:s3:::{bucket}/{prefix + '/' if prefix else ''}*."
     )
 
@@ -766,6 +761,17 @@ class AwsBillingConnector(BillingConnector):
                 )
             return creds
 
+        if connection.aws_external_id:
+            raise ValidationError(
+                "aws_external_id is not supported by AssumeRoleWithWebIdentity. Remove the "
+                "external ID for OIDC federation; external IDs require signed STS AssumeRole, "
+                "which this connector's built-in authentication does not perform.",
+                details={
+                    "field": "aws_external_id",
+                    "reason": "externalIdUnsupportedForWebIdentity",
+                },
+            )
+
         # Support JSON session credentials in secret_value only if explicitly structured as STS keys
         if secret_value is not None and secret_value.strip().startswith("{"):
             try:
@@ -806,9 +812,6 @@ class AwsBillingConnector(BillingConnector):
             "WebIdentityToken": web_token,
             "DurationSeconds": str(DEFAULT_STS_DURATION_SECONDS),
         }
-        if connection.aws_external_id:
-            form_data["ExternalId"] = connection.aws_external_id
-
         try:
             response = await self._client.post(
                 sts_url,

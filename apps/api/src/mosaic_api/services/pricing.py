@@ -49,7 +49,6 @@ from mosaic_api.domain import (
     AuditEvent,
     KeyVaultSecretId,
     MosaicModel,
-    deterministic_id,
     new_id,
     utc_now,
 )
@@ -477,12 +476,28 @@ class PricingService:
     # -- what pricing reads ---------------------------------------------------------------------
 
     async def book(self, tenant_id: str) -> PriceBook:
-        versions, publications = await asyncio.gather(
-            self._repository.list_price_versions(tenant_id),
-            self._repository.list_billing_publications(tenant_id),
-        )
+        # Snapshot committed approvals before reading their immutable prepared versions.
+        publications = await self._repository.list_billing_publications(tenant_id)
+        versions = await self._repository.list_price_versions(tenant_id)
+        committed_versions = {
+            version_id: publication.id
+            for publication in publications
+            for version_id in publication.price_version_ids
+        }
+        visible_versions = [
+            version
+            for version in versions
+            if version.publication_id is None
+            or committed_versions.get(version.id) == version.publication_id
+        ]
+        visible_ids = {version.id for version in visible_versions}
+        if missing_ids := committed_versions.keys() - visible_ids:
+            raise ConflictError(
+                "A published pricing list is not fully readable. Retry before using its rates.",
+                details={"missingPriceVersionIds": sorted(missing_ids)},
+            )
         return build_book(
-            versions,
+            visible_versions,
             self._seed,
             published_ids={publication.id for publication in publications},
         )
@@ -1411,6 +1426,7 @@ class PricingService:
                 gcp_workload_identity_audience=request.gcp_workload_identity_audience,
                 gcp_max_bytes_billed=request.gcp_max_bytes_billed,
                 credential_secret_uri=credential_secret_uri,
+                owned_secret_uris=[secret_id.versionless] if secret_id else [],
                 schedule=request.schedule.model_copy(deep=True),
                 cost_notice_acknowledged=request.cost_notice_acknowledged,
                 created_at=now,
@@ -1484,11 +1500,17 @@ class PricingService:
             )
 
         new_secret_id: KeyVaultSecretId | None = None
-        retired_uris = list(current.retired_secret_uris)
+        owned_uris = list(current.owned_secret_uris)
+        retired_uris = [
+            uri for uri in current.retired_secret_uris if uri in owned_uris
+        ]
         credential_secret_uri = current.credential_secret_uri
 
         if request.clear_stored_secret:
-            if current.credential_secret_uri and current.credential_secret_uri not in retired_uris:
+            if (
+                current.credential_secret_uri in owned_uris
+                and current.credential_secret_uri not in retired_uris
+            ):
                 retired_uris.append(current.credential_secret_uri)
             credential_secret_uri = None
 
@@ -1496,9 +1518,13 @@ class PricingService:
             new_secret_id = self._secret_store.new_secret(
                 f"mosaic-billing-{new_id('cred').replace('_', '-')}"
             )
-            if current.credential_secret_uri and current.credential_secret_uri not in retired_uris:
+            if (
+                current.credential_secret_uri in owned_uris
+                and current.credential_secret_uri not in retired_uris
+            ):
                 retired_uris.append(current.credential_secret_uri)
             credential_secret_uri = new_secret_id.versionless
+            owned_uris.append(credential_secret_uri)
         elif "credential_secret_uri" in fields and request.credential_secret_uri is not None:
             try:
                 parsed = KeyVaultSecretId.parse(request.credential_secret_uri)
@@ -1506,8 +1532,13 @@ class PricingService:
                 raise ValidationError(
                     str(exc), details={"field": "credentialSecretUri"}
                 ) from exc
+            if parsed.versionless in current.retired_secret_uris:
+                raise ValidationError(
+                    "This connection retired that credential. Supply a new credential instead.",
+                    details={"field": "credentialSecretUri"},
+                )
             if (
-                current.credential_secret_uri
+                current.credential_secret_uri in owned_uris
                 and current.credential_secret_uri != parsed.versionless
                 and current.credential_secret_uri not in retired_uris
             ):
@@ -1553,7 +1584,9 @@ class PricingService:
 
         now = self._clock()
         merged_data["credential_secret_uri"] = credential_secret_uri
-        merged_data["retired_secret_uris"] = []
+        merged_data["owned_secret_uris"] = owned_uris
+        retired_uris = [uri for uri in retired_uris if uri != credential_secret_uri]
+        merged_data["retired_secret_uris"] = retired_uris
         merged_data["revision"] = current.revision + 1
         merged_data["updated_at"] = now
         merged_data["updated_by"] = actor.object_id
@@ -1602,10 +1635,7 @@ class PricingService:
             raise
 
         for retired_uri in retired_uris:
-            try:
-                await self._secret_store.delete(KeyVaultSecretId.parse(retired_uri))
-            except ValueError:
-                pass
+            await self._secret_store.delete(KeyVaultSecretId.parse(retired_uri))
 
         return billing_connection_view(saved)
 
@@ -1632,14 +1662,8 @@ class PricingService:
         uris_to_delete = [
             uri
             for uri in [current.credential_secret_uri, *current.retired_secret_uris]
-            if uri
+            if uri and uri in current.owned_secret_uris
         ]
-        for uri in uris_to_delete:
-            try:
-                await self._secret_store.delete(KeyVaultSecretId.parse(uri))
-            except ValueError:
-                pass
-
         await self._repository.delete_billing_connection(
             current,
             AuditEvent(
@@ -1656,6 +1680,8 @@ class PricingService:
                 },
             ),
         )
+        for uri in uris_to_delete:
+            await self._secret_store.delete(KeyVaultSecretId.parse(uri))
 
     def _require_connector(self, connection: BillingConnection) -> BillingConnector:
         connector = self._billing_connectors.get(connection.provider)
@@ -2527,6 +2553,13 @@ class PricingService:
                 },
             )
 
+        if candidate.mapping_confidence in ("suggested", "unmatched") and not mapping.confirmed:
+            raise ValidationError(
+                f"Candidate {candidate.candidate_id} ({candidate.model}) has no exact "
+                "deployment mapping; confirm the binding before publishing.",
+                details={"candidateId": candidate.candidate_id, "deploymentKey": target.key},
+            )
+
         if (
             candidate.suggested_deployment_key
             and target.key.casefold() != candidate.suggested_deployment_key.casefold()
@@ -2704,13 +2737,12 @@ class PricingService:
                         details={"candidateId": cand.candidate_id},
                     )
                 if (
-                    cand. candidate_id in incoming_by_id
-                    and cand.mapping_confidence == "ambiguous"
+                    cand.candidate_id in incoming_by_id
                     and not mapping.confirmed
                 ):
                     raise ValidationError(
-                        f"Candidate {cand.candidate_id} ({cand.model}) has an ambiguous "
-                        "mapping; set confirmed=True to publish at cloud-model scope.",
+                        f"Candidate {cand.candidate_id} ({cand.model}) requires explicit "
+                        "confirmation to apply account billing at cloud-model scope.",
                         details={"candidateId": cand.candidate_id},
                     )
                 normalized_mapping = mapping.model_copy(
@@ -3001,10 +3033,10 @@ class PricingService:
                         "amount and must be mapped to a specific deployment.",
                         details={"candidateId": cand.candidate_id},
                     )
-                if cand.mapping_confidence == "ambiguous" and not mapping.confirmed:
+                if not mapping.confirmed:
                     raise ValidationError(
-                        f"Candidate {cand.candidate_id} ({cand.model}) has an ambiguous "
-                        "deployment mapping; confirm the mapping before publishing.",
+                        f"Candidate {cand.candidate_id} ({cand.model}) requires explicit "
+                        "confirmation to apply account billing at cloud-model scope.",
                         details={"candidateId": cand.candidate_id},
                     )
 
@@ -3129,9 +3161,8 @@ class PricingService:
                         if dep_facts.key not in affected_deployment_keys:
                             affected_deployment_keys.append(dep_facts.key)
 
-            version_id = deterministic_id(
-                "price", actor.tenant_id, publication_id, cand.candidate_id
-            )
+            # A failed approval can be retried with different mappings or effective dates.
+            version_id = new_id("price")
             prepared_versions.append(
                 PriceVersion(
                     id=version_id,

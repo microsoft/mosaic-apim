@@ -155,13 +155,10 @@ def _list_objects_xml(entries: list[tuple[str, str, int]]) -> str:
     )
 
 
-# -- 1. STS AssumeRoleWithWebIdentity (with & without ExternalId) and SigV4 signing ------------
+# -- 1. STS AssumeRoleWithWebIdentity and SigV4 signing --------------------------------------
 
 
-@pytest.mark.parametrize("external_id", [None, "mosaic-tenant-ext-98765"])
-async def test_sts_assume_role_with_web_identity_and_sigv4_headers(
-    external_id: str | None,
-) -> None:
+async def test_sts_assume_role_with_web_identity_and_sigv4_headers() -> None:
     sts_requests: list[httpx.Request] = []
     s3_requests: list[httpx.Request] = []
     entra_cred = _FakeEntraCredential("federated-jwt-token-xyz123")
@@ -186,7 +183,7 @@ async def test_sts_assume_role_with_web_identity_and_sigv4_headers(
         client=client,
         clock=_clock,
     )
-    conn = _aws_connection(external_id=external_id, audience=None)
+    conn = _aws_connection(audience=None)
 
     check = await connector.check_access(conn)
     assert check.status == "ready"
@@ -205,10 +202,7 @@ async def test_sts_assume_role_with_web_identity_and_sigv4_headers(
     assert sts_form["Version"] == ["2011-06-15"]
     assert sts_form["RoleArn"] == ["arn:aws:iam::123456789012:role/MosaicCurReader"]
     assert sts_form["WebIdentityToken"] == ["federated-jwt-token-xyz123"]
-    if external_id is not None:
-        assert sts_form["ExternalId"] == [external_id]
-    else:
-        assert "ExternalId" not in sts_form
+    assert "ExternalId" not in sts_form
 
     # Verify S3 SigV4 headers
     assert len(s3_requests) == 1
@@ -240,6 +234,105 @@ async def test_sts_assume_role_with_web_identity_and_sigv4_headers(
         params=dict(s3_req.url.params),
     )
     assert auth_header == expected_headers["Authorization"]
+
+
+@pytest.mark.parametrize("token_source", ["entra", "provider", "secret", "json", "session"])
+async def test_external_id_rejected_before_web_identity_or_http_requests(
+    token_source: str,
+) -> None:
+    requests: list[httpx.Request] = []
+    token_calls: list[str] = []
+    credential = _FakeEntraCredential()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        raise AssertionError("Invalid ExternalId must be rejected before any AWS request")
+
+    def token_provider(audience: str) -> str:
+        token_calls.append(audience)
+        return "web-token"
+
+    secret = {
+        "secret": "secret-web-identity-token",
+        "json": json.dumps({"webIdentityToken": "json-web-identity-token"}),
+        "session": json.dumps({"accessKeyId": "ASIAEXAMPLE", "secretAccessKey": "session-secret"}),
+    }.get(token_source)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        connector = AwsBillingConnector(
+            client=client,
+            azure_credential=credential if token_source == "entra" else None,
+            web_identity_token_provider=token_provider if token_source == "provider" else None,
+            clock=_clock,
+        )
+        conn = _aws_connection(external_id="external-id-not-for-web-identity")
+        check = await connector.check_access(conn, secret_value=secret)
+        assert check.status == "failed"
+        assert check.details["field"] == "aws_external_id"
+        assert check.details["reason"] == "externalIdUnsupportedForWebIdentity"
+        assert "signed STS AssumeRole" in check.message
+        assert "external-id-not-for-web-identity" not in check.message
+        with pytest.raises(ValidationError, match="not supported by AssumeRoleWithWebIdentity"):
+            await connector.start_or_poll_acquisition(conn, _aws_run(), secret_value=secret)
+
+    assert requests == []
+    assert token_calls == []
+    assert credential.requested_scopes == []
+
+
+@pytest.mark.parametrize("credential_source", ["provider", "secret"])
+async def test_preexisting_session_credentials_still_sign_s3_requests(
+    credential_source: str,
+) -> None:
+    requests: list[httpx.Request] = []
+    credentials = AwsSessionCredentials(
+        access_key_id="ASIAIOSFODNN7EXAMPLE",
+        secret_access_key="test-signing-secret",
+        session_token="test-session-token",
+    )
+    provider_calls: list[str | None] = []
+
+    def session_provider(connection: BillingConnection) -> AwsSessionCredentials:
+        provider_calls.append(connection.aws_external_id)
+        return credentials
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.url.host == "contoso-cur-exports.s3.us-east-1.amazonaws.com"
+        assert request.headers["Authorization"].startswith("AWS4-HMAC-SHA256 ")
+        assert request.headers["x-amz-security-token"] == credentials.session_token
+        return httpx.Response(200, text=_list_objects_xml([]))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        connector = AwsBillingConnector(
+            client=client,
+            session_credentials_provider=(
+                session_provider if credential_source == "provider" else None
+            ),
+            clock=_clock,
+        )
+        check = await connector.check_access(
+            _aws_connection(
+                external_id=(
+                    "provider-managed-external-id" if credential_source == "provider" else None
+                )
+            ),
+            secret_value=(
+                json.dumps(
+                    {
+                        "accessKeyId": credentials.access_key_id,
+                        "secretAccessKey": credentials.secret_access_key,
+                        "sessionToken": credentials.session_token,
+                    }
+                )
+                if credential_source == "secret"
+                else None
+            ),
+        )
+    assert check.status == "ready"
+    assert len(requests) == 1
+    assert provider_calls == (
+        ["provider-managed-external-id"] if credential_source == "provider" else []
+    )
 
 
 # -- 2. check_access success, Cost Explorer warning, S3 403, and STS trust failure -------------
@@ -313,12 +406,12 @@ async def test_check_access_warnings_and_permission_failures() -> None:
         clock=_clock,
     )
     sts_denied_res = await sts_denied_connector.check_access(
-        _aws_connection(external_id="ext-123"),
+        _aws_connection(),
         secret_value="secret-oidc-value-999",
     )
     assert sts_denied_res.status == "failed"
     assert "sts:AssumeRoleWithWebIdentity" in sts_denied_res.message
-    assert "sts:ExternalId" in sts_denied_res.message
+    assert "sts:ExternalId" not in sts_denied_res.message
     assert "secret-oidc-value-999" not in sts_denied_res.message
     assert "secret-oidc-value-999" not in json.dumps(sts_denied_res.details)
 

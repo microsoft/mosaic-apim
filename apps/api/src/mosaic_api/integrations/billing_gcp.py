@@ -45,7 +45,8 @@ DEFAULT_GCP_MAX_BYTES_BILLED = 10_000_000_000  # 10 GB cap per query job
 DEFAULT_GCP_PAGE_SIZE = 5_000
 DEFAULT_GCP_POLL_SECONDS = 5
 
-BIGQUERY_READONLY_SCOPE = "https://www.googleapis.com/auth/bigquery.readonly"
+# jobs.insert needs this scope; dataset access remains restricted by read-only IAM roles.
+BIGQUERY_SCOPE = "https://www.googleapis.com/auth/bigquery"
 CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 
 GCP_STS_TOKEN_URL = "https://sts.googleapis.com/v1/token"
@@ -702,7 +703,7 @@ class GcpBillingConnector:
                     "Accept": "application/json",
                 },
                 json={
-                    "scope": [BIGQUERY_READONLY_SCOPE],
+                    "scope": [BIGQUERY_SCOPE],
                     "lifetime": "3600s",
                 },
             )
@@ -767,9 +768,9 @@ class GcpBillingConnector:
             impersonate_email and impersonate_email.strip().casefold() != client_email.casefold()
         )
         scope = (
-            f"{CLOUD_PLATFORM_SCOPE} {BIGQUERY_READONLY_SCOPE}"
+            CLOUD_PLATFORM_SCOPE
             if needs_impersonation
-            else BIGQUERY_READONLY_SCOPE
+            else BIGQUERY_SCOPE
         )
         claims: dict[str, Any] = {
             "iss": client_email,
@@ -863,7 +864,7 @@ class GcpBillingConnector:
             subject_token = await self._acquire_subject_token(audience)
 
         needs_impersonation = bool(connection.gcp_service_account_email or impersonation_url)
-        sts_scope = CLOUD_PLATFORM_SCOPE if needs_impersonation else BIGQUERY_READONLY_SCOPE
+        sts_scope = CLOUD_PLATFORM_SCOPE if needs_impersonation else BIGQUERY_SCOPE
         sts_token = await self._exchange_sts_token(
             audience=audience,
             subject_token=subject_token,
@@ -897,7 +898,7 @@ class GcpBillingConnector:
         *,
         secret_value: str | None = None,
     ) -> str:
-        """Acquire a short-lived BigQuery read-only OAuth2 access token."""
+        """Acquire a short-lived OAuth2 token that can submit BigQuery query jobs."""
 
         if self._token_provider is not None:
             return await self._invoke_injected_token_provider(connection, secret_value)
@@ -935,7 +936,7 @@ class GcpBillingConnector:
                 sts_scope = (
                     CLOUD_PLATFORM_SCOPE
                     if connection.gcp_service_account_email
-                    else BIGQUERY_READONLY_SCOPE
+                    else BIGQUERY_SCOPE
                 )
                 sts_token = await self._exchange_sts_token(
                     audience=connection.gcp_workload_identity_audience,
@@ -961,7 +962,7 @@ class GcpBillingConnector:
             sts_scope = (
                 CLOUD_PLATFORM_SCOPE
                 if connection.gcp_service_account_email
-                else BIGQUERY_READONLY_SCOPE
+                else BIGQUERY_SCOPE
             )
             sts_token = await self._exchange_sts_token(
                 audience=connection.gcp_workload_identity_audience,

@@ -245,6 +245,7 @@ class BillingConnection(Entity):
     gcp_max_bytes_billed: int | None = Field(default=None, ge=1_000_000, le=100_000_000_000)
     # Secret references (never serialized to view payloads)
     credential_secret_uri: str | None = Field(default=None, repr=False)
+    owned_secret_uris: list[str] = Field(default_factory=list, repr=False)
     retired_secret_uris: list[str] = Field(default_factory=list, repr=False)
     # Schedule and health state
     schedule: BillingSchedule = Field(default_factory=BillingSchedule)

@@ -21,7 +21,8 @@ from mosaic_api.billing_pricing import (
 )
 from mosaic_api.errors import ValidationError
 from mosaic_api.integrations.billing_gcp import (
-    BIGQUERY_READONLY_SCOPE,
+    BIGQUERY_SCOPE,
+    CLOUD_PLATFORM_SCOPE,
     DEFAULT_GCP_MAX_BYTES_BILLED,
     OAUTH_JWT_BEARER_GRANT_TYPE,
     OAUTH_TOKEN_EXCHANGE_GRANT_TYPE,
@@ -306,6 +307,7 @@ async def test_wif_token_exchange_service_account_impersonation_and_check_access
             assert form["grant_type"] == [OAUTH_TOKEN_EXCHANGE_GRANT_TYPE]
             assert form["audience"] == [conn.gcp_workload_identity_audience]
             assert form["subject_token"] == [cred.subject_token]
+            assert form["scope"] == [CLOUD_PLATFORM_SCOPE]
             return httpx.Response(
                 200,
                 json={"access_token": "sts-federated-token-123", "token_type": "Bearer"},
@@ -314,7 +316,7 @@ async def test_wif_token_exchange_service_account_impersonation_and_check_access
         if "iamcredentials.googleapis.com" in str(request.url):
             assert request.headers["Authorization"] == "Bearer sts-federated-token-123"
             body = json.loads(request.content.decode("utf-8"))
-            assert body["scope"] == [BIGQUERY_READONLY_SCOPE]
+            assert body["scope"] == [BIGQUERY_SCOPE]
             return httpx.Response(
                 200,
                 json={
@@ -375,7 +377,8 @@ async def test_wif_token_exchange_service_account_impersonation_and_check_access
 # -- 3. Service Account JWT Signing & Secret Redaction -----------------------------------------
 
 
-async def test_service_account_jwt_assertion_and_secret_redaction() -> None:
+@pytest.mark.parametrize("impersonate", [False, True])
+async def test_service_account_jwt_assertion_and_secret_redaction(impersonate: bool) -> None:
     private_key_pem, public_key = _generate_rsa_private_key_pem()
     sa_email = "vault-sa@contoso-finops.iam.gserviceaccount.com"
     sa_secret_json = json.dumps(
@@ -389,7 +392,9 @@ async def test_service_account_jwt_assertion_and_secret_redaction() -> None:
         }
     )
     conn = _connection(
-        service_account_email=sa_email,
+        service_account_email=(
+            "target-sa@contoso-finops.iam.gserviceaccount.com" if impersonate else sa_email
+        ),
         workload_identity_audience=None,
     )
 
@@ -409,7 +414,11 @@ async def test_service_account_jwt_assertion_and_secret_redaction() -> None:
             )
             assert decoded["iss"] == sa_email
             assert decoded["sub"] == sa_email
-            assert decoded["scope"] == BIGQUERY_READONLY_SCOPE
+            assert decoded["scope"] == (
+                "https://www.googleapis.com/auth/cloud-platform"
+                if impersonate
+                else "https://www.googleapis.com/auth/bigquery"
+            )
             assert decoded["iat"] == int(_clock().timestamp())
             assert decoded["exp"] == int(_clock().timestamp()) + 3600
             return httpx.Response(
@@ -417,8 +426,16 @@ async def test_service_account_jwt_assertion_and_secret_redaction() -> None:
                 json={"access_token": "sa-jwt-access-token-789"},
             )
 
-        if request.method == "GET" and "/tables/" in str(request.url):
+        if request.url.host == "iamcredentials.googleapis.com":
+            assert impersonate
             assert request.headers["Authorization"] == "Bearer sa-jwt-access-token-789"
+            body = json.loads(request.content)
+            assert body["scope"] == [BIGQUERY_SCOPE]
+            return httpx.Response(200, json={"accessToken": "sa-impersonated-token"})
+
+        if request.method == "GET" and "/tables/" in str(request.url):
+            expected_token = "sa-impersonated-token" if impersonate else "sa-jwt-access-token-789"
+            assert request.headers["Authorization"] == f"Bearer {expected_token}"
             return httpx.Response(200, json={"schema": _valid_billing_table_schema()})
 
         if request.method == "POST" and str(request.url).endswith("/jobs"):
@@ -440,7 +457,8 @@ async def test_service_account_jwt_assertion_and_secret_redaction() -> None:
     assert "sa-jwt-access-token-789" not in serialized
 
 
-async def test_external_account_credential_json_with_impersonation_url() -> None:
+@pytest.mark.parametrize("impersonate", [False, True])
+async def test_external_account_credential_json_with_impersonation_url(impersonate: bool) -> None:
     ext_secret_json = json.dumps(
         {
             "type": "external_account",
@@ -456,16 +474,25 @@ async def test_external_account_credential_json_with_impersonation_url() -> None
             ),
         }
     )
+    if not impersonate:
+        credential_data = json.loads(ext_secret_json)
+        credential_data.pop("service_account_impersonation_url")
+        ext_secret_json = json.dumps(credential_data)
     conn = _connection(service_account_email=None, workload_identity_audience=None)
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url == httpx.URL("https://sts.googleapis.com/v1/token"):
+            form = parse_qs(request.content.decode())
+            assert form["scope"] == [CLOUD_PLATFORM_SCOPE if impersonate else BIGQUERY_SCOPE]
             return httpx.Response(200, json={"access_token": "ext-sts-tok"})
         if "iamcredentials.googleapis.com" in str(request.url):
+            assert impersonate
             assert request.headers["Authorization"] == "Bearer ext-sts-tok"
+            assert json.loads(request.content)["scope"] == [BIGQUERY_SCOPE]
             return httpx.Response(200, json={"accessToken": "ext-impersonated-tok"})
         if request.method == "GET" and "/tables/" in str(request.url):
-            assert request.headers["Authorization"] == "Bearer ext-impersonated-tok"
+            expected_token = "ext-impersonated-tok" if impersonate else "ext-sts-tok"
+            assert request.headers["Authorization"] == f"Bearer {expected_token}"
             return httpx.Response(200, json={"schema": _valid_billing_table_schema()})
         if request.method == "POST" and str(request.url).endswith("/jobs"):
             return httpx.Response(
@@ -483,6 +510,85 @@ async def test_external_account_credential_json_with_impersonation_url() -> None
         check = await connector.check_access(conn, secret_value=ext_secret_json)
 
     assert check.status == "ready"
+
+
+@pytest.mark.parametrize("token_source", ["entra", "raw", "external", "embedded"])
+@pytest.mark.parametrize("impersonate", [False, True])
+async def test_wif_auth_paths_request_job_capable_scopes(
+    token_source: str, impersonate: bool
+) -> None:
+    conn = _connection(
+        service_account_email=(
+            "reader@contoso-finops.iam.gserviceaccount.com" if impersonate else None
+        )
+    )
+    credential = _FakeEntraCredential("entra-subject")
+    secret: str | None = None
+    expected_subject = "entra-subject"
+    if token_source == "raw":
+        secret = "raw-subject"
+        expected_subject = secret
+    elif token_source in {"external", "embedded"}:
+        credential_data = {
+            "type": "external_account",
+            "audience": conn.gcp_workload_identity_audience,
+        }
+        if token_source == "embedded":
+            credential_data["subject_token"] = "embedded-subject"
+            expected_subject = "embedded-subject"
+        secret = json.dumps(credential_data)
+
+    stages: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "sts.googleapis.com":
+            stages.append("sts")
+            form = parse_qs(request.content.decode())
+            expected_scope = (
+                "https://www.googleapis.com/auth/cloud-platform"
+                if impersonate
+                else "https://www.googleapis.com/auth/bigquery"
+            )
+            assert form["scope"] == [expected_scope]
+            assert form["subject_token"] == [expected_subject]
+            return httpx.Response(200, json={"access_token": "job-capable-sts-token"})
+        if request.url.host == "iamcredentials.googleapis.com":
+            stages.append("iam")
+            assert impersonate
+            assert json.loads(request.content)["scope"] == [
+                "https://www.googleapis.com/auth/bigquery"
+            ]
+            return httpx.Response(200, json={"accessToken": "job-capable-impersonated-token"})
+        expected_token = (
+            "job-capable-impersonated-token" if impersonate else "job-capable-sts-token"
+        )
+        assert request.headers["Authorization"] == f"Bearer {expected_token}"
+        if request.method == "GET" and "/tables/" in str(request.url):
+            stages.append("table")
+            return httpx.Response(200, json={"schema": _valid_billing_table_schema()})
+        if request.method == "POST" and request.url.path.endswith("/jobs"):
+            stages.append("job")
+            configuration = json.loads(request.content)["configuration"]
+            query = configuration["query"]
+            assert configuration["dryRun"] is True
+            assert query["maximumBytesBilled"] == str(DEFAULT_GCP_MAX_BYTES_BILLED)
+            assert query["parameterMode"] == "NAMED"
+            assert {item["name"] for item in query["queryParameters"]} == {
+                "usage_start", "usage_end", "billing_account_id"
+            }
+            assert query["query"].lstrip().startswith("SELECT")
+            return httpx.Response(
+                200, json={"jobComplete": True, "statistics": {"totalBytesProcessed": "1024"}}
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        connector = GcpBillingConnector(client=client, credential=credential, clock=_clock)
+        check = await connector.check_access(conn, secret_value=secret)
+
+    assert check.status == "ready"
+    assert stages == (["sts", "iam", "table", "job"] if impersonate else ["sts", "table", "job"])
+    assert bool(credential.requested_scopes) is (token_source in {"entra", "external"})
 
 
 # -- 4. check_access Failure Modes: IAM Permissions & Missing Schema Columns -------------------

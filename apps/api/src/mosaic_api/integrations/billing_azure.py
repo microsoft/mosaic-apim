@@ -60,6 +60,8 @@ logger = structlog.get_logger()
 
 COST_DETAILS_API_VERSION = "2022-05-01"
 COST_MANAGEMENT_EXPORTS_API_VERSION = "2023-08-01"
+# Storage uses the same resource ID in public and sovereign clouds.
+AZURE_STORAGE_SCOPE = "https://storage.azure.com/.default"
 DEFAULT_POLL_INTERVAL_SECONDS = 30
 MIN_POLL_INTERVAL_SECONDS = 5
 MAX_POLL_INTERVAL_SECONDS = 300
@@ -521,6 +523,16 @@ def validate_azure_export_manifest_url(url: str | None, *, cloud: AzureCloud) ->
     return validate_azure_blob_url(url, cloud=cloud, allow_sas_query=False)
 
 
+def _manifest_token_scope(manifest_url: str, *, cloud: AzureCloud) -> str:
+    profile = cloud_profile(cloud)
+    host = (urlsplit(manifest_url).hostname or "").rstrip(".")
+    return (
+        profile.arm_scope
+        if host == urlsplit(profile.arm_endpoint).hostname
+        else AZURE_STORAGE_SCOPE
+    )
+
+
 def _supported_cost_details_months(today: date) -> list[str]:
     """Return the last 13 completed calendar months in ``YYYY-MM`` form, newest first."""
 
@@ -949,11 +961,13 @@ class AzureBillingConnector:
         connection: BillingConnection,
         *,
         secret_value: str | None = None,
+        scope: str | None = None,
     ) -> str:
-        """Obtain an ARM Bearer token without ever logging or echoing token/secret material."""
+        """Obtain a token for the requested resource using the configured Azure identity."""
 
         cloud: AzureCloud = connection.azure_cloud or "commercial"
         profile = cloud_profile(cloud)
+        scope = scope or profile.arm_scope
 
         if self._token_provider is not None:
             token = await self._token_provider(connection, secret_value)
@@ -975,7 +989,7 @@ class AzureBillingConnector:
             )
             access_token = await self._connection_service.token(
                 connection.azure_connection_id,
-                (profile.arm_scope,),
+                (scope,),
             )
             return access_token.token
 
@@ -1014,7 +1028,7 @@ class AzureBillingConnector:
                         client_secret,
                         authority=profile.authority,
                     ) as credential:
-                        issued = await credential.get_token(profile.arm_scope)
+                        issued = await credential.get_token(scope)
                         return issued.token
                 except ClientAuthenticationError:
                     raise UpstreamAuthorizationError(
@@ -1034,11 +1048,11 @@ class AzureBillingConnector:
                     "service-principal connection."
                 )
             try:
-                issued = await self._host_credential.get_token(profile.arm_scope)
+                issued = await self._host_credential.get_token(scope)
                 return issued.token
             except ClientAuthenticationError:
                 raise UpstreamAuthorizationError(
-                    "MOSAIC's managed identity could not authenticate to Azure Resource Manager."
+                    "MOSAIC's managed identity could not authenticate to Azure."
                 ) from None
             except (ServiceRequestError, ServiceResponseError):
                 raise UpstreamError(
@@ -1058,7 +1072,7 @@ class AzureBillingConnector:
 
         try:
             async with DefaultAzureCredential(authority=profile.authority) as credential:
-                issued = await credential.get_token(profile.arm_scope)
+                issued = await credential.get_token(scope)
                 return issued.token
         except ClientAuthenticationError:
             raise UpstreamAuthorizationError(
@@ -1085,6 +1099,7 @@ class AzureBillingConnector:
                     url,
                     headers=headers,
                     json=json_body,
+                    follow_redirects=False,
                 )
             timeout = httpx.Timeout(DEFAULT_HTTP_TIMEOUT_SECONDS)
             async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
@@ -1111,19 +1126,30 @@ class AzureBillingConnector:
         self,
         blob_urls: list[str],
         *,
-        token: str,
+        connection: BillingConnection,
+        secret_value: str | None,
+        storage_token: str | None = None,
         compress_data: bool,
     ) -> tuple[list[BillingConnectorPayloadPart], int]:
         parts: list[BillingConnectorPayloadPart] = []
         total_bytes = 0
 
         for idx, blob_url in enumerate(blob_urls, start=1):
+            blob_url = validate_azure_blob_url(
+                blob_url,
+                cloud=connection.azure_cloud or "commercial",
+                allow_sas_query=True,
+            )
             redacted_blob_url = redact_azure_url(blob_url)
             parsed = urlsplit(blob_url)
             has_sas = _contains_sas_query(parsed.query)
             headers: dict[str, str] = {"x-ms-version": "2023-11-03"}
             if not has_sas:
-                headers["Authorization"] = f"Bearer {token}"
+                if storage_token is None:
+                    storage_token = await self._acquire_token(
+                        connection, secret_value=secret_value, scope=AZURE_STORAGE_SCOPE
+                    )
+                headers["Authorization"] = f"Bearer {storage_token}"
 
             response = await self._request("GET", blob_url, headers=headers)
             if response.status_code in (401, 403):
@@ -1251,7 +1277,10 @@ class AzureBillingConnector:
                 )
 
             try:
-                token = await self._acquire_token(connection, secret_value=secret_value)
+                manifest_scope = _manifest_token_scope(manifest_url, cloud=cloud)
+                token = await self._acquire_token(
+                    connection, secret_value=secret_value, scope=manifest_scope
+                )
                 response = await self._request(
                     "GET",
                     manifest_url,
@@ -1521,7 +1550,8 @@ class AzureBillingConnector:
         scope: str,
         cloud: AzureCloud,
         source_month: str,
-        token: str,
+        connection: BillingConnection,
+        secret_value: str | None,
         operation_id: str | None,
         operation_location: str | None,
         retry_after: int,
@@ -1621,7 +1651,8 @@ class AzureBillingConnector:
         )
         parts, total_bytes = await self._download_manifest_partitions(
             blob_urls,
-            token=token,
+            connection=connection,
+            secret_value=secret_value,
             compress_data=compress_data,
         )
         return BillingConnectorStepResult(
@@ -1664,8 +1695,6 @@ class AzureBillingConnector:
             today=today,
             enforce_cost_details_limit=(mode == "costDetailsApi"),
         )
-        token = await self._acquire_token(connection, secret_value=secret_value)
-
         # Mode 2: exportManifest
         if mode == "exportManifest":
             manifest_url = validate_azure_export_manifest_url(
@@ -1673,6 +1702,10 @@ class AzureBillingConnector:
                 cloud=cloud,
             )
             redacted_manifest_url = redact_azure_url(manifest_url)
+            manifest_scope = _manifest_token_scope(manifest_url, cloud=cloud)
+            token = await self._acquire_token(
+                connection, secret_value=secret_value, scope=manifest_scope
+            )
             response = await self._request(
                 "GET",
                 manifest_url,
@@ -1731,7 +1764,9 @@ class AzureBillingConnector:
             )
             parts, total_bytes = await self._download_manifest_partitions(
                 blob_urls,
-                token=token,
+                connection=connection,
+                secret_value=secret_value,
+                storage_token=token if manifest_scope == AZURE_STORAGE_SCOPE else None,
                 compress_data=compress_data,
             )
             return BillingConnectorStepResult(
@@ -1747,6 +1782,7 @@ class AzureBillingConnector:
             )
 
         # Mode 1: costDetailsApi
+        token = await self._acquire_token(connection, secret_value=secret_value)
         if not run.operation_location:
             generate_url = (
                 f"{profile.arm_endpoint}{scope}/providers/Microsoft.CostManagement"
@@ -1817,7 +1853,8 @@ class AzureBillingConnector:
                     scope=scope,
                     cloud=cloud,
                     source_month=run.source_month,
-                    token=token,
+                    connection=connection,
+                    secret_value=secret_value,
                     operation_id=run.operation_id,
                     operation_location=None,
                     retry_after=retry_after,
@@ -1918,7 +1955,8 @@ class AzureBillingConnector:
                         scope=scope,
                         cloud=cloud,
                         source_month=run.source_month,
-                        token=token,
+                        connection=connection,
+                        secret_value=secret_value,
                         operation_id=op_id,
                         operation_location=next_location,
                         retry_after=retry_after,
@@ -1949,7 +1987,8 @@ class AzureBillingConnector:
                 scope=scope,
                 cloud=cloud,
                 source_month=run.source_month,
-                token=token,
+                connection=connection,
+                secret_value=secret_value,
                 operation_id=run.operation_id,
                 operation_location=next_location,
                 retry_after=retry_after,

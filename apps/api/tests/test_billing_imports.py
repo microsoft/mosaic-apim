@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+import csv
 import gzip
+import io
 import json
 from collections.abc import Iterator
 from datetime import UTC, date, datetime
@@ -11,6 +13,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from mosaic_api.billing_pricing import BillingCandidateMapping, BillingMappingsUpdateRequest
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
 from mosaic_api.domain import (
     AuditEvent,
@@ -209,6 +212,68 @@ async def test_quantity_weighted_decimal_derivation_across_scales() -> None:
     assert cand.existing_input_per_million == pytest.approx(2.50)
     assert cand.existing_output_per_million == pytest.approx(10.0)
     assert cand.conflicts_with_manual_override is False
+    assert detail.mappings[0].scope == "deployment"
+    assert detail.mappings[0].confirmed is True
+
+
+@pytest.mark.parametrize("resource_id", ["unregistered-resource", None])
+async def test_unmatched_billing_identity_requires_mapping_without_losing_evidence(
+    resource_id: str | None,
+) -> None:
+    service, _, _ = await _build_service()
+    content = (
+        "Date,MeterCategory,MeterName,Product,Quantity,UnitOfMeasure,"
+        "CostInBillingCurrency,BillingCurrencyCode,ResourceId,SubscriptionId,ResourceLocation\n"
+        "2026-09-01,Foundry Models,gpt 4o 1120 Inp glbl Tokens,Azure OpenAI,1000,1K Tokens,"
+        f"2.00,USD,{resource_id or ''},unregistered-account,East US 2\n"
+        "2026-09-01,Foundry Models,gpt 4o 1120 Outp glbl Tokens,Azure OpenAI,100,1K Tokens,"
+        f"0.80,USD,{resource_id or ''},unregistered-account,East US 2\n"
+    ).encode()
+    detail = await service.import_billing_data(
+        _actor(),
+        provider="azure",
+        pricing_cloud="commercial",
+        source_month="2026-09",
+        file_name="unmatched.csv",
+        content=content,
+    )
+    candidate = detail.candidates[0]
+    assert candidate.publishable is True
+    assert candidate.input_per_million == 2.0
+    assert candidate.output_per_million == 8.0
+    assert candidate.mapping_confidence == "unmatched"
+    assert candidate.suggested_scope == "excluded"
+    assert candidate.suggested_deployment_key is None
+    assert detail.mappings[0].scope == "excluded"
+    assert detail.mappings[0].confirmed is False
+    assert detail.eligible_row_count == 2
+    assert detail.total_eligible_cost_usd == pytest.approx(2.8)
+    assert len(detail.evidence_items) == 2
+    assert set(candidate.evidence_line_keys) == {e.line_key for e in detail.evidence_items}
+    assert all(e.source_resource_id == resource_id for e in detail.evidence_items)
+    assert all(e.source_account_id == "unregistered-account" for e in detail.evidence_items)
+
+    with pytest.raises(ValidationError, match="At least one publishable candidate"):
+        await service.publish_billing_run(_actor(), detail.id)
+
+    updated = await service.update_billing_mappings(
+        _actor(),
+        detail.id,
+        BillingMappingsUpdateRequest(
+            mappings=[
+                BillingCandidateMapping(
+                    candidate_id=candidate.candidate_id,
+                    scope="cloudModel",
+                    cloud="commercial",
+                    confirmed=True,
+                )
+            ]
+        ),
+    )
+    assert updated.mappings[0].scope == "cloudModel"
+    assert updated.mappings[0].confirmed is True
+    publication = await service.publish_billing_run(_actor(), detail.id)
+    assert publication is not None
 
 
 # -- 2. Azure Cost Details CSV & .csv.gz, reservations, tax exclusion, manual conflict ----------
@@ -580,6 +645,218 @@ def test_aws_cur_csv_and_parquet_bedrock_dimensions() -> None:
     prov = next(c for c in result.candidates if not c.publishable)
     assert prov.service_tier == "ProvisionedThroughput"
     assert any(i.code == "unsupportedCapacityUnit" for i in result.issues)
+
+
+def _aws_usage_rows() -> list[dict[str, Any]]:
+    return [
+        {
+            "line_item_usage_account_id": "123456789012",
+            "line_item_product_code": "AmazonBedrock",
+            "line_item_usage_type": f"USE1-Claude3-5Sonnet-{category}-tokens",
+            "line_item_usage_amount": quantity,
+            "pricing_unit": "1K tokens",
+            "line_item_currency_code": "USD",
+            "line_item_usage_start_date": "2026-09-05T00:00:00Z",
+        }
+        for category, quantity in [("input", 1000), ("output", 100)]
+    ]
+
+
+def _aws_csv(rows: list[dict[str, Any]]) -> bytes:
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=list(dict.fromkeys(k for row in rows for k in row)))
+    writer.writeheader()
+    writer.writerows(rows)
+    return output.getvalue().encode()
+
+
+@pytest.mark.parametrize("missing", [None, "", " "])
+@pytest.mark.parametrize("parquet", [False, True], ids=["csv", "parquet"])
+def test_aws_missing_cash_cost_is_not_a_zero_rate(missing: str | None, parquet: bool) -> None:
+    rows = _aws_usage_rows()
+    for row in rows:
+        row.update(line_item_unblended_cost=missing, line_item_net_unblended_cost=missing)
+    with pytest.raises(ValidationError, match=r"required numeric value.*line_item_unblended_cost"):
+        ingest_billing_bytes(
+            write_parquet_table(rows) if parquet else _aws_csv(rows),
+            file_name="missing-cost.parquet" if parquet else "missing-cost.csv",
+            provider="aws",
+            pricing_cloud="aws-bedrock",
+            source_month="2026-09",
+        )
+
+
+@pytest.mark.parametrize(
+    ("unblended", "net", "expected_cost"),
+    [
+        (None, "1.80", 1.8),
+        (" ", "1.80", 1.8),
+        ("3", "", 3.0),
+        ("0", None, 0.0),
+        (None, "0", 0.0),
+        ("3", "0", 0.0),
+    ],
+)
+def test_aws_net_only_cost_and_explicit_zero(
+    unblended: str | None, net: str | None, expected_cost: float,
+) -> None:
+    rows = _aws_usage_rows()
+    for row in rows:
+        row["line_item_net_unblended_cost"] = net
+        if unblended is not None:
+            row["line_item_unblended_cost"] = unblended
+    result = ingest_billing_bytes(
+        _aws_csv(rows),
+        file_name="cash-cost.csv",
+        provider="aws",
+        pricing_cloud="aws-bedrock",
+        source_month="2026-09",
+    )
+    candidate = result.candidates[0]
+    assert candidate.publishable is True
+    assert candidate.input_per_million == expected_cost
+    assert candidate.output_per_million == pytest.approx(expected_cost * 10)
+    assert result.total_eligible_cost_usd == pytest.approx(expected_cost * 2)
+    assert all(e.eligible_cost_usd == expected_cost for e in result.evidence_items)
+
+
+@pytest.mark.parametrize(
+    ("line_item_type", "effective_field"),
+    [
+        ("DiscountedUsage", "reservation_effective_cost"),
+        ("SavingsPlanCoveredUsage", "savings_plan_savings_plan_effective_cost"),
+        ("SavingsPlanCoveredUsage", "savings_plan_net_savings_plan_effective_cost"),
+    ],
+)
+@pytest.mark.parametrize("effective_cost", [None, "", "0", "2"])
+def test_aws_prepaid_usage_requires_nonzero_amortized_cost(
+    line_item_type: str, effective_field: str, effective_cost: str | None,
+) -> None:
+    rows = _aws_usage_rows()
+    for row in rows:
+        row.update(line_item_line_item_type=line_item_type)
+        row[effective_field] = effective_cost
+    result = ingest_billing_bytes(
+        _aws_csv(rows),
+        file_name="prepaid.csv",
+        provider="aws",
+        pricing_cloud="aws-bedrock",
+        source_month="2026-09",
+    )
+    candidate = result.candidates[0]
+    if effective_cost == "2":
+        assert candidate.publishable is True
+        assert candidate.input_per_million == 2.0
+        assert candidate.output_per_million == 20.0
+        assert all(e.amortized_benefit_cost_usd == 2.0 for e in result.evidence_items)
+        assert not any(i.code == "unamortizedPrepaidUsage" for i in result.issues)
+    else:
+        assert candidate.publishable is False
+        assert all(m.scope == "excluded" for m in result.mappings)
+        assert any(
+            i.code == "unamortizedPrepaidUsage" and i.severity == "blocker"
+            for i in result.issues
+        )
+
+
+@pytest.mark.parametrize("compression_level", [0, 9])
+def test_gzip_members_preserve_full_weighted_evidence_and_share_size_limit(
+    compression_level: int,
+) -> None:
+    rows = _aws_usage_rows() + _aws_usage_rows()
+    rows[0]["identity_line_item_id"] = "x" * 70_000
+    for row, cost, quantity in zip(
+        rows, ["3", "1.5", "4", "2"], [1000, 100, 2000, 200], strict=True,
+    ):
+        row.update(line_item_unblended_cost=cost, line_item_usage_amount=quantity)
+    content = _aws_csv(rows)
+    lines = content.splitlines(keepends=True)
+    members = gzip.compress(
+        b"".join(lines[:3]), compresslevel=compression_level,
+    ) + gzip.compress(b"".join(lines[3:]), compresslevel=compression_level)
+    full = ingest_billing_bytes(
+        content,
+        file_name="full.csv",
+        provider="aws",
+        pricing_cloud="aws-bedrock",
+        source_month="2026-09",
+    )
+    combined = ingest_billing_bytes(
+        members,
+        file_name="members.csv.gz",
+        provider="aws",
+        pricing_cloud="aws-bedrock",
+        source_month="2026-09",
+        max_decompressed_bytes=len(content),
+    )
+    assert combined.raw_row_count == full.raw_row_count == 4
+    assert combined.evidence_items == full.evidence_items
+    assert combined.candidates == full.candidates
+    assert combined.total_eligible_cost_usd == full.total_eligible_cost_usd == 10.5
+    assert combined.candidates[0].input_per_million == pytest.approx(2.333333)
+    assert combined.candidates[0].output_per_million == pytest.approx(11.666667)
+
+    with pytest.raises(BillingPayloadTooLargeError, match="Decompressed billing file"):
+        ingest_billing_bytes(
+            members,
+            file_name="members.csv.gz",
+            provider="aws",
+            pricing_cloud="aws-bedrock",
+            source_month="2026-09",
+            max_decompressed_bytes=len(content) - 1,
+        )
+
+
+@pytest.mark.parametrize("truncated_bytes", [1, 4, 8])
+def test_gzip_truncated_trailer_is_rejected(truncated_bytes: int) -> None:
+    rows = _aws_usage_rows()
+    for row in rows:
+        row["line_item_unblended_cost"] = "2"
+    content = gzip.compress(_aws_csv(rows))
+    with pytest.raises(ValidationError, match="valid GZIP"):
+        ingest_billing_bytes(
+            content[:-truncated_bytes],
+            file_name="truncated.csv.gz",
+            provider="aws",
+            pricing_cloud="aws-bedrock",
+            source_month="2026-09",
+        )
+
+
+@pytest.mark.parametrize("trailing", [b"garbage", b"\x1f", gzip.compress(b"")[:-1]])
+def test_gzip_trailing_garbage_or_incomplete_member_is_rejected(trailing: bytes) -> None:
+    rows = _aws_usage_rows()
+    for row in rows:
+        row["line_item_unblended_cost"] = "2"
+    with pytest.raises(ValidationError, match="valid GZIP"):
+        ingest_billing_bytes(
+            gzip.compress(_aws_csv(rows)) + trailing,
+            file_name="trailing.csv.gz",
+            provider="aws",
+            pricing_cloud="aws-bedrock",
+            source_month="2026-09",
+        )
+
+
+@pytest.mark.parametrize(
+    "fixture_base64",
+    [
+        # PyArrow 26.0.0: float32 cost=[10, 20], nullable=False/True, uncompressed,
+        # PLAIN encoding, DATA_PAGE V1, no statistics or stored Arrow schema.
+        "UEFSMRUAFRAVECwVBBUAFQYVBhwAAAAAACBBAACgQRUEGSw1ABgGc2NoZW1hFQIAFQglABgEY29zdAAW"
+        "BBkcGRwmABwVCBklBgAZGARjb3N0FQAWBBY2FjYmCEkcFQAVABUCAAAAFjYWBCYIFjYAKCBwYXJxdWV0"
+        "LWNwcC1hcnJvdyB2ZXJzaW9uIDI2LjAuMBkcHAAAAHgAAABQQVIx",
+        "UEFSMRUAFRwVHCwVBBUAFQYVBhwAAAACAAAABAEAACBBAACgQRUEGSw1ABgGc2NoZW1hFQIAFQglAhgE"
+        "Y29zdAAWBBkcGRwmABwVCBklBgAZGARjb3N0FQAWBBZCFkImCEkcFQAVABUCADwpBhkmAAQAAAAWQhYE"
+        "JggWQgAoIHBhcnF1ZXQtY3BwLWFycm93IHZlcnNpb24gMjYuMC4wGRwcAAAAgAAAAFBBUjE=",
+    ],
+    ids=["required", "optional"],
+)
+def test_independent_parquet_float_schema(fixture_base64: str) -> None:
+    assert read_parquet_table(base64.b64decode(fixture_base64)) == [
+        {"cost": 10.0},
+        {"cost": 20.0},
+    ]
 
 
 # -- 4. GCP BigQuery CSV & NDJSON parsing, credits, and invoice.month lag -----------------------

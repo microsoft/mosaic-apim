@@ -855,7 +855,10 @@ def _read_column_values(
     elif offset == 0 and chunk.file_offset > 0:
         offset = chunk.file_offset
 
-    is_optional = (schema_elem.repetition_type or REP_OPTIONAL) != REP_REQUIRED
+    repetition_type = schema_elem.repetition_type
+    if repetition_type is None:
+        repetition_type = REP_OPTIONAL
+    is_optional = repetition_type != REP_REQUIRED
     dictionary: list[Any] | None = None
     col_values: list[Any] = []
     decompressed_total = 0

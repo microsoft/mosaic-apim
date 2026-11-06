@@ -855,6 +855,52 @@ describe('PricingPage', { timeout: 15000 }, () => {
     expect(await screen.findByText(/Billing-derived rates published/)).toBeVisible()
   })
 
+  it('requires saving the displayed mappings before publishing', async () => {
+    const user = userEvent.setup()
+    const ready: BillingRunDetailView = {
+      ...billingRunDetail,
+      candidates: [{
+        ...billingRunDetail.candidates[0],
+        mappingConfidence: 'exact',
+        ambiguousDeploymentKeys: [],
+        conflictsWithManualOverride: false,
+        existingOrigin: 'seed',
+      }],
+      mappings: [{ ...billingRunDetail.mappings[0], confirmed: true }],
+    }
+    api.getBillingRun.mockResolvedValue(ready)
+    api.updateBillingMappings.mockImplementation(async (_runId, payload) => ({
+      ...ready,
+      mappings: payload.mappings,
+      previewRevision: 2,
+      version: 'etag-run-2',
+    }))
+    renderPage('/pricing?tab=billing&run=billrun_sep_2026')
+
+    const publish = await screen.findByRole('button', { name: 'Publish rates' })
+    await waitFor(() => expect(publish).toBeEnabled())
+    const target = screen.getByLabelText('Target deployment for gpt-4o')
+    await user.clear(target)
+    await fill(user, target, 'endpoint-aoai/other-chat')
+    expect(publish).toBeDisabled()
+    await user.click(publish)
+    expect(api.publishBillingRun).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: 'Save mappings' }))
+    await waitFor(() => expect(publish).toBeEnabled())
+    expect(api.updateBillingMappings).toHaveBeenCalledWith(
+      'billrun_sep_2026',
+      expect.objectContaining({
+        mappings: [expect.objectContaining({ deploymentKey: 'endpoint-aoai/other-chat' })],
+      }),
+    )
+    await user.click(publish)
+    await waitFor(() => expect(api.publishBillingRun).toHaveBeenCalledWith(
+      'billrun_sep_2026',
+      expect.objectContaining({ previewRevision: 2, version: 'etag-run-2' }),
+    ))
+  })
+
   it('creates a billing connection in WorkspaceEditorFrame and recovers from 409 stale preview during review', async () => {
     const user = userEvent.setup()
     api.createBillingConnection.mockRejectedValueOnce(new Error('Missing Cost Management Reader permission on scope'))
