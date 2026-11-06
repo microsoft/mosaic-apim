@@ -8,9 +8,11 @@ with client credentials and the `Models.Invoke.Application` permission, requesti
 
 ## Before you start
 
-You need an applied grant for the model, and Entra tokens must be enabled for it
-(`appliedMethods.entraEnabled` is `true`). Copy these values from the grant's connection details
-in the portal, or from `GET /api/v1/me/entitlements/{id}/connection`:
+You need applied access for the exact model offering, either individually or through an Automatic
+center-group grant, and Entra tokens must be enabled for it
+(`appliedMethods.entraEnabled` is `true`). Copy these values from the exact offering's connection
+details in the portal. For an individual grant, the equivalent API route is
+`GET /api/v1/me/entitlements/{id}/connection`:
 
 | Field | What it's for |
 | --- | --- |
@@ -42,13 +44,24 @@ connection details, not for the MOSAIC API, Azure CLI or Microsoft Graph.
 - Security-group grants have no subscription key. `keysAvailable` is `false`, and key reveal is
   refused.
 
-Membership changes are not immediate at the gateway. Microsoft Entra includes group IDs when it
-issues the token, so adding or removing a member takes effect when that member gets a new token.
-Access tokens commonly live for about an hour.
+For a custom [cost center](cost-centers.md), the token must contain the center's verified group
+ID even when your model grant is **individual**. Automatic grants give inherited JWT access, not
+a personal key or personal entitlement record. Request-only needs individual approval and gateway
+apply; Not available blocks new grants/requests. General is exempt from the mandatory group.
+
+Membership changes are not immediate at the gateway. Human access tokens normally have
+60-90 minutes total lifetime from issuance, and an existing token keeps its claims until expiry.
+The actual remaining `exp`, configured token policy, and directory propagation matter after
+removal. Managed identities can cache per-resource tokens/authorization for around 24 hours;
+membership changes can take several hours. There is no universal 90-minute bound or immediate
+JWT revocation/CAE promise. Existing individual keys require separate recheck and revoke/apply.
+See [removal consequences](cost-centers.md#removing-a-member).
 
 If the caller is in too many groups, Entra omits the `groups` list and marks the token as an
 overage token. MOSAIC can show this in the portal, but APIM cannot call Microsoft Graph during a
-model request. Ask an administrator for a direct grant if your token has group overage.
+model request. A direct token grant cannot bypass a custom center's group requirement. Ask an
+administrator to resolve claim eligibility or review an allowed individual-key path; General's
+direct-token path remains exempt.
 
 Install the libraries used below:
 
@@ -88,7 +101,8 @@ On a desktop you can sign in with the system browser instead. MSAL listens on a 
 result = app.acquire_token_interactive(scopes=[SCOPE])
 ```
 
-Access tokens expire after 60 to 90 minutes. MSAL caches them in memory for the life of the `app`
+Human access tokens normally expire 60 to 90 minutes after issuance; actual expiry and tenant
+policy govern. MSAL caches them in memory for the life of the `app`
 object, so try the cache before you prompt again:
 
 ```python
@@ -155,6 +169,9 @@ direct grants, oldest first, then the grants you hold through security groups. A
 its own grant's cost center, so a key call needs no header, and one naming a different cost center
 is refused. The gateway removes the header before the call reaches the model.
 
+A default is only a selection preference; neither a default nor this header adds group membership
+or resource permission. Custom-center token calls still require the center group claim.
+
 ### What's left of your limits
 
 Responses carry what's left of the limits that applied to the call:
@@ -205,5 +222,5 @@ header, never in `api_key`.
 | HTTP 403 that says you hold no grant under the cost center | The `x-mosaic-cost-center` header names a cost center you hold no applied grant under, or isn't a valid code. Copy `costCenter.code` from the connection details, or leave the header out to use your default. |
 | HTTP 403 that says the key belongs to a different cost center | You sent a key with an `x-mosaic-cost-center` header naming another cost center. Drop the header, or use the key of the grant under that cost center. |
 | HTTP 401 that says keys are turned off for the grant's cost center | The cost center allows Microsoft Entra tokens only. Send a token instead of the key. |
-| HTTP 403 from the gateway | The token is valid but doesn't match an applied grant. The grant might not be applied yet or has been revoked. You might be signed in as a different user, your application might be missing `Models.Invoke.Application`, your token might not include the granted group's ID, or a key you also sent belongs to a different grant. |
-| A group grant is visible in MOSAIC but the gateway denies it | Get a fresh runtime token and check that it has a `groups` claim containing the granted security-group object ID. If Entra emitted group overage instead, use a direct grant. |
+| HTTP 403 from the gateway | Check the exact applied model/pool-model grant, enabled state, signed-in identity, invocation permission, required group IDs (including the custom center group for an individual grant), and any key/token grant mismatch. |
+| A group grant is visible in MOSAIC but the gateway denies it | Refresh after directory/cache propagation and confirm the runtime token contains the required group IDs. Overage cannot be resolved by a direct token grant under a custom center; ask an administrator to resolve claims or review an allowed individual-key path. |

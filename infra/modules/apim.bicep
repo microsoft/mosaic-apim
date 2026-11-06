@@ -105,3 +105,4 @@ resource azureMonitorLogger 'Microsoft.ApiManagement/service/loggers@2022-08-01'
 
 output id string = service.id
 output name string = service.name
+output principalId string = service.identity.principalId

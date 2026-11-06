@@ -11,8 +11,14 @@ import io
 import json
 
 import pytest
-from mosaic_api.cost_centers import CostCenter, CostCenterLimit, PooledQuota
-from mosaic_api.domain import EntitlementResource, general_cost_center_id
+from mosaic_api.cost_center_directory import EntraGroupBinding
+from mosaic_api.cost_centers import (
+    CostCenter,
+    CostCenterLimit,
+    CostCenterResourceAccess,
+    PooledQuota,
+)
+from mosaic_api.domain import EntitlementResource, general_cost_center_id, utc_now
 from test_cost import (
     ALICE,
     ANALYSTS,
@@ -45,6 +51,19 @@ async def _charge_research(harness: Harness) -> None:
             tenant_id=TENANT,
             name="Research",
             code="RES",
+            entra_binding=EntraGroupBinding(
+                directory_tenant_id=TENANT,
+                group_object_id=ANALYSTS,
+                provenance="attached",
+                verification_state="verified",
+                verified_at=utc_now(),
+            ),
+            resource_access=[
+                CostCenterResourceAccess(
+                    resource=EntitlementResource(kind="modelApi", id="model-api-reserved"),
+                    mode="automatic",
+                )
+            ],
             limits=[
                 CostCenterLimit(
                     resource=EntitlementResource(kind="modelApi", id="model-api-reserved"),
@@ -59,7 +78,13 @@ async def _charge_research(harness: Harness) -> None:
         current = await entitlements.get_entitlement(TENANT, grant_id)
         assert current is not None
         await entitlements.save_entitlement(
-            current.model_copy(update={"cost_center_id": RESEARCH}), _audit("entitlement")
+            current.model_copy(
+                update={
+                    "cost_center_id": RESEARCH,
+                    "managed_by": "costCenterAutomatic" if grant_id == "grant-analysts" else None,
+                }
+            ),
+            _audit("entitlement"),
         )
     await _roll_up(harness)
 
@@ -210,12 +235,12 @@ async def test_a_member_sees_their_cost_centers_total_and_no_one_elses_use(
     assert set(research) == {"costCenter", "monthStart", "requests", "totalTokens", "resources"}
 
     # Bob holds no grant under General, so he sees only Research.
-    harness.sign_in(BOB, ["User"], frozenset())
+    harness.sign_in(BOB, ["User"], frozenset({ANALYSTS}))
     bob = harness.get("/api/v1/me/usage", period="30d")
     assert [item["costCenter"]["code"] for item in bob["costCenters"]] == ["RES"]
 
 
-async def test_someone_whose_grant_is_off_no_longer_sees_its_cost_centers_total(
+async def test_a_member_with_a_disabled_individual_grant_still_sees_inherited_totals(
     harness: Harness,
 ) -> None:
     await _charge_research(harness)
@@ -225,6 +250,17 @@ async def test_someone_whose_grant_is_off_no_longer_sees_its_cost_centers_total(
     await entitlements.save_entitlement(
         current.model_copy(update={"enabled": False}), _audit("entitlement")
     )
+    harness.sign_in(BOB, ["User"], frozenset({ANALYSTS}))
+
+    report = harness.get("/api/v1/me/usage", period="30d")
+
+    assert [item["costCenter"]["code"] for item in report["costCenters"]] == ["RES"]
+
+
+async def test_a_nonmember_cannot_see_center_totals_through_an_old_individual_grant(
+    harness: Harness,
+) -> None:
+    await _charge_research(harness)
     harness.sign_in(BOB, ["User"], frozenset())
 
     report = harness.get("/api/v1/me/usage", period="30d")

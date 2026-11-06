@@ -1,13 +1,21 @@
-# Cost-center inherited access: feasibility gate
+# Cost-center inherited access: historical feasibility proposal
 
-**Experimental, not enabled in MOSAIC.** This is M0 of the cost-center-group design, not an
-implemented automatic-access feature or a successful live APIM verification.
+**Historical and unimplemented; not the current cost-center design.**
+[ADR 0030](adr/0030-entra-backed-cost-centers.md) chooses dedicated Entra groups and stable JWT
+resource grants instead. The APIM-local membership/inherited-key proposal below was an offline
+feasibility investigation, not an implemented access feature or successful live APIM verification.
+Its gate is not a prerequisite for the chosen Entra-backed workflow.
 
-The proposed direction is a managed MOSAIC group per cost center, APIM-local membership data,
+The historical proposal used a managed MOSAIC group per cost center, APIM-local membership data,
 and one individually owned native APIM subscription per cost center/gateway. A dedicated product
-would scope that key to the selected model APIs; API policy must still enforce exact models,
-membership, attribution, limits, and the cost-center budget. Existing API-scoped/pool keys remain
-unchanged. Redis and Entra directory writes are not part of this proposal.
+would have scoped that key to selected model APIs; API policy would still have needed to enforce
+exact models, membership, attribution, limits, and the cost-center budget. Existing API-scoped/pool keys remain
+the separate individual-key path in the chosen design. Redis and Entra directory writes were not
+part of this proposal; the current design instead has optional API-identity group management.
+
+The independent read-only Graph verification and operational diagnostic sections below describe
+useful control-plane contracts, not implemented APIM-local authorization or inherited keys. They
+must not be read as a directory watcher or a claim of live Entra/APIM evidence.
 
 ## Run the offline probe
 
@@ -22,14 +30,14 @@ no credentials, changes no MOSAIC data, and does not create APIM products, subsc
 or Entra groups. The report always says `feasibilityGate: NOT_PASSED`; local serialization and
 reference-model checks cannot prove native gateway behavior or latency.
 
-The default cases are 10, 100, 1,000, and 5,000 **effective/enrolled** members, not a proposal to
-raise the current cost-center limit of 500 explicit references. One Entra reference can represent
-many people. Token-based group access does not require an individual APIM subscription.
+The historical cases are 10, 100, 1,000, and 5,000 **effective/enrolled** members, not a product
+capacity claim. The former local roster's 500-reference limit is not the membership model for the
+new paginated Entra workflow. Token-based group access does not require an individual APIM subscription.
 
 Generate an optional local bundle in a fresh directory:
 
 ```powershell
-python -m scripts.cost_center_access_probe --output "$env:TEMP\mosaic-cost-center-probe"
+python -m scripts.cost_center_access_probe --output ".artifacts\mosaic-cost-center-probe"
 ```
 
 The bundle contains a membership fragment, a diagnostic API policy, named-value fixture data, a
@@ -41,7 +49,7 @@ On Windows, exercise the generated membership expression in local .NET, without 
 PowerShell process for each bundle so a previously loaded reference type cannot be reused:
 
 ```powershell
-$bundle = Join-Path $env:TEMP "mosaic-cost-center-probe"
+$bundle = Join-Path $PWD ".artifacts\mosaic-cost-center-probe"
 Add-Type -Path (Join-Path $bundle "reference-host.cs") -ErrorAction Stop
 $cases = Get-Content (Join-Path $bundle "reference-cases.json") -Raw | ConvertFrom-Json
 foreach ($case in $cases) {
@@ -84,10 +92,9 @@ Named-value writes are not the entire management-plane workload. The report sepa
 native subscription-state changes when every fixture member has enrolled a key. A single removal
 needs two data writes plus one credential-state change. Removing the fixture's Entra reference at
 5,000 owners changes 65 data values and affects 4,501 Graph-only credentials; the 499 direct members
-remain eligible. Those credential operations still need bounded background reconciliation, not a
-burst of thousands of concurrent ARM calls. The future reconciler must publish eligibility removals
-without waiting behind that suspension backlog; native key state is not a substitute for local
-membership enforcement.
+remain eligible. The proposal would have needed bounded background reconciliation, not a burst of
+thousands of concurrent ARM calls, with eligibility removals independent of the suspension backlog.
+That reconciler was not implemented and is not part of the current Entra-backed workflow.
 
 Include a caller-supplied resource inventory for a published-tier headroom check:
 
@@ -176,9 +183,9 @@ The ordinary directory-preview API remains bounded.
 
 These are **local adapter checks, not a live Graph tenant verification**. Entra membership can
 change while pages are read; the result is not an atomic directory snapshot or an immediate
-revocation guarantee. This prerequisite does not implement a membership worker, persisted
-evidence refresh, APIM freshness enforcement, or inherited access. It does not pass the APIM
-feasibility gate.
+revocation guarantee. This read contract alone implements no membership worker, persisted
+evidence refresh, APIM freshness enforcement, or access grant. It neither passes the historical
+APIM-local feasibility gate nor verifies the separate group-management adapter live.
 
 ## Shared functional directory check
 
@@ -229,17 +236,17 @@ or refreshing the observation.
 This is **process-local, group-scoped operational diagnostic status**, not persisted worker
 health, an authorization cache, owner eligibility, or proof of access to every group. It resets
 to `notChecked` after a process restart; different API processes can have different observations.
-Its five-minute window is not the future inherited-key eligibility TTL. The Identity/settings
-controls are operational diagnostics, not inherited-key or authorization controls. Durable
-reconciliation consumers remain pending. Local mocks exercise the contract; no live tenant check
-or APIM acceptance is claimed.
+Its five-minute window is not an inherited-key eligibility TTL. The Identity/settings controls are
+operational diagnostics, not inherited-key or authorization controls. They provide no continuous
+directory watcher or key-reconciliation worker. Local mocks exercise the contract; no live tenant
+check or APIM acceptance is claimed.
 
 ## Live evidence required before APIM integration
 
-The independent [managed-group foundation](cost-centers.md#experimental-managed-groups) can be
-enabled without passing this gate: it only links MOSAIC records and shares the existing explicit
-roster. It does not implement inherited authorization, projection reconciliation, or native keys.
-Its availability is not evidence that the APIM contract below works.
+This section retains the **historical proposal's uncompleted acceptance gate**, not deployment
+instructions for the current design. The [local managed-group foundation](adr/0029-managed-cost-center-groups.md)
+only linked MOSAIC records and shared an internal roster; it too is superseded. Neither that
+experiment nor this offline probe proves the native APIM contract below.
 
 Live testing requires an explicitly authorized APIM target and scoped test identities. Do not
 infer permission from an Azure CLI login, a target manifest, or an existing model publication.
@@ -254,11 +261,13 @@ rates, resource counts, and mixed-version behavior under steady traffic and memb
 The diagnostic bundle alone cannot measure these or replace real authorization/budget verification.
 Do not use production traffic, create test directory accounts, or issue 5,000 real keys by implication.
 
-If the native context or supported capacity does not meet the proposed contract, revise the design
-before wiring it into MOSAIC. Do not silently fall back to Redis, shared keys, all-APIs subscription
-scope, Graph calls from the gateway, or per-member model-policy generation.
+The proposal was not wired into MOSAIC. Do not treat it as permission to install an authorization
+fallback using Redis, shared keys, all-APIs subscription scope, Graph calls from the gateway, or
+per-member model-policy generation.
 
-The existing [cost-center guide](cost-centers.md) describes the behavior actually available today.
+The [cost-center guide](cost-centers.md) and [ADR 0030](adr/0030-entra-backed-cost-centers.md)
+describe the chosen Entra-backed behavior. Its live evidence must be recorded separately; the
+historical measurements here do not establish interoperability or production scale.
 Related live-verification boundaries are in the [E2E runbook](e2e/runbook.md).
 
 References: [APIM policy expressions and allowed types][expressions],

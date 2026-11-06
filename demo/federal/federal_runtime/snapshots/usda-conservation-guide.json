@@ -1,0 +1,47 @@
+{
+  "profile": "usda-conservation-guide",
+  "provenance": {
+    "mode": "snapshot",
+    "release": "NRCS national conservation practice page metadata capture",
+    "retrieved_at": "2026-10-29T00:23:05.900357+00:00",
+    "sources": [
+      {
+        "url": "https://www.nrcs.usda.gov/resources/guides-and-instructions/cover-crop-ac-340-conservation-practice-standard",
+        "sha256": "c41bc484e147a796b688fa405a50ae2259bef13302b3e87d84d076c1a9a7d449"
+      },
+      {
+        "url": "https://www.nrcs.usda.gov/resources/guides-and-instructions/nutrient-management-ac-590-conservation-practice-standard",
+        "sha256": "604323db79d8a0f4eab7c27d6896daca0e4a81e0ebe2f6593a2f71022895cc48"
+      },
+      {
+        "url": "https://www.nrcs.usda.gov/resources/guides-and-instructions/contour-farming-ac-330-conservation-practice-standard",
+        "sha256": "630fdeec704b6f442b7a389ee6d9a929987f9706ce6f2e85558a9baecc05ab37"
+      }
+    ],
+    "selection": "Small selected public-data subset, not a complete agency inventory.",
+    "scope": "National reference pages only; state/local standards and eligibility not evaluated."
+  },
+  "records": [
+    {
+      "id": "340",
+      "title": "Cover Crop (Ac.) (340) Conservation Practice Standard | Natural Resources Conservation ServiceLock",
+      "description": "",
+      "source_url": "https://www.nrcs.usda.gov/resources/guides-and-instructions/cover-crop-ac-340-conservation-practice-standard",
+      "version": "Web page captured at provenance.retrieved_at; no publication date asserted."
+    },
+    {
+      "id": "590",
+      "title": "Nutrient Management (Ac.) (590) Conservation Practice Standard | Natural Resources Conservation ServiceLock",
+      "description": "",
+      "source_url": "https://www.nrcs.usda.gov/resources/guides-and-instructions/nutrient-management-ac-590-conservation-practice-standard",
+      "version": "Web page captured at provenance.retrieved_at; no publication date asserted."
+    },
+    {
+      "id": "330",
+      "title": "Contour Farming (Ac.) (330) Conservation Practice Standard | Natural Resources Conservation ServiceLock",
+      "description": "",
+      "source_url": "https://www.nrcs.usda.gov/resources/guides-and-instructions/contour-farming-ac-330-conservation-practice-standard",
+      "version": "Web page captured at provenance.retrieved_at; no publication date asserted."
+    }
+  ]
+}

@@ -31,6 +31,7 @@ export interface PortalProfile {
   pendingRequestCount: number
   groupsOverage: boolean
   defaultCostCenter?: CostCenterRef | null
+  defaultCostCenterEligible?: boolean
 }
 
 /**
@@ -53,10 +54,55 @@ export interface PortalCostCenter extends CostCenterRef {
   keysAllowed: boolean
 }
 
+export interface CostCenterSelfServiceSettings {
+  creationRequestsEnabled: boolean
+  membershipRequestsEnabled: boolean
+}
+
+export interface MembershipCostCenter extends CostCenterRef {
+  publicPurpose: string | null
+  builtIn: boolean
+  membershipState: 'member' | 'notMember' | 'unknown' | 'exempt'
+  tokenEligible: boolean
+}
+
+export interface CostCenterDirectoryPage {
+  items: MembershipCostCenter[]
+  nextCursor: string | null
+  membershipError: string | null
+}
+
+export interface CostCenterMembershipRequestCreate {
+  costCenterId: string
+  justification: string
+  idempotencyKey: string
+}
+
+export interface PortalCostCenterMembershipRequest {
+  id: string
+  requestKind: 'costCenterMembership'
+  costCenter: CostCenterRef
+  justification: string
+  state: AccessRequestState
+  createdAt: string
+  updatedAt: string
+  decidedAt?: string | null
+  decisionNote?: string | null
+  membershipState?: 'pending' | 'succeeded' | 'failed' | 'unknown' | null
+  needsAdministratorAttention: boolean
+}
+
 export interface PortalModel {
   name: string
   format: string | null
   version: string | null
+}
+
+export interface CatalogCostCenterAccess {
+  costCenter: CostCenterRef
+  mode: 'automatic' | 'requestOnly'
+  isDefault: boolean
+  keysAllowed: boolean
 }
 
 export interface CatalogEntry {
@@ -76,6 +122,8 @@ export interface CatalogEntry {
   enforced?: boolean | null
   entitledCostCenterIds?: string[]
   requestedCostCenterIds?: string[]
+  /** Exact, currently eligible resource/center choices; missing definitions never imply access. */
+  costCenterAccess?: CatalogCostCenterAccess[]
   /** `poolModel` only: the API the model is called with. */
   apiStyle?: ApiShape | null
   /** `poolModel` only. Null when the model's capacity is hidden or unknown. */
@@ -114,6 +162,50 @@ export interface AccessRequestResourceSnapshot {
 }
 
 export type AccessRequestState = 'pending' | 'approved' | 'denied' | 'withdrawn'
+
+export type RequestKind = 'resource' | 'costCenter' | 'costCenterMembership'
+
+export interface PortalRequestCounts {
+  pendingResourceCount: number
+  pendingCostCenterCount: number
+  pendingMembershipCount?: number
+  pendingCount: number
+}
+
+export interface CostCenterRequestCreate {
+  name: string
+  code?: string | null
+  description?: string | null
+  justification: string
+  suggestedGroupObjectId?: string | null
+  idempotencyKey: string
+}
+
+export interface PortalCostCenterRequest {
+  id: string
+  requestKind: 'costCenter'
+  name: string
+  code?: string | null
+  description?: string | null
+  justification: string
+  suggestedGroupObjectId?: string | null
+  state: AccessRequestState
+  createdAt: string
+  updatedAt: string
+  decidedAt?: string | null
+  decisionNote?: string | null
+  preparationStarted: boolean
+  costCenter?: CostCenterRef | null
+  setupState?: 'setupRequired' | 'ready' | 'exempt' | null
+  requesterMembershipRequested: boolean
+  requesterMembershipState?: 'pending' | 'succeeded' | 'failed' | 'unknown' | null
+  needsAdministratorAttention: boolean
+}
+
+export type PortalRequest =
+  | { requestKind: 'resource'; request: AccessRequest }
+  | { requestKind: 'costCenter'; request: PortalCostCenterRequest }
+  | { requestKind: 'costCenterMembership'; request: PortalCostCenterMembershipRequest }
 
 export interface AccessRequest {
   id: string
@@ -179,6 +271,8 @@ export interface ModelAccessSettings {
 }
 
 export interface EntitlementRuntime {
+  eligibilityRecheckPending?: boolean
+  keyRevocationPending?: boolean
   keyState?: 'pending' | 'preparing' | 'ready' | 'failed' | 'deleted' | 'ineligible' | null
   keyError?: string | null
   publicationId: string
@@ -207,6 +301,7 @@ export interface Entitlement {
   entityType: 'entitlement'
   subject: { kind: 'user' | 'group' | 'application' | 'securityGroup'; id: string }
   resource: EntitlementResource
+  managedBy?: 'costCenterAutomatic' | null
   enabled: boolean
   enforcement: EntitlementEnforcement | null
   binding: EntitlementBinding | null
@@ -220,6 +315,7 @@ export interface Entitlement {
 
 export interface ResolvedEntitlement {
   entitlement: Entitlement
+  accessOrigin?: 'automaticCostCenter' | 'approvedIndividual' | 'group'
   costCenter?: CostCenterRef | null
   resourceSummary: ResourceSummary | null
   via: 'direct' | 'group' | 'securityGroup'

@@ -136,6 +136,52 @@ describe('ConnectionDetails', () => {
     vi.restoreAllMocks()
   })
 
+  it('provides token-only connection details for automatic group access and never mounts personal-key controls', async () => {
+    const user = userEvent.setup()
+    const automatic: ResolvedEntitlement = {
+      ...securityGroupResolved, accessOrigin: 'automaticCostCenter',
+      entitlement: { ...securityGroupResolved.entitlement, managedBy: 'costCenterAutomatic' },
+    }
+    renderDetails(automatic)
+    await openDetails(user, securityGroupConnection)
+    expect(screen.queryByRole('button', { name: /Show (primary|secondary) key|Create key|Rotate key|Delete key/i })).not.toBeInTheDocument()
+    expect(samples().join('\n')).toContain('Bearer')
+    expect(api.revealMyEntitlementKey).not.toHaveBeenCalled()
+    expect(api.createMyEntitlementKey).not.toHaveBeenCalled()
+  })
+
+  it('does not turn automatic access to an exact pool model into an individual key', async () => {
+    const user = userEvent.setup()
+    renderDetails({
+      ...poolResolved, accessOrigin: 'automaticCostCenter', via: 'securityGroup',
+      entitlement: { ...poolResolved.entitlement, managedBy: 'costCenterAutomatic',
+        subject: { kind: 'securityGroup', id: 'principal_group_1' } },
+    })
+    await openDetails(user, {
+      ...poolConnection, keysAvailable: false, keyExists: false, principalKind: 'securityGroup',
+      appliedMethods: { keysEnabled: false, entraEnabled: true },
+    })
+    expect(screen.queryByRole('button', { name: 'Show primary key' })).not.toBeInTheDocument()
+    expect(samples().join('\n')).toContain('MOSAIC_ACCESS_TOKEN')
+    expect(samples().join('\n')).not.toContain('MOSAIC_API_KEY')
+    expect(api.revealMyEntitlementKey).not.toHaveBeenCalled()
+    expect(api.createMyEntitlementKey).not.toHaveBeenCalled()
+  })
+
+  it('keeps automatic MCP access on its separate token connection without key controls', async () => {
+    const user = userEvent.setup()
+    const automatic: ResolvedEntitlement = {
+      ...mcpSecurityGroupResolved, accessOrigin: 'automaticCostCenter',
+      entitlement: { ...mcpSecurityGroupResolved.entitlement, managedBy: 'costCenterAutomatic' },
+    }
+    await openMcpDetails(user, mcpSecurityGroupConnection, automatic)
+    expect(api.getMcpConnection).toHaveBeenCalledExactlyOnceWith(automatic.entitlement.id)
+    expect(api.getMyEntitlementConnection).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Show primary key' })).not.toBeInTheDocument()
+    expect(api.revealMyEntitlementKey).not.toHaveBeenCalled()
+    expect(api.createMyEntitlementKey).not.toHaveBeenCalled()
+  })
+
   it('labels Government models and never offers commercial token setup or eager key reveal', async () => {
     const user = userEvent.setup()
     const government: ModelConnection = {

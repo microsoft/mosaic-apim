@@ -4,6 +4,8 @@ import hashlib
 import json
 from datetime import UTC, datetime
 
+from mosaic_api.cost_center_membership_requests import MembershipRequest
+from mosaic_api.cost_center_requests import CostCenterRequest
 from mosaic_api.domain import AccessRequest
 from mosaic_api.notifications import (
     NotificationAudience,
@@ -105,4 +107,76 @@ def access_request_event(
             user_object_ids=[request.requester_object_id], include_administrators=True
         ),
         data=NotificationTemplateData(requires_plan_apply=request.state == "approved"),
+    )
+
+
+def cost_center_request_event(request: CostCenterRequest) -> NotificationEvent:
+    event_type = {
+        "pending": NotificationEventType.REQUEST_SUBMITTED,
+        "approved": NotificationEventType.REQUEST_APPROVED,
+        "denied": NotificationEventType.REQUEST_DENIED,
+        "withdrawn": NotificationEventType.REQUEST_WITHDRAWN,
+    }[request.state]
+    summary = {
+        "pending": "A cost center creation request is ready for administrator review.",
+        "approved": (
+            "The cost center request was approved. Open it for group setup, requester "
+            "membership, and any remaining administrator action."
+        ),
+        "denied": "The cost center creation request was declined.",
+        "withdrawn": "The cost center creation request was withdrawn.",
+    }[request.state]
+    occurred_at = request.decided_at or request.created_at
+    return build_notification_event(
+        tenant_id=request.tenant_id,
+        event_type=event_type,
+        source_id=request.id,
+        source_revision=f"{request.state}:{occurred_at.astimezone(UTC).isoformat()}",
+        occurred_at=occurred_at,
+        origin="costCenterRequests",
+        subject=NotificationSubject(
+            request_id=request.id,
+            request_kind="costCenter",
+            cost_center_id=request.cost_center_id,
+        ),
+        audience=NotificationAudience(
+            user_object_ids=[request.requester_object_id], include_administrators=True
+        ),
+        data=NotificationTemplateData(summary=summary),
+    )
+
+
+def membership_request_event(request: MembershipRequest) -> NotificationEvent:
+    event_type = {
+        "pending": NotificationEventType.REQUEST_SUBMITTED,
+        "approved": NotificationEventType.REQUEST_APPROVED,
+        "denied": NotificationEventType.REQUEST_DENIED,
+        "withdrawn": NotificationEventType.REQUEST_WITHDRAWN,
+    }[request.state]
+    summary = {
+        "pending": "A cost center membership request is ready for administrator review.",
+        "approved": (
+            "The membership request was approved. Open it for directory membership status "
+            "and any remaining administrator action. Resource access is separate."
+        ),
+        "denied": "The cost center membership request was declined.",
+        "withdrawn": "The cost center membership request was withdrawn.",
+    }[request.state]
+    return build_notification_event(
+        tenant_id=request.tenant_id,
+        event_type=event_type,
+        source_id=request.id,
+        source_revision=f"{request.state}:{request.membership_state}:{request.updated_at.isoformat()}",
+        occurred_at=request.updated_at,
+        origin="costCenterMembershipRequests",
+        subject=NotificationSubject(
+            request_id=request.id,
+            request_kind="costCenterMembership",
+            cost_center_id=request.cost_center.id,
+        ),
+        audience=NotificationAudience(
+            user_object_ids=[request.requester_object_id],
+            include_administrators=True,
+        ),
+        data=NotificationTemplateData(summary=summary),
     )

@@ -8,7 +8,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from mosaic_api.cost_centers import CostCenterBook, PooledQuota
+from mosaic_api.cost_centers import CostCenterBook, CostCenterResourceAccessMode, PooledQuota
 from mosaic_api.domain import (
     BindingSource,
     Entitlement,
@@ -72,6 +72,9 @@ class CostCenterIntent:
     pool: PooledQuota | None
     # Commercial MCP remains token-only; Government MCP includes key permission in its intent.
     keyed: bool = True
+    required_cost_center_group_id: str | None = None
+    directory_tenant_id: str | None = None
+    access_mode: CostCenterResourceAccessMode | None = None
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -81,6 +84,15 @@ class CostCenterIntent:
             "default": self.default_for_subject,
             "inherited": self.inherited.model_dump(mode="json") if self.inherited else None,
             "pool": self.pool.model_dump(mode="json") if self.pool else None,
+            **(
+                {
+                    "requiredCostCenterGroupId": self.required_cost_center_group_id,
+                    "directoryTenantId": self.directory_tenant_id,
+                    "accessMode": self.access_mode,
+                }
+                if self.required_cost_center_group_id is not None
+                else {}
+            ),
         }
 
 
@@ -98,6 +110,33 @@ def cost_center_intent(
     cost_center = book.get(entitlement.cost_center_id)
     if cost_center is None:
         return None
+    group_id: str | None = None
+    directory_tenant_id: str | None = None
+    mode: CostCenterResourceAccessMode | None = None
+    if not cost_center.is_general:
+        binding = cost_center.entra_binding
+        group_id = cost_center.verified_group_object_id
+        mode = cost_center.access_mode_for(entitlement.resource)
+        if (
+            binding is None
+            or group_id is None
+            or binding.directory_tenant_id.casefold() != entitlement.tenant_id.casefold()
+            or mode == CostCenterResourceAccessMode.NOT_AVAILABLE
+            or entitlement.subject.kind == EntitlementSubjectKind.GROUP
+        ):
+            return None
+        directory_tenant_id = binding.directory_tenant_id
+        if entitlement.subject.kind == EntitlementSubjectKind.SECURITY_GROUP and (
+            entitlement.managed_by != "costCenterAutomatic"
+            or mode != CostCenterResourceAccessMode.AUTOMATIC
+            or principal is None
+            or principal.object_id.casefold() != group_id.casefold()
+        ):
+            return None
+        if entitlement.managed_by == "costCenterAutomatic" and (
+            entitlement.subject.kind != EntitlementSubjectKind.SECURITY_GROUP
+        ):
+            return None
     limit = cost_center.limit_for(entitlement.resource)
     direct = entitlement.subject.kind in {
         EntitlementSubjectKind.USER,
@@ -123,7 +162,30 @@ def cost_center_intent(
             else entitlement.resource.kind
             in {EntitlementResourceKind.MODEL_API, EntitlementResourceKind.POOL_MODEL}
         ),
+        required_cost_center_group_id=group_id,
+        directory_tenant_id=directory_tenant_id,
+        access_mode=mode,
     )
+
+
+def custom_grant_supported(
+    entitlement: Entitlement,
+    intent: CostCenterIntent,
+    *,
+    azure_cloud: str,
+    settings: ModelAccessSettings,
+    group_claims_enabled: bool,
+) -> bool:
+    """Keep unsupported custom-center paths out of every publication type, including old data."""
+
+    if intent.required_cost_center_group_id is None:
+        return True
+    if azure_cloud != "commercial":
+        return False
+    tokens = settings.entra_enabled and group_claims_enabled
+    if entitlement.managed_by == "costCenterAutomatic":
+        return tokens
+    return tokens or (settings.keys_enabled and intent.keys_allowed)
 
 
 def with_inherited_limits(entitlement: Entitlement, book: CostCenterBook) -> Entitlement:
@@ -171,6 +233,7 @@ def entitlement_intent_digest(
             else None
         ),
         "costCenter": cost_center.payload() if cost_center else None,
+        **({"managedBy": entitlement.managed_by} if entitlement.managed_by else {}),
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()

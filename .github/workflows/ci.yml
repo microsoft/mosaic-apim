@@ -37,6 +37,11 @@ jobs:
         run: uv run --no-sync pytest apps/api/tests
       - name: Test the scripts
         run: uv run --no-sync python -m unittest discover -s scripts/tests -t .
+      - name: Lint the federal demo operator kit
+        run: >-
+          uv run --no-sync ruff check scripts/federal_demo
+          scripts/tests/test_federal_demo.py scripts/tests/test_federal_model_verifier.py
+          scripts/tests/test_federal_access_lifecycle.py scripts/tests/test_federal_job_cleanup.py
 
   frontend:
     name: Frontend (apps/${{ matrix.app }})
@@ -170,6 +175,28 @@ jobs:
         if: always()
         run: docker logs m-protected
 
+  federal-runtime:
+    name: Federal demo runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.17"
+          python-version: "3.13"
+      - name: Install pinned runtime test dependencies
+        run: |
+          uv venv --no-config --python 3.13 demo/federal/.venv
+          uv pip install --no-config --python demo/federal/.venv --require-hashes -r demo/federal/requirements-dev.txt
+      - name: Test and lint the agency runtime
+        run: |
+          demo/federal/.venv/bin/python -m pytest -c demo/federal/pytest.ini demo/federal/tests
+          demo/federal/.venv/bin/python -m ruff check demo/federal
+          demo/federal/.venv/bin/python -m ruff format --check demo/federal
+
   infra:
     name: Infrastructure (Bicep)
     runs-on: ubuntu-latest
@@ -182,6 +209,11 @@ jobs:
         run: |
           az bicep build --file infra/main.bicep --stdout > /dev/null
           az bicep build --file e2e/mcp-servers/deploy/main.bicep --stdout > /dev/null
+          az bicep build --file infra/federal-demo/main.bicep --stdout > /dev/null
+          az bicep build --file infra/federal-demo/runtime-only.bicep --stdout > /dev/null
+          az bicep build --file infra/federal-demo/inference-only.bicep --stdout > /dev/null
+      - name: Test the federal estate infrastructure contract
+        run: python -m unittest discover -s infra/federal-demo/tests -v
 
   # The main branch ruleset requires only this check, so jobs can be added or renamed without
   # changing the ruleset. It runs even when a job fails or is cancelled, and fails unless every job
@@ -189,7 +221,7 @@ jobs:
   result:
     name: CI result
     if: always()
-    needs: [python, frontend, e2e, mcp-servers, mcp-protected, infra]
+    needs: [python, frontend, e2e, mcp-servers, mcp-protected, federal-runtime, infra]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

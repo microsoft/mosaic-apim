@@ -63,6 +63,8 @@ const supportCostCenter: CostCenter = {
   code: 'support',
   description: null,
   owners: [],
+  setupState: 'setupRequired',
+  resourceAccess: [],
   members: [],
   keysAllowed: true,
   limits: [],

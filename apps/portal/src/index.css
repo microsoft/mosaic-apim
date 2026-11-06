@@ -45,6 +45,19 @@
 
 * { box-sizing: border-box; }
 
+.cost-center-search { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 24px 0; }
+.cost-center-search > .fui-Field { flex: 1 1 240px; }
+.cost-center-list { list-style: none; margin: 24px 0; padding: 0; background: var(--mosaic-surface); border: 1px solid var(--mosaic-border-soft); border-radius: 12px; overflow: hidden; }
+.cost-center-list > li { padding: 20px; }
+.cost-center-list > li + li { border-top: 1px solid var(--mosaic-border-soft); }
+.cost-center-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 16px; }
+.cost-center-row > div:first-child { flex: 1 1 240px; min-width: 0; }
+.cost-center-row p { color: var(--mosaic-text-muted); margin: 8px 0 0; overflow-wrap: anywhere; }
+.cost-center-title { font-size: 18px; font-weight: 600; justify-content: start; text-align: start; max-width: 100%; }
+.cost-center-row-actions, .cost-center-detail-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.cost-center-detail-actions { margin-top: 24px; }
+.cost-center-list a:not(.workspace-primary-link), .cost-center-detail-actions a:not(.workspace-primary-link) { color: var(--mosaic-primary); }
+
 .notification-bell { display: inline-flex; align-items: center; gap: 4px; min-height: 40px; padding: 8px; border-radius: 6px; color: var(--mosaic-primary); text-decoration: none; }
 .notification-bell svg { width: 22px; height: 22px; }
 .notification-bell:hover { background: var(--mosaic-primary-soft); }
@@ -705,8 +718,38 @@ textarea { font: inherit; }
   letter-spacing: 0.03em;
   text-transform: uppercase;
 }
-.metadata-list dd { margin: 0; }
-.request-actions { display: flex; align-items: center; gap: 12px; }
+.metadata-list dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.request-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.request-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 20px; }
+.request-counts { color: var(--mosaic-text-muted); margin: 0 0 16px; }
+.request-load-error { display: grid; justify-items: start; gap: 8px; margin-bottom: 16px; }
+.workspace-back { margin-bottom: 16px; }
+.workspace-primary-link {
+  display: inline-flex; align-items: center; justify-content: center; min-height: 36px;
+  padding: 6px 12px; border: 1px solid transparent; border-radius: 8px;
+  background: var(--mosaic-primary); color: var(--mosaic-primary-text);
+  font-weight: 600; text-decoration: none; white-space: nowrap;
+}
+.workspace-primary-link:hover { text-decoration: underline; }
+.workspace-primary-link:focus-visible { outline: 2px solid var(--mosaic-primary); outline-offset: 3px; }
+.cost-center-request-form { display: grid; gap: 24px; min-width: 0; }
+.request-form-section { padding: 24px; border: 1px solid var(--mosaic-border-soft); border-radius: 12px; background: var(--mosaic-surface); min-width: 0; }
+.request-form-section h2, .request-readiness h3 { margin: 0 0 8px; font-size: 18px; font-weight: 600; }
+.request-form-section p, .request-submit p, .request-readiness p { max-width: 75ch; line-height: 1.6; margin: 0 0 16px; }
+.request-form-fields { display: grid; gap: 20px; }
+.cost-center-request-form .fui-Input, .cost-center-request-form .fui-Textarea { width: 100%; min-width: 0; }
+.request-submit { padding-bottom: 20px; }
+.request-readiness { padding-top: 16px; border-top: 1px solid var(--mosaic-border-soft); }
+.request-readiness > .fui-Badge { margin-bottom: 12px; }
+.catalog-grant-status { display: grid; gap: 8px; }
+.catalog-grant-status p { margin: 0; line-height: 1.6; }
+.catalog-unavailable { display: grid; justify-items: start; gap: 10px; }
+.cost-center-access-notice { display: grid; gap: 12px; }
+.cost-center-access-notice p { margin: 0; max-width: 75ch; line-height: 1.6; }
+@container workspace (max-width: 600px) {
+  .request-form-section { padding: 16px; }
+  .request-card .metadata-list { grid-template-columns: minmax(0, 1fr); }
+}
 .standalone-signout { margin-top: 16px; }
 .retry-button { margin-top: 12px; }
 

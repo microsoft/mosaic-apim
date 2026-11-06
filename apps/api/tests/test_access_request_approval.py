@@ -25,6 +25,7 @@ from mosaic_api.domain import (
     ModelAccessSettings,
     ModelApi,
     ModelProvider,
+    Principal,
     Publication,
     PublicationStatus,
     TokenEnforcement,
@@ -295,6 +296,51 @@ async def test_a_principal_registered_with_different_case_is_reused(client: Test
     assert response.status_code == 200, response.text
     assert response.json()["requesterPrincipalId"] == registered["id"]
     assert len(client.get("/api/v1/principals").json()) == 1
+
+
+async def test_approval_reuses_a_legacy_principal_with_an_alternate_guid_spelling(
+    client: TestClient,
+) -> None:
+    await _seed(client)
+    legacy = Principal(
+        id="legacy-principal",
+        tenant_id=TENANT,
+        object_id=f"{{{REQUESTER.upper()}}}",
+        kind="user",
+    )
+    await client.app.state.repository.create_principal(legacy, _audit())
+    created = await _request(client)
+
+    response = client.post(f"/api/v1/access-requests/{created.id}/approve", json={})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["requesterPrincipalId"] == legacy.id
+    assert len(client.get("/api/v1/principals").json()) == 1
+    assert not _audit_actions(client, "principal.created")
+
+
+async def test_approval_rejects_duplicate_requester_even_with_an_exact_match(
+    client: TestClient,
+) -> None:
+    await _seed(client)
+    for principal_id, object_id, kind in (
+        ("legacy-user", REQUESTER, "user"),
+        ("legacy-app", f"{{{REQUESTER.upper()}}}", "servicePrincipal"),
+    ):
+        await client.app.state.repository.create_principal(
+            Principal(
+                id=principal_id, tenant_id=TENANT, object_id=object_id, kind=kind
+            ),
+            _audit(),
+        )
+    created = await _request(client)
+
+    response = client.post(f"/api/v1/access-requests/{created.id}/approve", json={})
+
+    assert response.status_code == 409
+    assert "Multiple principals" in response.json()["message"]
+    assert client.get("/api/v1/entitlements").json() == []
+    assert not _audit_actions(client, "accessRequest.approved")
 
 
 async def test_approving_again_returns_the_same_grant_without_duplicating_it(

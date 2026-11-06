@@ -2,6 +2,11 @@
 
 **Status:** Accepted
 
+**Update:** [ADR 0030](0030-entra-backed-cost-centers.md) requires verified Entra membership
+for custom centers and exact-resource modes. Automatic creates a stable group grant, not
+per-member entitlements; individual token grants still require the center group. Cost-center
+creation requests are a distinct request kind, not fabricated model/MCP resources.
+
 **Update:** [ADR 0011](0011-governed-model-access.md) implements the runtime binding for direct
 user/application grants to MOSAIC-published models. Other resource/subject combinations retain
 the desired-state-only behavior described here. A trusted `orchestrated` binding is now
@@ -115,8 +120,10 @@ model's plan is reviewed and applied.
   MOSAIC group they belong to, and reports which path each arrived by so the portal can say
   "granted to you" or "granted through *Platform engineering*". A direct grant is never replaced by
   a group grant, because it is the more specific statement.
-- Groups remain MOSAIC-managed. Entra security groups are not read, and the `groups` token claim is
-  not consulted. That is a deliberate deferral, not an oversight.
+- The original deferral kept groups MOSAIC-managed without Entra reads or token-group matching.
+  [ADR 0016](0016-agent-identities-and-security-group-grants.md) replaced that deferral with Entra
+  security-group grants; [ADR 0030](0030-entra-backed-cost-centers.md) adds authoritative center
+  membership. Generic local groups remain informational, not a runtime fallback.
 - An entitlement with no binding is still a valid grant; it simply has no consumption to show yet.
   The portal must say so rather than render zero usage, and the orchestration phase will populate
   the same field with `source: orchestrated`.
@@ -145,3 +152,20 @@ grant. A manual binding can't set either. A binding with neither an attribution 
 subscription links no usage. Imported model APIs, imported MCP servers, products, and model
 deployments carry no MOSAIC policy, so they're still linked only through their subscription.
 [ADR 0015](0015-end-user-usage-report.md) records how the usage report uses these fields.
+
+## Amendment 2026-11-03: Exact center resources and distinct center requests
+
+[ADR 0030](0030-entra-backed-cost-centers.md) preserves an entitlement as one exact resource
+under one cost center. The pool scope is part of pool-model identity; catalog grouping never
+broadens a grant. A custom center's verified exclusively bound Entra group is its membership
+authority, not a local group record or default preference.
+
+Automatic materializes one managed group grant per exact resource. Ordinary Request-only approval
+creates an individual grant, and Not available rejects new requests/grants server-side. Both
+individual and group custom-center token paths require the center group claim; General is exempt.
+Individual keys remain separate where resource and center permit them. Approval still is not apply.
+
+A cost-center creation request is a separate kind with proposed details, an optional group
+suggestion, and an idempotent link to one created center, even if directory setup remains incomplete.
+It is not represented as a model/MCP entitlement, and its approval alone adds neither membership
+nor resource access.

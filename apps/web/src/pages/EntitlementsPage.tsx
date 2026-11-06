@@ -35,6 +35,9 @@ import { ModelAccessSettingsPanel } from '../components/ModelAccessSettingsPanel
 import { ApprovalPolicies } from '../components/ApprovalPolicies'
 import { BulkApprovalWorkspace } from '../components/BulkApprovalWorkspace'
 import { BulkRequestSelection } from '../components/BulkRequestSelection'
+import { CostCenterRequestReview, CostCenterRequestSummary } from '../components/CostCenterRequestReview'
+import { CostCenterMembershipReview, CostCenterMembershipSummary, RequesterName } from '../components/CostCenterMembershipReview'
+import { membershipNeedsAttention } from '../request-queue'
 import { PublishModelDialog } from '../components/PublishModelDialog'
 import { ResourceWorkbench } from '../components/ResourceWorkbench'
 import { useWorkbenchLocation } from '../components/useWorkbenchLocation'
@@ -60,6 +63,7 @@ import { entitlementResourceCloud, entitlementResourceEnvironment } from '../ent
 import { environmentLabel, useEnvironmentCatalog } from '../environments'
 import { holdsApi } from '../publication-state'
 import { runtimeConfig } from '../runtime-config'
+import { adminRequestKey, combineAdminRequests } from '../request-queue'
 import {
   ENTITLEMENT_SUBJECT_KIND_LABELS,
   GRANT_OVERLAP_KIND_LABELS,
@@ -69,6 +73,7 @@ import {
 import type {
   AccessRequest,
   AccessRequestApproval,
+  AdminRequest,
   Entitlement,
   EntitlementEnforcement,
   EntitlementResource,
@@ -162,7 +167,7 @@ function poolGrantSaved(lead: string, pool: Pick<ModelPool, 'id' | 'displayName'
  * requester's Entra object ID in any letter case. Undefined for a requester MOSAIC doesn't know,
  * and while principals are loading or failed to load.
  */
-function requestingPrincipal(accessRequest: AccessRequest, principals: Principal[] = []) {
+function requestingPrincipal(accessRequest: { requesterObjectId: string; requesterPrincipalId?: string | null }, principals: Principal[] = []) {
   const objectId = accessRequest.requesterObjectId.toLowerCase()
   return principals.find(
     (item) => item.id === accessRequest.requesterPrincipalId || item.objectId.toLowerCase() === objectId,
@@ -226,7 +231,7 @@ const grantRowId = (entitlementId: string) => `grant-${entitlementId}`
 const ACCESS_SECTIONS = [
   { value: 'grants', label: 'Grants', icon: <KeyRegular />, description: 'Saved grants describe desired access. Saving, disabling, or revoking a grant does not by itself apply gateway changes.' },
   { value: 'effective', label: 'Effective access & overlaps', icon: <ShieldCheckmarkRegular />, description: 'Inspect recorded access paths and precedence. This is desired state, not a live runtime authorization test.' },
-  { value: 'requests', label: 'Access requests', icon: <PersonClockRegular />, description: 'Decide portal requests, then review and apply the affected model, pool, or MCP plan where runtime access is governed.' },
+  { value: 'requests', label: 'Requests', icon: <PersonClockRegular />, description: 'Review resource-access and cost-center creation requests as distinct kinds. Directory setup and reviewed gateway apply remain separate.' },
   { value: 'approvalPolicies', label: 'Approval policies', icon: <ShieldCheckmarkRegular />, description: 'Explicit, scheduled automatic approvals create bounded grant intent. Gateway plan review and apply remain separate.' },
   { value: 'settings', label: 'Model access settings', icon: <SettingsRegular />, description: 'Choose a published model to configure its authentication methods and review all saved grants and settings together.' },
 ] as const
@@ -329,6 +334,8 @@ export function EntitlementsPage() {
   const [form, setForm] = useState<GrantForm>(emptyForm)
   const editBase = useRef<Entitlement | undefined>(undefined)
   const { selectedId, mode } = workbench
+  const kindParam = searchParams.get('requestKind')
+  const selectedRequestKind = kindParam === 'costCenter' || kindParam === 'costCenterMembership' ? kindParam : 'resource'
   const selectedPublicationId = activeSection === 'settings' ? selectedId ?? '' : ''
   const environmentFilter = searchParams.get('environment') ?? 'all'
   const directModelId = mode === 'new' ? searchParams.get('model') : null
@@ -352,7 +359,7 @@ export function EntitlementsPage() {
   }
 
   function selectSection(section: string) {
-    updateLocation({ tab: section, selected: null, mode: null, model: null })
+    updateLocation({ tab: section, selected: null, mode: null, model: null, requestKind: null })
   }
 
   function selectRecord(id: string | null) {
@@ -389,6 +396,7 @@ export function EntitlementsPage() {
     queryKey: ['access-requests', 'pending'],
     queryFn: () => api.listAccessRequests('pending'),
   })
+  const requestCounts = useQuery({ queryKey: ['request-counts'], queryFn: () => api.getRequestCounts() })
   const accessRequests = useQuery({
     queryKey: ['access-requests', requestStatus],
     queryFn: () => api.listAccessRequests(requestStatus === 'all' ? undefined : requestStatus),
@@ -397,7 +405,31 @@ export function EntitlementsPage() {
   const requestHistory = useQuery({
     queryKey: ['access-requests', 'all'],
     queryFn: () => api.listAccessRequests(),
-    enabled: activeSection === 'requests' && Boolean(selectedId),
+    enabled: activeSection === 'requests' && Boolean(selectedId) && selectedRequestKind === 'resource',
+  })
+  const costCenterRequests = useQuery({
+    queryKey: ['cost-center-requests', requestStatus],
+    queryFn: () => api.listCostCenterRequests(requestStatus === 'all' ? undefined : requestStatus),
+    enabled: activeSection === 'requests',
+  })
+  const selectedCenterRequest = useQuery({
+    queryKey: ['cost-center-requests', 'selected', selectedId],
+    queryFn: () => api.getCostCenterRequest(selectedId!),
+    enabled: activeSection === 'requests' && Boolean(selectedId) && selectedRequestKind === 'costCenter',
+    retry: false,
+  })
+  const membershipRequests = useQuery({
+    queryKey: ['cost-center-membership-requests', requestStatus],
+    queryFn: () => api.listCostCenterMembershipRequests(),
+    select: (items) => items.filter((item) => requestStatus === 'all' || item.state === requestStatus
+      || (requestStatus === 'pending' && membershipNeedsAttention(item))),
+    enabled: activeSection === 'requests',
+  })
+  const selectedMembershipRequest = useQuery({
+    queryKey: ['cost-center-membership-requests', 'selected', selectedId],
+    queryFn: () => api.getCostCenterMembershipRequest(selectedId!),
+    enabled: activeSection === 'requests' && Boolean(selectedId) && selectedRequestKind === 'costCenterMembership',
+    retry: false,
   })
   const overlaps = useQuery({
     queryKey: ['entitlements', 'overlaps'],
@@ -569,6 +601,7 @@ export function EntitlementsPage() {
     onSuccess: async (_, { context }) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['access-requests'] }),
+        queryClient.invalidateQueries({ queryKey: ['request-counts'] }),
         queryClient.invalidateQueries({ queryKey: ['entitlements'] }),
         queryClient.invalidateQueries({ queryKey: ['principals'] }),
         queryClient.invalidateQueries({ queryKey: ['publications'] }),
@@ -580,7 +613,10 @@ export function EntitlementsPage() {
     },
     onError: async (error) => {
       if (error instanceof ApiError && error.status === 409) {
-        await queryClient.invalidateQueries({ queryKey: ['access-requests'] })
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['access-requests'] }),
+          queryClient.invalidateQueries({ queryKey: ['request-counts'] }),
+        ])
       }
     },
   })
@@ -709,7 +745,7 @@ export function EntitlementsPage() {
   function openApproval(accessRequest: AccessRequest) {
     approveMutation.reset()
     setApproving(approvalContext(accessRequest))
-    updateLocation({ tab: 'requests', selected: accessRequest.id, mode: 'review' })
+    updateLocation({ tab: 'requests', selected: accessRequest.id, mode: 'review', requestKind: null })
   }
 
   function openReview(publicationId: string) {
@@ -720,7 +756,7 @@ export function EntitlementsPage() {
 
   /** Overlap diagnostics and decided requests open the exact grant in one URL update. */
   function showGrant(entitlementId: string) {
-    updateLocation({ tab: 'grants', selected: entitlementId, mode: null, model: null })
+    updateLocation({ tab: 'grants', selected: entitlementId, mode: null, model: null, requestKind: null })
   }
 
   useEffect(() => {
@@ -737,7 +773,7 @@ export function EntitlementsPage() {
     event.preventDefault()
     if (mode === 'edit' && selectedId) {
       const grant = entitlements.data?.find((item) => item.id === selectedId)
-      if (!grant || grantLocked(grant) || callRateError(form) || editMutation.isPending) return
+      if (!grant || grant.managedBy === 'costCenterAutomatic' || grantLocked(grant) || callRateError(form) || editMutation.isPending) return
       let enforcement = buildEnforcement(form, managedGrant(grant))
       const original = formForGrant(grant)
       const limitsUnchanged = (['tokensPerMinute', 'tokenQuota', 'tokenQuotaPeriod', 'calls', 'renewalPeriodSeconds'] as const)
@@ -789,7 +825,26 @@ export function EntitlementsPage() {
   }, [dialogOpen, mode, selectedId, editingGrant?.id, directModelId])
   const approvalReady = principals.isSuccess && entitlements.isSuccess && publications.isSuccess
     && modelApis.isSuccess && mcpServers.isSuccess && modelPools.isSuccess && mcpPublications.isSuccess
-  const selectedRequest = (requestHistory.data ?? accessRequests.data ?? []).find((item) => item.id === selectedId)
+  const selectedRequest = selectedRequestKind === 'resource'
+    ? (requestHistory.data ?? accessRequests.data ?? []).find((item) => item.id === selectedId) : undefined
+  const selectedCostCenterRequest = selectedRequestKind === 'costCenter'
+    ? selectedCenterRequest.data ?? costCenterRequests.data?.find((item) => item.id === selectedId) : undefined
+  const selectedMembership = selectedRequestKind === 'costCenterMembership'
+    ? selectedMembershipRequest.data ?? membershipRequests.data?.find((item) => item.id === selectedId) : undefined
+  const selectedRequestQuery = selectedRequestKind === 'costCenterMembership' ? selectedMembershipRequest
+    : selectedRequestKind === 'costCenter' ? selectedCenterRequest : requestHistory
+  const queueItems = combineAdminRequests(
+    selectedRequest && !accessRequests.data?.some((item) => item.id === selectedRequest.id)
+      ? [...(accessRequests.data ?? []), selectedRequest] : accessRequests.data ?? [],
+    selectedCostCenterRequest && !costCenterRequests.data?.some((item) => item.id === selectedCostCenterRequest.id)
+      ? [...(costCenterRequests.data ?? []), selectedCostCenterRequest] : costCenterRequests.data ?? [],
+    selectedMembership && !membershipRequests.data?.some((item) => item.id === selectedMembership.id)
+      ? [...(membershipRequests.data ?? []), selectedMembership] : membershipRequests.data ?? [],
+  )
+  function selectQueueRecord(key: string | null) {
+    const item = queueItems.find((entry) => adminRequestKey(entry.requestKind, entry.request.id) === key)
+    updateLocation({ selected: item?.request.id ?? null, requestKind: item && item.requestKind !== 'resource' ? item.requestKind : null, mode: null })
+  }
   useEffect(() => {
     if (activeSection !== 'requests' || mode !== 'review') {
       setApproving(null)
@@ -837,8 +892,23 @@ export function EntitlementsPage() {
   if (activeSection === 'requests' && bulkStage === 'review') return <BulkApprovalWorkspace requestIds={bulkIds} principals={principals.data ?? []} costCenters={costCenters.data ?? []}
     onBack={() => setBulkStage(null)} onComplete={() => {
       void queryClient.invalidateQueries({ queryKey: ['access-requests'] })
+      void queryClient.invalidateQueries({ queryKey: ['request-counts'] })
       void queryClient.invalidateQueries({ queryKey: ['entitlements'] })
     }} />
+  if (activeSection === 'requests' && selectedRequestKind === 'costCenter' && mode === 'review'
+    && selectedCostCenterRequest && selectedCenterRequest.data) {
+    return <CostCenterRequestReview key={selectedCostCenterRequest.id} request={selectedCostCenterRequest}
+      requester={requestingPrincipal(selectedCostCenterRequest, principals.data)?.label ?? 'Requester name unavailable'}
+      recordRefreshing={selectedCenterRequest.isFetching} recordError={selectedCenterRequest.isError ? selectedCenterRequest.error : undefined}
+      onBack={() => updateLocation({ mode: null })} />
+  }
+  if (activeSection === 'requests' && selectedRequestKind === 'costCenterMembership' && mode === 'review'
+    && selectedMembership && selectedMembershipRequest.data) {
+    return <CostCenterMembershipReview key={selectedMembership.id} request={selectedMembership}
+      requester={requestingPrincipal(selectedMembership, principals.data)?.label}
+      recordRefreshing={selectedMembershipRequest.isFetching} recordError={selectedMembershipRequest.isError ? selectedMembershipRequest.error : undefined}
+      onBack={() => updateLocation({ mode: null })} />
+  }
 
   return (
     <section className={styles.page}>
@@ -855,12 +925,14 @@ export function EntitlementsPage() {
           next.delete('selected')
           next.delete('mode')
           next.delete('workbench')
+          next.delete('requestKind')
           setSearchParams(next)
         }}>
-          {pendingRequests.isSuccess ? `${pendingRequests.data.length} pending access requests` : 'Open access requests'}
+          {requestCounts.isSuccess ? `${requestCounts.data.pendingCount} pending requests` : 'Open requests'}
         </Button>
-        {pendingRequests.isPending && <Text role="status">Checking pending requests…</Text>}
-        {pendingRequests.isError && <Text role="status">Pending count unavailable. Open requests to retry.</Text>}
+        {requestCounts.isPending && <Text role="status">Checking pending requests…</Text>}
+        {requestCounts.isSuccess && <Text>{requestCounts.data.pendingResourceCount} resource · {requestCounts.data.pendingCostCenterCount} cost-center creation · {requestCounts.data.pendingMembershipCount ?? 0} membership</Text>}
+        {requestCounts.isError && <Button onClick={() => void requestCounts.refetch()}>Pending count unavailable — retry</Button>}
       </div>
       {banner && (
         <MessageBar intent="success" layout="multiline">
@@ -895,6 +967,8 @@ export function EntitlementsPage() {
       {denyMutation.isError && <ErrorState error={denyMutation.error} />}
       {activeSection === 'grants' && entitlements.isError && rows.length > 0 && <ErrorState error={entitlements.error} />}
       {activeSection === 'requests' && accessRequests.isError && Boolean(accessRequests.data?.length) && <ErrorState error={accessRequests.error} />}
+      {activeSection === 'requests' && costCenterRequests.isError && <ErrorState title="Cost-center requests unavailable" error={costCenterRequests.error} />}
+      {activeSection === 'requests' && membershipRequests.isError && <ErrorState title="Membership requests unavailable" error={membershipRequests.error} />}
       {costCenters.isError && <ErrorState error={costCenters.error} />}
       {principals.isError && <ErrorState error={principals.error} />}
       {groups.isError && <ErrorState error={groups.error} />}
@@ -1185,6 +1259,10 @@ export function EntitlementsPage() {
                         </div>
                       </section>
                       <section aria-label="Grant actions">
+                        {entitlement.managedBy === 'costCenterAutomatic' ? <>
+                          <Text>This stable group grant is managed by the cost center&apos;s exact Automatic resource configuration, not by individual membership edits.</Text>
+                          {entitlement.costCenterId && <RouterLink to={`/cost-centers/${encodeURIComponent(entitlement.costCenterId)}?tab=access`}>Manage automatic access in cost center</RouterLink>}
+                        </> : <>
                         {locked && <MessageBar intent="warning"><MessageBarBody>Access is applying or its state is unknown. Recover the resource's access state before editing or revoking this grant.</MessageBarBody></MessageBar>}
                         <Button disabled={locked || toggleMutation.isPending} onClick={() => workbench.open('edit', entitlement.id)}>Edit grant</Button>
                         <RowActions
@@ -1238,6 +1316,7 @@ export function EntitlementsPage() {
                             },
                           }]}
                         />
+                        </>}
                       </section>
                       <dl className={styles.detailList}>
                         <div><dt>Notes</dt><dd>{entitlement.notes || 'No notes'}</dd></div>
@@ -1335,30 +1414,32 @@ export function EntitlementsPage() {
       </Card>}
 
       {activeSection === 'requests' &&
-        <ResourceWorkbench
-          title="Access requests"
-          description="Approving creates grant intent with the limits you confirm. A request can be decided once; a decision is final."
-          items={selectedRequest && !accessRequests.data?.some((item) => item.id === selectedRequest.id)
-            ? [...(accessRequests.data ?? []), selectedRequest] : accessRequests.data ?? []}
-          getId={(item) => item.id}
-          selectedId={selectedId}
-          onSelect={selectRecord}
-          listLabel="Access requests"
-          detailLabel="Selected access request"
-          emptyList={accessRequests.isPending ? <Loading label="Loading access requests..." /> : accessRequests.isError
-            ? <><ErrorState error={accessRequests.error} /><Button onClick={() => accessRequests.refetch()}>Retry requests</Button></>
-            : <EmptyState title={requestStatus === 'pending' ? 'No pending requests' : 'No requests with this status'}>Requests appear when a portal user asks for a resource they are not entitled to.</EmptyState>}
-          missingSelection={requestHistory.isPending ? <Loading label="Loading selected request..." /> : requestHistory.isError
-            ? <><ErrorState error={requestHistory.error} /><Button onClick={() => requestHistory.refetch()}>Retry selected request</Button></>
-            : <EmptyState title="Request unavailable">This exact request was removed or is inaccessible. <Button onClick={() => selectRecord(null)}>Back to list</Button></EmptyState>}
-          renderListItem={(accessRequest) => <div className={styles.listSummary}>
-            <Text weight="semibold">{requestingPrincipal(accessRequest, principals.data)?.label ?? 'Requester name unavailable'}</Text>
-            <Text className={styles.secondaryCell}>{requestResourceLabel(accessRequest, resourceLabel(accessRequest.resource))}</Text>
-            <Badge appearance="outline">{accessRequest.state}</Badge>
+        <ResourceWorkbench<AdminRequest>
+          title="Requests"
+          description="Resource approval creates grant intent; creation prepares one center. Membership requests require manual review of real group changes, not bulk or AI approval. No approval applies a gateway plan."
+          items={queueItems}
+          getId={(item) => adminRequestKey(item.requestKind, item.request.id)}
+          selectedId={selectedId ? adminRequestKey(selectedRequestKind, selectedId) : null}
+          onSelect={selectQueueRecord}
+          listLabel="Requests"
+          detailLabel={selectedRequestKind !== 'resource' ? 'Selected cost-center request' : 'Selected access request'}
+          emptyList={accessRequests.isPending || costCenterRequests.isPending || membershipRequests.isPending ? <Loading label="Loading requests..." /> : accessRequests.isError || costCenterRequests.isError || membershipRequests.isError
+            ? <><ErrorState error={accessRequests.error ?? costCenterRequests.error ?? membershipRequests.error} /><Button onClick={() => { void accessRequests.refetch(); void costCenterRequests.refetch(); void membershipRequests.refetch() }}>Retry requests</Button></>
+            : <EmptyState title={requestStatus === 'pending' ? 'No pending requests' : 'No requests with this status'}>Requests appear when a portal user asks for individual resource access, a new cost center, or center membership. Approved membership requests needing attention remain in Pending.</EmptyState>}
+          missingSelection={selectedRequestQuery.isPending ? <Loading label="Loading selected request..." />
+            : selectedRequestQuery.isError
+              ? <><ErrorState error={selectedRequestQuery.error} /><Button onClick={() => void selectedRequestQuery.refetch()}>Retry selected request</Button></>
+              : <EmptyState title="Request unavailable">This exact request was removed or is inaccessible. <Button onClick={() => selectQueueRecord(null)}>Back to list</Button></EmptyState>}
+          renderListItem={(item) => <div className={styles.listSummary}>
+            <Text weight="semibold"><RequesterName objectId={item.request.requesterObjectId} name={requestingPrincipal(item.request, principals.data)?.label} retryButton={false} /></Text>
+            <Text className={styles.secondaryCell}>{item.requestKind === 'costCenter' ? item.request.name : item.requestKind === 'costCenterMembership' ? item.request.costCenter.name : requestResourceLabel(item.request, resourceLabel(item.request.resource))}</Text>
+            <Badge appearance="outline">{item.requestKind === 'costCenter' ? 'Cost-center creation' : item.requestKind === 'costCenterMembership' ? 'Cost-center membership' : 'Resource access'}</Badge>
+            <Badge appearance="outline">{item.request.state}</Badge>
+            {(item.requestKind === 'costCenter' && item.request.needsAdministratorAttention || item.requestKind === 'costCenterMembership' && membershipNeedsAttention(item.request)) && <Badge appearance="tint" color="warning">Action needed</Badge>}
           </div>}
           toolbar={
             <>
-            <Button disabled={!pendingRequests.isSuccess || !pendingRequests.data.length} onClick={() => setBulkStage('select')}>Bulk approval review</Button>
+            <Button disabled={!pendingRequests.isSuccess || !pendingRequests.data.length} onClick={() => setBulkStage('select')}>Bulk resource approval review</Button>
             <Field label="Request status">
               <Select value={requestStatus} onChange={(_, data) => {
                 const next = new URLSearchParams(searchParams)
@@ -1366,6 +1447,7 @@ export function EntitlementsPage() {
                 else next.set('requestStatus', data.value)
                 next.delete('selected')
                 next.delete('mode')
+                next.delete('requestKind')
                 setSearchParams(next)
               }}>
                 <option value="pending">Pending</option>
@@ -1377,7 +1459,23 @@ export function EntitlementsPage() {
             </Field>
             </>
           }
-          renderDetail={(accessRequest) => <div className={styles.grantDetail}>
+          renderDetail={(item) => item.requestKind === 'costCenterMembership' ? <div className={styles.grantDetail}>
+            {selectedMembershipRequest.isFetching && <Text role="status">Refreshing recorded membership request…</Text>}
+            {selectedMembershipRequest.isError && <><ErrorState title="Recorded membership request unavailable" error={selectedMembershipRequest.error} />
+              <Button onClick={() => void selectedMembershipRequest.refetch()}>Retry selected request</Button></>}
+            <CostCenterMembershipSummary request={item.request} requester={requestingPrincipal(item.request, principals.data)?.label}
+              onReview={selectedMembershipRequest.isSuccess && !selectedMembershipRequest.isFetching
+                ? () => updateLocation({ tab: 'requests', selected: item.request.id, requestKind: 'costCenterMembership', mode: 'review' }) : undefined} />
+          </div> : item.requestKind === 'costCenter' ? <div className={styles.grantDetail}>
+            {selectedCenterRequest.isFetching && <Text role="status">Refreshing the exact recorded request before review…</Text>}
+            {selectedCenterRequest.isError && <><ErrorState title="Recorded cost-center request unavailable" error={selectedCenterRequest.error} />
+              <Button onClick={() => void selectedCenterRequest.refetch()}>Retry selected request</Button></>}
+            <CostCenterRequestSummary request={item.request}
+              requester={requestingPrincipal(item.request, principals.data)?.label ?? 'Requester name unavailable'}
+              onReview={selectedCenterRequest.isSuccess && !selectedCenterRequest.isFetching
+                ? () => updateLocation({ tab: 'requests', selected: item.request.id, requestKind: 'costCenter', mode: 'review' }) : undefined} />
+          </div>
+            : ((accessRequest: AccessRequest) => <div className={styles.grantDetail}>
             <Title3 as="h3">{requestResourceLabel(accessRequest, resourceLabel(accessRequest.resource))}</Title3>
             <dl className={styles.detailList}>
               <div><dt>Requester</dt><dd className={styles.cellStack}>
@@ -1416,7 +1514,7 @@ export function EntitlementsPage() {
                               onClick: () => denyMutation.mutate(accessRequest.id),
                             }]}
                           />
-          </div>}
+          </div>)(item.request)}
         />}
 
         {activeSection === 'effective' && <Card className={styles.detailCard}>
@@ -1471,7 +1569,7 @@ export function EntitlementsPage() {
         </Card>}
       </SectionLayout>
 
-      <Dialog open={dialogOpen && (mode !== 'edit' || Boolean(editingGrant))}
+      <Dialog open={dialogOpen && (mode !== 'edit' || Boolean(editingGrant && editingGrant.managedBy !== 'costCenterAutomatic'))}
         title={mode === 'edit' ? 'Edit grant' : 'New grant'}
         description="Save desired access intent. Nothing changes in API Management until the affected resource plan is reviewed and applied."
         pending={createMutation.isPending || editMutation.isPending}
@@ -1654,6 +1752,10 @@ export function EntitlementsPage() {
         </DialogSurface>
       </Dialog>
       {dialogOpen && mode === 'edit' && !editingGrant && <EmptyState title="Grant unavailable"><Button onClick={() => closeEditor()}>Back to list</Button></EmptyState>}
+      {dialogOpen && mode === 'edit' && editingGrant?.managedBy === 'costCenterAutomatic' && <MessageBar intent="info"><MessageBarBody>
+        Automatic grants are edited through their cost center, not as ordinary individual grants.
+        {' '}<Button onClick={() => closeEditor()}>Back to grant</Button>
+      </MessageBarBody></MessageBar>}
       <PublishModelDialog
         open={activeSection === 'settings' && mode === 'review' && review?.publication.id === selectedPublicationId}
         initialReview={review}

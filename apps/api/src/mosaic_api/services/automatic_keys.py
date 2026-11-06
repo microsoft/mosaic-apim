@@ -261,9 +261,12 @@ async def reconcile_initial_keys(
             or grant.subject != entitlement.subject
             or grant.object_id.casefold() != principal.object_id.casefold()
             or intent is None
+            or charged is None
+            or not charged.is_general
             or not intent.keys_allowed
             or (charged is not None and charged.recheck_pending(entitlement.id, principal.id))
             or grant.intent_digest != entitlement_intent_digest(entitlement, principal, intent)
+            or grant.required_cost_center_group_id != intent.required_cost_center_group_id
             or grant.enforcement != effective_enforcement(entitlement, intent)
             or name != expected_name
         ):

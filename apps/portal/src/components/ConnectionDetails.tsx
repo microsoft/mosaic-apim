@@ -31,6 +31,7 @@ import {
 } from '../entitlement-format'
 import { useFocusHandoff, useFocusHandoffSource, type FocusHandoff } from '../focus-handoff'
 import { runtimeConfig } from '../runtime-config'
+import { isAutomaticAccess } from '../portal-access'
 import type { Entitlement, McpConnection, ModelConnection, ResolvedEntitlement } from '../types'
 import { KeyReveal } from './KeyReveal'
 import { CloudBadge } from './CloudBadge'
@@ -62,7 +63,8 @@ export function ConnectionDetails({ resolved }: { resolved: ResolvedEntitlement 
           {mosaicGroup && !securityGroup ? (
             <GroupGrantNotice resourceKind={resourceKind} />
           ) : (
-            <DirectGrantConnection entitlement={resolved.entitlement} />
+            <DirectGrantConnection entitlement={resolved.entitlement}
+              allowPersonalKey={!isAutomaticAccess(resolved) && resolved.entitlement.subject.kind === 'user'} />
           )}
         </div>
       )}
@@ -166,7 +168,7 @@ function GroupGrantNotice({ resourceKind }: { resourceKind: 'modelApi' | 'mcpSer
   )
 }
 
-function DirectGrantConnection({ entitlement }: { entitlement: Entitlement }) {
+function DirectGrantConnection({ entitlement, allowPersonalKey }: { entitlement: Entitlement; allowPersonalKey: boolean }) {
   const api = usePortalApi()
   const { accounts } = useMsal()
   const location = useLocation()
@@ -205,7 +207,7 @@ function DirectGrantConnection({ entitlement }: { entitlement: Entitlement }) {
     const mcp = info as McpConnection
     return <>
       <McpConnectionPanel connection={mcp} focusHandoff={focusHandoff} />
-      {mcp.azureCloud === 'government' && <KeyReveal
+      {allowPersonalKey && mcp.azureCloud === 'government' && <KeyReveal
         key={[identity, location.key, entitlement.id, entitlement.updatedAt, mcp.runtime?.status,
           mcp.runtime?.keyState, mcp.runtime?.subscriptionName, mcp.keyExists].join('|')}
         entitlementId={entitlement.id} connection={mcp}
@@ -236,13 +238,14 @@ function DirectGrantConnection({ entitlement }: { entitlement: Entitlement }) {
       <EndpointSection connection={model} />
       <CostCenterHeaderSection connection={model} kind="modelApi" />
       <AuthenticationSection connection={model} />
-      <KeyReveal
+      {!allowPersonalKey && <Text as="p" className="connection-note">Access granted to a group uses Microsoft Entra sign-in only, so there&apos;s no key. Sign in with your own account to get a token.</Text>}
+      {allowPersonalKey && <KeyReveal
         key={keySession}
         entitlementId={entitlement.id}
         connection={model}
         onConflict={() => void connection.refetch()}
         focusHandoff={focusHandoff}
-      />
+      />}
       <SamplesSection connection={model} />
       <LimitsSection connection={model} />
     </>

@@ -32,7 +32,7 @@ export function notificationPreferencesInput(value: NotificationPreferencesInput
   }
 }
 export function notificationTarget(subject: NotificationSubject) {
-  if (subject.requestId) return `/entitlements?tab=requests&selected=${encodeURIComponent(subject.requestId)}`
+  if (subject.requestId) return `/entitlements?tab=requests&selected=${encodeURIComponent(subject.requestId)}${subject.requestKind && subject.requestKind !== 'resource' ? `&requestKind=${subject.requestKind}` : ''}`
   if (subject.entitlementId) return `/entitlements?tab=grants&selected=${encodeURIComponent(subject.entitlementId)}`
   if (subject.publicationId && subject.publicationTarget) {
     const publicationId = encodeURIComponent(subject.publicationId)

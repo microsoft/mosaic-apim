@@ -3,7 +3,7 @@
 This guide is for administrators who run MOSAIC. It explains how MOSAIC measures the use of the
 model APIs and MCP servers it governs, how to set up a gateway so that its use can be measured, how
 current the figures are, and what each one means. The README's
-[Usage and analytics](../README.md#usage-and-analytics) section lists the views and routes, and
+[Usage and analytics](analytics-reference.md#usage-and-analytics) section lists the views and routes, and
 [ADR 0019](adr/0019-usage-telemetry.md) records the design. [Pricing](pricing.md) explains how
 MOSAIC turns the usage into cost.
 
@@ -45,7 +45,7 @@ it published them or adopted them, and its model pools once a pool's API is in A
 ignores other APIs on the same gateway, and doesn't read the logs of a gateway where it governs
 nothing.
 
-API Management, not the caller, picks which of a [model pool](../README.md#model-pools)'s
+API Management, not the caller, picks which of a [model pool](model-pools.md)'s
 deployments serves a call, so MOSAIC finds the deployment in the gateway's log. It tries the
 backend that served the call, then the host and deployment that backend called, and then the host
 or the deployment alone, when only one of the pool's deployments has it. It reports the call under

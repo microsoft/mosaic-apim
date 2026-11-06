@@ -13,7 +13,7 @@ import type {
   ResourceSummary,
 } from '../types'
 import { MyAccessPage } from './MyAccessPage'
-import { connection, directResolved, revealedPrimary } from '../test/connection'
+import { connection, directResolved, revealedPrimary, securityGroupResolved } from '../test/connection'
 
 const mocks = vi.hoisted(() => ({
   api: {} as PortalApi,
@@ -126,6 +126,55 @@ function renderPage(
 }
 
 describe('MyAccessPage', () => {
+  it('honors a cost-center link without falling back when no matching grant is available', async () => {
+    renderPage([{ ...directResolved, costCenter: research }], {}, [], '/access?costCenter=cc-finance&view=all')
+    const filter = await screen.findByRole('combobox', { name: 'Cost center' })
+    expect(filter).toHaveValue('cc-finance')
+    expect(screen.getByRole('option', { name: 'Selected cost center unavailable' })).toBeVisible()
+    expect(screen.getByText('No access matches these filters')).toBeVisible()
+    await userEvent.selectOptions(filter, 'cc-research')
+    expect(screen.getByTestId('route')).toHaveAttribute('data-search', '?costCenter=cc-research&view=all')
+    expect(screen.getByText('1 resource · 1 grant')).toBeVisible()
+  })
+
+  it('distinguishes automatic cost-center access from an individual approval and retains pending gateway apply', async () => {
+    renderPage([
+      {
+        ...securityGroupResolved, accessOrigin: 'automaticCostCenter', costCenter: research,
+        entitlement: { ...securityGroupResolved.entitlement, managedBy: 'costCenterAutomatic', costCenterId: research.id,
+          runtime: { ...connection.runtime!, status: 'pending', appliedAt: null } },
+      },
+      { ...directResolved, accessOrigin: 'approvedIndividual', costCenter: finance },
+    ])
+    expect(await screen.findByText(/Approved for you · Automatic through your cost center/)).toBeVisible()
+    await userEvent.click(screen.getByRole('button', { name: 'View access for Chat model API' }))
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Grant' }), securityGroupResolved.entitlement.id)
+    const drawer = within(screen.getByRole('dialog'))
+    expect(drawer.getByText('Automatic through your cost center')).toBeVisible()
+    expect(drawer.getByText(/Waiting for an administrator to review and apply/)).toBeVisible()
+    expect(drawer.getByText(/No personal key is inherited/)).toBeVisible()
+    expect(drawer.queryByText('Active')).not.toBeInTheDocument()
+    expect(drawer.getByText(/typically 60–90 minutes from issuance/)).toBeVisible()
+    expect(drawer.getByText(/around 24 hours/)).toBeVisible()
+  })
+
+  it('shows an unusable saved default without redirecting charging to General', async () => {
+    renderPage([], { defaultCostCenter: research, defaultCostCenterEligible: false })
+    expect(await screen.findByText('Your default cost center is not eligible')).toBeVisible()
+    expect(screen.getByText(/access is not redirected to General/)).toBeVisible()
+  })
+
+  it('shows key revocation and membership review as pending rather than immediate revocation', async () => {
+    renderPage([{
+      ...directResolved, accessOrigin: 'approvedIndividual', costCenter: research,
+      entitlement: { ...directResolved.entitlement, runtime: {
+        ...connection.runtime!, keyRevocationPending: true, eligibilityRecheckPending: true,
+      } },
+    }])
+    expect(await screen.findByText('Eligibility or key review pending')).toBeVisible()
+    expect(screen.getByText(/Previously copied keys may still work until/)).toBeVisible()
+    expect(screen.getByText(/Key creation, rotation, and reveal use fresh membership verification/)).toBeVisible()
+  })
   it('says when a cost center is blocked or near its budget, with totals only', async () => {
     renderPage(
       [{ entitlement: baseEntitlement, resourceSummary: baseSummary, via: 'direct', viaGroupId: null, viaGroupName: null }],

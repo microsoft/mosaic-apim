@@ -129,6 +129,114 @@ export interface PendingRecheck {
   entitlementIds: string[] | null
   requestedAt: string
   requestedBy: string | null
+  lastCheckedAt?: string | null
+  verificationError?: string | null
+}
+
+export type CostCenterSetupState = 'setupRequired' | 'ready' | 'exempt'
+export type DirectoryOperationState = 'pending' | 'succeeded' | 'failed' | 'unknown'
+export type CostCenterResourceAccessMode = 'automatic' | 'requestOnly' | 'notAvailable'
+
+export interface EntraGroupBinding {
+  directoryTenantId: string
+  groupObjectId: string
+  provenance: 'attached' | 'created'
+  verificationState: 'unverified' | 'verified' | 'failed'
+  verifiedAt: string | null
+  verificationError?: string | null
+}
+
+export type CostCenterGroupSetup =
+  | { mode: 'attach'; groupObjectId: string; acknowledgeMembershipChanges: true }
+  | { mode: 'create'; displayName?: string | null }
+
+export interface CostCenterResourceAccess {
+  resource: CostCenterLimit['resource']
+  mode: CostCenterResourceAccessMode
+}
+
+export interface CostCenterCreate {
+  name: string
+  code: string
+  description?: string | null
+  owners?: string[]
+  keysAllowed?: boolean
+  groupSetup?: CostCenterGroupSetup | null
+  resourceAccess?: CostCenterResourceAccess[]
+}
+
+export type CostCenterUpdate = Partial<CostCenterCreate> & {
+  discoverable?: boolean
+  publicPurpose?: string | null
+  acknowledgeMembershipChanges?: true
+}
+
+export interface CostCenterGroupCapabilities {
+  available: boolean
+  directoryTenantId: string | null
+  canReadGroups: boolean
+  canCreateGroups: boolean
+  canAddUsers: boolean
+  canAddServicePrincipals: boolean
+  canRemoveMembers: boolean
+  applicationPermissions: string[]
+  advisory: true
+  memberListingApi: 'beta'
+  memberListingNotice: string
+  message?: string | null
+  errorCode?: string | null
+}
+
+export interface CostCenterDirectoryOperationView {
+  id: string
+  tenantId: string
+  entityType: 'costCenterDirectoryOperation'
+  costCenterId: string
+  kind: 'createGroup' | 'addMember' | 'removeMember'
+  directoryTenantId: string
+  groupObjectId: string | null
+  memberObjectId: string | null
+  memberKind: PrincipalKind | null
+  displayName: string | null
+  description: string | null
+  requestedBy: string
+  state: DirectoryOperationState
+  errorCode?: string | null
+  errorMessage?: string | null
+  errorDetails?: {
+    httpStatus?: number | null
+    graphCode?: string | null
+    graphMessage?: string | null
+    requestId?: string | null
+    clientRequestId?: string | null
+    retryAfter?: number | null
+  } | null
+  directoryUpdated: boolean
+  canRetry: boolean
+  propagationNotice?: string | null
+  keyRevocationNotice?: string | null
+  recoveryNotice?: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CostCenterDirectMember {
+  objectId: string
+  kind: PrincipalKind | null
+  odataType: string
+  displayName: string | null
+  detail: string | null
+  appId: string | null
+  membershipType: 'direct'
+}
+
+export interface CostCenterDirectoryMembers {
+  directoryTenantId: string
+  groupObjectId: string
+  members: CostCenterDirectMember[]
+  nextCursor: string | null
+  apiVersion: 'beta'
+  previewNotice: string
 }
 
 export interface CostCenter {
@@ -138,7 +246,15 @@ export interface CostCenter {
   name: string
   code: string
   description: string | null
+  discoverable?: boolean
+  publicPurpose?: string | null
   owners: string[]
+  entraBinding?: EntraGroupBinding | null
+  /** Derived by the server from the stable General identity, never from its editable name. */
+  setupState: CostCenterSetupState
+  resourceAccess: CostCenterResourceAccess[]
+  directoryOperations?: CostCenterDirectoryOperationView[]
+  /** Legacy records only; never an editable roster for Entra-backed centers. */
   members: CostCenterMember[]
   groupId?: string | null
   /** Saved roster revision, not an APIM synchronization status. */
@@ -157,6 +273,8 @@ export interface CostCenter {
 }
 
 export interface CostCenterSettings {
+  creationRequestsEnabled?: boolean
+  membershipRequestsEnabled?: boolean
   id: string
   tenantId: string
   defaultCostCenterId: string
@@ -590,6 +708,8 @@ export interface EntitlementRuntime {
   keyExists?: boolean
   appliedAt?: string | null
   error?: string | null
+  eligibilityRecheckPending?: boolean
+  keyRevocationPending?: boolean
 }
 
 export interface Entitlement {
@@ -599,6 +719,7 @@ export interface Entitlement {
   resource: EntitlementResource
   costCenterId?: string
   costCenter?: CostCenterRef | null
+  managedBy?: 'costCenterAutomatic' | null
   revocation?: GrantRevocation | null
   enabled: boolean
   enforcement?: EntitlementEnforcement | null
@@ -650,6 +771,74 @@ export interface AccessRequestApproval {
   confirmedEnvironment?: string
   costCenterId?: string
 }
+
+export interface CostCenterRequestApproval {
+  costCenter: CostCenterCreate
+  addRequester: boolean
+  note?: string | null
+}
+
+export interface AdminCostCenterRequest {
+  id: string
+  tenantId: string
+  entityType: 'costCenterRequest'
+  requestKind: 'costCenter'
+  requesterObjectId: string
+  name: string
+  code?: string | null
+  description?: string | null
+  justification: string
+  suggestedGroupObjectId?: string | null
+  state: AccessRequestState
+  approval?: (CostCenterRequestApproval & {
+    costCenterId: string
+    decidedByObjectId: string
+    startedAt: string
+  }) | null
+  decidedByObjectId?: string | null
+  decidedAt?: string | null
+  decisionNote?: string | null
+  costCenterId?: string | null
+  preparationError?: string | null
+  requesterMembershipState?: DirectoryOperationState | null
+  requesterMembershipError?: string | null
+  createdAt: string
+  updatedAt: string
+  costCenter?: CostCenterRef | null
+  setupState?: CostCenterSetupState | null
+  needsAdministratorAttention: boolean
+}
+
+export type CostCenterSettingsUpdate = Partial<Pick<CostCenterSettings, 'defaultCostCenterId' | 'creationRequestsEnabled' | 'membershipRequestsEnabled'>>
+
+export interface AdminCostCenterMembershipRequest {
+  id: string
+  requestKind: 'costCenterMembership'
+  requesterObjectId: string
+  costCenter: CostCenterRef
+  justification: string
+  state: AccessRequestState
+  createdAt: string
+  updatedAt: string
+  decidedAt?: string | null
+  decisionNote?: string | null
+  membershipState?: 'pending' | 'succeeded' | 'failed' | 'unknown' | null
+  membershipError: string | null
+  operationId: string | null
+  needsAdministratorAttention: boolean
+}
+
+export interface RequestCounts {
+  pendingResourceCount: number
+  pendingCostCenterCount: number
+  pendingMembershipCount?: number
+  pendingCount: number
+}
+
+export type AdminRequest =
+  | { requestKind: 'resource'; request: AccessRequest }
+  | { requestKind: 'costCenter'; request: AdminCostCenterRequest }
+  | { requestKind: 'costCenterMembership'; request: AdminCostCenterMembershipRequest }
 
 export interface PolicyPreview {
   contentSha256: string

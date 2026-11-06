@@ -29,7 +29,10 @@ vi.mock('./api', () => ({
   ApiError: class ApiError extends Error {
     status = 403
   },
-  usePortalApi: () => Object.assign({ listNotifications: async () => ({ items: [], unreadCount: 0, continuationToken: null }) }, mocks.api),
+  usePortalApi: () => Object.assign({
+    listNotifications: async () => ({ items: [], unreadCount: 0, continuationToken: null }),
+    getRequestCounts: async () => ({ pendingCount: 0, pendingResourceCount: 0, pendingCostCenterCount: 0 }),
+  }, mocks.api),
 }))
 
 function renderApp(path = '/access') {
@@ -85,7 +88,7 @@ describe('App', () => {
     renderApp(path)
     expect(await screen.findByRole('heading', { name: 'Usage & cost' })).toBeVisible()
     const links = within(screen.getByRole('navigation', { name: 'Primary navigation' })).getAllByRole('link')
-    expect(links.map((link) => link.textContent)).toEqual(['Usage & cost', 'Catalog', 'My access', 'My requests', 'Notifications'])
+    expect(links.map((link) => link.textContent)).toEqual(['Usage & cost', 'Catalog', 'My access', 'My cost centers', 'My requests', 'Notifications'])
     expect(links[0]).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('group', { name: 'Appearance' })).toBeVisible()
     expect(screen.queryByText('Personal view')).not.toBeInTheDocument()
@@ -131,6 +134,7 @@ describe('App', () => {
     async ({ entitlementCount, pendingRequestCount, summary }) => {
       mocks.api = {
         getProfile: async () => portalProfile({ entitlementCount, pendingRequestCount }),
+        getRequestCounts: async () => ({ pendingResourceCount: pendingRequestCount, pendingCostCenterCount: 0, pendingCount: pendingRequestCount }),
         listEntitlements: async () => [],
         listEnvironments: async () => [],
       } as unknown as PortalApi
@@ -144,4 +148,27 @@ describe('App', () => {
       expect(header).not.toHaveTextContent(/entitlement/i)
     },
   )
+  it('counts all three request types instead of the legacy profile resource count', async () => {
+    mocks.api = {
+      getProfile: async () => portalProfile({ pendingRequestCount: 1 }),
+      getRequestCounts: async () => ({ pendingResourceCount: 1, pendingCostCenterCount: 2, pendingMembershipCount: 1, pendingCount: 4 }),
+      listEntitlements: async () => [],
+      listEnvironments: async () => [],
+    } as unknown as PortalApi
+    renderApp()
+    expect(await screen.findByText('0 grants · 4 pending requests')).toBeVisible()
+    expect(screen.getByRole('link', { name: '4 pending requests: 1 resource request, 2 cost-center requests, 1 membership request' }))
+      .toHaveAttribute('href', '/requests?status=pending')
+  })
+  it('does not present a failed count lookup as zero pending requests', async () => {
+    mocks.api = {
+      getProfile: async () => portalProfile(),
+      getRequestCounts: async () => { throw new Error('Counts unavailable') },
+      listEntitlements: async () => [],
+      listEnvironments: async () => [],
+    } as unknown as PortalApi
+    renderApp()
+    expect(await screen.findByText('0 grants · Pending requests unavailable')).toBeVisible()
+    expect(screen.queryByText('0 pending requests')).not.toBeInTheDocument()
+  })
 })

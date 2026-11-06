@@ -1,10 +1,21 @@
 from collections.abc import Sequence
 
 from mosaic_api.approvals import ApprovalDecisionProvenance, ApprovalPolicy
+from mosaic_api.cost_center_membership_requests import MembershipRequest, membership_guard_id
+from mosaic_api.cost_center_requests import CostCenterRequest
 from mosaic_api.domain import AccessRequest, AccessRequestState, AuditEvent, Entitlement, new_id
 from mosaic_api.errors import ConflictError
 from mosaic_api.notifications import NotificationEvent, NotificationEventType
 from mosaic_api.repositories.base import DirectoryRepository
+from mosaic_api.repositories.cost_center_request_writes import (
+    REQUEST_CHANGED,
+    require_request_change,
+    validate_request_write,
+)
+from mosaic_api.repositories.membership_request_writes import (
+    MEMBERSHIP_CHANGED,
+    validate_membership_write,
+)
 from mosaic_api.services.approval_events import grant_event
 from mosaic_api.services.notification_events import access_request_event
 
@@ -19,6 +30,9 @@ class InMemoryEntitlementRepository:
     ) -> None:
         self.entitlements: dict[str, Entitlement] = {}
         self.access_requests: dict[str, AccessRequest] = {}
+        self.cost_center_requests: dict[tuple[str, str], CostCenterRequest] = {}
+        self.membership_requests: dict[tuple[str, str], MembershipRequest] = {}
+        self.membership_guards: dict[tuple[str, str], str] = {}
         self.audit_events: dict[str, AuditEvent] = {}
         self.notification_events = notification_events if notification_events is not None else {}
         self.approval_policies = approval_policies if approval_policies is not None else {}
@@ -188,6 +202,153 @@ class InMemoryEntitlementRepository:
         return await self.approve_access_request_with_events(
             access_request, entitlement, audit_events, [access_request_event(access_request)]
         )
+
+    async def list_cost_center_requests(
+        self,
+        tenant_id: str,
+        *,
+        requester_object_id: str | None = None,
+        state: str | None = None,
+    ) -> list[CostCenterRequest]:
+        return sorted(
+            (
+                item.model_copy(deep=True)
+                for item in self.cost_center_requests.values()
+                if item.tenant_id == tenant_id
+                and (requester_object_id is None or item.requester_object_id == requester_object_id)
+                and (state is None or str(item.state) == state)
+            ),
+            key=lambda item: (item.created_at, item.id),
+            reverse=True,
+        )
+
+    async def list_membership_requests(
+        self,
+        tenant_id: str,
+        *,
+        requester_object_id: str | None = None,
+        state: str | None = None,
+    ) -> list[MembershipRequest]:
+        return sorted(
+            [
+                item.model_copy(deep=True)
+                for (tenant, _), item in self.membership_requests.items()
+                if tenant == tenant_id
+                and (requester_object_id is None or item.requester_object_id == requester_object_id)
+                and (state is None or item.state == state)
+            ],
+            key=lambda item: (item.created_at, item.id),
+            reverse=True,
+        )
+
+    async def get_membership_request(
+        self,
+        tenant_id: str,
+        request_id: str,
+    ) -> MembershipRequest | None:
+        item = self.membership_requests.get((tenant_id, request_id))
+        return item.model_copy(deep=True) if item else None
+
+    async def create_membership_request(
+        self,
+        request: MembershipRequest,
+        audit: AuditEvent,
+        events: Sequence[NotificationEvent],
+    ) -> MembershipRequest:
+        validated = validate_membership_write(request, audit, events)
+        key = (request.tenant_id, request.id)
+        guard_key = (request.tenant_id, membership_guard_id(request))
+        if key in self.membership_requests or guard_key in self.membership_guards:
+            raise ConflictError("An active membership request already exists for this center")
+        return self._save_membership_events(validated, audit, events)
+
+    async def save_membership_request(
+        self,
+        request: MembershipRequest,
+        audit: AuditEvent,
+        events: Sequence[NotificationEvent],
+    ) -> MembershipRequest:
+        previous = self.membership_requests.get((request.tenant_id, request.id))
+        if not request.etag or previous is None or previous.etag != request.etag:
+            raise ConflictError(MEMBERSHIP_CHANGED)
+        validated = validate_membership_write(request, audit, events, previous)
+        return self._save_membership_events(validated, audit, events)
+
+    def _save_membership_events(
+        self,
+        request: MembershipRequest,
+        audit: AuditEvent,
+        events: Sequence[NotificationEvent],
+    ) -> MembershipRequest:
+        if audit.id in self.audit_events or any(
+            (event.tenant_id, event.id) in self.notification_events for event in events
+        ):
+            raise ConflictError(MEMBERSHIP_CHANGED)
+        guard_key = (request.tenant_id, membership_guard_id(request))
+        owner = self.membership_guards.get(guard_key)
+        if request.active and owner not in {None, request.id}:
+            raise ConflictError(MEMBERSHIP_CHANGED)
+        saved = request.model_copy(update={"etag": new_id("etag")}, deep=True)
+        self.membership_requests[(request.tenant_id, request.id)] = saved
+        if request.active:
+            self.membership_guards[guard_key] = request.id
+        elif owner == request.id:
+            del self.membership_guards[guard_key]
+        self.audit_events[audit.id] = audit.model_copy(deep=True)
+        for event in events:
+            self.notification_events[(event.tenant_id, event.id)] = event.model_copy(deep=True)
+        return saved.model_copy(deep=True)
+
+    async def get_cost_center_request(
+        self, tenant_id: str, request_id: str
+    ) -> CostCenterRequest | None:
+        stored = self.cost_center_requests.get((tenant_id, request_id))
+        return stored.model_copy(deep=True) if stored is not None else None
+
+    async def create_cost_center_request(
+        self,
+        request: CostCenterRequest,
+        audit_event: AuditEvent,
+        events: Sequence[NotificationEvent],
+    ) -> CostCenterRequest:
+        validated = validate_request_write(request, audit_event, events)
+        if (request.tenant_id, request.id) in self.cost_center_requests:
+            raise ConflictError(REQUEST_CHANGED)
+        if request.state != AccessRequestState.PENDING or request.approval is not None:
+            raise ValueError("A new cost center request must be pending and unclaimed")
+        return self._save_cost_center_request_events(validated, audit_event, events)
+
+    async def save_cost_center_request(
+        self,
+        request: CostCenterRequest,
+        audit_event: AuditEvent,
+        events: Sequence[NotificationEvent],
+    ) -> CostCenterRequest:
+        validated = validate_request_write(request, audit_event, events)
+        if not request.etag:
+            raise ValueError("A cost center request decision requires its read ETag")
+        stored = self.cost_center_requests.get((request.tenant_id, request.id))
+        if stored is None or stored.etag != request.etag:
+            raise ConflictError(REQUEST_CHANGED)
+        require_request_change(stored, validated)
+        return self._save_cost_center_request_events(validated, audit_event, events)
+
+    def _save_cost_center_request_events(
+        self,
+        request: CostCenterRequest,
+        audit_event: AuditEvent,
+        events: Sequence[NotificationEvent],
+    ) -> CostCenterRequest:
+        if audit_event.id in self.audit_events or any(
+            (event.tenant_id, event.id) in self.notification_events for event in events
+        ):
+            raise ConflictError(REQUEST_CHANGED)
+        saved = request.model_copy(update={"etag": new_id("etag")}, deep=True)
+        self.cost_center_requests[(request.tenant_id, request.id)] = saved
+        self.audit_events[audit_event.id] = audit_event.model_copy(deep=True)
+        for event in events:
+            self.notification_events[(event.tenant_id, event.id)] = event.model_copy(deep=True)
+        return saved.model_copy(deep=True)
 
     async def approve_access_request_with_events(
         self,

@@ -1,0 +1,111 @@
+{
+  "profile": "doe-lab-research",
+  "provenance": {
+    "mode": "snapshot",
+    "release": "OSTI API v1 solar metadata capture",
+    "retrieved_at": "2026-10-29T00:19:10.247920+00:00",
+    "sources": [
+      {
+        "url": "https://www.osti.gov/api/v1/records?search=solar&rows=5",
+        "sha256": "05d2a456d0c7adcda7a8862060ce9b81eb53a138f07ed73db5aadf0a825f2a13"
+      }
+    ],
+    "selection": "Small selected public-data subset, not a complete agency inventory."
+  },
+  "records": [
+    {
+      "id": "3376627",
+      "title": "Solar Training and Education Partnership for Underserved Populations",
+      "publication_date": "2026-07-06T00:00:00",
+      "doi": "10.2172/3376627",
+      "research_organizations": [
+        "Solar Landscape, LLC, Asbury Park, NJ (United States)"
+      ],
+      "subjects": [
+        "14 SOLAR ENERGY",
+        "Community Based Organizations",
+        "STEP-UP"
+      ],
+      "source_url": "https://www.osti.gov/biblio/3376627",
+      "scope": "Bibliographic metadata only. Abstract/full text not rehosted or reviewed."
+    },
+    {
+      "id": "3602539",
+      "title": "Assessing Uncertainty in Solar Measurements: Key Findings From NLR's SUNI Application Across 89 Stations",
+      "publication_date": "2026-08-25T00:00:00",
+      "doi": "10.66816/po3816574",
+      "research_organizations": [
+        "National Laboratory of the Rockies (NLR), Golden, CO (United States)"
+      ],
+      "subjects": [
+        "14 SOLAR ENERGY",
+        "24 POWER TRANSMISSION AND DISTRIBUTION",
+        "97 MATHEMATICS AND COMPUTING",
+        "ARM",
+        "Atmospheric Radiation Measurement",
+        "Baseline Surface Radiation Network",
+        "BSRN",
+        "bulk uncertainty processing",
+        "DHI",
+        "diffuse horizontal irradiance",
+        "direct normal irradiance",
+        "DNI"
+      ],
+      "source_url": "https://www.osti.gov/biblio/3602539",
+      "scope": "Bibliographic metadata only. Abstract/full text not rehosted or reviewed."
+    },
+    {
+      "id": "3505047",
+      "title": "Exploring Uncertainty in Solar Measurements: Insights from the National Laboratory of the Rockies' SUNI Application at 89 Stations",
+      "publication_date": "2026-08-21T00:00:00",
+      "doi": "10.66816/pr5064435",
+      "research_organizations": [
+        "National Laboratory of the Rockies (NLR), Golden, CO (United States)"
+      ],
+      "subjects": [
+        "14 SOLAR ENERGY",
+        "24 POWER TRANSMISSION AND DISTRIBUTION",
+        "97 MATHEMATICS AND COMPUTING",
+        "solar measurements",
+        "Solar Uncertainty Integrator",
+        "SUNI",
+        "uncertainty"
+      ],
+      "source_url": "https://www.osti.gov/biblio/3505047",
+      "scope": "Bibliographic metadata only. Abstract/full text not rehosted or reviewed."
+    },
+    {
+      "id": "3377650",
+      "title": "Energy 101: Solar [Slides]",
+      "publication_date": "2026-06-02T00:00:00",
+      "doi": "10.66816/pr2954832",
+      "research_organizations": [
+        "National Laboratory of the Rockies (NLR), Golden, CO (United States)"
+      ],
+      "subjects": [
+        "14 SOLAR ENERGY",
+        "29 ENERGY PLANNING, POLICY, AND ECONOMY",
+        "energy",
+        "photovoltaics",
+        "solar"
+      ],
+      "source_url": "https://www.osti.gov/biblio/3377650",
+      "scope": "Bibliographic metadata only. Abstract/full text not rehosted or reviewed."
+    },
+    {
+      "id": "3376083",
+      "title": "Novel PV Array System Design to Accelerate Solar Deployment, Reduce LCOE, Reduce Land Use Competition, and Increase Siting Flexibility",
+      "publication_date": "2025-11-30T00:00:00",
+      "doi": "10.2172/3376083",
+      "research_organizations": [
+        "Planted Solar, Inc., Oakland, CA (United States)"
+      ],
+      "subjects": [
+        "14 SOLAR ENERGY",
+        "solar"
+      ],
+      "source_url": "https://www.osti.gov/biblio/3376083",
+      "scope": "Bibliographic metadata only. Abstract/full text not rehosted or reviewed."
+    }
+  ]
+}

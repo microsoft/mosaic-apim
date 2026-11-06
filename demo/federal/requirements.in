@@ -1,0 +1,9 @@
+# Deliberately match the existing MCP 1.x M-agent baseline. No MCP 2 upgrade.
+-c ../../e2e/mcp-servers/m-agent/requirements.txt
+azure-core[aio]==1.41.0
+azure-identity==1.25.3
+httpx==0.28.1
+mcp==1.30.0
+pydantic==2.13.5
+starlette==1.7.0
+uvicorn==0.54.0

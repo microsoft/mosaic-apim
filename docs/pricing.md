@@ -3,7 +3,7 @@
 This guide is for administrators who run MOSAIC. It explains where MOSAIC's prices come from, how
 it finds the price of each deployment, how to add and correct prices, how provisioned throughput is
 charged, and how to refresh the prices MOSAIC ships. The README's
-[Usage and analytics](../README.md#usage-and-analytics) section lists the views and routes,
+[Usage and analytics](analytics-reference.md#usage-and-analytics) section lists the views and routes,
 [Usage analytics](usage-analytics.md) explains the usage that's priced, and
 [ADR 0020](adr/0020-price-list.md) records the original design.
 [ADR 0031](adr/0031-billing-derived-pricing.md) extends it with reviewed billing-derived rates.
@@ -133,9 +133,13 @@ Provider operations and access checks can incur object-read, query, storage, and
   access** and correct the reported scope/agreement/permission issue; do not broaden to Owner.
 - Export mode reads an existing amortized manifest and every CSV/Gzip partition from official
   cloud-specific Blob hosts. Supply a credential-free HTTPS manifest URL, with identity-based
-  **Storage Blob Data Reader** access to its container. Embedded SAS/query credentials and
-  arbitrary/private download hosts are refused. Configure an export for the selected observation
-  month; MOSAIC does not create it or silently substitute ActualCost/retail prices.
+  **Storage Blob Data Reader** access to its container. Blob reads acquire a separate
+  `https://storage.azure.com/.default` token rather than reusing the ARM token; the Storage
+  audience is the same in Commercial and Government while the identity authority remains
+  cloud-specific. Configured manifest URLs must not embed SAS/query credentials. Provider-issued
+  SAS partition URLs are read without a bearer token; unsigned Blob partitions use the Storage
+  token. Arbitrary/private download hosts are refused. Configure an export for the selected
+  observation month; MOSAIC does not create it or silently substitute ActualCost/retail prices.
 
 **AWS**
 
@@ -146,15 +150,21 @@ Provider operations and access checks can incur object-read, query, storage, and
   `AssumeRoleWithWebIdentity`; configure the AWS OIDC provider and role trust for the API
   identity's actual issuer, audience and subject. `awsAudience` defaults to
   `api://AzureADTokenExchange`. This is not an implicit AWS ambient credential chain or a
-  runtime Bedrock key. Do not rely on ExternalId-based `AssumeRole` trust: this connector uses
-  web-identity federation.
+  runtime Bedrock key. `awsExternalId` is not supported by direct
+  `AssumeRoleWithWebIdentity`; that combination is rejected. External-ID trust requires signed
+  `AssumeRole`, which the built-in connector does not perform. For that trust model, obtain
+  short-lived role session credentials outside MOSAIC with signed `AssumeRole`, store those
+  resulting credentials in the vault, leave `awsExternalId` unset, and arrange their rotation.
+  Give the external source identity only `sts:AssumeRole` on the one billing-reader role.
 - Restrict the role to `s3:ListBucket` on the one bucket with the configured prefix condition,
   and `s3:GetObject` on that prefix's manifest/report objects. Add only the necessary
   `kms:Decrypt` permission if the export is KMS-encrypted. No Bedrock invocation, Cost Explorer,
   export creation, or S3 write permission is needed.
 - Vault alternatives are a raw web-identity token, JSON with `webIdentityToken`, or JSON with
-  `accessKeyId`, `secretAccessKey`, and optional `sessionToken`. Stored temporary tokens/session
-  keys do not renew themselves; rotate them before expiry. Federation is preferable for schedules.
+  `accessKeyId`, `secretAccessKey`, and optional `sessionToken`. Explicit keys are used directly
+  for the S3 reads; MOSAIC does not use them to assume the configured role. Stored temporary
+  tokens/session keys do not renew themselves; rotate them before expiry. Federation is
+  preferable for schedules.
   Default discovery is bounded to five listing pages and 50 report objects; narrow the prefix
   or upload a supported extraction when those limits are exceeded.
 
@@ -166,7 +176,9 @@ Provider operations and access checks can incur object-read, query, storage, and
 - Give the querying identity **BigQuery Job User** on the query project and **BigQuery Data
   Viewer** only on the necessary table/view (with authorized-view access to the underlying data
   when appropriate). It needs table metadata/schema access plus query-result reads, not billing
-  administrator or data-editor permissions.
+  administrator or data-editor permissions. OAuth must permit `jobs.insert` (the `bigquery` or
+  `cloud-platform` scope); the narrower `bigquery.readonly` OAuth scope cannot submit these jobs.
+  Dataset/table read-only enforcement comes from IAM, not that unsupported job-submission scope.
 - Prefer Workload Identity Federation via `gcpWorkloadIdentityAudience`, optionally
   `gcpServiceAccountEmail` for impersonation. Establish the external identity trust and the
   narrowly scoped service-account impersonation permissions yourself. Alternatives are vault
@@ -213,15 +225,16 @@ Vault Secrets Officer** on this dedicated vault); gateways must have **no access
 [Azure Government management setup](azure-government.md) for the existing vault separation.
 
 The connection editor accepts write-only JSON/token material. APIs also accept
-`credentialSecretUri` referencing a Key Vault secret. Saved connection views expose whether a
-secret exists, never its value; Cosmos stores references, not credential values. Replacing/clearing
-credentials and deleting a connection use secret lifecycle cleanup, so use dedicated
-MOSAIC-managed secrets rather than sharing a reference with another application. Do not put
+`credentialSecretUri` referencing a secret in the configured management vault. Saved connection
+views expose whether a secret exists, never its value; Cosmos stores references, not credential
+values. Rotation/clearing/deletion cleans up only secrets MOSAIC created and owns. Externally
+supplied secret references are never deleted by these connection operations; their owner remains
+responsible for rotation and retirement. Do not put
 secrets in source files, screenshots, source-scope labels, URLs, or billing evidence.
 
-Without a configured writer the service has an in-memory development secret-store fallback;
-that is **not durable or an acceptable production credential store**. Configure the vault before
-saving production billing credentials. The API identity also needs network access to the vault
+Configure the vault before saving production billing credentials; a local in-memory development
+store is **not durable or an acceptable production credential store**. The API identity also
+needs network access to the vault
 and provider endpoints. The adapters use provider HTTP/token-exchange protocols, not a general
 AWS/GCP SDK credential-discovery chain.
 
@@ -340,7 +353,7 @@ A model API's calls are priced by the deployment its publication fronts. A grant
 by the model API it grants. An API MOSAIC adopted rather than published doesn't say which deployment
 it calls, so its calls have no price. MCP servers carry no tokens and have no cost.
 
-A [model pool](../README.md#model-pools)'s API fronts many deployments, so MOSAIC prices each of its
+A [model pool](model-pools.md)'s API fronts many deployments, so MOSAIC prices each of its
 calls at the member that served it. It places a call on a member by the backend the gateway logged,
 or by the host and deployment that backend calls. A provisioned member's cost is shared among the
 pool's callers like any other's, from the day MOSAIC first saw it behind the pool, and a member

@@ -30,6 +30,32 @@ describe('usePortalApi', () => {
     vi.unstubAllGlobals()
   })
 
+  it('keeps membership reads, search, and requests on encoded portal-scoped routes', async () => {
+    const fetchMock = stubFetch(() => jsonResponse({}))
+    const { result } = renderHook(() => usePortalApi())
+    await result.current.getCostCenterSelfServiceSettings()
+    await result.current.listMyCostCenters({ q: 'R & D', cursor: undefined })
+    await result.current.searchCostCenters({ cursor: 'page/+' })
+    await result.current.getDiscoverableCostCenter('center/1')
+    await result.current.listCostCenterMembershipRequests()
+    await result.current.getCostCenterMembershipRequest('request/1')
+    const payload = { costCenterId: 'cc-1', justification: 'Evaluation', idempotencyKey: '11111111-2222-4333-8444-555555555555' }
+    await result.current.createCostCenterMembershipRequest(payload)
+    await result.current.withdrawCostCenterMembershipRequest('request/1')
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      'http://localhost:8000/api/v1/portal/cost-center-self-service-settings',
+      'http://localhost:8000/api/v1/portal/my-cost-centers?limit=20&q=R+%26+D',
+      'http://localhost:8000/api/v1/portal/cost-center-directory?limit=20&cursor=page%2F%2B',
+      'http://localhost:8000/api/v1/portal/cost-center-directory/center%2F1',
+      'http://localhost:8000/api/v1/portal/cost-center-membership-requests',
+      'http://localhost:8000/api/v1/portal/cost-center-membership-requests/request%2F1',
+      'http://localhost:8000/api/v1/portal/cost-center-membership-requests',
+      'http://localhost:8000/api/v1/portal/cost-center-membership-requests/request%2F1/withdraw',
+    ])
+    expect(fetchMock.mock.calls[6][1]).toMatchObject({ method: 'POST', body: JSON.stringify(payload) })
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ cache: 'no-store' })
+  })
+
   it('reads and updates only the authenticated personal inbox with encoded filters and item IDs', async () => {
     const fetchMock = stubFetch(() => jsonResponse({ items: [], unreadCount: 0, continuationToken: null }))
     const { result } = renderHook(() => usePortalApi())
@@ -137,6 +163,30 @@ describe('usePortalApi', () => {
     const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toBe('http://localhost:8000/api/v1/portal/cost-centers')
     expect(options.method).toBe('GET')
+  })
+
+  it('keeps cost-center creation, tracking, withdrawal, and combined counts on owner-scoped routes', async () => {
+    const fetchMock = stubFetch(() => jsonResponse({}))
+    const { result } = renderHook(() => usePortalApi())
+    const payload = {
+      name: 'Research', justification: 'Evaluation costs', suggestedGroupObjectId: '11111111-2222-3333-4444-555555555555',
+      idempotencyKey: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+    }
+    await result.current.getRequestCounts()
+    await result.current.listCostCenterRequests()
+    await result.current.createCostCenterRequest(payload)
+    await result.current.getCostCenterRequest('request/1')
+    await result.current.withdrawCostCenterRequest('request/1')
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      'http://localhost:8000/api/v1/portal/request-counts',
+      'http://localhost:8000/api/v1/portal/cost-center-requests',
+      'http://localhost:8000/api/v1/portal/cost-center-requests',
+      'http://localhost:8000/api/v1/portal/cost-center-requests/request%2F1',
+      'http://localhost:8000/api/v1/portal/cost-center-requests/request%2F1/withdraw',
+    ])
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'GET', cache: 'no-store' })
+    expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: 'POST', body: JSON.stringify(payload) })
+    expect(fetchMock.mock.calls[4][1]).toMatchObject({ method: 'POST', body: undefined })
   })
 
   it('reads my usage with an explicit period from the owner-scoped API', async () => {

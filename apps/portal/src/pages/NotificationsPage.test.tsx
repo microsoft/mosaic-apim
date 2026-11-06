@@ -19,6 +19,22 @@ function renderPage(api: Partial<PortalApi>) {
 }
 
 describe('NotificationsPage', () => {
+  it('links cost-center notifications to their distinct request kind', async () => {
+    renderPage({
+      listNotifications: async () => ({
+        items: [notificationItem({
+          title: 'Cost center approved', summary: 'Group setup is still required.',
+          subject: { requestId: 'center/request', requestKind: 'costCenter' },
+        })],
+        unreadCount: 1, continuationToken: null,
+      }),
+    })
+    expect(await screen.findByRole('heading', { name: 'Cost center approved' })).toBeVisible()
+    expect(screen.getByRole('link', { name: 'View cost-center request' }))
+      .toHaveAttribute('href', '/requests?request=center%2Frequest&requestKind=costCenter')
+    expect(screen.queryByRole('link', { name: 'View request' })).not.toBeInTheDocument()
+    expect(screen.getByText(/Cost-center approval creates a center, but group setup and membership may still be pending/)).toBeVisible()
+  })
   it('isolates cached personal inbox data when the authenticated account changes', async () => {
     mocks.account = 'user-a'
     const listNotifications = vi.fn(async () => ({
@@ -46,7 +62,8 @@ describe('NotificationsPage', () => {
     renderPage({ listNotifications, setNotificationRead })
     expect(await screen.findByRole('heading', { name: 'Request approved' })).toBeVisible()
     expect(screen.getByRole('link', { name: 'View request' })).toHaveAttribute('href', '/requests?request=request%2F1')
-    expect(screen.getByText(/Approval creates a grant; it does not mean gateway access is ready/)).toBeVisible()
+    expect(screen.getByText(/Resource request approval saves a grant/)).toBeVisible()
+    expect(screen.getByText(/Neither approval means gateway access is ready/)).toBeVisible()
     expect(screen.queryByText('user-1')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Mark read' }))
     expect(await screen.findByRole('button', { name: 'Mark unread' })).toBeEnabled()

@@ -3,18 +3,17 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
-import type { PortalApi } from '../api'
-import type { AccessRequest } from '../types'
+import { ApiError, type PortalApi } from '../api'
+import type { AccessRequest, PortalCostCenterRequest } from '../types'
+import { costCenterRequest } from '../test/cost-center-request-fixtures'
 import { MyRequestsPage } from './MyRequestsPage'
 
 const mocks = vi.hoisted(() => ({
   api: {} as PortalApi,
 }))
 
-vi.mock('../api', () => ({
-  ApiError: class ApiError extends Error {
-    status = 500
-  },
+vi.mock('../api', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../api')>(),
   usePortalApi: () => mocks.api,
 }))
 
@@ -52,9 +51,33 @@ function accessRequest(overrides: Partial<AccessRequest>): AccessRequest {
 
 const opened = `Opened ${new Date('2026-01-01T00:00:00Z').toLocaleDateString()}`
 
-function renderPage(requests: AccessRequest[], withdrawAccessRequest = vi.fn(), path = '/') {
+function renderPage(requests: AccessRequest[], withdrawAccessRequest = vi.fn(), path = '/',
+  centers: PortalCostCenterRequest[] = [], getCostCenterRequest = vi.fn(async (id: string) => {
+    const request = centers.find((item) => item.id === id)
+    if (!request) throw new ApiError('Request not found', 404)
+    return request
+  }), listFailure?: Error) {
+  let costCenterRequests = centers
+  const withdrawCostCenterRequest = vi.fn(async (id: string) => {
+    const request = costCenterRequests.find((item) => item.id === id)!
+    const withdrawn = { ...request, state: 'withdrawn' as const }
+    costCenterRequests = costCenterRequests.map((item) => item.id === id ? withdrawn : item)
+    return withdrawn
+  })
   mocks.api = {
     listAccessRequests: async () => requests,
+    listCostCenterRequests: async () => {
+      if (listFailure) throw listFailure
+      return costCenterRequests
+    },
+    getCostCenterRequest,
+    listCostCenterMembershipRequests: async () => [],
+    withdrawCostCenterRequest,
+    getRequestCounts: async () => ({
+      pendingResourceCount: requests.filter((request) => request.state === 'pending').length,
+      pendingCostCenterCount: costCenterRequests.filter((request) => request.state === 'pending').length,
+      pendingCount: [...requests, ...costCenterRequests].filter((request) => request.state === 'pending').length,
+    }),
     listEnvironments: async () => [
       { key: 'production', displayName: 'Production', description: null, color: 'danger', production: true, order: 50 },
     ],
@@ -68,10 +91,95 @@ function renderPage(requests: AccessRequest[], withdrawAccessRequest = vi.fn(), 
       </MemoryRouter>
     </QueryClientProvider>,
   )
-  return { withdrawAccessRequest }
+  return { withdrawAccessRequest, withdrawCostCenterRequest, getCostCenterRequest }
 }
 
 describe('MyRequestsPage', () => {
+  it('combines distinct request kinds and counts without treating a center as a resource', async () => {
+    renderPage([accessRequest({ id: 'same-id' })], vi.fn(), '/requests', [costCenterRequest({ id: 'same-id' })])
+    expect(await screen.findByRole('heading', { name: 'Research team' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Chat completions' })).toBeVisible()
+    expect(screen.getByText('1 resource request pending · 1 cost-center request pending')).toBeVisible()
+    expect(screen.getByRole('link', { name: 'My cost centers' })).toHaveAttribute('href', '/cost-centers')
+    await userEvent.selectOptions(screen.getByLabelText('Request type'), 'costCenter')
+    expect(screen.queryByRole('heading', { name: 'Chat completions' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Research team' })).toBeVisible()
+  })
+
+  it('opens the exact cost-center deep link outside pending filters and never opens a colliding resource ID', async () => {
+    const { getCostCenterRequest } = renderPage([accessRequest({ id: 'center/request' })], vi.fn(),
+      '/requests?request=center%2Frequest&requestKind=costCenter&status=pending',
+      [costCenterRequest({ id: 'center/request', state: 'approved', costCenter: { id: 'cc-1', name: 'Research', code: 'RES' }, setupState: 'setupRequired' })])
+    expect(await screen.findByRole('heading', { name: 'Research team' })).toBeVisible()
+    expect(getCostCenterRequest).toHaveBeenCalledWith('center/request')
+    expect(screen.queryByRole('heading', { name: 'Chat completions' })).not.toBeInTheDocument()
+    expect(screen.getByText('Group setup required')).toBeVisible()
+    expect(screen.getByText(/It does not confirm that its group/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Withdraw' })).not.toBeInTheDocument()
+  })
+
+  it('withdraws only a pending cost-center request before preparation and keeps the resource endpoint separate', async () => {
+    const { withdrawAccessRequest, withdrawCostCenterRequest } = renderPage([], vi.fn(), '/requests', [
+      costCenterRequest(),
+      costCenterRequest({ id: 'preparing', name: 'Preparing center', preparationStarted: true }),
+      costCenterRequest({ id: 'approved', name: 'Approved center', state: 'approved' }),
+      costCenterRequest({ id: 'denied', name: 'Denied center', state: 'denied' }),
+      costCenterRequest({ id: 'withdrawn', name: 'Withdrawn center', state: 'withdrawn' }),
+    ])
+    const withdraw = await screen.findByRole('button', { name: 'Withdraw' })
+    expect(screen.getAllByRole('button', { name: 'Withdraw' })).toHaveLength(1)
+    expect(screen.getByText(/can no longer be withdrawn/)).toBeVisible()
+    await userEvent.click(withdraw)
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm withdrawal' }))
+    await waitFor(() => expect(withdrawCostCenterRequest).toHaveBeenCalledWith('center-request-1'))
+    expect(withdrawAccessRequest).not.toHaveBeenCalled()
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Withdraw' })).not.toBeInTheDocument())
+  })
+
+  it.each([403, 404])('shows an unavailable owner-scoped %s response without leaking a list record or another request', async (status) => {
+    const failed = vi.fn().mockRejectedValue(new ApiError('Request not found', status))
+    renderPage([], vi.fn(), '/requests?request=private&requestKind=costCenter', [costCenterRequest()], failed)
+    expect(await screen.findByText('Request unavailable')).toBeVisible()
+    expect(screen.queryByText('You do not have access to the portal yet')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Research team' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Withdraw' })).not.toBeInTheDocument()
+  })
+
+  it('does not replace a failed list with a success-shaped empty state', async () => {
+    renderPage([accessRequest({})], vi.fn(), '/requests', [], undefined, new Error('Cost-center requests unavailable'))
+    expect(await screen.findByText('Cost-center requests unavailable')).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Chat completions' })).toBeVisible()
+    expect(screen.queryByText('No requests opened')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry cost-center requests' })).toBeVisible()
+  })
+
+  it('describes requester addition as a historical result, not a current membership claim', async () => {
+    renderPage([], vi.fn(), '/requests', [costCenterRequest({
+      state: 'approved', setupState: 'ready', requesterMembershipRequested: true, requesterMembershipState: 'succeeded',
+    })])
+    expect(await screen.findByText(/past operation result, not confirmation of current membership/)).toBeVisible()
+    expect(screen.getByText(/managed-identity caches can last around 24 hours/)).toBeVisible()
+    expect(screen.getByText(/Previously copied keys need separate revocation/)).toBeVisible()
+  })
+
+  it('describes approved membership awaiting group setup without implying a directory operation has begun', async () => {
+    renderPage([], vi.fn(), '/requests', [costCenterRequest({
+      name: 'Knowledge Engineering',
+      state: 'approved',
+      costCenter: { id: 'cc-knowledge', name: 'Knowledge Engineering', code: 'KNOW' },
+      setupState: 'setupRequired',
+      requesterMembershipRequested: true,
+      requesterMembershipState: 'pending',
+      needsAdministratorAttention: true,
+    })])
+    expect(await screen.findByRole('heading', { name: 'Knowledge Engineering' })).toBeVisible()
+    const readiness = within(screen.getByRole('region', { name: 'Cost-center readiness' }))
+    expect(readiness.getByText('Group setup required')).toBeVisible()
+    expect(readiness.getByText('Your group membership is pending. An administrator must finish or review group setup and the membership step.')).toBeVisible()
+    expect(screen.getByRole('status')).toHaveTextContent('Ask your administrator to review setup or the pending membership step.')
+    expect(screen.queryByText(/directory operation|membership operation/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Withdraw' })).not.toBeInTheDocument()
+  })
   it('opens only the exact linked request and returns to the full list', async () => {
     const user = userEvent.setup()
     renderPage([

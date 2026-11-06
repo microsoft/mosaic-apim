@@ -2,6 +2,11 @@
 
 **Status:** Accepted
 
+**Custom-center amendment:** [ADR 0030](0030-entra-backed-cost-centers.md) adds a mandatory
+center-group claim to every custom-center token path, including individual grants. General is
+exempt. Earlier advice below to use a direct grant for group overage is not a custom-center
+membership bypass.
+
 **Update:** The portal's My access page now uses the current-user APIs. Each model grant's
 **Connection details** panel loads the connection only when opened. For an applied direct grant,
 it reveals one key on explicit request, holds it only in transient component state (never a
@@ -134,6 +139,23 @@ administrator-only handoff route. Tenant membership, a known application ID, a c
 binding, and membership in a MOSAIC group do not authorize disclosure. The service checks the
 subscription's current active API scope and rechecks the grant after the ARM round trip.
 
+**Direct ownership must be unambiguous even in legacy directory data.** Current-user listing
+and direct connection/key operations resolve every matching principal in the caller's tenant,
+comparing GUIDs canonically rather than accepting the first exact object-ID match. Multiple
+registrations fail closed. A direct grant must name that unique principal and match its
+`subject_kind_for` identity mapping. This check is repeated after credential retrieval, so
+ambiguity introduced during the ARM round trip prevents disclosure. Security-group membership
+and explicit administrator handoff retain their separate authorization paths.
+
+Every new principal registration requires a GUID object ID, normalized to lowercase hyphenated
+form, and the tenant-plus-object-ID deterministic record ID is independent of principal kind.
+Create-only writes prevent concurrent enrollment from creating another canonical registration.
+Persisted legacy records remain readable for repair; they are not automatically merged or
+assigned new IDs. Manual enrollment still does not establish directory existence or type.
+Registry-based ownership is not independent proof of a token's user/application class.
+See [registration repair guidance](../access.md#governed-model-access); suspected prior
+disclosure requires key rotation, not just metadata correction.
+
 Reveals require durable, secret-free audit records and non-cacheable responses. Normal listing,
 planning, publishing, and synchronization never call `listSecrets`. Administrator UI reveals
 use transient state, not query caches or browser storage. Upstream errors never substitute a
@@ -181,7 +203,8 @@ counter keys remain unchanged.
 
 The policy treats missing, empty and `/` `scp` values on agent app-only tokens as not delegated,
 and authorizes application/agent callers through `roles`. If Entra signals group overage instead of
-emitting `groups`, the policy denies group-grant access and tells the caller to use a direct grant.
+emitting `groups`, the policy denies group-grant access. A direct token grant can avoid an optional
+resource-group check under General, but cannot prove a custom center's required group membership.
 
 ## Amendment 2026-09-30: The governed policy tags each call with its grant
 
@@ -222,3 +245,23 @@ records how the catalog and access requests treat an unpublished model.
   the same model under several. A call names the grant it uses with the `x-mosaic-cost-center`
   header. A key always charges its own grant's cost center, and a header naming another is refused
   with 403.
+
+## Amendment 2026-11-03: Exact-resource modes and mandatory center membership
+
+[ADR 0030](0030-entra-backed-cost-centers.md) replaces the local cost-center roster with a
+verified exclusive Entra group for each custom center. Automatic creates a stable group grant on
+an exact resource; Request-only approvals create individual grants; Not available blocks new
+grants/requests. Adding members changes Entra, not the Automatic policy hash or a per-user grant
+collection.
+
+Individual token grants and quota exceptions also require the center group claim. Direct-grant
+precedence, a personal default, the tenant default, and the center header never bypass membership.
+Invocation scope/app-role requirements remain separate. General's built-in identity is exempt
+from the new group requirement.
+
+Automatic requires caller-side Entra support. Resource key enablement and the center's key switch
+still allow explicit eligible individual keys where supported; no shared or inherited group key
+is introduced. New key creation/reveal checks eligibility. Removing a member does not invalidate
+issued tokens or copied keys: token expiry/propagation and explicit individual-key recheck and
+revoke/apply are separate. No directory watcher, immediate JWT revocation, or CAE is promised.
+Government is outside this new workflow.

@@ -43,6 +43,8 @@ vi.mock('./api', async (importOriginal) => {
     listPrincipals: async () => [],
     listGroups: async () => [],
     listAccessRequests: async () => [],
+    listCostCenterRequests: async () => [],
+    getRequestCounts: async () => ({ pendingResourceCount: 0, pendingCostCenterCount: 0, pendingCount: 0 }),
     listNotificationInbox: async () => ({ items: [], unreadCount: 0, continuationToken: null }),
   }
   return { ...actual, useMosaicApi: () => api }

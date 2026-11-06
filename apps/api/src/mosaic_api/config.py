@@ -47,13 +47,6 @@ class Settings(BaseSettings):
     environment: Environment = Environment.AZURE
     auth_mode: AuthMode = AuthMode.ENTRA
     repository_backend: RepositoryBackend = RepositoryBackend.COSMOS
-    managed_cost_center_groups: bool = Field(
-        default=False,
-        description=(
-            "Experimental MOSAIC-owned cost-center groups and shared membership APIs. "
-            "Does not enable inherited model access or change APIM configuration."
-        ),
-    )
     tenant_id: str
     api_client_id: str | None = None
     spa_client_id: str | None = None
@@ -177,8 +170,8 @@ class Settings(BaseSettings):
     entra_group_claims: bool = Field(
         default=True,
         description=(
-            "Records whether bootstrap configured groupMembershipClaims. Informational, and "
-            "drives warnings."
+            "Records whether bootstrap configured groupMembershipClaims. Required for "
+            "custom-center token access and Automatic resource modes; does not enable keys."
         ),
     )
     graph_endpoint: AnyHttpUrl = Field(

@@ -1,0 +1,51 @@
+{
+  "profile": "usda-crop-insights",
+  "provenance": {
+    "mode": "snapshot",
+    "release": "USDA NASS Crop Production 2025 Summary, approved 2026-01-12",
+    "retrieved_at": "2026-10-29",
+    "snapshot_generated_at": "2026-10-29T00:36:46.444121+00:00",
+    "sources": [
+      {
+        "url": "https://www.nass.usda.gov/Publications/Todays_Reports/reports/cropan26.txt",
+        "excerpt_sha256": "a6a0b9cc76a41eb60c7200149684276b358ee825bb4e41336a01b91abea8958a",
+        "retrieved_at": "2026-10-29",
+        "capture_note": "Selected public report text transcribed from web_fetch. Direct refresh is not a fallback: it fails explicitly on source/network errors."
+      }
+    ],
+    "selection": "Small selected public-data subset, not a complete agency inventory.",
+    "precision": "National summary estimates; acreage is rounded in millions. 2024 corn acreage is not included, not zero. No state/county/farm inference."
+  },
+  "records": [
+    {
+      "id": "corn-2024",
+      "crop": "corn",
+      "geography": "United States",
+      "year": 2024,
+      "yield": 179.3,
+      "yield_unit": "bushels/acre",
+      "harvested_million_acres": null,
+      "source_url": "https://www.nass.usda.gov/Publications/Todays_Reports/reports/cropan26.txt"
+    },
+    {
+      "id": "corn-2025",
+      "crop": "corn",
+      "geography": "United States",
+      "year": 2025,
+      "yield": 186.5,
+      "yield_unit": "bushels/acre",
+      "harvested_million_acres": 91.3,
+      "source_url": "https://www.nass.usda.gov/Publications/Todays_Reports/reports/cropan26.txt"
+    },
+    {
+      "id": "soybeans-2025",
+      "crop": "soybeans",
+      "geography": "United States",
+      "year": 2025,
+      "yield": 53.0,
+      "yield_unit": "bushels/acre",
+      "harvested_million_acres": 80.4,
+      "source_url": "https://www.nass.usda.gov/Publications/Todays_Reports/reports/cropan26.txt"
+    }
+  ]
+}

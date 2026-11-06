@@ -1,14 +1,69 @@
 # Approvals and notifications
 
-MOSAIC separates an approval, gateway enforcement, and communication about either. An approval
-creates desired grant intent. An administrator still reviews and applies the resource's gateway
+MOSAIC separates an approval, directory membership, gateway enforcement, and communication about
+them. A resource approval creates desired grant intent. An administrator still reviews and applies the resource's gateway
 plan before the new access is usable. A sent notification does not change that boundary.
+
+## Resource requests and cost-center requests
+
+These are different request kinds. A resource request names one exact Request-only model,
+pool-model offering, or MCP server under an eligible center. A custom center requires its
+verified Entra group; tenant/personal defaults and the cost-center header do not establish
+membership. Approval rechecks setup, current eligibility, mode, publication availability, and
+limits. Not available is enforced server-side, not merely hidden in the portal.
+
+A cost-center creation request collects a proposed name, purpose/justification, and optional
+existing group object ID, without granting the requester directory-wide search/write permissions.
+It has its own queue/count/status/notification links rather than a fabricated model entitlement.
+The administrator uses the center setup workspace, may use or ignore the group suggestion, and
+explicitly chooses initial members.
+
+Approving a center request links to exactly one saved center, even if directory setup fails or
+remains incomplete. Retry/recovery must reuse that center and reconcile uncertain group creation,
+not create duplicates. Neither requester membership nor resource access is implied by approval.
+A notification distinguishes approved-but-setup-required from configured membership and
+from an applied resource grant. See [cost-center requests](cost-centers.md#request-a-cost-center).
+
+A **cost-center membership request** asks to join an existing administrator-published center.
+It is not a resource request or a proposal for a second center. Users initiate it from
+**My cost centers** and track it in **My requests**. Administrators explicitly review the
+real Entra-group effect before approving, or deny with a note. Direct administrator additions
+remain available independently.
+
+The decision commits before the directory addition. Approval does not claim membership success:
+pending, failed, and unknown directory outcomes remain visible with recovery guidance. A retry
+uses the same retained operation; an uncertain addition must be reconciled instead of blindly
+replayed. Directory-confirmed membership can still need propagation and a fresh token before
+Automatic access works. Joining does not create keys or individual resource grants.
+
+Queue totals, type filters, exact request links, personal notifications, and administrator
+notifications distinguish all three request kinds. Membership decisions are manual; scheduled
+resource approval policies, advisory AI, and bulk resource approval do not approve joins.
+See [self-service settings](cost-centers.md#my-cost-centers-and-self-service-settings) for
+persisted switches and opt-in discovery.
+
+## Automatic inheritance is not scheduled approval
+
+A center's Automatic mode creates one stable group grant per exact resource using JWTs, with no
+per-member automatic entitlements or APIM policy writes when membership changes. It requires
+caller-side token support and a reviewed apply for the group grant. The portal distinguishes this
+inherited access from individual approval.
+
+Approval policies below operate on eligible individual resource requests; they neither replace
+administrator group setup nor silently add a requester to Entra. Request-only approvals remain
+individual and require gateway apply. Individual tokens still require a custom center's group
+claim; explicit individual keys remain separate where resource and center permit them.
+Government offerings are excluded from the new center workflow.
 
 ## Approve several requests
 
-Select explicit requests in **Entitlements**, then review the batch. A submission contains at
+For resource access, select explicit requests in **Entitlements**, then review the batch. A submission contains at
 most 100 requests; it is not a live "approve everything matching this filter" query. Review each
 request's resource, current environment, cost center, effective limits, and blockers.
+
+Do not treat a cost-center creation or membership request as an item in a resource-grant batch
+or feed it to a model/MCP approval template. Their reviews configure a center or change directory
+membership, not an entitlement.
 
 Execution validates every request again. One request's conflict does not undo another's approval.
 Keep successful results and retry only unresolved items. Repeating an already approved request

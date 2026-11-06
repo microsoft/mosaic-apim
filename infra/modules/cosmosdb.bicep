@@ -26,6 +26,7 @@ resource account 'Microsoft.DocumentDB/databaseAccounts@2024-05-15' = {
       }
     ]
     minimalTlsVersion: 'Tls12'
+    // Explicit public intent; inherited modify policies may still override the effective setting.
     publicNetworkAccess: 'Enabled'
   }
 }

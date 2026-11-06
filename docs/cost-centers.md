@@ -1,340 +1,476 @@
 # Cost centers
 
-Every grant in MOSAIC, and so every call through it, is charged to a cost center: a team, project,
-or budget line that pays for AI. People choose one when they ask for access, and name one on each
-call when they hold several. Analytics, the chargeback, and the portal report spend and quotas per
-cost center, and a cost center's monthly budget can warn its owners and block its calls; see
-[Budgets and alerts](budgets-and-alerts.md). [ADR 0022](adr/0022-cost-centers.md) records the
-design.
+A cost center is the team, project, or budget line that pays for AI. It defines charging, resource
+availability, default limits, and pooled quotas. For every **custom** center, one dedicated Entra
+security group defines membership. An **entitlement** is still a grant to one exact resource under
+one center: membership alone is not permission to call every model or MCP server.
+
+The built-in **General** center is exempt from the mandatory Entra group. Its exemption follows
+its built-in identity, not its editable name or code. Government offerings are not available in
+the new Entra-backed setup and access-mode workflow; their existing workflow is separate.
+
+[ADR 0030](adr/0030-entra-backed-cost-centers.md) records this design and supersedes the earlier
+local-group experiment. See [workflow diagrams](workflows.md) for setup, access, and removal.
 
 - [What a cost center holds](#what-a-cost-center-holds)
 - [Set up cost centers](#set-up-cost-centers)
+- [My cost centers and self-service settings](#my-cost-centers-and-self-service-settings)
 - [Members and who may charge a cost center](#members-and-who-may-charge-a-cost-center)
-- [Experimental managed groups](#experimental-managed-groups)
-- [Limits and pooled quotas](#limits-and-pooled-quotas)
+- [Resource access modes](#resource-access-modes)
 - [Grants, requests, and approvals](#grants-requests-and-approvals)
+- [Removing a member](#removing-a-member)
+- [Limits and pooled quotas](#limits-and-pooled-quotas)
 - [Choose a cost center on a call](#choose-a-cost-center-on-a-call)
 - [Keys](#keys)
 - [Reports](#reports)
 - [API](#api)
+- [Earlier MVP records and historical proposals](#earlier-mvp-records-and-historical-proposals)
 - [Limits of the design](#limits-of-the-design)
 
 ## What a cost center holds
 
-| Field | What it is |
+| Item | What it means |
 | --- | --- |
-| Name | What people see, such as **Customer Insights**. |
-| Code | What calls name, such as `CI-204`. 1 to 64 letters, digits, dots, hyphens, and underscores, unique in the tenant whatever its case. |
-| Owners | Email addresses of the people responsible for it. |
-| Members | The people, applications, agents, and Entra security groups that may charge it. |
-| Keys allowed | Whether its grants may use subscription keys. Off, they use Microsoft Entra tokens only. |
-| Limits | For each model API, [model pool](../README.md#model-pools) model, or MCP server: per-person default limits, and an optional pooled monthly quota. |
+| Name and code | A readable name and a code calls can select, such as **Customer Insights** and `CI-204`. Codes are 1 to 64 letters, digits, dots, hyphens, and underscores, unique in the tenant regardless of case. |
+| Owners/contact details | People responsible for spend and notifications. An email address here does not assign Entra group ownership or add a member. |
+| Entra binding | The configured directory and verified group object ID, with setup status and whether MOSAIC created or attached it. Required for custom centers. |
+| Resource access | Automatic, Request-only, or Not available for each exact published model, pool-model offering, or MCP server. |
+| Keys allowed | Whether an otherwise eligible individual grant may use a subscription key. This does not enable keys on the resource or create a group key. |
+| Limits | Per-person defaults and optional pooled monthly quotas for each exact resource. |
 
-A cost center spans gateways: one cost center can hold grants on models published through any of
-them.
+A center spans gateways. Its group can be bound to **only one** MOSAIC cost center; a similar
+display name is not an identity match. Membership lives in Entra, not in an editable MOSAIC
+shadow roster, and the centers list does not download the full membership of every group.
 
-Every tenant has **General** (`general`). It's built in, so you can rename it and change its code,
-but not delete it. It's the tenant's default until you choose another.
+Every tenant has General, initially code `general`. You may rename it and change its code, but
+not delete it. Tenant and personal defaults are preferences for selecting among eligible grants;
+making a custom center a default does not give anyone membership or resource permission.
 
 ## Set up cost centers
 
-In the console, open **Cost centers**:
+Open a center's workspace in the administrator console. Configure its details, group setup,
+initial membership, and resource access together:
 
-1. Under **New cost center**, give it a name, a code, owners, and whether keys are allowed, and
-   choose **Create cost center**.
-2. Open it, and add members: people, applications, agents, or Entra security groups MOSAIC already
-   knows. Add a security group rather than listing many people.
-3. Under **Limits**, set per-person defaults and pooled quotas for the models and MCP servers its
-   people use.
-4. Under **Tenant default**, choose which cost center new principals are charged to. Everyone may
-   charge the tenant's default.
+1. Save the center's name, code, responsible contacts, and key restrictions.
+2. Attach an eligible existing Entra group, or explicitly create one through MOSAIC.
+3. Verify the directory and group object ID. An existing group must be an ordinary
+   **cloud-managed, assigned-membership, security-enabled, mail-disabled, non-role-assignable**
+   group. Dynamic, on-premises-managed, mail-enabled, and role-assignable groups are unsupported
+   in this editor.
+4. Choose initial members explicitly, including whether to add the person who requested the
+   center. Neither ownership/contact metadata nor approval adds anyone silently.
+5. Set access modes and limits for exact resources. Review and apply the affected gateway plans
+   before treating new resource grants as active.
 
-When you onboard a person, application, or agent on the **Identity** page, its **Default cost
-center** is the tenant's default unless you pick another. Its calls are charged there when they name
-none. Security groups have no default.
+**Attaching a group affects the real directory group.** Adding or removing members through MOSAIC
+can also change their access to other applications that use it. Attaching requires an explicit
+acknowledgment of this effect; prefer a group dedicated to the center.
 
-A cost center can't be deleted while it's the tenant's default, while it's anyone's default, or
-while grants are charged to it. Move those first. A principal can't be deleted while a cost center
-lists it: remove it from the cost center first, which revokes what relied on it.
+Directory lookup and verification use the API identity's read-only baseline. Optional
+`Group.Create` permits creation; the API service principal is explicitly assigned as an owner
+when MOSAIC creates a group. Optional `GroupMember.ReadWrite.All` permits user membership edits.
+Adding service principals, including managed identities and app-only agent identities, additionally
+requires separately consented `Application.ReadWrite.All`. These application permissions can be
+tenant-wide even though MOSAIC restricts mutations to a center's verified bound group. A MOSAIC
+Admin role is not directory consent. See [deployment and consent](deployment.md#optional-cost-center-group-management).
 
-Changing a cost center's code, turning its keys off or on, changing its limits, or changing a
-principal's default changes what the gateway enforces. The grants it affects show as pending until
-you review and apply their models' plans. Until then, the gateway keeps enforcing what it has.
+### Incomplete setup and recovery
+
+The center is saved **before** external group creation. If consent is missing, Graph refuses the
+operation, or creation fails, keep the center and finish setup later. It is not usable for custom
+center grants, defaults-based eligibility, or credentials until its binding is verified.
+
+A timed-out creation has an **unknown outcome**, not permission to create another group. Inspect
+the retained operation and reconcile the actual object identity or use administrator-assisted
+recovery. Retrying approval or recovery must not create another center or group. A matching
+display name is not sufficient recovery evidence.
+
+A verified attached group can support runtime access without membership-write consent. Its
+membership view is then read-only, not an incomplete group binding. Capability checks distinguish
+creation, user membership, and workload membership; they do not create or delete test groups.
+
+Keep these states separate:
+
+| State | What it establishes |
+| --- | --- |
+| Center setup | Whether the required group is verified and exclusively bound |
+| Directory operation | Whether a create/add/remove succeeded, failed, or has an unknown outcome |
+| Membership propagation | Whether refreshed tokens can be expected to reflect the directory change |
+| Gateway apply | Which resource/gateway changes are pending, applied, or failed |
+| Individual key revocation | Which existing credentials still need revocation and gateway apply |
+
+Deleting or disabling a center does not delete its Entra group. Deletion remains blocked while
+references such as grants or defaults require the center. Rebinding or releasing an applied
+group association requires explicit revocation/reconfiguration; changing a stored association
+does not remove access already applied to APIM.
 
 ## Members and who may charge a cost center
 
-A principal may charge a cost center when:
-- it's the tenant's default, which everyone may charge;
-- it's the principal's own default;
-- the cost center lists the principal; or
-- the cost center lists a security group the principal is in.
+The Members view reads the actual Entra membership with server-side paging, including supported
+workload identities. With the appropriate consent, administrators add or remove **direct**
+relationships in the bound group. A successful local record edit is never reported as a successful
+directory change. Permission denial, throttling, replication delay, and unknown outcomes remain
+visible with recovery guidance.
 
-A security group may charge only the tenant's default and the cost centers that list it.
+**Preview dependency:** direct member listing currently uses Microsoft Graph **beta**, following
+Microsoft's [documented workaround for v1.0 omitting service principals](https://learn.microsoft.com/en-us/graph/api/group-list-members?view=graph-rest-1.0).
+Graph beta APIs are subject to change and
+[are not supported for production use](https://learn.microsoft.com/en-us/graph/api/group-list-members?view=graph-rest-beta).
+This is a control-plane roster-listing limitation, separate from the stable JWT group-claim
+authorization path at APIM, which does not call Graph. Neither listing nor the new write adapter
+has proved live interoperability in this change.
 
-Removing a member stops them charging the cost center:
-- Their grants under it are revoked, unless they may still charge it another way, such as through
-  a security group it lists. A revoked grant is turned off, with the reason recorded, and the next
-  apply of its model deletes its key. You can turn it back on only once they may charge the cost
-  center again.
-- If it was their default, their default goes back to the tenant's.
-- Removing a security group also checks every grant whose subject might have charged the cost
-  center only through that group. With Microsoft Graph lookup off, a grant that came from a request
-  keeps only the groups that request was made through, and a grant nothing proves eligible is
-  revoked.
-- Leaving the tenant's default revokes nothing.
+Direct and inherited membership are distinct. An inherited member cannot be removed by pretending
+to delete a direct relationship; its parent-group relationship must be reviewed separately.
+Removing a direct relationship also does not prove that no other membership path remains.
 
-Losing the right to charge a cost center any other way revokes grants the same way:
-- **Changing a principal's default** revokes its grants under the former default, unless it may
-  still charge it as a listed member or through a listed security group.
-- **Changing the tenant's default** revokes the grants under the former default whose subjects may
-  charge it no other way: as a listed member, through a listed security group, or as their own
-  default. People onboarded while it was the tenant's default have it as their own default, so
-  they keep theirs.
-- **Turning a grant back on** checks again that its subject may charge its cost center, whether it
-  was revoked or turned off by hand.
+For a custom center, current eligibility depends on its verified Entra group, not a local roster,
+an owner email address, a personal default, or the tenant default. Requests, approvals, individual
+grant creation/re-enabling, and key creation/reveal check eligibility. Failed or incomplete
+directory verification is not successful membership evidence.
 
-Revoking a grant waits for its model's lock, which an apply holds while it runs. If a grant can't
-be revoked yet, the cost center shows **Recheck pending**:
-- Applies leave the grants still to be checked out of runtime access, and the plan says which.
-- To finish, open the cost center and choose **Check grants again**. Any later member removal or
-  default change finishes it too, and so does repeating the change.
+At runtime, **every custom-center token path** requires the center's group ID in the validated
+token, including an approved individual grant. A more-specific direct grant can choose different
+limits but cannot bypass that requirement. General retains its existing resource/credential rules
+without a new mandatory center-group check.
 
-## Experimental managed groups
+## Resource access modes
 
-`MOSAIC_MANAGED_COST_CENTER_GROUPS` is **false by default**. Opting in enables the
-[managed-group foundation](adr/0029-managed-cost-center-groups.md), not automatic model access.
-It makes no APIM configuration changes, creates no subscription keys or Entra groups, and adds
-no model-call dependency.
+| Mode | What members receive |
+| --- | --- |
+| **Automatic** | One managed Entra group grant for this center and exact resource. Eligible members use it with a runtime JWT after gateway apply. No per-member automatic entitlements or keys are created. |
+| **Request-only** | Eligible members may request an individual resource grant. Approval and gateway apply remain separate. |
+| **Not available** | The resource cannot be newly requested or granted under this center. This is enforced by the API, not just hidden in the portal. |
 
-With the setting enabled, each new cost center atomically gets one owned MOSAIC group.
-Administrators can link an existing center with
-`POST /api/v1/cost-centers/{id}/group`. This is idempotent and preserves its existing members,
-grants, keys, defaults, and IDs. A matching display name never causes an unrelated group to be
-adopted.
+Modes apply to an **exact offering**, not to the catalog's visual grouping of similar models.
+A pool-model offering includes both the model identity and the pool scope; the same model in
+another pool or publication is a different resource. Model and MCP grants are independent.
 
-The cost-center response adds `groupId` and `membershipRevision`; group metadata adds
-`purpose: "costCenter"` and `costCenterId`. Both membership routes read and mutate the **same
-explicit roster**:
+Automatic requires **caller-side Entra token support** on that publication. MOSAIC does not
+silently enable tokens, weaken the resource's authentication settings, or manufacture individual
+keys when tokens are disabled. A backend reached with an API key can still accept caller JWTs at
+APIM; backend authentication and caller authentication are different.
 
-- `/api/v1/cost-centers/{id}/members/{principalId}`
-- `/api/v1/groups/{groupId}/members/{principalId}`
+Configure Automatic once and apply the group grant through the reviewed gateway plan. Adding
+members afterward performs Graph work, with **no per-person automatic grant generation and no
+APIM management writes**. Resource modes, grants, quotas, key restrictions, and other policy
+changes still use review/apply and can leave pending work on several gateways. Inspect partial
+failures per resource rather than treating one successful apply as completion everywhere.
 
-The compatibility foundation keeps that roster in the existing cost-center record. The group
-API projects it rather than creating a second set of membership documents. Both routes support
-individual principals and existing Entra security-group references, share the 500-reference
-limit, and preserve the existing grant rechecks and personal-default reset on removal. An Entra
-reference occupies one row; neither response expands the group's directory membership.
+Automatic itself provides no personal key. Where resource keys and center keys are enabled,
+an explicit eligible individual grant can still use the individual-key workflow. Reviewed
+individual quota exceptions on available resources remain membership-gated. Neither an exception
+nor a key request can bypass Not available or incomplete center setup. Changing a mode is desired
+intent; inspect and apply the resulting grant/revocation changes before claiming existing runtime
+access has changed.
 
-A person's default, and permission to charge the tenant's default, **do not** make that person
-an explicit group member. Removing an absent group reference returns 404 without changing defaults
-or grants, except that a recorded explicit removal can be retried to finish its default reset or
-grant rechecks. The cost-center route still supports removing default-only charge eligibility.
-Rename or delete the group through its owning cost center; independent group edits/deletion are
-refused. Deleting a center also removes its owned group atomically, but is refused if a grant still
-references that group, even under another center.
+## Grants, requests, and approvals
 
-The console distinguishes these records in **Identity > MOSAIC groups** with a managed-group
-badge, owning-center navigation, and an **Edit members** workspace. It accepts recorded people,
-workloads, and Entra security-group references, and immediately saves additions/removals to the
-same roster as the cost center's **Members** section. **Done** closes the editor without undoing
-saved membership changes. Both views refresh related membership/default/grant
-data after changes. The managed name and description stay read-only here; edit them through
-the owning cost center. Missing ownership data is an explicit error, not permission to edit it
-as an ordinary group.
+A grant names one cost center as part of its identity. The same person can hold the same model
+under two centers as two grants, each with its own limits, counters, and usage.
 
-Linked cost centers provide **View membership group** navigation from their overview and Members
-section. There are no new automatic-access or synchronization controls in the console or portal.
-Managed groups cannot be used as legacy group-entitlement subjects and are excluded from that
-grant selector.
-Generic MOSAIC groups remain desired-state-only and still reject Entra-group members.
-Turning the setting off stops new group creation/linkage; already-linked centers keep their
-shared membership behavior and ownership guards. It does not unlink or delete anything.
+- **Administrators** choose an eligible center and available exact resource. A managed Automatic
+  grant derives from the center's configuration; it is not an individual request approval.
+- **Portal users** see the distinction between *Automatic through your cost center* and *Approved
+  for you*. Inherited access does not appear as a personal key or create a personal grant record
+  for every group member.
+- **Resource requests** name an eligible center and a Request-only offering. Approval rechecks
+  membership, mode, availability, and limits, and saves an individual grant. Scheduled approval
+  policies do not turn Request-only into Automatic.
+- **Gateway apply** makes the approved grant effective. Approved but unapplied access is waiting
+  for apply, not Active.
+- **Model pools** grant one exact pool model at a time. Two models in one pool require two grants,
+  even where eligible direct grants share one individual pool-and-center key.
 
-The revision records membership changes, not a completed gateway synchronization. Renaming a
-center or changing its limits does not advance it. Missing or conflicting owned metadata is
-reported as an error instead of being silently adopted or recreated. APIM synchronization,
-automatic/request modes, explicit model selection, inherited personal keys, and per-gateway
-synchronization readiness remain separate, gated work.
+### Request a cost center
 
-The directory adapter separately provides a
-[complete Entra verification prerequisite](cost-center-access-feasibility.md#independent-graph-verification-prerequisite).
-It checks an explicit owner cohort against every transitive-members page instead of using the
-bounded directory preview as authorization evidence. It returns no successful evidence after a
-partial or failed read. This is an internal control-plane contract, not an enabled background
-membership sync, a new portal capability, or live verification of a real tenant.
+A portal user opens **My cost centers > Request a cost center** to submit a proposed name,
+purpose/justification, and an optional existing Entra
+group object ID. Submitting a suggestion gives the user no directory-wide group search or write
+permission.
 
-Administrators can explicitly exercise that contract from **Identity > Entra security groups**
-with the
-[shared functional directory check](cost-center-access-feasibility.md#shared-functional-directory-check).
-Its group-scoped diagnostic observation also appears under **Settings > Runtime configuration**
-and in directory status, independently of configured lookup and token consent. It is process-local,
-does not grant access, and is not durable gateway sync status or inherited-key eligibility.
+This is a distinct request kind, not a fabricated model or MCP entitlement. It has its own status
+and appears in the administrator queue, counts, notifications, and request links. The administrator
+uses the normal center setup workspace, may use or ignore the group suggestion, and explicitly
+chooses initial membership.
+
+Approval links the request to exactly one created center, even if directory setup remains
+incomplete. An approved center request is not evidence that the requester is a member, a resource
+grant exists, or a gateway apply succeeded. See [approvals](approvals-and-notifications.md).
+
+## My cost centers and self-service settings
+
+The portal's **My cost centers** area separates current membership from the resources in
+**My access**. **My memberships** shows the caller's own centers, including private ones.
+**Find cost centers** searches only centers an administrator explicitly published for discovery.
+General is shown as a built-in charging option, not as an Entra group membership to request.
+
+Administrators configure **Settings > Cost centers**:
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| Cost-center creation requests | On | Users may propose a new center for administrator review. |
+| Cost-center membership requests | Off | Users may request to join an administrator-published center. |
+
+These are persisted tenant settings, not environment variables or browser preferences. Turning
+one off prevents new submissions; it does not remove memberships, delete centers, cancel existing
+requests, change grants, or change the tenant/personal default charging preference. Existing
+reviews and recovery remain available to administrators.
+
+Each custom center starts private. After group setup is ready, an administrator can publish its
+name, code, and public purpose from its editor, acknowledging that adding members changes the
+real Entra group and may affect other applications that use it. Search does not expose private
+centers, directory-wide group lookup, owner email addresses, member rosters, directory IDs,
+credentials, or spending. Unpublishing stops new discovery/submission, not existing membership.
+
+### Request to join
+
+Find a published center, open its details, and choose **Request to join**. Explain why you need
+membership; submitting does not add you. **My requests** tracks resource access, center creation,
+and membership as distinct request kinds. There is at most one active join request per person
+and center, including submissions retried with another key. Administrators may still add someone
+directly through the center's Members view without requiring a request.
+
+An administrator reviews the requesting person, center, group readiness, and the real membership
+effect, then approves or denies. Approval uses MOSAIC's existing consented direct Entra addition,
+not a local roster or a fabricated resource grant. If the person already has effective membership,
+including through a nested group, the request can complete without another direct addition.
+Ordinary users request only their own membership; workload-identity joins are not offered here.
+
+Approval, the directory operation, and usable resource access have separate states. Missing
+consent or a failed write leaves **administrator action needed**. An uncertain outcome requires
+reconciliation of the retained operation, not a new blind addition. The portal distinguishes
+directory-confirmed membership from what the current token proves, and reports failed membership
+verification rather than claiming that the caller has no memberships.
+
+Joining can unlock already-applied **Automatic** offerings once a fresh runtime token includes
+the group. **Request-only** offerings still require individual approval; **Not available** remains
+unavailable. Joining creates no key, increases no budget or pooled quota, and changes no default.
+Graph membership reads in the portal are not a runtime authorization fallback, and do not bypass
+token group overage or gateway apply. The existing supported-cloud restriction remains in effect.
+
+## Removing a member
+
+Removing someone in MOSAIC changes their real **direct Entra relationship**. It does not recall a
+token, invalidate a previously copied key, or rewrite the stable Automatic grant.
+
+| Credential/access path | Consequence and required follow-up |
+| --- | --- |
+| Automatic JWT | Once directory propagation and token refresh remove the center group claim, that token cannot match the center's group grant. The existing grant/policy does not need rebuilding for each member. |
+| Individual JWT | A refreshed token without the center group also fails, even if an individual grant remains. Direct-grant precedence does not bypass membership. |
+| Existing individual key | The key is independent of JWT membership. Review affected individual grants/keys, revoke or disable the affected access, and apply the affected gateway plans. A directory write alone does not revoke it. |
+| Another inherited membership path | Review the remaining relationship; removing one direct relationship does not necessarily remove effective membership. |
+
+Already-issued JWTs retain their claims until expiry. Human access tokens normally have
+**60-90 minutes total lifetime from issuance**, not another fixed 60-90 minutes after removal;
+the token's actual remaining `exp` and configured token policy matter. Directory propagation can
+also delay new claims. Managed identities can cache tokens/authorization per resource for
+**around 24 hours**, and membership changes can take several hours. MOSAIC does not promise a
+universal 90-minute bound, immediate JWT revocation, or CAE for this APIM path.
+
+After removal, distinguish directory success, propagation/token refresh pending, and individual
+key revocation pending. MOSAIC identifies affected direct/key access for eligibility recheck and
+review/apply. If a publication lock prevents completion, the work remains explicitly pending;
+retry the recheck rather than interpreting the membership edit as a completed gateway revocation.
+
+For changes made **outside MOSAIC**, an administrator must explicitly recheck individual-key
+eligibility and finish any revoke/apply work. Complete, tenant-bound verification is required;
+failed or partial checks stay visible. There is no continuous directory watcher or guaranteed
+automatic key revocation. See [removal workflow](workflows.md#remove-a-member-and-finish-credential-revocation).
 
 ## Limits and pooled quotas
 
-**Per-person defaults** apply to each grant under the cost center that sets no limits of its own:
-tokens per minute, a token quota, calls per minute, and a call quota. They count on the grant's own
-counter, exactly as if the grant set them. A security group's grant applies them to each member.
+**Per-person defaults** apply to a grant that sets no limits of its own: tokens per minute, a
+token quota, calls per minute, and a call quota. They use that grant's counter. A security-group
+grant applies its allowance to each member, keyed by the runtime caller's object ID.
 
-A **pooled monthly quota** is shared by every grant under the cost center on that model, whoever
-calls:
-- **Monthly tokens** is a second `llm-token-limit` in the model's policy, with a `Monthly` quota,
-  counted per cost center and publication. A call has to fit both the caller's own limits and the
-  pooled quota.
-- **Monthly calls** is a `quota-by-key` over the calendar month, counted the same way.
-- MCP servers, and models whose gateway tier can't meter tokens, have a pooled call quota only.
+A **pooled monthly quota** is shared by every grant under the center on that resource:
 
-API Management counts each gateway separately, so a pooled quota is per model, per gateway.
+- Monthly tokens use a second `llm-token-limit`, with a `Monthly` quota, counted per cost center
+  and publication. A call must fit both its own limits and the pooled quota.
+- Monthly calls use `quota-by-key` over the calendar month, counted the same way.
+- MCP servers, and models whose gateway tier cannot meter tokens, have a pooled call quota only.
 
-A [model pool](../README.md#model-pools)'s models take per-person defaults and pooled quotas like
-any model. A model pool serves each model from deployments in several regions, and its limits
-count every call to the model, whichever deployment served it. Its pooled quota is counted per
-cost center and pool model.
+APIM counts each gateway separately. The same model on two gateways has two pooled quotas.
+A [model pool](model-pools.md)'s quota counts every call to its exact pool model, whichever member
+deployment served it, per center and pool model.
 
-The gateway reports what's left in response headers:
-
-| Header | What's left |
+| Response header | What's left |
 | --- | --- |
 | `x-mosaic-remaining-tokens` | The grant's tokens this minute |
 | `x-mosaic-remaining-quota-tokens` | The grant's token quota |
 | `x-mosaic-remaining-calls` | The grant's calls this rate window |
-| `x-mosaic-cost-center-remaining-quota-tokens` | The cost center's pooled tokens this month |
+| `x-mosaic-cost-center-remaining-quota-tokens` | The center's pooled tokens this month |
 
-Each header is present only when that limit applies. Call quotas don't report what's left.
-
-## Grants, requests, and approvals
-
-A grant names one cost center, and that's part of what the grant is. The same person can hold the
-same model under two cost centers, as two grants, each with its own limits, key, and usage.
-
-- **Entitlements:** a new grant charges the cost center you choose, or its subject's default. MOSAIC
-  refuses a cost center the subject may not charge. The grants table shows and filters by cost
-  center.
-- **Portal requests:** people choose a cost center from a dropdown of those they may charge, with
-  their default preselected. They can ask for the same model again under another of their cost
-  centers.
-- **Approvals:** the dialog shows the cost center the person chose, and you can charge another they
-  may charge. Leaving limits empty applies the cost center's per-person defaults, when it has any.
-- **Model pools:** a grant on a [model pool](../README.md#model-pools)'s model names a cost center
-  like any other grant, and so does a request for one. A person who holds two of a pool's models
-  under one cost center has two grants, each with its own limits, and one key.
+Each header appears only when that limit applies. Call quotas do not report what's left.
 
 ## Choose a cost center on a call
 
-A call names the cost center it charges with the `x-mosaic-cost-center` header, set to the cost
-center's code. The code is compared without case. Connection details in the portal show the header
-and its value for each grant.
+`x-mosaic-cost-center` optionally selects the code of a center under which the caller **already
+has an authorized grant**. Codes are compared without case. The header grants neither membership
+nor resource access; connection details show the appropriate value.
 
 ```bash
 curl "$ENDPOINT/openai/deployments/gpt-4o/chat/completions?api-version=2024-10-21" \
-  -H "Authorization: Bearer $MOSAIC_ACCESS_TOKEN" \
+  -H "Authorization: ******" \
   -H "x-mosaic-cost-center: CI-204" \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"Hello"}]}'
 ```
 
-Without the header, the gateway uses, in order:
-1. the caller's direct grant under their default cost center;
-2. their other direct grants, oldest first;
-3. their security-group grants, the most generous first.
+Without a header, APIM considers eligible grants in this order:
 
-A key belongs to one grant, or to one model pool and cost center, so it always charges that cost
-center, and needs no header. The gateway refuses a call with **403** when:
-- the header isn't a single valid code (denial reason `cost-center`);
-- the caller holds no grant under the cost center it names (`cost-center`); or
-- a key comes with a header naming a different cost center (`cost-center-mismatch`).
+1. the caller's direct grant under their default center;
+2. other direct grants, oldest first;
+3. matching security-group grants, most generous first.
 
-The gateway removes the header before the call reaches the model or MCP server.
+These are selection preferences, not ways around a custom center's group requirement.
+A key belongs to one grant, or one pool and center, and always charges that center. APIM rejects
+an invalid/unauthorized code, a key with a conflicting center header, or a key/token combination
+that does not validate to the same grant. It strips the header before forwarding to the backend.
 
 ## Keys
 
-Applies don't create keys. A grant's key exists once someone asks for it:
-- In the portal, on **My access**, a person creates, rotates, or deletes the key for their own
-  applied direct grant.
-- In the console, on **Entitlements**, an administrator does the same for any direct grant, such as
-  an application's or an agent's.
+Keys remain **individual credentials**, not inherited group credentials. They work only when the
+resource accepts keys, the center allows them, and the individual grant is eligible and applied.
+New key creation and reveal require current eligibility. A key is transferable bearer material,
+not proof that its named holder physically made the call.
 
-Rotating regenerates one slot, primary or secondary, while the other keeps working, so clients can
-move to the new value without downtime. Deleting the key stops every client using it; a new key can
-be created after. The key's name in API Management ends with the cost center's code.
+For commercial model grants, apply does not create a key. The holder explicitly creates, rotates,
+reveals, or deletes their applied direct grant's key in the portal; an administrator does so for
+an application or agent. Rotation replaces one slot while the other can remain in use. Explicit
+key deletion is separate from changing Entra membership.
 
-Keys work only when the model's governed access accepts keys and the grant's cost center allows
-them. Turning a cost center's keys off suspends its grants' keys at the next apply, and keeps them
-for when keys are allowed again. Security-group grants never have keys.
+Turning center keys off suspends affected keys at the next apply. Revoking a grant ends its
+access through the reviewed revocation/apply workflow. Existing copied keys do not expire because
+a directory relationship was removed; inspect pending key work before declaring access ended.
+Security-group grants have no key path.
 
-A [model pool](../README.md#model-pools) gives each person, application, or agent one key per pool
-and cost center. It serves every model they hold directly in the pool under that cost center, so
-the same key calls any of them, and the portal says which. Creating, rotating, or deleting it from
-any of those grants acts on that one key. Revoking one of the grants ends only that model, at the
-pool's next apply, and that apply deletes the key once every grant it serves is revoked.
+A model pool provides one individual key per subject, pool, and center for eligible direct grants
+on its models. Revoking one model grant removes only that model at the pool's next apply; the key
+is deleted when no eligible grants it serves remain. Automatic group access does not enlarge the
+set of models that such a key authorizes.
 
 ## Reports
 
-- **Analytics:** every tab has a **Cost center** filter. Filtered, it counts only calls through the
-  cost center's grants. Refusals, unattributed calls, client applications, reserved capacity
-  nobody called, and figures by the hour belong to no grant, so the filter leaves them out and the
-  page says so. Overview ranks cost centers, Consumers lists each with its grants, callers, and cost,
-  Cost shows cost by cost center, and grant, limit, and hygiene rows name theirs.
-- **Chargeback:** the CSV has **Cost center** and **Cost center name** columns after **Object ID**.
-  **Unattributed calls** and **Reserved capacity with no calls** belong to no grant, so their cost
-  center is empty. See [Pricing](pricing.md#chargeback).
-- **Model pools:** a [model pool](../README.md#model-pools)'s calls count under the cost center of
-  the grant that made them, like any model's, each priced at the deployment that served it. Calls
-  to a pool without governed access belong to no grant.
-- **Portal:** **Usage & cost** shows a person their own use, limits, and rate-limit use, as before.
-  For each cost center they hold an enabled grant under, it adds the cost center's total this
-  month, from everyone's calls, and the total on each resource they hold there that has a pooled
-  quota, against that quota. It never shows who else called, how many did, or what any one person
-  used.
-- **Budgets:** a cost center's page shows its monthly budget's progress, forecast, and emails, and
-  the Dashboard shows every budget. The owners get its emails by default. See
-  [Budgets and alerts](budgets-and-alerts.md).
+- **Analytics:** the Cost center filter includes attributed calls under that center's grants.
+  Unattributed calls, refusals, client-application summaries, idle reserved capacity, and hourly
+  figures without grant attribution are excluded and labeled. Grant, limit, and hygiene rows
+  identify their center.
+- **Chargeback:** the CSV includes Cost center and Cost center name after Object ID.
+  Unattributed calls and reserved capacity with no calls have no center. See [pricing](pricing.md#chargeback).
+- **Model pools:** attributed calls use the selected grant's center and the price of the deployment
+  that served the call.
+- **Portal:** Usage & cost shows the caller's own attributed use. Shared center totals and pooled
+  quotas are labeled shared and do not disclose the roster or a per-person spending breakdown.
+  A shared total can still allow inference about another person's use in a very small cohort.
+- **Budgets:** a center's monthly budget can notify its responsible contacts and block calls
+  asynchronously. See [budgets and alerts](budgets-and-alerts.md).
 
 ## API
 
-Administrators (`Admin`):
+The deployed OpenAPI document is the reference for request bodies. Use the center's Entra workflow,
+not the superseded local managed-group membership routes. Creating or updating a center accepts
+`groupSetup` (attach, create, or leave setup for later) and exact `resourceAccess` definitions.
+Directory member writes require an `Idempotency-Key`; an HTTP response alone is not proof of
+success. Inspect the returned operation state, propagation warnings, and pending key work.
 
-| Method | Route under `/api/v1` | Result |
+| Method | Route under `/api/v1` | Purpose |
 | --- | --- | --- |
-| GET | `/cost-centers` | Every cost center, with its members, grant counts, and whether it's the tenant's default |
-| POST | `/cost-centers` | Create one: `name`, `code`, `description`, `owners`, `keysAllowed`; 409 `codeInUse` |
-| POST | `/cost-centers/{id}/group` | Experimental, setting required: idempotently link an existing center to its owned group; no model access or APIM apply |
-| GET | `/cost-centers/{id}` | One cost center |
-| PATCH | `/cost-centers/{id}` | Change its name, code, description, owners, or keys allowed |
-| DELETE | `/cost-centers/{id}` | Delete it; 409 `builtIn`, `tenantDefault`, `isDefault`, `hasGrants`, or `groupHasGrants` |
-| PUT | `/cost-centers/{id}/members/{principalId}` | Add a member |
-| DELETE | `/cost-centers/{id}/members/{principalId}` | Remove a member, and revoke the grants that relied on it |
-| POST | `/cost-centers/{id}/recheck` | Check again the grants its pending rechecks cover |
-| PUT | `/cost-centers/{id}/limits` | Replace its per-person defaults and pooled quotas. A limit on a pool model names a `poolModel` resource, whose `scopeId` is the pool |
-| GET, PUT, DELETE | `/cost-centers/{id}/budget` | Its monthly budget; see [Budgets and alerts](budgets-and-alerts.md#api) |
-| GET, PUT | `/cost-center-settings` | The tenant's default cost center |
-| GET | `/entitlements?costCenter={id}` | Grants charged to a cost center |
-| POST, DELETE | `/entitlements/{id}/keys` | Create or delete any direct grant's key |
-| POST | `/entitlements/{id}/keys/rotate` | Regenerate one slot: `{"slot":"primary"}` or `{"slot":"secondary"}` |
-| GET | `/analytics/{view}?costCenterId={id}` | Any analytics view, filtered to one cost center |
+| GET, POST | `/cost-centers` | List centers and setup state, or save a center |
+| GET, PATCH, DELETE | `/cost-centers/{id}` | Read/update a center, or delete it subject to reference guards |
+| GET | `/cost-centers/group-capabilities` | Read the separately consented directory capabilities |
+| GET | `/cost-centers/{id}/directory-members` | Page through the real group's direct Entra members |
+| PUT, DELETE | `/cost-centers/{id}/directory-members/{objectId}` | Add/remove a direct relationship through a durable directory operation |
+| GET | `/cost-centers/{id}/directory-operations` | Inspect group and membership operation outcomes |
+| GET | `/cost-centers/{id}/directory-operations/{operationId}` | Read an operation and its permitted recovery actions |
+| POST | `/cost-centers/{id}/directory-operations/{operationId}/retry` | Explicitly retry a known-safe failure |
+| POST | `/cost-centers/{id}/directory-operations/{operationId}/recover` | Reconcile an uncertain external outcome rather than blindly replay it |
+| POST | `/cost-centers/{id}/recheck` | Explicitly recheck affected individual-grant/key eligibility |
+| PUT | `/cost-centers/{id}/limits` | Replace default limits and pooled quotas for exact resources |
+| GET, PUT, DELETE | `/cost-centers/{id}/budget` | Manage the monthly budget |
+| GET, PUT | `/cost-center-settings` | Read/update the default selection preference and independent self-service switches |
+| GET | `/entitlements?costCenter={id}` | List grants charged to a center |
+| GET | `/portal/cost-centers` | Caller-scoped eligible centers |
+| POST | `/portal/access-requests` | Request an available Request-only resource under an eligible center |
+| POST, DELETE | `/me/entitlements/{id}/keys` | Explicitly create/delete the caller's individual key |
+| POST | `/me/entitlements/{id}/keys/reveal` | Reveal an eligible applied individual key |
+| GET | `/analytics/{view}?costCenterId={id}` | Read filtered analytics |
 
-People (`User`), for themselves only:
+Cost-center creation requests have their own routes and never stand in for resource grants:
 
-| Method | Route under `/api/v1` | Result |
+| Method | Route under `/api/v1` | Purpose |
 | --- | --- | --- |
-| GET | `/portal/cost-centers` | The cost centers they may charge, their default marked |
-| POST | `/portal/access-requests` | Ask for access, with `costCenterId` (their default when omitted) |
-| POST, DELETE | `/me/entitlements/{id}/keys` | Create or delete their key |
-| POST | `/me/entitlements/{id}/keys/rotate` | Regenerate one slot of their key |
-| GET | `/me/usage` | Their usage, with `costCenters`: each cost center's total this month |
+| GET | `/request-counts` | Read separate resource, creation, and membership counts and their total |
+| GET | `/cost-center-requests` | Review cost-center proposals, optionally filtered by state |
+| GET | `/cost-center-requests/{id}` | Read the proposal, linked center, and setup attention state |
+| POST | `/cost-center-requests/{id}/approve` | Review the center configuration and explicitly choose whether to add the requester |
+| POST | `/cost-center-requests/{id}/deny` | Decline a pending proposal |
+| GET | `/portal/request-counts` | Read the caller's separate request counts |
+| GET, POST | `/portal/cost-center-requests` | List the caller's proposals or submit one with an optional group suggestion |
+| GET | `/portal/cost-center-requests/{id}` | Track the caller's own proposal and incomplete setup |
+| POST | `/portal/cost-center-requests/{id}/withdraw` | Withdraw the caller's pending proposal |
+
+Membership discovery and requests use separate, owner-scoped routes:
+
+| Method | Route under `/api/v1` | Purpose |
+| --- | --- | --- |
+| GET | `/portal/cost-center-self-service-settings` | Read the two saved self-service switches without exposing administrator settings |
+| GET | `/portal/my-cost-centers` | Page/search the caller's current memberships with separate token eligibility |
+| GET | `/portal/cost-center-directory` | Page/search administrator-published centers using safe public fields |
+| GET | `/portal/cost-center-directory/{id}` | Read a published center or the caller's own private membership |
+| GET, POST | `/portal/cost-center-membership-requests` | List the caller's joins or submit a justified, idempotent request |
+| GET | `/portal/cost-center-membership-requests/{id}` | Track the caller's own decision and directory outcome |
+| POST | `/portal/cost-center-membership-requests/{id}/withdraw` | Withdraw the caller's pending join |
+| GET | `/cost-center-membership-requests` | Review joins, optionally filtered by decision state |
+| GET | `/cost-center-membership-requests/{id}` | Read the administrator view, including retained operation and recovery context |
+| POST | `/cost-center-membership-requests/{id}/approve` | Approve with explicit membership-change acknowledgment |
+| POST | `/cost-center-membership-requests/{id}/deny` | Decline a pending join |
+| POST | `/cost-center-membership-requests/{id}/resume` | Resume a recorded approval using its retained directory operation |
+
+Discovery lists accept `q`, `cursor`, and `limit`; membership-check failure is explicit rather
+than an authoritative empty roster. Submission uses an `idempotencyKey` UUID in the body.
+Approval and resume require `acknowledgeMembershipChanges: true`.
+
+Administrators use the non-`/me` entitlement credential routes for authorized workload handoff.
+Knowing a center, principal, group, request, or entitlement ID is not authorization to mutate it.
+Creation, membership, and resource access requests are distinct request kinds.
+
+<a id="experimental-managed-groups"></a>
+
+## Earlier MVP records and historical proposals
+
+[ADR 0029](adr/0029-managed-cost-center-groups.md) described a default-off MOSAIC-local managed
+group and shared internal roster. That experiment is superseded, not an authorization fallback.
+Its old local group IDs must never be treated as Entra object IDs.
+
+Old MVP centers without a verified new binding need explicit reconfiguration or recreation.
+There is no production migration, upgrade wizard, automatic member conversion, or historical
+backfill. Reconfigure deliberately: MOSAIC does not silently copy old members into Entra, broaden
+individual grants into group grants, delete existing data, or redirect charges to General.
+Generic MOSAIC-local groups remain unrelated desired-state records, not runtime groups.
+
+The [APIM-local membership/inherited-key feasibility proposal](cost-center-access-feasibility.md)
+is **historical and unimplemented**. Its offline probe is not the design for Entra-backed centers,
+evidence of live interoperability, or a prerequisite for the JWT group-grant path.
 
 ## Limits of the design
 
-- Group membership comes from the token at call time, so removing someone from a group takes effect
-  when their token expires, usually within about an hour.
-- A pooled quota counts per gateway. The same model on two gateways has two pooled quotas.
-- A cost center's totals in the portal are totals, including the person's own calls. When only one
-  other grant charges the cost center, or a pooled resource under it, subtracting their own use
-  from that total shows the other's.
-- Calls MOSAIC couldn't attribute belong to no cost center, so a cost center's figures can be lower
-  than its gateway's.
+- Group-overage tokens cannot prove the mandatory group claim for a custom center. An individual
+  token grant cannot bypass it; APIM has no Graph fallback. An administrator must resolve claim
+  eligibility or review a separately allowed individual-key path.
+- JWT expiry, directory propagation, managed-identity caching, and key revocation have different
+  timing. Removal is not an instant kill switch for all credentials.
+- Stable Automatic group grants avoid per-member policy churn; they do not establish production
+  throughput or the scale of arbitrary individual grants/keys.
+- Direct member listing depends on the preview Graph beta API, not a production-supported
+  directory-listing contract. The runtime's local JWT group-grant check is independent of it.
+- Reports omit calls MOSAIC cannot attribute. Dollar-budget feedback is delayed, not a hard cap.
+- Fictional adapters, policy tests, and screenshots do not prove live Entra/APIM behavior. Live
+  group mutation and gateway checks require a separately authorized non-production target.
 
-Automatic model access through MOSAIC-managed cost-center groups is **not implemented**.
-The [inherited-access feasibility probe](cost-center-access-feasibility.md) explores the proposed
-APIM-local membership and native personal-key design offline. The default-off group foundation
-above does not enable that runtime path.
+References: [Graph creation and ownership](https://learn.microsoft.com/en-us/graph/api/group-post-groups?view=graph-rest-1.0),
+[member-write permissions](https://learn.microsoft.com/en-us/graph/api/group-post-members?view=graph-rest-1.0),
+[safe relationship removal](https://learn.microsoft.com/en-us/graph/api/group-delete-members?view=graph-rest-1.0),
+[access-token lifetime](https://learn.microsoft.com/en-us/entra/identity-platform/access-tokens#token-lifetime),
+and [managed-identity caching](https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/managed-identities-faq#are-managed-identities-tokens-cached).
