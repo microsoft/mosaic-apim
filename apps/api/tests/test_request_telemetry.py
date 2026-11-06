@@ -3,6 +3,7 @@ from typing import Any
 
 import pytest
 import structlog
+from azure.monitor.opentelemetry._utils import configurations as distro_configurations
 from azure.monitor.opentelemetry.exporter.export.trace import _exporter as trace_exporter
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -471,5 +472,20 @@ def test_the_distro_leaves_fastapi_to_the_api(telemetry: Telemetry) -> None:
     # The distro's own FastAPI instrumentation replaces fastapi.FastAPI. An app built from that
     # class would be instrumented the distro's way, health probes and all, before the API could.
     assert [options["instrumentation_options"] for options in telemetry.options] == [
-        {"fastapi": {"enabled": False}}
+        {
+            "fastapi": {"enabled": False},
+            "httpx": {"enabled": False},
+            "httpx2": {"enabled": False},
+        }
     ]
+
+
+@pytest.mark.parametrize("library", ["httpx", "httpx2"])
+def test_the_distro_does_not_add_unredacted_httpx_client_spans(
+    telemetry: Telemetry, library: str
+) -> None:
+    telemetry.start()
+    (options,) = telemetry.options
+    distro_configurations._default_instrumentation_options(options)
+
+    assert options["instrumentation_options"][library] == {"enabled": False}

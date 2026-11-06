@@ -2,6 +2,14 @@ import '@testing-library/jest-dom/vitest'
 import { cleanup } from '@testing-library/react'
 import { afterEach } from 'vitest'
 
+// Use Fluent Motion's supported test fallback: Happy DOM's animation cancellation
+// rejects finished promises during cleanup, unlike the browser's motion lifecycle.
+Object.defineProperty(Element.prototype, 'animate', {
+  configurable: true,
+  writable: true,
+  value: undefined,
+})
+
 // Vitest globals are not enabled, so React Testing Library cannot register its own auto-cleanup.
 // Without this, rendered trees accumulate and queries match elements from earlier tests.
 afterEach(() => {
