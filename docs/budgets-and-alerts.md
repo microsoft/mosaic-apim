@@ -27,7 +27,7 @@ monthly UTC budgets. Shared budget spend is never described as one person's priv
 
 | Field | What it is |
 | --- | --- |
-| Amount | US dollars a month, at list price, across every gateway. At least $0.01. |
+| Amount | US dollars a month, using MOSAIC's applicable approved/manual/public rates, across every gateway. At least $0.01. |
 | Warn at | One to five whole percentages from 1 to 1,000. 80 and 100 by default. |
 | Email the owners | Whether the cost center's owners get its emails. On by default. |
 | Also email | Up to 20 more email addresses. They needn't belong to anyone who uses MOSAIC. |
@@ -72,7 +72,7 @@ and `budget.deleted`.
 ## What counts against a budget
 
 - A cost center's spend is exactly what **Analytics > Cost** shows for it: the calls of its
-  grants, priced by deployment and day at list price. Provisioned throughput is shared among its
+  grants, priced by deployment and day from the shared price book. Provisioned throughput is shared among its
   callers by their share of its tokens. See [Pricing](pricing.md). A grant on a
   [model pool](model-pools.md)'s model counts the same way, each call priced at the
   deployment that served it, whichever region that was.
@@ -220,8 +220,11 @@ People (`User`), for themselves only:
 - Budgets are as current as the rollups, and a block lands after the spend that triggers it.
 - The list holds 315 blocked cost centers. Past that, the newest blocks don't fit, the gateways
   still allow their calls, and the Dashboard's budget overview says how many.
-- Budgets are in US dollars at list price, like the Cost tab. They aren't a bill: discounts,
-  credits, and other currencies aren't modelled.
+- Budgets use the same USD approved billing-derived/manual/public rates as the Cost tab, not an
+  invoice. Billing-derived rates can reflect negotiated discounts and attributable commitments;
+  taxes, one-off credits and FX are excluded. Publishing/backdating rates can raise or lower spend
+  and make the next budget check block or unblock a center. Draft retrievals have no such effect.
+  See [Pricing](pricing.md#billing-data-import-review-publish) before approving a correction.
 - A blocked cost center's calls are refused on every gateway MOSAIC manages. A gateway MOSAIC only
   observes doesn't check the list.
 - Exchange/Graph mailbox sending in the chosen cloud, and how long API Management takes to apply a named

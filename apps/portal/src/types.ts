@@ -334,6 +334,7 @@ export interface ResolvedEntitlement {
 export type UsagePeriod = '7d' | '30d' | '90d'
 export type UsageDataSource = 'simulated' | 'logAnalytics'
 export type UsageAttribution = 'simulated' | 'measured' | 'unattributed'
+export type PricingBasis = 'publicSeed' | 'customManual' | 'billingDerived' | 'mixed'
 
 export interface UsageTotals {
   requests: number
@@ -471,6 +472,7 @@ export interface MyUsageReport {
   end: string
   generatedAt: string
   currency: 'USD'
+  pricingBasis?: PricingBasis
   totals: UsageTotals
   timeline: UsageTimelinePoint[]
   byEnvironment: UsageEnvironmentBreakdown[]

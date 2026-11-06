@@ -1,7 +1,7 @@
 """Scope leases expire, can't be stolen while held, and are taken in one global order."""
 
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 from azure.core import MatchConditions
@@ -46,6 +46,78 @@ async def test_memory_expired_lease_can_be_taken_over() -> None:
     await repository.acquire_scope_lease("tenant", "environments", "next", lease_seconds=60)
     await repository.release_scope_lease("tenant", "environments", "stalled")
     assert repository.scope_leases[("tenant", "environments")][0] == "next"
+
+
+async def test_memory_renewal_extends_without_releasing_and_requires_live_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = utc_now()
+    monkeypatch.setattr("mosaic_api.repositories.memory_gateway.utc_now", lambda: now)
+    repository = InMemoryGatewayRepository()
+    await repository.acquire_scope_lease("tenant", "billing", "owner", lease_seconds=60)
+    now += timedelta(seconds=30)
+    await repository.renew_scope_lease("tenant", "billing", "owner", lease_seconds=120)
+    assert repository.scope_leases[("tenant", "billing")] == (
+        "owner", now + timedelta(seconds=120)
+    )
+    with pytest.raises(ConflictError):
+        await repository.acquire_scope_lease("tenant", "billing", "other", lease_seconds=60)
+    with pytest.raises(ConflictError):
+        await repository.renew_scope_lease("tenant", "billing", "other", lease_seconds=60)
+    now += timedelta(seconds=121)
+    with pytest.raises(ConflictError):
+        await repository.renew_scope_lease("tenant", "billing", "owner", lease_seconds=60)
+    with pytest.raises(ConflictError):
+        await repository.renew_scope_lease("other", "billing", "owner", lease_seconds=60)
+    await repository.acquire_scope_lease("tenant", "billing", "other", lease_seconds=60)
+    with pytest.raises(ConflictError):
+        await repository.renew_scope_lease("tenant", "billing", "owner", lease_seconds=60)
+    assert repository.scope_leases[("tenant", "billing")][0] == "other"
+
+
+async def test_cosmos_renewal_is_conditional_and_never_releases_the_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = utc_now()
+    monkeypatch.setattr("mosaic_api.repositories.cosmos_gateway.utc_now", lambda: now)
+    cosmos = Cosmos()
+    repository = gateway_repository(cosmos)
+    container = cosmos.containers["desired"]
+    await repository.acquire_scope_lease("tenant", "billing", "owner", lease_seconds=60)
+    lease_id = deterministic_id("scopeLease", "tenant", "billing")
+    original = container.items[("tenant", lease_id)].copy()
+    now += timedelta(seconds=30)
+    await repository.renew_scope_lease("tenant", "billing", "owner", lease_seconds=120)
+    renewed = container.items[("tenant", lease_id)]
+    assert renewed["createdAt"] == original["createdAt"]
+    assert renewed["_etag"] != original["_etag"]
+    assert datetime.fromisoformat(renewed["expiresAt"]) == now + timedelta(seconds=120)
+    assert container.deletes == []
+    with pytest.raises(ConflictError):
+        await repository.acquire_scope_lease("tenant", "billing", "other", lease_seconds=60)
+    with pytest.raises(ConflictError):
+        await repository.renew_scope_lease("tenant", "billing", "other", lease_seconds=60)
+    now += timedelta(seconds=121)
+    with pytest.raises(ConflictError):
+        await repository.renew_scope_lease("tenant", "billing", "owner", lease_seconds=60)
+    with pytest.raises(ConflictError):
+        await repository.renew_scope_lease("other", "billing", "owner", lease_seconds=60)
+    assert container.items[("tenant", lease_id)] == renewed
+    await repository.acquire_scope_lease("tenant", "billing", "other", lease_seconds=60)
+    with pytest.raises(ConflictError):
+        await repository.renew_scope_lease("tenant", "billing", "owner", lease_seconds=60)
+    assert container.items[("tenant", lease_id)]["ownerId"] == "other"
+
+
+async def test_cosmos_renewal_loses_cas_without_overwriting_the_new_owner() -> None:
+    cosmos = Cosmos()
+    repository = gateway_repository(cosmos)
+    await repository.acquire_scope_lease("tenant", "billing", "owner", lease_seconds=60)
+    cosmos.containers["desired"].replace_on_read = True
+    with pytest.raises(ConflictError):
+        await repository.renew_scope_lease("tenant", "billing", "owner", lease_seconds=60)
+    lease_id = deterministic_id("scopeLease", "tenant", "billing")
+    assert cosmos.containers["desired"].items[("tenant", lease_id)]["ownerId"] == "new-owner"
 
 
 async def test_cosmos_lease_is_exclusive_until_released() -> None:

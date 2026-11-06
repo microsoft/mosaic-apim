@@ -651,9 +651,9 @@ class AnalyticsService:
     async def cost_center_spend(self, tenant_id: str, cost_center_id: str) -> AnalyticsSpend | None:
         """This month's spend and its forecast for one cost center, for background checks.
 
-        The calls its grants carried, at list prices, exactly as the Cost tab's spend shows them
-        under the cost center filter. Reserved capacity nobody called is no cost center's. None
-        when this deployment has no price list.
+        The calls its grants carried, priced from MOSAIC's price list, exactly as the Cost tab's
+        spend shows them under the cost center filter. Reserved capacity nobody called is no cost
+        center's. None when this deployment has no price list.
         """
 
         actor = Actor(object_id="system:cost-centers", tenant_id=tenant_id)

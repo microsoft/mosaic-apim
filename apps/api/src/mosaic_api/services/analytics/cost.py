@@ -26,10 +26,13 @@ from mosaic_api.domain import EntitlementResourceKind
 from mosaic_api.pricing import (
     UNKNOWN_DEPLOYMENT,
     DayRate,
+    PriceOrigin,
     Pricer,
+    PricingBasis,
     Unpriced,
     month_first,
     month_last,
+    pricing_basis_for_origins,
     token_amount,
 )
 from mosaic_api.services.analytics.models import AnalyticsCostSummary, AnalyticsUnpricedUse
@@ -46,6 +49,51 @@ LIST_PRICE_NOTE = (
     "Costs are at list prices from MOSAIC's price list, before any discount, and are estimates, "
     "not a bill."
 )
+BILLING_DERIVED_NOTE = (
+    "Costs are estimates from MOSAIC's price list using approved billing-derived rates from "
+    "prior-month cloud billing data, and are not a bill."
+)
+MIXED_BILLING_NOTE = (
+    "Costs are estimates from MOSAIC's price list combining approved billing-derived rates with "
+    "public list or administrator-entered fallback prices, and are not a bill."
+)
+CUSTOM_MANUAL_NOTE = (
+    "Costs are estimates from MOSAIC's price list using administrator-entered and public list "
+    "prices, and are not a bill."
+)
+_BASIS_NOTES: frozenset[str] = frozenset(
+    {LIST_PRICE_NOTE, BILLING_DERIVED_NOTE, MIXED_BILLING_NOTE, CUSTOM_MANUAL_NOTE}
+)
+
+
+def basis_note(basis: PricingBasis, origins: Iterable[PriceOrigin] = ()) -> str:
+    """The note describing which rate sources priced a report's usage."""
+
+    if basis == "publicSeed":
+        return LIST_PRICE_NOTE
+    if basis == "billingDerived":
+        return BILLING_DERIVED_NOTE
+    if basis == "mixed" and ("billing" in set(origins) or not set(origins)):
+        return MIXED_BILLING_NOTE
+    return CUSTOM_MANUAL_NOTE
+
+
+class _CostNotes(list[str]):
+    """Report cost notes carrying the observed pricing basis and origins."""
+
+    pricing_basis: PricingBasis = "publicSeed"
+    origins: set[PriceOrigin]
+
+    def __init__(
+        self,
+        items: Iterable[str] = (),
+        *,
+        pricing_basis: PricingBasis = "publicSeed",
+        origins: Iterable[PriceOrigin] = (),
+    ) -> None:
+        super().__init__(items)
+        self.pricing_basis = pricing_basis
+        self.origins = set(origins)
 CACHED_NOTE = (
     "The gateway's logs don't separate cached prompt tokens, so every prompt token is priced at "
     "the full input price."
@@ -116,6 +164,7 @@ class Priced:
     unpriced: Unpriced | None = None
     # The share of the tokens that couldn't be priced.
     unpriced_share: float = 0.0
+    origins: set[PriceOrigin] = field(default_factory=set)
 
 
 @dataclass
@@ -141,6 +190,7 @@ class CostTally:
     unpriced_tokens: int = 0
     unpriced_requests: int = 0
     left: dict[str, _Left] = field(default_factory=dict)
+    origins: set[PriceOrigin] = field(default_factory=set)
 
     def add_amount(
         self, amount: float | None, reserved: float = 0.0, key: str | None = None
@@ -167,6 +217,7 @@ class CostTally:
         if priced.amount is not None:
             self.add_amount(priced.amount, priced.reserved, key if kind == "deployment" else None)
             self.priced_tokens += tokens - left_tokens
+            self.origins.update(priced.origins)
         if left_tokens <= 0 or priced.unpriced is None:
             return
         left_requests = round(metrics.requests * share)
@@ -178,11 +229,35 @@ class CostTally:
         item.tokens += left_tokens
         item.requests += left_requests
 
-    def summary(self, notes: Iterable[str] = ()) -> AnalyticsCostSummary:
+    def summary(
+        self,
+        notes: Iterable[str] = (),
+        *,
+        pricing_basis: PricingBasis | None = None,
+    ) -> AnalyticsCostSummary:
         ordered = sorted(
             self.left.values(), key=lambda item: (-item.tokens, -item.requests, item.label)
         )
+        notes_list = list(dict.fromkeys(notes))
+        resolved_basis = pricing_basis
+        if resolved_basis is None:
+            if isinstance(notes, _CostNotes):
+                combined = self.origins | notes.origins
+                resolved_basis = (
+                    pricing_basis_for_origins(combined) if combined else notes.pricing_basis
+                )
+            elif self.origins:
+                resolved_basis = pricing_basis_for_origins(self.origins)
+            elif BILLING_DERIVED_NOTE in notes_list:
+                resolved_basis = "billingDerived"
+            elif MIXED_BILLING_NOTE in notes_list:
+                resolved_basis = "mixed"
+            elif CUSTOM_MANUAL_NOTE in notes_list:
+                resolved_basis = "customManual"
+            else:
+                resolved_basis = "publicSeed"
         return AnalyticsCostSummary(
+            pricing_basis=resolved_basis,
             total=None if self.total is None else round(self.total, 4),
             reserved=round(self.reserved, 4) if self.reserved else None,
             priced_tokens=self.priced_tokens,
@@ -202,7 +277,7 @@ class CostTally:
                 )
                 for item in ordered[:UNPRICED_ROWS]
             ],
-            notes=list(dict.fromkeys(notes)),
+            notes=notes_list,
         )
 
 
@@ -215,7 +290,8 @@ class CostBook:
     today: date
     # Each provisioned deployment's tokens by month, across every gateway and caller.
     provisioned_tokens: dict[tuple[str, date], int]
-    notes: list[str] = field(default_factory=list)
+    _extra_notes: list[str] = field(default_factory=list)
+    _origins: set[PriceOrigin] = field(default_factory=set)
     _reserved: dict[tuple[str, date], float | None] = field(default_factory=dict)
     _resource_apis: dict[tuple[str, str], str] = field(default_factory=dict)
 
@@ -224,12 +300,29 @@ class CostBook:
             (gateway_id, api.resource_id): api.api_name
             for (gateway_id, _), api in self.scope.apis.items()
         }
-        self.note(LIST_PRICE_NOTE)
         self.note(CACHED_NOTE)
 
     def note(self, text: str) -> None:
-        if text not in self.notes:
-            self.notes.append(text)
+        if text in _BASIS_NOTES:
+            return
+        if text not in self._extra_notes:
+            self._extra_notes.append(text)
+
+    def record_origin(self, origin: PriceOrigin) -> None:
+        self._origins.add(origin)
+
+    def pricing_basis(self) -> PricingBasis:
+        return self.pricer.pricing_basis(day=self.today, origins=self._origins)
+
+    @property
+    def notes(self) -> _CostNotes:
+        basis = self.pricing_basis()
+        lead = basis_note(basis, self._origins)
+        return _CostNotes(
+            [lead, *self._extra_notes],
+            pricing_basis=basis,
+            origins=self._origins,
+        )
 
     # -- one deployment ---------------------------------------------------------------------
 
@@ -264,6 +357,9 @@ class CostBook:
         total = metrics.total_tokens or prompt + completion
         if total <= 0:
             quiet = self.pricer.rate(key, days[-1])
+            if quiet.kind != "unpriced" and quiet.entry is not None:
+                self.record_origin(quiet.entry.origin)
+                return Priced(0.0, origins={quiet.entry.origin})
             return (
                 Priced(None, unpriced=quiet.unpriced) if quiet.kind == "unpriced" else Priced(0.0)
             )
@@ -273,6 +369,7 @@ class CostBook:
         unpriced_days = 0
         first: Unpriced | None = None
         seen: set[tuple[str, str | None]] = set()
+        used_origins: set[PriceOrigin] = set()
         for day in days:
             rate: DayRate = self.pricer.rate(key, day)
             seen.add((rate.kind, rate.entry.id if rate.entry else None))
@@ -286,6 +383,8 @@ class CostBook:
                 else:
                     amount += value
                     priced = True
+                    used_origins.add(rate.entry.origin)
+                    self.record_origin(rate.entry.origin)
             else:
                 unpriced_days += 1
                 first = first or rate.unpriced or UNKNOWN_DEPLOYMENT
@@ -293,7 +392,12 @@ class CostBook:
             self.note(AVERAGED_NOTE)
         if not priced:
             return Priced(None, unpriced=first, unpriced_share=1.0)
-        return Priced(amount, unpriced=first, unpriced_share=unpriced_days / count)
+        return Priced(
+            amount,
+            unpriced=first,
+            unpriced_share=unpriced_days / count,
+            origins=used_origins,
+        )
 
     def _reserved_share(self, key: str, days: list[date], metrics: UsageMetrics) -> Priced:
         """A provisioned deployment's calls share its month's reserved cost by their tokens.
@@ -314,12 +418,20 @@ class CostBook:
                 None,
             )
             return Priced(None, unpriced=reason or UNKNOWN_DEPLOYMENT, unpriced_share=1.0)
+        used_origins = {
+            rate.entry.origin
+            for day in self.pricer.month_days(month, self.today)
+            if (rate := self.pricer.rate(key, day)).kind == "provisioned"
+            and rate.entry is not None
+        }
+        for origin in used_origins:
+            self.record_origin(origin)
         self.note(RESERVED_NOTE)
         total = metrics.total_tokens or metrics.prompt_tokens + metrics.completion_tokens
         if total <= 0:
-            return Priced(0.0)
+            return Priced(0.0, origins=used_origins)
         part = monthly * total / max(self.month_tokens(key, month), total)
-        return Priced(part, reserved=part)
+        return Priced(part, reserved=part, origins=used_origins)
 
     def idle(self, key: str, first: date, last: date) -> float:
         """Reserved capacity on days in months that had no calls to share it among."""
@@ -333,6 +445,8 @@ class CostBook:
                 rate = self.pricer.rate(key, day)
                 if rate.kind == "provisioned" and rate.daily is not None:
                     total += rate.daily
+                    if rate.entry is not None:
+                        self.record_origin(rate.entry.origin)
                 day += timedelta(days=1)
             else:
                 day = month_last(day) + timedelta(days=1)

@@ -53,6 +53,7 @@ environment, and cost center. An MCP grant does not substitute for a model grant
 | Set up gateway telemetry and understand rollups, freshness, and retention | [Usage analytics](usage-analytics.md) |
 | Find console/portal views and their API routes | [Analytics reference](analytics-reference.md) |
 | Understand price sources, effective dates, overrides, and missing prices | [Pricing](pricing.md) |
+| Import or retrieve USD cloud billing, configure credentials and draft schedules, then review and publish rates | [Billing-derived pricing](pricing.md#billing-data-import-review-publish) and [ADR 0031](adr/0031-billing-derived-pricing.md) |
 | Configure Entra membership, charging, resource modes, individual keys, and pooled quotas | [Cost centers](cost-centers.md) |
 | Configure monthly budgets, alerts, and delayed cost-center blocking | [Budgets and alerts](budgets-and-alerts.md) |
 

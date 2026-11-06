@@ -814,10 +814,12 @@ function HygieneTab({ report }: { report: AnalyticsHygiene }) {
 
 function UnattributedTab({ report }: { report: AnalyticsUnattributed }) {
   const priced = report.cost != null
+  const pricingBasis = (report.cost as (AnalyticsCostSummary & { pricingBasis?: string }) | null | undefined)?.pricingBasis
+  const costBasis = pricingBasis && pricingBasis !== 'publicSeed' ? "at MOSAIC's configured prices" : 'at list prices'
   return (
     <Card className={styles.panelCard}>
       <Title3 as="h2">Unattributed calls</Title3>
-      <Text size={200}>{formatCompact(report.requests)} calls ({formatPercent(report.share)}) could not be linked to a grant. A publication&apos;s or model pool&apos;s shared key belongs to no one caller, so grant access per caller to see who uses it.{report.cost?.total != null ? ` They cost ${formatCost(report.cost.total)} at list prices.` : ''}</Text>
+      <Text size={200}>{formatCompact(report.requests)} calls ({formatPercent(report.share)}) could not be linked to a grant. A publication&apos;s or model pool&apos;s shared key belongs to no one caller, so grant access per caller to see who uses it.{report.cost?.total != null ? ` They cost ${formatCost(report.cost.total)} ${costBasis}.` : ''}</Text>
       <div className="table-scroll">
         <table aria-label="Unattributed calls">
           <thead><tr><th>API</th><th>Gateway</th><th>Subscription</th><th>Reason</th><th>Requests</th><th>Tokens</th><th>Last seen</th>{priced && <th>Cost</th>}</tr></thead>

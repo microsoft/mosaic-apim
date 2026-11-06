@@ -8,6 +8,7 @@ For identities and network paths, see [architecture](architecture.md).
 
 - [Deploy with `azd`](#deploy-with-azd)
 - [Optional cost-center group management](#optional-cost-center-group-management)
+- [Billing-derived pricing](#billing-derived-pricing)
 
 ## Deploy with `azd`
 
@@ -83,6 +84,29 @@ consent a client, create an identity, assign app roles, or grant Microsoft Graph
 only delegated runtime consent bootstrap creates is for the model client's `Models.Invoke` and
 `Mcp.Invoke` grant. Bootstrap exposes
 `MOSAIC_MODEL_RUNTIME_CLIENT_ID`; this must not be the MOSAIC control-plane API's client ID.
+
+## Billing-derived pricing
+
+The **Pricing > Billing data** workflow accepts supported USD extracts or read-only Azure, AWS,
+and GCP billing connections. Provision the provider export/dataset, narrowly scoped IAM and
+federation first; MOSAIC does not create billing infrastructure or grant itself access.
+
+- Set `MOSAIC_MANAGEMENT_KEY_VAULT_URI` to the isolated API-only management credentials vault
+  before saving production billing secrets. APIM identities must not access it. External secret
+  references remain externally owned; connection rotation/deletion never deletes those secrets.
+- `MOSAIC_BILLING_REFRESH_ENABLED=true` and
+  `MOSAIC_BILLING_REFRESH_INTERVAL_SECONDS=300` run polling and per-connection opted-in monthly
+  schedules. Keep at least one API replica awake, use durable Cosmos state, and set
+  `MOSAIC_SCHEDULED_WORKERS_ALWAYS_ON=true` only when actual hosting guarantees it.
+- The worker prepares **drafts only**. Review normalized evidence, exclusions, deployment
+  bindings and effective date before **Publish rates**. The UTC approval date is the default;
+  backdating can change reported spend and budget blocking at the next budget check.
+- Retrieval/checks can incur cloud read/query charges. A complete month can still acquire late
+  adjustments; failed/empty retrievals never replace approved rates.
+
+See [Pricing](pricing.md#connections-and-least-privilege) for exact schema/auth forms,
+provider-specific least privilege, query/file bounds, scheduler readiness and recovery.
+Publication is not invoice reconciliation, FX, automatic approval, or a markup feature.
 
 ## Optional cost-center group management
 

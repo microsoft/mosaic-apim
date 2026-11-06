@@ -26,7 +26,9 @@ from mosaic_api.environments import EnvironmentCatalog, is_production
 from mosaic_api.model_pools import PoolModel
 from mosaic_api.observed import ObservedModelDeployment
 from mosaic_api.pricing import (
+    PriceOrigin,
     Pricer,
+    PricingBasis,
     deployment_key,
     month_first,
     token_amount,
@@ -274,6 +276,7 @@ class MyUsageReport(MosaicModel):
     end: str
     generated_at: datetime
     currency: Literal["USD"]
+    pricing_basis: PricingBasis = "publicSeed"
     totals: UsageTotals
     timeline: list[UsageTimelinePoint]
     by_environment: list[UsageEnvironmentBreakdown]
@@ -611,10 +614,17 @@ class _MeasuredPricing:
     reserved: bool = False
     # Each pool model grant's deployments, current and past, keyed as rollups key them.
     members: dict[str, list[str]] = field(default_factory=dict)
+    origins: set[PriceOrigin] = field(default_factory=set)
 
     def _provisioned(self, key: str) -> bool:
         facts = self.pricer.facts_for(key)
         return facts is not None and facts.provisioned
+
+    def _record_provisioned_origins(self, key: str, month: date) -> None:
+        for month_day in self.pricer.month_days(month, self.today):
+            rate = self.pricer.rate(key, month_day)
+            if rate.kind == "provisioned" and rate.entry is not None:
+                self.origins.add(rate.entry.origin)
 
     def cost(self, key: str, day: date, usage: DailyUsage) -> float | None:
         """What one day's calls cost, or None when MOSAIC can't price them."""
@@ -628,14 +638,23 @@ class _MeasuredPricing:
             if monthly is None:
                 return None
             self.reserved = True
+            self._record_provisioned_origins(key, month)
             if total <= 0:
                 return 0.0
             shared = max(self.tokens.get((key.casefold(), month), 0), total)
             return monthly * total / shared
         rate = self.pricer.rate(key, day)
         if rate.kind == "tokens" and rate.entry is not None:
-            return token_amount(rate.entry, usage.prompt_tokens or 0, usage.completion_tokens or 0)
+            amount = token_amount(
+                rate.entry, usage.prompt_tokens or 0, usage.completion_tokens or 0
+            )
+            if amount is not None and total > 0:
+                self.origins.add(rate.entry.origin)
+            return amount
         return None
+
+    def pricing_basis(self) -> PricingBasis:
+        return self.pricer.pricing_basis(day=self.today, origins=self.origins)
 
     def why(self, key: str, day: date) -> str:
         """Why calls on ``day`` have no cost."""
@@ -1575,6 +1594,9 @@ class UsageService:
         behalf_rows = await self._on_behalf_rows(
             actor.tenant_id, behalf, behalf_models, pricing, book, start=start, end=end
         )
+        pricing_basis: PricingBasis = (
+            pricing.pricing_basis() if pricing is not None else "publicSeed"
+        )
         return MyUsageReport(
             data_source=self._source.data_source,
             period=period,
@@ -1582,6 +1604,7 @@ class UsageService:
             end=end.isoformat(),
             generated_at=now,
             currency="USD",
+            pricing_basis=pricing_basis,
             totals=totals,
             timeline=timeline,
             by_environment=by_environment,
@@ -1597,6 +1620,7 @@ class UsageService:
                 freshness=freshness,
                 priced=pricing is not None,
                 reserved=pricing is not None and pricing.reserved,
+                pricing_basis=pricing_basis,
             ),
             freshness=freshness,
             recent_hours=_combine_hours([row.recent_hours for row in rows], now)
@@ -2505,6 +2529,7 @@ def _notes(
     freshness: UsageFreshness | None = None,
     priced: bool = False,
     reserved: bool = False,
+    pricing_basis: PricingBasis = "publicSeed",
 ) -> list[str]:
     if data_source == "simulated":
         notes = [
@@ -2520,11 +2545,20 @@ def _notes(
             "shows it.",
         ]
         if priced:
-            notes.append(
-                "Costs are estimates at list prices from MOSAIC's price list, before any "
-                "discount, and are not a bill. The gateway's logs don't separate cached prompt "
-                "tokens, so every prompt token is priced at the full input price."
-            )
+            if pricing_basis == "publicSeed":
+                notes.append(
+                    "Costs are estimates at list prices from MOSAIC's price list, before any "
+                    "discount, and are not a bill. The gateway's logs don't separate cached prompt "
+                    "tokens, so every prompt token is priced at the full input price."
+                )
+            else:
+                notes.append(
+                    "Costs are estimates from MOSAIC's price list using your organization's "
+                    "approved model rates (including rates derived from prior-month billing where "
+                    "configured, and public list prices elsewhere), and are not a bill. The "
+                    "gateway's logs don't separate cached prompt tokens, so every prompt token is "
+                    "priced at the full input price."
+                )
             if reserved:
                 notes.append(
                     "A provisioned deployment costs the same whether or not it's called, so "

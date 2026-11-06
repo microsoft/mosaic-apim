@@ -71,7 +71,7 @@ API, [model pool](model-pools.md), or MCP server), kind of subject, and [cost ce
 | Tab | What it shows |
 | --- | --- |
 | Overview | Requests, tokens, active callers, errors, p95 latency, and cost against the previous period, the trend, and the top models, callers, and APIs |
-| Cost | What usage cost at list price: the total and trend, spend this month and the month-end forecast, and cost by model, deployment, caller, and API, with each provisioned deployment's monthly cost and utilization |
+| Cost | Estimated cost at applicable approved/manual/public rates: total and trend, spend this month and month-end forecast, and cost by model, deployment, caller, and API, with provisioned monthly cost and utilization |
 | Consumers | Each person, agent, application, and Entra security group, with requests, tokens, cost, grants, resources, and when they were last seen; the model calls MCP servers' applications made for each person, which those applications already count; then each grant, and each client application |
 | Models | Each model, each deployment's busiest minute against its capacity, and each API and MCP server, with their cost |
 | Reliability | Successful, gateway-throttled, backend 429, and denied calls, an estimated latency histogram, denials by reason, and each API's reliability |
@@ -97,11 +97,21 @@ cost center. These routes need `Admin`:
 
 ## Pricing
 
-MOSAIC prices usage from a sourced, dated price list, at list price, each time a view is read. It
+MOSAIC prices usage from a sourced, dated price list each time a view is read. It
 ships list prices for Azure Commercial and Azure Government, read from the public Azure Retail
 Prices API, and every price cites its source. On the console's **Pricing** page, administrators add
 prices for custom clouds and other providers, such as an OpenAI-compatible endpoint or AWS Bedrock,
 or override one from a date. Each is a new version, audited, and never changes the days before it.
+
+**Billing data** also accepts supported Azure Cost Details, AWS CUR/CUR 2.0, and GCP BigQuery
+extractions or read-only connections. It derives quantity-weighted USD rates from a completed
+month's contract-discounted, amortized consumption, excluding tax and one-off credits.
+Administrators review evidence and deployment bindings before **Publish rates**; monthly
+refreshes create drafts, never approvals. Activation defaults to the UTC approval date, while
+explicitly acknowledged backdating can revise reports and budget blocking at the next check.
+Provider queries/object reads can cost money; customers configure exports, least-privilege
+permissions, federation or API-only management-vault credentials. This is not invoice
+reconciliation, FX, or an administrator percentage/fixed-dollar markup feature.
 
 A managed Azure deployment's default pricing cloud comes from its explicit resource cloud; a
 URL-only endpoint uses its verified host family, where `.azure.us` means Azure Government.
@@ -113,7 +123,9 @@ monthly amount, shared among its callers by their share of its tokens. A
 MOSAIC can't price shows **No price**, never $0, and the **Unpriced deployments** tab says what
 would price it, including a pool's calls MOSAIC couldn't place on a member.
 [Pricing](pricing.md) covers sources, matching, overrides, PTUs, chargeback, and refreshing the
-seed. [ADR 0020](adr/0020-price-list.md) records the design. These routes need `Admin`:
+seed, billing setup and its [limits](pricing.md#limits).
+[ADR 0020](adr/0020-price-list.md) records the original design and
+[ADR 0031](adr/0031-billing-derived-pricing.md) extends it. These routes need `Admin`:
 
 | Method | Route under `/api/v1` | Result |
 | --- | --- | --- |
@@ -124,6 +136,16 @@ seed. [ADR 0020](adr/0020-price-list.md) records the design. These routes need `
 | GET | `/pricing/unpriced` | Deployments with no price today, and adopted model APIs with calls, with why |
 | GET | `/pricing/endpoints` | Each endpoint's cloud, region, and deployments, as MOSAIC prices them |
 | PATCH | `/pricing/endpoints/{id}` | Override an endpoint's cloud or region, or set a declared deployment's type and PTUs; audited, and refused with 409 if the facts changed since the `version` sent |
+| GET | `/pricing/billing/templates` | Supported source schemas, sample CSV, and GCP extraction SQL |
+| POST | `/pricing/billing/imports` | Normalize a supported upload into a draft; no rate activation |
+| GET | `/pricing/billing/connections`, `/pricing/billing/connections/{id}` | Source configuration, never secret values |
+| POST / PATCH / DELETE | `/pricing/billing/connections` (POST), `/pricing/billing/connections/{id}` (PATCH/DELETE) | Manage a connection and opt-in schedule; audited, version-protected updates |
+| POST | `/pricing/billing/connections/{id}/check`, `/pricing/billing/connections/{id}/runs` | Check dataset access or start a completed month's retrieval |
+| GET | `/pricing/billing/runs`, `/pricing/billing/runs/{id}` | Acquisition history, normalized evidence, candidates and issues |
+| POST | `/pricing/billing/runs/{id}/poll` | Advance a queued/running provider operation |
+| PATCH | `/pricing/billing/runs/{id}/mappings` | Save reviewed candidate bindings/exclusions against the preview revision |
+| POST | `/pricing/billing/runs/{id}/publish` | Explicitly approve dated rates; stale previews fail and backdating requires acknowledgement |
+| GET | `/pricing/billing/publications`, `/pricing/billing/scheduler` | Published-list provenance or worker readiness/status |
 
 ## Usage and cost in the portal
 
@@ -147,7 +169,7 @@ shows the application's own calls or anyone else's, and it's left out of the per
 
 In Azure the figures are measured, and the page says how current they are. The gateway applies
 limits as calls arrive, so someone can reach one before the page shows it. A row with nothing to
-link its calls has null figures, not zero. Cost is the person's own calls at list price, from the
+link its calls has null figures, not zero. Cost is the person's own calls at the applicable rates from the
 [price list](analytics-reference.md#pricing). A resource MOSAIC can't price shows **No price**, and the totals say how
 many resources they exclude.
 

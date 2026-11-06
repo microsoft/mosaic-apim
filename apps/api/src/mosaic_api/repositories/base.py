@@ -2,6 +2,12 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Protocol
 
+from mosaic_api.billing_pricing import (
+    BillingAcquisitionRun,
+    BillingConnection,
+    BillingEvidenceChunk,
+    BillingPublication,
+)
 from mosaic_api.budget_notifications import BudgetNotificationOutbox
 from mosaic_api.budgets import Budget, BudgetState, EmailSettings, GateState
 from mosaic_api.clouds import AzureCloud
@@ -306,15 +312,27 @@ class GatewayRepository(Protocol):
     ) -> None:
         """Acquire an expiring lease on a scope that guards only MOSAIC's own records.
 
-        Unlike a publication lock, a lease expires. It is for short critical sections that make
-        no Azure Resource Manager calls, so an expired lease can't let an old writer resume
-        against API Management. Their writes are conditional, so a stalled holder can't overwrite
+        Unlike a publication lock, a lease expires. It is not a fencing mechanism for Azure
+        Resource Manager mutations, so an expired holder must never resume writes against
+        API Management. MOSAIC record writes are conditional, so a stalled holder can't overwrite
         a newer one either. Raises ``ConflictError`` while another owner holds an unexpired lease.
+        Long-running read-only billing retrievals renew throughout provider waits and check
+        ownership before publishing their results.
         """
         ...
 
     async def release_scope_lease(self, tenant_id: str, scope: str, owner_id: str) -> None:
         """Release the lease if this owner still holds it; otherwise leave the current holder."""
+        ...
+
+    async def renew_scope_lease(
+        self, tenant_id: str, scope: str, owner_id: str, *, lease_seconds: float
+    ) -> None:
+        """Atomically extend an unexpired lease owned by this operation, or raise ConflictError.
+
+        Renewal never releases or reacquires the lease. Callers doing long-running reads must
+        renew throughout their waits and stop processing when ownership is lost.
+        """
         ...
 
 
@@ -731,6 +749,63 @@ class PricingRepository(Protocol):
         someone else saved or created them since they were read.
         """
         ...
+
+    async def list_billing_connections(self, tenant_id: str) -> list[BillingConnection]: ...
+
+    async def get_billing_connection(
+        self, tenant_id: str, connection_id: str
+    ) -> BillingConnection | None: ...
+
+    async def create_billing_connection(
+        self, connection: BillingConnection, audit_event: AuditEvent
+    ) -> BillingConnection: ...
+
+    async def save_billing_connection(
+        self, connection: BillingConnection, audit_event: AuditEvent
+    ) -> BillingConnection: ...
+
+    async def delete_billing_connection(
+        self, connection: BillingConnection, audit_event: AuditEvent
+    ) -> None: ...
+
+    async def list_billing_runs(
+        self, tenant_id: str, *, connection_id: str | None = None
+    ) -> list[BillingAcquisitionRun]: ...
+
+    async def get_billing_run(
+        self, tenant_id: str, run_id: str
+    ) -> BillingAcquisitionRun | None: ...
+
+    async def create_billing_run(
+        self, run: BillingAcquisitionRun, audit_event: AuditEvent
+    ) -> BillingAcquisitionRun: ...
+
+    async def save_billing_run(
+        self, run: BillingAcquisitionRun, audit_event: AuditEvent
+    ) -> BillingAcquisitionRun: ...
+
+    async def save_billing_evidence_chunks(
+        self, tenant_id: str, run_id: str, chunks: Sequence[BillingEvidenceChunk]
+    ) -> None: ...
+
+    async def list_billing_evidence_chunks(
+        self, tenant_id: str, run_id: str
+    ) -> list[BillingEvidenceChunk]: ...
+
+    async def list_billing_publications(self, tenant_id: str) -> list[BillingPublication]: ...
+
+    async def get_billing_publication(
+        self, tenant_id: str, publication_id: str
+    ) -> BillingPublication | None: ...
+
+    async def create_prepared_price_versions(self, versions: Sequence[PriceVersion]) -> None: ...
+
+    async def create_billing_publication(
+        self,
+        publication: BillingPublication,
+        run: BillingAcquisitionRun,
+        audit_event: AuditEvent,
+    ) -> BillingPublication: ...
 
 
 class CostCenterRepository(Protocol):

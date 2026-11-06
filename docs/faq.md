@@ -195,15 +195,17 @@ See [usage analytics](usage-analytics.md) and [analytics views](analytics-refere
 
 ## Is MOSAIC cost the Azure bill?
 
-No. MOSAIC prices measured tokens using sourced, effective-dated retail or administrator-entered
-prices. That supports estimates, chargeback, and forecasts; it is not actual invoice reconciliation.
-Contract discounts or other adjustments require suitable overrides. Unpriced usage is shown as
-**No price**, not zero. Cached prompt tokens currently use the full input rate; provisioned
+No. MOSAIC prices measured tokens using sourced, effective-dated public, manual, or approved
+billing-derived prices. That supports estimates, chargeback, and forecasts; it is not invoice
+reconciliation. Supported USD billing extracts or read-only Azure/AWS/GCP connections can derive
+contract-discounted, amortized rates from a completed month, excluding tax and one-off credits.
+Unpriced usage is shown as **No price**, not zero. Cached prompt tokens currently use the ordinary input rate; provisioned
 throughput is allocated by token share, with idle capacity reported separately.
 
-Azure Cost Management ingestion and automatic repricing from last month's bill are not implemented.
-Azure billing data is delayed and can be provisional during the month; it is not simply unavailable
-until 30 days later. See [pricing](pricing.md) and
+Billing retrieval and optional monthly refresh create drafts; an administrator must review
+evidence, mappings, and effective date before publishing. There is no automatic activation,
+FX, or percentage/fixed-dollar markup policy. Billing data can arrive late even after month end;
+a changed extract needs a new review, not a silent historical rewrite. See [pricing](pricing.md) and
 [Microsoft's cost-data timing guidance](https://learn.microsoft.com/en-us/azure/cost-management-billing/costs/understand-cost-mgt-data).
 
 ## Is a dollar budget a hard spending cap?

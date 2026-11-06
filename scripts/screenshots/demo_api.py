@@ -16,13 +16,14 @@ this cannot be pointed at a deployed MOSAIC.
 """
 
 import argparse
+import csv
 import json
 import math
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from io import BytesIO
+from io import BytesIO, StringIO
 from typing import Any, cast
 from uuid import UUID
 
@@ -37,6 +38,13 @@ from mosaic_api.azure_connections import (
     AzureConnection,
     AzureConnectionCreate,
     AzureConnectionService,
+)
+from mosaic_api.billing_pricing import (
+    BillingCandidateMapping,
+    BillingConnectionCreate,
+    BillingMappingsUpdateRequest,
+    BillingPublishRequest,
+    previous_complete_month,
 )
 from mosaic_api.budgets import BudgetAction, BudgetUpdate, EmailSettingsUpdate, EmailTest
 from mosaic_api.clouds import AzureCloud, azure_ai_cloud, cloud_profile
@@ -136,7 +144,12 @@ from mosaic_api.notifications import (
     PersonalTeamsSettingsInput,
     TeamsDestinationInput,
 )
-from mosaic_api.pricing import DeploymentPricingUpdate, EndpointPricingUpdate, PriceCreate
+from mosaic_api.pricing import (
+    DeploymentPricingUpdate,
+    EndpointPricingUpdate,
+    PriceCreate,
+    PriceMatch,
+)
 from mosaic_api.repositories import GatewayRepository, InMemoryEntitlementRepository
 from mosaic_api.services import (
     DirectoryService,
@@ -482,6 +495,12 @@ SENSITIVE_LITERALS = [
     DEMO_EMAIL_MAILBOX_ID,
     DEMO_TEAMS_APP_ID,
     DEMO_BOT_APP_ID,
+    "123456789012",
+    "contoso-billing-cur",
+    "contoso-billing-project",
+    "billing_export",
+    "gcp_billing_export_resource_v1_DEMO",
+    "MosaicBillingReadRole",
     *(person.object_id for person in PEOPLE),
     *(blueprint for blueprint in AGENT_BLUEPRINTS.values()),
     *(item.object_id for item in EXTRA_DIRECTORY_OBJECTS),
@@ -3196,6 +3215,118 @@ async def seed_usage(services: DemoServices, estate: Estate, tenant_id: str) -> 
     raise SeedError(f"Rolling up the demo's usage took more than {MAX_ROLLUP_CYCLES} cycles")
 
 
+async def seed_billing(services: DemoServices, estate: Estate, tenant_id: str) -> None:
+    """Create fictional source configurations and reproducible published/draft billing evidence."""
+
+    admin = Actor(ADMIN.object_id, tenant_id)
+    pricing = services.pricing
+    for connection in (
+        BillingConnectionCreate(
+            name="Azure monthly amortized costs",
+            provider="azure",
+            pricing_cloud="commercial",
+            azure_scope=AI_RESOURCE_ID.split("/resourceGroups/")[0],
+        ),
+        BillingConnectionCreate(
+            name="AWS monthly CUR",
+            provider="aws",
+            pricing_cloud="aws-bedrock",
+            aws_role_arn="arn:aws:iam::123456789012:role/MosaicBillingReadRole",
+            aws_cur_bucket="contoso-billing-cur",
+            aws_cur_prefix="cur/",
+            aws_region="us-east-1",
+        ),
+        BillingConnectionCreate(
+            name="GCP monthly detailed export",
+            provider="gcp",
+            pricing_cloud="gcp-vertex",
+            gcp_project_id="contoso-billing-project",
+            gcp_dataset_id="billing_export",
+            gcp_table_id="gcp_billing_export_resource_v1_DEMO",
+            gcp_location="US",
+        ),
+    ):
+        # Configurations only: no credentials, checks, scheduled work, or provider requests.
+        await pricing.create_billing_connection(admin, connection)
+
+    month = previous_complete_month(utc_now().date())
+    target = next(
+        facts
+        for facts in (await pricing.deployments(tenant_id)).values()
+        if facts.endpoint_id == estate.aoai_endpoint_id and facts.deployment_name == "gpt-4o"
+    )
+    existing = (await pricing.book(tenant_id)).match(target, utc_now().date())
+    if not isinstance(existing, PriceMatch):
+        raise SeedError("The fictional GPT-4o deployment needs its seeded price")
+    entry = existing.entry
+    if entry.input_per_million is None or entry.output_per_million is None:
+        raise SeedError("The fictional GPT-4o deployment needs complete token prices")
+
+    def extraction(input_rate: float, output_rate: float, *, tax: bool = False) -> bytes:
+        stream = StringIO()
+        writer = csv.writer(stream)
+        writer.writerow(
+            [
+                "Date", "MeterCategory", "MeterName", "Product", "Quantity", "UnitOfMeasure",
+                "CostInBillingCurrency", "BillingCurrencyCode", "ChargeType", "PricingModel",
+                "ResourceId", "ResourceLocation",
+            ]
+        )
+        for meter, quantity, cost, charge_type in (
+            ("gpt 4o 1120 Inp glbl Tokens", 2000, input_rate * 2, "Usage"),
+            ("gpt 4o 1120 Outp glbl Tokens", 500, output_rate / 2, "Usage"),
+            *([("Tax", 1, 1.20, "Tax")] if tax else []),
+        ):
+            writer.writerow(
+                [
+                    f"{month}-15", "Foundry Models", meter, "Azure OpenAI", quantity,
+                    "1K Tokens", cost, "USD", charge_type, "OnDemand", AI_RESOURCE_ID, "eastus2",
+                ]
+            )
+        return stream.getvalue().encode()
+
+    approved = await pricing.import_billing_data(
+        admin,
+        provider="azure",
+        pricing_cloud="commercial",
+        source_month=month,
+        file_name="fictional-amortized-approved.csv",
+        content=extraction(entry.input_per_million, entry.output_per_million),
+    )
+    approved = await pricing.update_billing_mappings(
+        admin,
+        approved.id,
+        BillingMappingsUpdateRequest(
+            preview_revision=approved.preview_revision,
+            mappings=[
+                BillingCandidateMapping(
+                    candidate_id=candidate.candidate_id,
+                    scope="deployment",
+                    deployment_key=target.key,
+                    confirmed=True,
+                )
+                for candidate in approved.candidates
+            ],
+        ),
+    )
+    await pricing.publish_billing_run(
+        admin,
+        approved.id,
+        BillingPublishRequest(
+            preview_revision=approved.preview_revision,
+            note="Fictional demo evidence; same rate as the seed, approved today.",
+        ),
+    )
+    await pricing.import_billing_data(
+        admin,
+        provider="azure",
+        pricing_cloud="commercial",
+        source_month=month,
+        file_name="fictional-amortized-draft.csv",
+        content=extraction(1.80, 7.20, tax=True),
+    )
+
+
 def _budget_amount(spent: float, used: float) -> float:
     """The amount, to two significant figures, of which ``spent`` is the share ``used``."""
 
@@ -3288,6 +3419,7 @@ def build_settings(cors_origins: list[str]) -> Settings:
         budgets_enabled=False,
         notifications_enabled=False,
         approval_evaluator_enabled=False,
+        billing_refresh_enabled=False,
     )
 
 
@@ -3313,6 +3445,7 @@ def build_demo_app(console_port: int, portal_port: int) -> FastAPI:
             services = install_demo_services(demo_app, portal_origins)
             try:
                 estate = await seed_estate(services, TENANT_ID)
+                await seed_billing(services, estate, TENANT_ID)
                 center = await services.cost_centers.get_cost_center(
                     Actor(ADMIN.object_id, TENANT_ID), estate.cost_centers["CI-204"]
                 )

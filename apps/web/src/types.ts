@@ -3316,6 +3316,7 @@ export interface AnalyticsCostSummary {
   unpricedItems: number
   unpriced: AnalyticsUnpricedUse[]
   notes: string[]
+  pricingBasis?: PricingBasis | null
 }
 
 export interface AnalyticsSpend {
@@ -3364,7 +3365,7 @@ export interface AnalyticsCostDeploymentRow {
   region: string | null
   pricing: 'tokens' | 'provisioned' | 'unpriced'
   priceId?: string | null
-  priceOrigin?: 'seed' | 'admin' | null
+  priceOrigin?: PriceOrigin | null
   inputPerMillion?: number | null
   cachedInputPerMillion?: number | null
   outputPerMillion?: number | null
@@ -3397,7 +3398,7 @@ export interface AnalyticsCost extends AnalyticsReport {
   priced: boolean
 }
 
-export type PriceOrigin = 'seed' | 'admin'
+export type PriceOrigin = 'seed' | 'admin' | 'billing'
 export type PriceStatus = 'current' | 'upcoming' | 'past' | 'corrected'
 export type UnpricedReason =
   | 'unknownDeployment'
@@ -3410,10 +3411,41 @@ export type UnpricedReason =
   | 'noOutputPrice'
   | 'beforeDeployment'
 
+export type BillingProvider = 'azure' | 'aws' | 'gcp' | 'mosaicTemplate'
+export type ConnectedBillingProvider = 'azure' | 'aws' | 'gcp'
+export type BillingCostBasis = 'contractAmortized'
+export type BillingConnectionStatus = 'untested' | 'ready' | 'failed'
+export type BillingRunStatus =
+  | 'queued'
+  | 'running'
+  | 'readyForReview'
+  | 'published'
+  | 'failed'
+  | 'superseded'
+export type BillingAcquisitionKind = 'upload' | 'connected' | 'scheduled'
+export type BillingUsageCategory =
+  | 'inputTokens'
+  | 'cachedInputTokens'
+  | 'cacheWriteTokens'
+  | 'outputTokens'
+  | 'ptuHours'
+  | 'monthlyCommitment'
+  | 'unsupported'
+  | 'excluded'
+export type AzureBillingRetrievalMode = 'costDetailsApi' | 'exportManifest'
+export type BillingReviewIssueSeverity = 'blocker' | 'warning' | 'info'
+export type BillingMappingScope = 'deployment' | 'cloudModel' | 'excluded'
+export type BillingMappingConfidence = 'exact' | 'suggested' | 'ambiguous' | 'unmatched'
+export type PricingBasis = 'publicSeed' | 'customManual' | 'billingDerived' | 'mixed'
+
 export interface PriceSource {
   title: string
-  url: string
+  url?: string | null
   retrievedOn?: string | null
+  reference?: string | null
+  kind?: 'external' | 'billingRun'
+  runId?: string | null
+  sourceMonth?: string | null
 }
 
 export interface PriceView {
@@ -3443,6 +3475,10 @@ export interface PriceView {
   sources: PriceSource[]
   note: string | null
   overrides: string | null
+  billingRunId?: string | null
+  publicationId?: string | null
+  sourceMonth?: string | null
+  billingProvider?: string | null
 }
 
 export interface PriceLineView {
@@ -3482,6 +3518,12 @@ export interface PricingOverview {
   deploymentTypes: string[]
   deployments: number
   pricedDeployments: number
+  pricingBasis?: PricingBasis
+  billingConnections?: number
+  pendingBillingReviews?: number
+  lastBillingPublishedAt?: string | null
+  lastBillingSourceMonth?: string | null
+  billingSchedulerAlwaysOn?: boolean
 }
 
 export interface PriceCreate {
@@ -3574,4 +3616,349 @@ export interface EndpointPricingUpdate {
   }>
   /** The version the form was opened on. A save over someone else's newer change is refused. */
   version?: string | null
+}
+
+export interface BillingSchedule {
+  enabled?: boolean
+  dayOfMonth?: number
+  timeUtc?: string
+  timeZone?: string
+  lastTriggeredSourceMonth?: string | null
+  lastRunId?: string | null
+  lastRunAt?: string | null
+  lastError?: string | null
+}
+
+export interface BillingConnectionView {
+  id: string
+  name: string
+  provider: ConnectedBillingProvider
+  pricingCloud: string
+  pricingCloudLabel: string
+  azureCloud?: AzureCloud | null
+  azureConnectionId?: string | null
+  azureScope?: string | null
+  azureRetrievalMode?: AzureBillingRetrievalMode | null
+  azureExportManifestUrl?: string | null
+  awsAccountId?: string | null
+  awsRoleArn?: string | null
+  awsExternalId?: string | null
+  awsAudience?: string | null
+  awsRegion?: string | null
+  awsCurBucket?: string | null
+  awsCurPrefix?: string | null
+  awsExportName?: string | null
+  gcpBillingAccountId?: string | null
+  gcpProjectId?: string | null
+  gcpDatasetId?: string | null
+  gcpTableId?: string | null
+  gcpLocation?: string | null
+  gcpServiceAccountEmail?: string | null
+  gcpWorkloadIdentityAudience?: string | null
+  gcpMaxBytesBilled?: number | null
+  hasStoredSecret: boolean
+  schedule: BillingSchedule
+  status: BillingConnectionStatus
+  statusMessage?: string | null
+  checkedAt?: string | null
+  costNoticeAcknowledged: boolean
+  revision: number
+  createdAt: string
+  updatedAt: string
+  updatedBy?: string | null
+  version?: string | null
+}
+
+export interface BillingConnectionCreate {
+  name: string
+  provider: ConnectedBillingProvider
+  pricingCloud: string
+  azureCloud?: AzureCloud | null
+  azureConnectionId?: string | null
+  azureScope?: string | null
+  azureRetrievalMode?: AzureBillingRetrievalMode | null
+  azureExportManifestUrl?: string | null
+  awsAccountId?: string | null
+  awsRoleArn?: string | null
+  awsExternalId?: string | null
+  awsAudience?: string | null
+  awsRegion?: string | null
+  awsCurBucket?: string | null
+  awsCurPrefix?: string | null
+  awsExportName?: string | null
+  gcpBillingAccountId?: string | null
+  gcpProjectId?: string | null
+  gcpDatasetId?: string | null
+  gcpTableId?: string | null
+  gcpLocation?: string | null
+  gcpServiceAccountEmail?: string | null
+  gcpWorkloadIdentityAudience?: string | null
+  gcpMaxBytesBilled?: number | null
+  credentialSecret?: string | null
+  credentialSecretUri?: string | null
+  schedule?: BillingSchedule
+  costNoticeAcknowledged?: boolean
+}
+
+export interface BillingConnectionUpdate {
+  name?: string | null
+  pricingCloud?: string | null
+  azureCloud?: AzureCloud | null
+  azureConnectionId?: string | null
+  azureScope?: string | null
+  azureRetrievalMode?: AzureBillingRetrievalMode | null
+  azureExportManifestUrl?: string | null
+  awsAccountId?: string | null
+  awsRoleArn?: string | null
+  awsExternalId?: string | null
+  awsAudience?: string | null
+  awsRegion?: string | null
+  awsCurBucket?: string | null
+  awsCurPrefix?: string | null
+  awsExportName?: string | null
+  gcpBillingAccountId?: string | null
+  gcpProjectId?: string | null
+  gcpDatasetId?: string | null
+  gcpTableId?: string | null
+  gcpLocation?: string | null
+  gcpServiceAccountEmail?: string | null
+  gcpWorkloadIdentityAudience?: string | null
+  gcpMaxBytesBilled?: number | null
+  credentialSecret?: string | null
+  credentialSecretUri?: string | null
+  clearStoredSecret?: boolean
+  schedule?: BillingSchedule | null
+  costNoticeAcknowledged?: boolean | null
+  version?: string | null
+}
+
+export interface BillingConnectionCheckResult {
+  connectionId?: string | null
+  provider?: ConnectedBillingProvider | null
+  status: BillingConnectionStatus
+  message: string
+  checkedAt: string
+  scopeSummary?: string | null
+  hasStoredSecret?: boolean
+  supportedSourceMonths: string[]
+  warnings: string[]
+  details?: Record<string, unknown>
+}
+
+export interface BillingNormalizedEvidenceItem {
+  lineKey: string
+  provider: BillingProvider
+  sourceScope?: string | null
+  sourceAccountId?: string | null
+  sourceResourceId?: string | null
+  sourceResourceName?: string | null
+  serviceName?: string | null
+  meterId?: string | null
+  skuId?: string | null
+  skuDescription?: string | null
+  publisher?: string | null
+  model?: string | null
+  modelVersion?: string | null
+  region?: string | null
+  deploymentType?: string | null
+  serviceTier?: string | null
+  routingMode?: string | null
+  usageCategory: BillingUsageCategory
+  rawUsageUnit?: string | null
+  rawQuantity: number
+  normalizedQuantity: number
+  normalizedUnit?: string | null
+  eligibleCostUsd: number
+  amortizedBenefitCostUsd: number
+  excludedCostUsd: number
+  excludedReason?: string | null
+  rowCount: number
+  usageStart?: string | null
+  usageEnd?: string | null
+  invoiceMonth?: string | null
+  currency: string
+  notes: string[]
+}
+
+export interface BillingReviewIssue {
+  code: string
+  severity: BillingReviewIssueSeverity
+  message: string
+  model?: string | null
+  region?: string | null
+  sourceResourceId?: string | null
+  details?: Record<string, unknown>
+}
+
+export interface BillingCandidateMapping {
+  candidateId: string
+  scope: BillingMappingScope
+  deploymentKey?: string | null
+  cloud?: string | null
+  confirmed?: boolean
+  replaceManualOverride?: boolean
+}
+
+export interface BillingCandidateRate {
+  candidateId: string
+  provider: BillingProvider
+  pricingCloud: string
+  sourceScope?: string | null
+  sourceAccountId?: string | null
+  sourceResourceId?: string | null
+  sourceResourceName?: string | null
+  publisher?: string | null
+  model: string
+  version?: string | null
+  deploymentType?: string | null
+  region?: string | null
+  serviceTier?: string | null
+  routingMode?: string | null
+  inputTokens?: number | null
+  cachedInputTokens?: number | null
+  cacheWriteTokens?: number | null
+  outputTokens?: number | null
+  ptuHours?: number | null
+  commitmentMonths?: number | null
+  inputCostUsd?: number | null
+  cachedInputCostUsd?: number | null
+  cacheWriteCostUsd?: number | null
+  outputCostUsd?: number | null
+  ptuCostUsd?: number | null
+  monthlyCommitmentCostUsd?: number | null
+  totalEligibleCostUsd: number
+  excludedCostUsd: number
+  inputPerMillion?: number | null
+  cachedInputPerMillion?: number | null
+  outputPerMillion?: number | null
+  ptuHourly?: number | null
+  monthlyAmount?: number | null
+  publishable: boolean
+  unpublishableReason?: string | null
+  suggestedScope: BillingMappingScope
+  suggestedDeploymentKey?: string | null
+  ambiguousDeploymentKeys: string[]
+  mappingConfidence: BillingMappingConfidence
+  existingPriceId?: string | null
+  existingLineId?: string | null
+  existingOrigin?: PriceOrigin | null
+  existingInputPerMillion?: number | null
+  existingCachedInputPerMillion?: number | null
+  existingOutputPerMillion?: number | null
+  existingPtuHourly?: number | null
+  existingMonthlyAmount?: number | null
+  conflictsWithManualOverride: boolean
+  warnings: string[]
+  evidenceLineKeys: string[]
+}
+
+export interface BillingRunSummaryView {
+  id: string
+  connectionId?: string | null
+  connectionName?: string | null
+  provider: BillingProvider
+  pricingCloud: string
+  pricingCloudLabel: string
+  acquisitionKind: BillingAcquisitionKind
+  sourceMonth: string
+  invoiceMonths: string[]
+  costBasis: BillingCostBasis
+  currency: string
+  derivationVersion: string
+  status: BillingRunStatus
+  statusMessage?: string | null
+  sourceScope?: string | null
+  sourceFileName?: string | null
+  sourceManifestId?: string | null
+  contentFingerprint?: string | null
+  duplicateOfRunId?: string | null
+  startedAt: string
+  completedAt?: string | null
+  publishedAt?: string | null
+  publicationId?: string | null
+  rawRowCount: number
+  eligibleRowCount: number
+  excludedRowCount: number
+  totalReadBytes: number
+  totalEligibleCostUsd: number
+  totalExcludedCostUsd: number
+  evidenceChunkCount: number
+  evidenceItemCount: number
+  candidateCount: number
+  publishableCandidateCount: number
+  blockerCount: number
+  warningCount: number
+  previewRevision: number
+  createdBy?: string | null
+  publishedBy?: string | null
+  version?: string | null
+}
+
+export interface BillingRunDetailView extends BillingRunSummaryView {
+  effectiveFromDefault?: string | null
+  candidates: BillingCandidateRate[]
+  mappings: BillingCandidateMapping[]
+  issues: BillingReviewIssue[]
+  evidenceItems: BillingNormalizedEvidenceItem[]
+}
+
+export interface BillingRunTriggerRequest {
+  sourceMonth?: string | null
+  forceRerun?: boolean
+}
+
+export interface BillingMappingsUpdateRequest {
+  mappings: BillingCandidateMapping[]
+  previewRevision?: number | null
+  version?: string | null
+}
+
+export interface BillingPublishRequest {
+  effectiveFrom?: string | null
+  acknowledgeBackdateImpact?: boolean
+  acknowledgeManualOverrideReplacement?: boolean
+  note?: string | null
+  previewRevision?: number | null
+  version?: string | null
+}
+
+export interface BillingPublicationView {
+  id: string
+  runId: string
+  connectionId?: string | null
+  provider: BillingProvider
+  pricingCloud: string
+  pricingCloudLabel: string
+  sourceMonth: string
+  effectiveFrom: string
+  backdated: boolean
+  priceVersionIds: string[]
+  affectedDeploymentKeys: string[]
+  replacedManualOverrideIds: string[]
+  note?: string | null
+  publishedBy: string
+  publishedAt: string
+}
+
+export interface BillingSourceTemplateView {
+  provider: BillingProvider
+  title: string
+  schemaVersion: string
+  supportedFormats: string[]
+  requiredColumns: string[]
+  optionalColumns: string[]
+  sampleCsv?: string | null
+  extractionQuery?: string | null
+  notes: string[]
+}
+
+export interface BillingImportPayload {
+  provider: BillingProvider
+  pricingCloud: string
+  sourceMonth?: string | null
+  fileName: string
+  sourceScope?: string | null
+  contentBase64?: string | null
+  contentText?: string | null
+  force?: boolean
 }

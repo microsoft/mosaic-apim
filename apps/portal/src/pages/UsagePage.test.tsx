@@ -502,6 +502,30 @@ describe('UsagePage', () => {
     expect(screen.getByText('Excludes 3 resources with unknown cost')).toBeVisible()
     expect(screen.getByText(/Estimated costs use list prices from MOSAIC's price list/)).toBeVisible()
   })
+
+  it("describes the organization's approved rates when measured costs use billing-derived or custom pricing", async () => {
+    const report = usageReport({
+      dataSource: 'logAnalytics',
+      pricingBasis: 'billingDerived',
+      notes: [
+        "Costs are estimates from MOSAIC's price list using your organization's approved model rates (including rates derived from prior-month billing where configured, and public list prices elsewhere), and are not a bill. The gateway's logs don't separate cached prompt tokens, so every prompt token is priced at the full input price.",
+      ],
+    })
+    renderPage({
+      ...report,
+      byResource: report.byResource.map((row) =>
+        row.entitlementId === 'grant-model' ? { ...row, attribution: 'measured' } : row,
+      ),
+    })
+
+    await screen.findByRole('table', { name: 'Usage by resource' })
+    expect(
+      screen.getByText(
+        /Estimated costs use your organization's approved rates in MOSAIC's price list, and aren't a bill\./,
+      ),
+    ).toBeVisible()
+    expect(screen.queryByText(/before any discount/)).not.toBeInTheDocument()
+  })
   it('shows the priced part of a resource with why the rest has no price', async () => {
     const report = usageReport({ dataSource: 'logAnalytics', notes: [] })
     renderPage({

@@ -91,6 +91,8 @@ Budgets and their email have these. See [Budgets and alerts](budgets-and-alerts.
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `MOSAIC_BUDGETS_ENABLED` | `true` | Runs the background check that judges budgets, emails at thresholds, and blocks cost centers. It runs only where usage comes from rollups. Off, budgets are kept but never judged. |
+| `MOSAIC_BILLING_REFRESH_ENABLED` | `true` | Poll in-flight billing acquisitions and run explicitly opted-in monthly draft schedules. Never publishes rates. |
+| `MOSAIC_BILLING_REFRESH_INTERVAL_SECONDS` | `300` | Billing worker tick, 30–86,400 seconds. Durable schedules also need an always-on API host; see [billing operations](pricing.md#schedules-late-data-and-recovery). |
 | `MOSAIC_BUDGET_INTERVAL_SECONDS` | `900` | How often every budget is checked, from 60 to 86,400 seconds. |
 | `MOSAIC_BUDGET_FAST_INTERVAL_SECONDS` | `300` | How often a budget at 90% or more, with a threshold or a block to come, is checked, from 60 to 3,600 seconds. |
 

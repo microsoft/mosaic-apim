@@ -303,17 +303,16 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   <tr>
     <td width="50%" valign="top">
       <img src="images/screenshots/console-analytics-cost.png" alt="The Cost section with this month's spend, the month-end forecast, the range's cost, a cost and token trend, and cost by model, consumer, and cost center">
-      <p><b>Cost.</b> What measured usage cost at list price: this month's spend and its month-end
+      <p><b>Cost.</b> Estimated spend from MOSAIC's applicable approved/manual/public rates: this month's spend and its month-end
       forecast, the range's cost and trend, and cost by model, consumer, cost center, API, and
       deployment, with a chargeback export that names each row's cost center. Usage MOSAIC can't
       price shows <b>No price</b>, never $0.</p>
     </td>
     <td width="50%" valign="top">
       <img src="images/screenshots/console-pricing.png" alt="The Pricing page listing one GPT-4o version's input, cached-input, and output prices by deployment type and region">
-      <p><b>Pricing.</b> The list prices MOSAIC turns usage into cost with, for each cloud, each
-      linked to its source. Administrators add prices for other clouds and providers, or override
-      one from a date without changing the days before it, and see which deployments have no price
-      and why.</p>
+      <p><b>Pricing.</b> Public, manual, and approved billing-derived rates with dated history
+      and source evidence. Administrators inspect model and deployment prices, scheduled changes,
+      and coverage without changing earlier days unless they explicitly backdate a correction.</p>
     </td>
   </tr>
   <tr>
@@ -492,6 +491,25 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
 <p><b>Model change review.</b> See the current edit separately from an earlier saved grant, with
 before-and-after values and the impact of applying the whole batch. Unchanged settings stay out
 of the main review; Technical execution retains the complete target and resource writes.</p>
+
+### Billing data and rate review
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/console-billing-data.png" alt="Pricing Billing data with fictional Azure, AWS and GCP source configurations and draft or published billing runs">
+      <p><b>Billing data.</b> Configure read-only billing sources or import a completed month's
+      USD extraction, then track acquisitions and reviews. Monthly refresh is opt-in and
+      prepares drafts only; the fictional connections shown are untested.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/console-billing-review.png" alt="A fictional billing draft review showing source month, eligible spend, quantities, existing and proposed rates, mapping decisions and publication controls">
+      <p><b>Billing rate review.</b> Compare quantity-weighted effective rates and evidence,
+      confirm deployment bindings, and review exclusions before publishing. The effective date
+      controls when estimates change; backdating can also change historical reports and budgets.</p>
+    </td>
+  </tr>
+</table>
 
 ## End-user portal
 

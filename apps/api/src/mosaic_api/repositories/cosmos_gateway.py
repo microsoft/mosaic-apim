@@ -599,6 +599,35 @@ class CosmosGatewayRepository(CosmosRepositoryBase):
         ) as error:
             raise busy from error
 
+    async def renew_scope_lease(
+        self, tenant_id: str, scope: str, owner_id: str, *, lease_seconds: float
+    ) -> None:
+        lease_id = deterministic_id("scopeLease", tenant_id, scope)
+        lost = ConflictError(
+            "The scope lease expired or was acquired by another worker.",
+            details={"scope": scope},
+        )
+        try:
+            item = await self._desired.read_item(item=lease_id, partition_key=tenant_id)
+            now = utc_now()
+            if (
+                item.get("ownerId") != owner_id
+                or item.get("tenantId") != tenant_id
+                or _lease_expiry(item) <= now
+            ):
+                raise lost
+            await self._desired.replace_item(
+                item=lease_id,
+                body={**item, "expiresAt": (now + timedelta(seconds=lease_seconds)).isoformat()},
+                etag=item["_etag"],
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except (
+            exceptions.CosmosResourceNotFoundError,
+            exceptions.CosmosAccessConditionFailedError,
+        ) as error:
+            raise lost from error
+
     async def release_scope_lease(self, tenant_id: str, scope: str, owner_id: str) -> None:
         lease_id = deterministic_id("scopeLease", tenant_id, scope)
         try:

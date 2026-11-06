@@ -145,6 +145,28 @@ async def test_rotation_verifies_before_activation_and_removes_retired_secret() 
     assert "replacement" not in replaced.model_dump_json()
 
 
+@pytest.mark.parametrize("cloud", ["commercial", "government"])
+async def test_storage_tokens_keep_the_selected_connection_identity_and_cloud(
+    monkeypatch: pytest.MonkeyPatch, cloud: str
+) -> None:
+    service, _ = build()
+    created = await service.create(ACTOR, request().model_copy(update={"azure_cloud": cloud}))
+    issuer = AsyncMock(return_value=AccessToken("fictional-storage-token", 9999999999))
+    monkeypatch.setattr(service, "_issue", issuer)
+    scope = "https://storage.azure.com/.default"
+
+    token = await service.token(created.id, (scope,))
+    assert token.token == "fictional-storage-token"
+    issued_connection, issued_secret, issued_scopes = issuer.call_args.args
+    assert issued_connection.id == created.id
+    assert issued_connection.azure_cloud == cloud
+    assert issued_secret == SECRET
+    assert issued_scopes == (scope,)
+    with pytest.raises(ValidationError, match="audience"):
+        await service.token(created.id, ("https://storage.example.invalid/.default",))
+    issuer.assert_awaited_once()
+
+
 async def test_failed_rotation_metadata_does_not_change_active_secret(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

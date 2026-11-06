@@ -28,6 +28,7 @@ Start with the [architecture](docs/architecture.md), [workflow diagrams](docs/wo
 | Grant access and connect a client | [Grants](docs/access.md), [Entra model calls](docs/call-models-with-entra-tokens.md), and [MCP connections](docs/connect-to-mcp-servers.md) |
 | Set up team access and real Entra membership | [Cost-center setup](docs/cost-centers.md#set-up-cost-centers) |
 | Understand chargeback and spending controls | [Cost centers](docs/cost-centers.md), [usage](docs/usage-analytics.md), [pricing](docs/pricing.md), and [budgets](docs/budgets-and-alerts.md) |
+| Derive and approve customer-specific billing rates | [Billing data, credentials, and schedules](docs/pricing.md#billing-data-import-review-publish) |
 | Check capabilities, limitations, and direction | [Capabilities and roadmap](docs/overview.md) |
 
 ## What MOSAIC does
@@ -47,6 +48,9 @@ Start with the [architecture](docs/architecture.md), [workflow diagrams](docs/wo
   saves intent; a separate gateway apply makes resource access effective.
 - **Operate the estate:** pool compatible model deployments, inspect health, and report usage,
   sourced price estimates, cost-center spend, and asynchronous budget alerts or blocking.
+- **Review billing-derived rates:** import supported USD Azure, AWS, or GCP billing extracts or
+  retrieve them read-only, inspect evidence and deployment bindings, then explicitly publish dated
+  rates. Opt-in monthly refresh prepares drafts only; see [Pricing](docs/pricing.md).
 
 See the [capability inventory](docs/overview.md#what-is-implemented) for supported paths and opt-ins.
 Provider detection alone does not imply support for publishing, token metering, or pricing.
@@ -117,7 +121,8 @@ identifiers and secrets blurred. Directory data and checks are simulated, not li
 </table>
 
 The [full gallery](docs/gallery.md) includes publishing reviews, model pools, Entra directory
-lookups, grants, cost centers, budgets, analytics, notifications, and Government connections.
+lookups, grants, cost centers, budgets, analytics, notifications, Government connections, and
+[billing-rate review](docs/gallery.md#billing-data-and-rate-review).
 It also shows [cost-center requests and Automatic access](docs/gallery.md#cost-center-requests-and-automatic-access),
 including membership discovery and requests, administrator controls, and incomplete setup
 rather than treating approval as usable access.
@@ -126,8 +131,14 @@ rather than treating approval as usable access.
 ## Important boundaries
 
 APIM's native limits are not the same as the analytics figures. Usage is rolled up from gateway
-logs every 15 minutes by default; priced usage is an estimate, not the Azure invoice. Dollar-budget
+logs every 15 minutes by default; priced usage is an estimate, not the provider invoice. Dollar-budget
 blocking normally trails usage by 15-30 minutes and can overshoot. See the [FAQ](docs/faq.md).
+
+Estimates use applicable approved billing-derived, manual, or public rates. Billing-derived rates
+reflect a completed source month's contract-discounted, amortized consumption, excluding tax and
+one-off credits. They are USD-only, not invoice reconciliation, FX, or a percentage/fixed-dollar
+markup feature. Publication defaults to today's UTC date; explicit backdating can change past
+reports and the next budget check's blocking decisions. See [pricing limits](docs/pricing.md#limits).
 
 Government resources can be managed from commercial MOSAIC through a separate management identity;
 their runtime offerings are key-only. Management metadata and usage enter commercial MOSAIC, so

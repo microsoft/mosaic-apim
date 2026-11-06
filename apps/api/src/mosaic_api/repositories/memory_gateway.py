@@ -441,6 +441,19 @@ class InMemoryGatewayRepository:
             )
         self.scope_leases[key] = (owner_id, now + timedelta(seconds=lease_seconds))
 
+    async def renew_scope_lease(
+        self, tenant_id: str, scope: str, owner_id: str, *, lease_seconds: float
+    ) -> None:
+        key = (tenant_id, scope)
+        now = utc_now()
+        current = self.scope_leases.get(key)
+        if current is None or current[0] != owner_id or current[1] <= now:
+            raise ConflictError(
+                "The scope lease expired or was acquired by another worker.",
+                details={"scope": scope},
+            )
+        self.scope_leases[key] = (owner_id, now + timedelta(seconds=lease_seconds))
+
     async def release_scope_lease(self, tenant_id: str, scope: str, owner_id: str) -> None:
         key = (tenant_id, scope)
         current = self.scope_leases.get(key)

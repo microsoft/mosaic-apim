@@ -127,14 +127,18 @@ applied runtime enforcement, and measured reporting are deliberately different c
   Telemetry section checks that its usage can be measured and says how to fix what's missing. See
   [Usage analytics](usage-analytics.md) and
   [ADR 0019](adr/0019-usage-telemetry.md)
-- Pricing: a sourced, dated price list turns measured usage into cost. MOSAIC ships list prices for
+- Pricing: a sourced, dated price list turns measured usage into estimated cost. MOSAIC ships list prices for
   Azure Commercial and Azure Government from the Azure Retail Prices API, each citing its source.
   Administrators add prices for custom clouds and other providers, or override one from a date, as
-  audited versions that never rewrite the days before them. Analytics, the Dashboard, and the
-  portal show cost at list price, with this month's spend and a month-end forecast, provisioned
+  audited versions that never rewrite the days before them. Supported Azure/AWS/GCP billing
+  uploads or read-only connections derive USD contract-amortized candidates; administrators review
+  evidence and mappings before publication. Monthly refresh only prepares drafts. Analytics, the
+  Dashboard, budgets, and the portal use the applicable approved/manual/public rates, with this
+  month's spend and a month-end forecast, provisioned
   throughput shared by each caller's share of its tokens, and a chargeback export. Usage MOSAIC
   can't price shows **No price**, never $0. See [Pricing](pricing.md) and
-  [ADR 0020](adr/0020-price-list.md)
+  [ADR 0020](adr/0020-price-list.md), extended by
+  [ADR 0031](adr/0031-billing-derived-pricing.md)
 - Cost centers: every grant, and so every call, is charged to a cost center that spans gateways,
   with responsible contacts, a keys-allowed switch, default limits, and pooled monthly quotas.
   Each custom center exclusively binds one verified Entra group for membership and chooses
@@ -267,7 +271,7 @@ inventory above describes current capabilities; the boundaries above distinguish
    Analytics into Cosmos, attributed to each grant, member, and client application, and shown in
    the portal against each grant's own limits and in the console's Dashboard and Analytics; see
    [ADR 0019](adr/0019-usage-telemetry.md). A sourced, dated price list turns that usage into
-   cost at list price, with a month-end forecast and a chargeback export; see
+   estimated cost at applicable approved/manual/public rates, with a month-end forecast and a chargeback export; see
    [ADR 0020](adr/0020-price-list.md). Cost centers charge every grant and call to a team or
    budget line, with pooled quotas and spend per cost center; see
    [ADR 0022](adr/0022-cost-centers.md). Monthly budgets warn by email at 80% and 100%, and

@@ -29,6 +29,14 @@ directory membership separately; Claims Operations remains available for the joi
 The demonstration does not change the production defaults: creation requests are on and
 membership requests are off until an administrator enables them.
 
+Billing screenshots use only generated fictional Azure Cost Details rows, normalized through
+the production pricing service. One deployment-bound list is approved on the capture's UTC date
+at the same rate as the public seed, so provenance changes without changing its numerical rate;
+a second draft proposes discounted input/output rates and excludes tax. Azure/AWS/GCP source
+configurations have no credentials, remain **Untested**, and make no provider calls. The billing
+worker and all source schedules stay disabled. This demonstrates review and evidence, not live
+provider connectivity, automatic activation, or a markup feature.
+
 ## When to update them
 
 Regenerate the affected shots, and reread their gallery and any README descriptions, in the same change as any of
@@ -259,6 +267,9 @@ survives to be read back.
 - `REDACTION_PATTERNS` in `capture.py`: GUIDs, email addresses, URLs and URIs, Azure resource IDs,
   Azure, Graph, Workflows, Bot Connector and Contoso hostnames, IPv4 addresses, MOSAIC record IDs and the
   APIM names derived from them, and the demo's placeholder keys.
+- Billing redaction also includes `mosaic://`/`s3://` evidence/storage URIs, AWS role ARNs,
+  12-digit account numbers, GCP billing-account shapes, truncated fingerprints, and the fictional
+  billing project/dataset/table/bucket/role names in `SENSITIVE_LITERALS`.
 
 Fictional people, workload identities, directory results, and gateway/account display names are
 also blurred. Public model names, API paths, deployment names, limits, and dates stay readable
@@ -377,6 +388,8 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-notification-readiness` | Console | `/settings?tab=notifications&notificationView=health`, evidence and remediation for storage, hosting, email, public links, and disabled workers | Dark | Notification readiness |
 | `console-analytics-cost` | Console | `/analytics?tab=cost` | Light | Cost |
 | `console-pricing` | Console | `/pricing`, **Prices** section filtered to `2024-11-20` | Dark | Pricing |
+| `console-billing-data` | Console | `/pricing?tab=billing`, untested fictional Azure/AWS/GCP source configurations and published/draft upload history; no provider calls | Light | Billing data |
+| `console-billing-review` | Console | `/pricing?tab=billing`, latest fictional Azure draft opened in **Review billing run**, quantities/rates, exclusions, bindings and effective date; never published by capture actions | Dark | Billing rate review |
 | `console-analytics-consumers` | Console | `/analytics?tab=consumers` | Light | Consumers |
 | `console-analytics-mcp-model-use` | Console | `/analytics?tab=consumers`, scrolled to **Model use through MCP servers** | Dark | Model use through MCP servers |
 | `console-analytics-limits` | Console | `/analytics?tab=limits` | Dark | Grant limits |

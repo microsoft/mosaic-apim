@@ -226,7 +226,10 @@ def cost_report(
 
     deployment_rows = _deployment_rows(context, deployments, costs, now, tally.total)
     notes = [HOURS_NOTE] if hourly else []
-    summary = tally.summary([*notes, *costs.notes, CHARGEBACK_NOTE])
+    summary = tally.summary(
+        [*notes, *costs.notes, CHARGEBACK_NOTE],
+        pricing_basis=costs.pricing_basis(),
+    )
     return AnalyticsCost(
         **context.report(),
         spend=spend,
@@ -290,6 +293,8 @@ def _deployment_rows(
                 pricing=rate.kind,
                 price_id=price.id if price else None,
                 price_origin=price.origin if price else None,
+                price_source_month=price.source_month if price else None,
+                price_billing_provider=price.billing_provider if price else None,
                 input_per_million=price.input_per_million if price else None,
                 cached_input_per_million=price.cached_input_per_million if price else None,
                 output_per_million=price.output_per_million if price else None,

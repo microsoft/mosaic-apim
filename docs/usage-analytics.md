@@ -482,7 +482,10 @@ governed call on a gateway whose list of blocked cost centers MOSAIC didn't writ
 
 ### Cost
 
-Usage is priced from MOSAIC's price list, at list price, by the day, each time a report is read.
+Usage is priced from MOSAIC's dated price book by the day, each time a report is read. Applicable
+approved billing-derived, manual, and public seed rates can contribute to one report; the basis
+is an estimate, not an invoice. Billing-derived rates reflect an observed source month's
+contract-discounted, amortized consumption, not necessarily today's provider charges.
 The Cost tab shows the total, the trend, cost by model, deployment, caller, and API, spend this
 month, and a month-end forecast. Usage MOSAIC can't price shows **No price**, never $0, and each
 report counts what it left out. Only calls the model served have tokens, so only they cost

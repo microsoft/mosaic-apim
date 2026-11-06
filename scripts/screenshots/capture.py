@@ -121,7 +121,12 @@ REDACTION_PATTERNS = [
     # Email addresses.
     r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+",
     # URLs and URIs, including api:// audiences.
-    r"\b(?:https?|api|wss?)://[^\s\"'<>]+",
+    r"\b(?:https?|api|wss?|mosaic|s3)://[^\s\"'<>]+",
+    # Billing account/role identifiers and truncated content fingerprints.
+    r"\barn:aws(?:-[a-z-]+)?:[^\s\"'<>]+",
+    r"\b\d{12}\b",
+    r"\b[0-9A-F]{6}-[0-9A-F]{6}-[0-9A-F]{6}\b",
+    r"\b[0-9a-f]{16}\b",
     # Azure resource IDs.
     r"/subscriptions/[^\s\"'<>]+",
     # Bare hostnames of the services MOSAIC talks to.
@@ -1179,6 +1184,32 @@ SHOTS: list[Shot] = [
         # One model version's prices, where the demo's scheduled GPT-4o rate shows as a change.
         actions=(fill_text("Find a model", "2024-11-20"), wait_for_text("Changes ")),
         height=1300,
+    ),
+    Shot(
+        "console-billing-data",
+        "console",
+        "/pricing?tab=billing",
+        "light",
+        "fictional-amortized-draft.csv",
+        width=1800,
+        height=1600,
+    ),
+    Shot(
+        "console-billing-review",
+        "console",
+        "/pricing?tab=billing",
+        "dark",
+        "fictional-amortized-draft.csv",
+        actions=(
+            lambda page: page.get_by_role("table", name="Billing runs", exact=True)
+            .get_by_role("row")
+            .filter(has_text="Ready for review")
+            .get_by_role("button", name="Review & publish", exact=True)
+            .click(),
+            wait_for_text("Normalized billing evidence"),
+        ),
+        width=1800,
+        height=2100,
     ),
     Shot(
         "console-analytics-consumers",

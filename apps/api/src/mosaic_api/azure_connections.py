@@ -417,7 +417,7 @@ class AzureConnectionService:
     async def token(self, connection_id: str, scopes: tuple[str, ...]) -> AccessToken:
         connection = await self.get(self.tenant_id, connection_id)
         profile = cloud_profile(connection.azure_cloud)
-        permitted = {profile.arm_scope}
+        permitted = {profile.arm_scope, "https://storage.azure.com/.default"}
         # The query endpoint and audience belong to the same closed cloud profile.
         from mosaic_api.integrations.loganalytics.client import query_scope
 

@@ -860,8 +860,9 @@ export function UsagePage() {
                 {showCost && usage.data.dataSource === 'logAnalytics' && (
                   <>
                     {' '}
-                    Estimated costs use list prices from MOSAIC&apos;s price list, before any
-                    discount, and aren&apos;t a bill.
+                    {usage.data.pricingBasis && usage.data.pricingBasis !== 'publicSeed'
+                      ? "Estimated costs use your organization's approved rates in MOSAIC's price list, and aren't a bill."
+                      : "Estimated costs use list prices from MOSAIC's price list, before any discount, and aren't a bill."}
                   </>
                 )}
               </Text>
