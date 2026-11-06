@@ -29,7 +29,7 @@ from mosaic_api.domain import (
     new_id,
     utc_now,
 )
-from mosaic_api.errors import UpstreamAuthorizationError, UpstreamError
+from mosaic_api.errors import ConflictError, UpstreamAuthorizationError, UpstreamError
 from mosaic_api.main import create_app
 from mosaic_api.observed import ObservedModelDeployment
 from mosaic_api.pricing import token_amount
@@ -264,6 +264,50 @@ async def _build_scheduling_harness(
     )
 
 
+async def _seed_running_run(service: PricingService) -> str:
+    connection = await service.create_billing_connection(
+        _actor(),
+        BillingConnectionCreate(
+            name="Azure Poll Lease",
+            provider="azure",
+            pricing_cloud="commercial",
+            azure_scope="/subscriptions/00000000-0000-0000-0000-000000000001",
+            schedule=BillingSchedule(enabled=False),
+        ),
+    )
+    service.register_billing_connector(
+        _ScriptedBillingConnector(
+            steps=[BillingConnectorStepResult(status="running", operation_id="poll-op")]
+        )
+    )
+    run = await service.start_billing_run(
+        _actor(), connection.id, BillingRunTriggerRequest(source_month="2026-09")
+    )
+    return run.id
+
+
+def _completed_step(manifest: str = "winner-manifest") -> BillingConnectorStepResult:
+    return BillingConnectorStepResult(
+        status="completed",
+        source_manifest_id=manifest,
+        parts=[BillingConnectorPayloadPart(name=f"{manifest}.csv", content=VALID_AZURE_CSV)],
+    )
+
+
+async def _prepare_scheduled_start(repository: InMemoryPricingRepository, run_id: str) -> str:
+    initial = await repository.get_billing_run(TENANT, run_id)
+    assert initial is not None and initial.connection_id is not None
+    await repository.save_billing_run(initial.model_copy(update={"status": "failed"}), _audit())
+    connection = await repository.get_billing_connection(TENANT, initial.connection_id)
+    assert connection is not None
+    await repository.save_billing_connection(
+        connection.model_copy(update={"schedule": BillingSchedule(
+            enabled=True, day_of_month=1, time_utc="00:00", time_zone="UTC"
+        )}), _audit(),
+    )
+    return billing_schedule_lease_scope(connection.id, initial.source_month)
+
+
 # -- 1. Schedule due calculation across time zones, year rollover, and leap years ---------------
 
 
@@ -356,6 +400,256 @@ def test_schedule_due_calculation_utc_timezones_year_rollover_and_leap_february(
     assert non_leap_march.period_start == date(2025, 2, 1)
     assert non_leap_march.period_end == date(2025, 2, 28)
     assert non_leap_march.days_in_month == 28
+
+
+async def test_tokyo_day_one_schedule_waits_for_utc_month_completion() -> None:
+    clock, repository, _gateway, _endpoints, _vault, service, scheduler = (
+        await _build_scheduling_harness(now=datetime(2026, 10, 31, 15, 0, tzinfo=UTC))
+    )
+    schedule = BillingSchedule(
+        enabled=True, day_of_month=1, time_utc="00:00", time_zone="Asia/Tokyo",
+        last_triggered_source_month="2026-09",
+    )
+    connection = await service.create_billing_connection(
+        _actor(),
+        BillingConnectionCreate(
+            name="Tokyo schedule", provider="azure", pricing_cloud="commercial",
+            azure_scope="/subscriptions/00000000-0000-0000-0000-000000000001",
+            schedule=schedule,
+        ),
+    )
+    connector = _ScriptedBillingConnector(steps=[BillingConnectorStepResult(status="running")])
+    service.register_billing_connector(connector)
+    before = resolve_schedule_window(schedule, clock())
+    assert before.source_month == "2026-10"
+    assert before.is_time_reached
+    assert not before.is_due
+    assert (await scheduler.run_once()).triggered_run_ids == []
+    clock.set(datetime(2026, 10, 31, 23, 59, 59, tzinfo=UTC))
+    assert not resolve_schedule_window(schedule, clock()).is_due
+    assert (await scheduler.run_once()).triggered_run_ids == []
+    saved = await repository.get_billing_connection(TENANT, connection.id)
+    assert saved is not None
+    assert saved.schedule.last_triggered_source_month == "2026-09"
+    assert connector.calls == []
+
+    clock.set(datetime(2026, 11, 1, 0, 0, tzinfo=UTC))
+    assert resolve_schedule_window(schedule, clock()).is_due
+    tick = await scheduler.run_once()
+    assert len(tick.triggered_run_ids) == 1
+    assert connector.calls[0][1] == "2026-10"
+    assert (await scheduler.run_once()).triggered_run_ids == []
+
+
+@pytest.mark.parametrize(
+    ("winner_kind", "contender_kind"),
+    [("interactive", "interactive"), ("interactive", "scheduler"), ("scheduler", "interactive")],
+)
+async def test_every_poll_entry_point_serializes_before_evidence_replacement(
+    monkeypatch: pytest.MonkeyPatch, winner_kind: str, contender_kind: str
+) -> None:
+    clock, repository, gateway, endpoints, vault, service, scheduler = (
+        await _build_scheduling_harness()
+    )
+    run_id = await _seed_running_run(service)
+    winner_connector = _ScriptedBillingConnector(steps=[_completed_step()])
+    loser_step = _completed_step("different-extract")
+    loser_step.parts[0].content = VALID_AZURE_CSV.replace(b"3.50", b"350.00")
+    loser_connector = _ScriptedBillingConnector(steps=[loser_step])
+    service.register_billing_connector(winner_connector)
+    contender = PricingService(
+        repository, endpoint_repository=endpoints, gateway_repository=gateway, clock=clock,
+        secret_store=vault, secret_reader=vault.read,
+        billing_connectors={"azure": loser_connector},
+    )
+    contender_scheduler = BillingPricingScheduler(repository, gateway, contender, tenant_id=TENANT)
+    evidence_started, finish_evidence = asyncio.Event(), asyncio.Event()
+    save_evidence = repository.save_billing_evidence_chunks
+
+    async def pause_evidence(tenant_id: str, target_id: str, chunks: Any) -> None:
+        evidence_started.set()
+        await finish_evidence.wait()
+        await save_evidence(tenant_id, target_id, chunks)
+
+    monkeypatch.setattr(repository, "save_billing_evidence_chunks", pause_evidence)
+    winner = asyncio.create_task(
+        scheduler.run_once() if winner_kind == "scheduler"
+        else service.poll_billing_run(_actor(), run_id)
+    )
+    try:
+        await asyncio.wait_for(evidence_started.wait(), timeout=5)
+        if contender_kind == "scheduler":
+            tick = await contender_scheduler.run_once()
+            assert tick.lease_conflicts == [billing_run_lease_scope(run_id)]
+            assert tick.polled_run_ids == []
+        else:
+            with pytest.raises(ConflictError):
+                await contender.poll_billing_run(_actor(), run_id)
+        assert loser_connector.calls == []
+    finally:
+        finish_evidence.set()
+        await winner
+
+    persisted = await repository.get_billing_run(TENANT, run_id)
+    evidence = await repository.list_billing_evidence_chunks(TENANT, run_id)
+    assert persisted is not None and persisted.status == "readyForReview"
+    assert persisted.source_manifest_id == "winner-manifest"
+    assert persisted.candidates[0].input_per_million == pytest.approx(1.75)
+    assert evidence
+    assert (await contender.poll_billing_run(_actor(), run_id)).status == "readyForReview"
+    assert await repository.list_billing_evidence_chunks(TENANT, run_id) == evidence
+    assert loser_connector.calls == []
+    assert gateway.scope_leases == {}
+
+
+async def test_scheduler_rechecks_retry_after_under_the_shared_poll_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock, repository, gateway, _endpoints, _vault, service, scheduler = (
+        await _build_scheduling_harness()
+    )
+    run_id = await _seed_running_run(service)
+    connector = _ScriptedBillingConnector(steps=[_completed_step()])
+    service.register_billing_connector(connector)
+    acquire = gateway.acquire_scope_lease
+
+    async def defer_before_acquire(
+        tenant_id: str, scope: str, owner: str, *, lease_seconds: float,
+    ) -> None:
+        run = await repository.get_billing_run(TENANT, run_id)
+        assert run is not None
+        await repository.save_billing_run(
+            run.model_copy(update={"poll_after": clock() + timedelta(minutes=5)}), _audit()
+        )
+        await acquire(tenant_id, scope, owner, lease_seconds=lease_seconds)
+
+    monkeypatch.setattr(gateway, "acquire_scope_lease", defer_before_acquire)
+    tick = await scheduler.run_once()
+    assert tick.polled_run_ids == []
+    assert connector.calls == []
+    assert gateway.scope_leases == {}
+
+
+@pytest.mark.parametrize("operation_kind", ["interactive", "scheduler-poll", "scheduler-start"])
+async def test_heartbeat_keeps_lease_during_provider_wait_longer_than_lease(
+    monkeypatch: pytest.MonkeyPatch, operation_kind: str
+) -> None:
+    clock, repository, gateway, _endpoints, _vault, service, _scheduler = (
+        await _build_scheduling_harness()
+    )
+    run_id = await _seed_running_run(service)
+    if operation_kind == "scheduler-start":
+        scope = await _prepare_scheduled_start(repository, run_id)
+    else:
+        scope = billing_run_lease_scope(run_id)
+    lease_seconds = 0.3
+    entered, finish = asyncio.Event(), asyncio.Event()
+    renewals: list[datetime] = []
+    renew = gateway.renew_scope_lease
+
+    async def track_renew(
+        tenant_id: str, target: str, owner: str, *, lease_seconds: float,
+    ) -> None:
+        await renew(tenant_id, target, owner, lease_seconds=lease_seconds)
+        renewals.append(utc_now())
+
+    monkeypatch.setattr(gateway, "renew_scope_lease", track_renew)
+
+    async def wait_on_provider(_connection: BillingConnection, _run: BillingAcquisitionRun) -> None:
+        entered.set()
+        await finish.wait()
+
+    connector = _ScriptedBillingConnector(on_call=wait_on_provider, steps=[_completed_step()])
+    service.register_billing_connector(connector)
+    scheduler = BillingPricingScheduler(
+        repository, gateway, service, tenant_id=TENANT, clock=clock, lease_seconds=lease_seconds
+    )
+    task = asyncio.create_task(
+        service.poll_billing_run(_actor(), run_id, lease_seconds=lease_seconds)
+        if operation_kind == "interactive" else scheduler.run_once()
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        initial_expiry = gateway.scope_leases[(TENANT, scope)][1]
+        await asyncio.sleep(lease_seconds * 2.5)
+        assert utc_now() > initial_expiry
+        assert gateway.scope_leases[(TENANT, scope)][1] > utc_now()
+        assert len(renewals) >= 5
+        with pytest.raises(ConflictError):
+            await gateway.acquire_scope_lease(TENANT, scope, "contender", lease_seconds=60)
+    finally:
+        finish.set()
+        result = await task
+    if operation_kind == "interactive":
+        assert result.status == "readyForReview"
+    else:
+        assert len(result.completed_run_ids) == 1
+        assert result.lease_conflicts == []
+    assert len(connector.calls) == 1
+    assert gateway.scope_leases == {}
+
+
+@pytest.mark.parametrize("external_cancel", [False, True])
+@pytest.mark.parametrize("suppress_provider_cancellation", [False, True])
+@pytest.mark.parametrize("operation_kind", ["interactive", "scheduler-poll", "scheduler-start"])
+async def test_heartbeat_ownership_loss_or_cancellation_stops_without_publishing_evidence(
+    external_cancel: bool,
+    suppress_provider_cancellation: bool,
+    operation_kind: str,
+) -> None:
+    clock, repository, gateway, _endpoints, _vault, service, _scheduler = (
+        await _build_scheduling_harness()
+    )
+    run_id = await _seed_running_run(service)
+    scope = (
+        await _prepare_scheduled_start(repository, run_id)
+        if operation_kind == "scheduler-start" else billing_run_lease_scope(run_id)
+    )
+    original = await repository.list_billing_runs(TENANT)
+    original_connections = await repository.list_billing_connections(TENANT)
+    entered, provider_cancelled = asyncio.Event(), asyncio.Event()
+
+    async def wait_on_provider(_connection: BillingConnection, _run: BillingAcquisitionRun) -> None:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            if not suppress_provider_cancellation:
+                raise
+        finally:
+            provider_cancelled.set()
+
+    service.register_billing_connector(
+        _ScriptedBillingConnector(on_call=wait_on_provider, steps=[_completed_step()])
+    )
+    scheduler = BillingPricingScheduler(
+        repository, gateway, service, tenant_id=TENANT, clock=clock, lease_seconds=0.15
+    )
+    task = asyncio.create_task(
+        service.poll_billing_run(_actor(), run_id, lease_seconds=0.15)
+        if operation_kind == "interactive" else scheduler.run_once()
+    )
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    if external_cancel:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert (TENANT, scope) not in gateway.scope_leases
+    else:
+        gateway.scope_leases[(TENANT, scope)] = ("winner", utc_now() + timedelta(seconds=60))
+        if operation_kind == "interactive":
+            with pytest.raises(ConflictError):
+                await asyncio.wait_for(task, timeout=5)
+        else:
+            tick = await asyncio.wait_for(task, timeout=5)
+            assert tick.lease_conflicts == [scope]
+            assert tick.completed_run_ids == []
+            assert tick.triggered_run_ids == []
+        assert gateway.scope_leases[(TENANT, scope)][0] == "winner"
+    assert provider_cancelled.is_set()
+    assert await repository.list_billing_runs(TENANT) == original
+    assert await repository.list_billing_connections(TENANT) == original_connections
+    assert await repository.list_billing_evidence_chunks(TENANT, run_id) == []
 
 
 # -- 2. Repeated ticks and concurrent replica races never duplicate a month's acquisition ------
@@ -1174,4 +1468,3 @@ async def test_non_ai_only_dataset_and_disabled_worker_readiness() -> None:
 
     updated_conn = await service.get_billing_connection(actor, conn.id)
     assert updated_conn.schedule.last_error == run_detail.status_message
-

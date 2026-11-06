@@ -152,7 +152,7 @@ async def import_billing(
         except PydanticValidationError as exc:
             raise ValidationError(
                 "Invalid billing import request payload.",
-                details={"errors": exc.errors(include_input=False)},
+                details={"errors": exc.errors(include_input=False, include_context=False)},
             ) from exc
         if parsed.content_base64 is not None:
             try:

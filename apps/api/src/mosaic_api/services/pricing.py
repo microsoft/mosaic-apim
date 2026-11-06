@@ -101,6 +101,11 @@ from mosaic_api.services.billing_ingestion import (
     ingest_billing_bytes,
     ingest_billing_parts,
 )
+from mosaic_api.services.billing_leases import (
+    DEFAULT_BILLING_LEASE_SECONDS,
+    billing_run_lease_scope,
+    with_billing_lease_heartbeat,
+)
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.telemetry import governed_apis
 from mosaic_api.usage_telemetry import RolledUpApi
@@ -2003,6 +2008,41 @@ class PricingService:
         run_id: str,
         *,
         lease_renewer: Callable[[], Awaitable[None]] | None = None,
+        lease_seconds: float = DEFAULT_BILLING_LEASE_SECONDS,
+    ) -> BillingRunDetailView:
+        scope = billing_run_lease_scope(run_id)
+        owner = new_id("billingPoll")
+        await self._gateways.acquire_scope_lease(
+            actor.tenant_id, scope, owner, lease_seconds=lease_seconds
+        )
+
+        async def renew() -> None:
+            await self._gateways.renew_scope_lease(
+                actor.tenant_id, scope, owner, lease_seconds=lease_seconds
+            )
+
+        async def poll(guard: Callable[[], Awaitable[None]]) -> BillingRunDetailView:
+            async def check() -> None:
+                await guard()
+                if lease_renewer is not None:
+                    await lease_renewer()
+
+            await check()
+            return await self._poll_billing_run(actor, run_id, lease_renewer=check)
+
+        try:
+            return await with_billing_lease_heartbeat(
+                poll, renew, lease_seconds=lease_seconds
+            )
+        finally:
+            await self._gateways.release_scope_lease(actor.tenant_id, scope, owner)
+
+    async def _poll_billing_run(
+        self,
+        actor: Actor,
+        run_id: str,
+        *,
+        lease_renewer: Callable[[], Awaitable[None]],
     ) -> BillingRunDetailView:
         run = await self._repository.get_billing_run(actor.tenant_id, run_id)
         if run is None:
@@ -2032,6 +2072,18 @@ class PricingService:
                 "Billing connection was not found", details={"id": run.connection_id}
             )
 
+        renew_lease = lease_renewer
+
+        async def check_run_lease() -> None:
+            await renew_lease()
+            latest = await self._repository.get_billing_run(actor.tenant_id, run.id)
+            if latest is None or latest.status != run.status or latest.etag != run.etag:
+                raise ConflictError(
+                    "Billing acquisition run changed while polling.",
+                    details={"runId": run.id},
+                )
+
+        lease_renewer = check_run_lease
         secret_value: str | None = None
         try:
             connector = self._require_connector(connection)

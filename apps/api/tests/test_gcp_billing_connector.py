@@ -485,7 +485,7 @@ async def test_external_account_credential_json_with_impersonation_url(impersona
             form = parse_qs(request.content.decode())
             assert form["scope"] == [CLOUD_PLATFORM_SCOPE if impersonate else BIGQUERY_SCOPE]
             return httpx.Response(200, json={"access_token": "ext-sts-tok"})
-        if "iamcredentials.googleapis.com" in str(request.url):
+        if request.url.host == "iamcredentials.googleapis.com":
             assert impersonate
             assert request.headers["Authorization"] == "Bearer ext-sts-tok"
             assert json.loads(request.content)["scope"] == [BIGQUERY_SCOPE]

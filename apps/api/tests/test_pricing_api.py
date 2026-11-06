@@ -196,6 +196,42 @@ def test_prices_are_listed_per_cloud_with_their_sources(admin: TestClient) -> No
     assert admin.get("/api/v1/pricing/prices", params={"cloud": "Not A Cloud"}).status_code == 422
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("sourceMonth", "2026-13", "Source month must use YYYY-MM format"),
+        ("pricingCloud", "secret-invalid-cloud!", "A pricing cloud key is up to 40"),
+        ("fileName", "   ", "Provide a file name"),
+        ("provider", "secret-invalid-provider", "Input should be"),
+    ],
+)
+def test_invalid_billing_import_json_returns_safe_validation_errors(
+    admin: TestClient, field: str, value: str, message: str
+) -> None:
+    payload = {
+        "provider": "azure",
+        "pricingCloud": "commercial",
+        "sourceMonth": "2026-09",
+        "fileName": "billing.csv",
+        "contentText": "secret-billing-content",
+        "sourceScope": "secret-billing-scope",
+    }
+    payload[field] = value
+    response = admin.post("/api/v1/pricing/billing/imports", json=payload)
+
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["code"] == "validation_error"
+    assert body["message"] == "Invalid billing import request payload."
+    errors = body["details"]["errors"]
+    assert len(errors) == 1
+    assert errors[0]["loc"] == [field]
+    assert message in errors[0]["msg"]
+    assert "input" not in errors[0]
+    assert "ctx" not in errors[0]
+    assert "secret-" not in response.text
+
+
 async def test_an_override_adds_a_version_and_keeps_the_history(admin: TestClient) -> None:
     prices = admin.get("/api/v1/pricing/prices", params={"cloud": "commercial"}).json()
     line = next(

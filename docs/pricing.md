@@ -243,7 +243,8 @@ AWS/GCP SDK credential-discovery chain.
 - Each connection's monthly schedule is **off by default**. Enable it explicitly, choose day
   1–28, time and IANA time zone (default day 3, 04:00 UTC). The serialized field is `timeUtc`,
   but the scheduler interprets it in `timeZone`; use UTC if you want UTC execution. The target is
-  the preceding calendar month in that schedule's zone, then validated as a completed UTC month.
+  the preceding calendar month in that schedule's zone. If the local scheduled time falls
+  before that month has ended in UTC, the worker waits until UTC month-end before starting it.
 - `MOSAIC_BILLING_REFRESH_ENABLED=true` (default) runs the worker for polling and opted-in monthly
   drafts. `MOSAIC_BILLING_REFRESH_INTERVAL_SECONDS=300` (30–86,400) controls its tick. Keep at least
   one API replica awake and set `MOSAIC_SCHEDULED_WORKERS_ALWAYS_ON=true` only when hosting
@@ -254,6 +255,9 @@ AWS/GCP SDK credential-discovery chain.
   Existing non-failed work for that connection/month suppresses another scheduled run.
   A failed acquisition is recorded; inspect it and retry/fetch explicitly rather than expecting
   unbounded automatic retries. If the worker is disabled, use **Check status** for in-flight work.
+  Interactive status checks and background polls share the same per-run lease. A heartbeat
+  extends ownership during provider waits without releasing the lease; losing ownership or
+  cancelling the request stops retrieval before its results are published.
 - Scheduled work **only creates drafts**. It never approves or activates prices. Failed, empty,
   incomplete, or expired-credential retrievals leave the approved book intact. Schedule and
   notification preferences are independent.

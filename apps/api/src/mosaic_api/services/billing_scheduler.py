@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -15,7 +15,7 @@ from pydantic import Field
 from mosaic_api.billing_pricing import (
     BillingAcquisitionRun,
     BillingConnection,
-    BillingReviewIssue,
+    BillingRunDetailView,
     BillingRunTriggerRequest,
     BillingSchedule,
     BillingSchedulerStatusView,
@@ -25,6 +25,11 @@ from mosaic_api.billing_pricing import (
 from mosaic_api.domain import AuditEvent, MosaicModel, new_id, utc_now
 from mosaic_api.errors import ConflictError
 from mosaic_api.repositories import GatewayRepository, PricingRepository
+from mosaic_api.services.billing_leases import (
+    DEFAULT_BILLING_LEASE_SECONDS,
+    billing_run_lease_scope,
+    with_billing_lease_heartbeat,
+)
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.pricing import (
     SAVE_ATTEMPTS,
@@ -35,7 +40,6 @@ from mosaic_api.services.pricing import (
 logger = structlog.get_logger()
 
 BILLING_SCHEDULER_ACTOR_ID = "mosaic-billing-scheduler"
-DEFAULT_BILLING_LEASE_SECONDS = 180.0
 NON_FAILED_RUN_STATUSES: frozenset[str] = frozenset(
     {"queued", "running", "readyForReview", "published"}
 )
@@ -55,12 +59,6 @@ def billing_schedule_lease_scope(connection_id: str, source_month: str) -> str:
     """Scope lease key guarding a connection's monthly scheduled draft retrieval."""
 
     return f"billing-schedule:{connection_id}:{source_month}"
-
-
-def billing_run_lease_scope(run_id: str) -> str:
-    """Scope lease key guarding one in-flight billing acquisition run poll."""
-
-    return f"billing-run:{run_id}"
 
 
 class BillingScheduleWindow(MosaicModel):
@@ -109,6 +107,7 @@ def resolve_schedule_window(
     is_due = bool(
         schedule.enabled
         and is_time_reached
+        and period_end < now.astimezone(UTC).date()
         and not already_triggered
         and not has_non_failed
     )
@@ -247,22 +246,7 @@ class BillingPricingScheduler:
     async def renew_scope_lease(self, scope: str) -> None:
         """Renew ``scope`` lease held by this worker, raising ``ConflictError`` if lost."""
 
-        scope_leases = getattr(self._coordination, "scope_leases", None)
-        if isinstance(scope_leases, dict):
-            current = scope_leases.get((self._tenant_id, scope))
-            if (
-                current is None
-                or current[0] != self._owner
-                or current[1] <= utc_now()
-            ):
-                raise ConflictError(
-                    "The scope lease expired or was acquired by another worker.",
-                    details={"scope": scope},
-                )
-        await self._coordination.release_scope_lease(
-            self._tenant_id, scope, self._owner
-        )
-        await self._coordination.acquire_scope_lease(
+        await self._coordination.renew_scope_lease(
             self._tenant_id,
             scope,
             self._owner,
@@ -364,60 +348,6 @@ class BillingPricingScheduler:
                     raise
         return None
 
-    async def _mark_run_failed_fallback(
-        self,
-        run: BillingAcquisitionRun,
-        error: Exception,
-    ) -> BillingAcquisitionRun | None:
-        now = self._clock()
-        error_msg = _safe_billing_error_message(error)
-        current = await self._repository.get_billing_run(self._tenant_id, run.id)
-        if current is None or current.status not in ("queued", "running"):
-            return current
-        failed_issue = BillingReviewIssue(
-            code="acquisitionFailed",
-            severity="blocker",
-            message=error_msg,
-        )
-        failed_run = current.model_copy(
-            update={
-                "status": "failed",
-                "status_message": error_msg,
-                "completed_at": now,
-                "poll_after": None,
-                "continuation_token": None,
-                "issues": [*current.issues, failed_issue],
-                "updated_at": now,
-            }
-        )
-        saved = await self._repository.save_billing_run(
-            failed_run,
-            AuditEvent(
-                id=new_id("audit"),
-                tenant_id=self._tenant_id,
-                action="pricing.billingRunFailed",
-                resource_type="billingAcquisitionRun",
-                resource_id=current.id,
-                actor_object_id=self._actor.object_id,
-                details={
-                    "connectionId": current.connection_id,
-                    "provider": current.provider,
-                    "sourceMonth": current.source_month,
-                    "acquisitionKind": current.acquisition_kind,
-                    "error": error_msg,
-                },
-            ),
-        )
-        if current.acquisition_kind == "scheduled" and current.connection_id:
-            await self._update_connection_schedule_cas(
-                current.connection_id,
-                source_month=current.source_month,
-                run_id=current.id,
-                run_at=now,
-                last_error=error_msg,
-            )
-        return saved
-
     async def _poll_in_flight_runs(
         self, result: BillingSchedulerTickResult
     ) -> None:
@@ -436,90 +366,40 @@ class BillingPricingScheduler:
                 continue
 
             scope = billing_run_lease_scope(run.id)
+
+            async def validate_poll_due(_run_id: str = run.id) -> None:
+                latest = await self._repository.get_billing_run(self._tenant_id, _run_id)
+                if (
+                    latest is None
+                    or latest.status != "running"
+                    or (latest.poll_after is not None and self._clock() < latest.poll_after)
+                ):
+                    raise ConflictError(
+                        "Billing acquisition run is no longer due for polling.",
+                        details={"runId": _run_id},
+                    )
+
             try:
-                await self._coordination.acquire_scope_lease(
-                    self._tenant_id,
-                    scope,
-                    self._owner,
+                polled_view = await self._pricing.poll_billing_run(
+                    self._actor,
+                    run.id,
+                    lease_renewer=validate_poll_due,
                     lease_seconds=self._lease_seconds,
                 )
             except ConflictError:
                 result.lease_conflicts.append(scope)
+                logger.warning(
+                    "billing_scheduler_poll_lease_lost",
+                    run_id=run.id,
+                    scope=scope,
+                )
                 continue
 
-            try:
-                current_run = await self._repository.get_billing_run(
-                    self._tenant_id, run.id
-                )
-                if current_run is None or current_run.status != "running":
-                    continue
-                now = self._clock()
-                if (
-                    current_run.poll_after is not None
-                    and now < current_run.poll_after
-                ):
-                    continue
-
-                run_id = current_run.id
-                expected_etag = current_run.etag
-
-                async def renew_run_lease(
-                    _run_id: str = run_id,
-                    _scope: str = scope,
-                    _etag: str | None = expected_etag,
-                ) -> None:
-                    await self.renew_scope_lease(_scope)
-                    latest = await self._repository.get_billing_run(
-                        self._tenant_id, _run_id
-                    )
-                    if (
-                        latest is None
-                        or latest.status != "running"
-                        or (_etag is not None and latest.etag != _etag)
-                    ):
-                        raise ConflictError(
-                            "Billing acquisition run changed while polling.",
-                            details={"runId": _run_id, "scope": _scope},
-                        )
-
-                try:
-                    polled_view = await self._pricing.poll_billing_run(
-                        self._actor,
-                        current_run.id,
-                        lease_renewer=renew_run_lease,
-                    )
-                except ConflictError:
-                    result.lease_conflicts.append(scope)
-                    logger.warning(
-                        "billing_scheduler_poll_lease_lost",
-                        run_id=current_run.id,
-                        scope=scope,
-                    )
-                    continue
-                except Exception as exc:
-                    try:
-                        await renew_run_lease()
-                        await self._mark_run_failed_fallback(current_run, exc)
-                        result.polled_run_ids.append(current_run.id)
-                        result.failed_run_ids.append(current_run.id)
-                    except ConflictError:
-                        result.lease_conflicts.append(scope)
-                        logger.warning(
-                            "billing_scheduler_poll_lease_lost_on_failure",
-                            run_id=current_run.id,
-                            scope=scope,
-                        )
-                    continue
-
-                result.polled_run_ids.append(current_run.id)
-                if polled_view.status == "readyForReview":
-                    result.completed_run_ids.append(current_run.id)
-                elif polled_view.status == "failed":
-                    result.failed_run_ids.append(current_run.id)
-            finally:
-                await self._coordination.release_scope_lease(
-                    self._tenant_id, scope, self._owner
-                )
+            result.polled_run_ids.append(run.id)
+            if polled_view.status == "readyForReview":
+                result.completed_run_ids.append(run.id)
+            elif polled_view.status == "failed":
+                result.failed_run_ids.append(run.id)
 
     async def _trigger_due_scheduled_runs(
         self, result: BillingSchedulerTickResult
@@ -594,13 +474,12 @@ class BillingPricingScheduler:
                 conn_id = fresh_conn.id
                 expected_conn_etag = fresh_conn.etag
 
-                async def renew_schedule_lease(
+                async def validate_schedule(
                     _conn_id: str = conn_id,
                     _month: str = source_month,
                     _scope: str = scope,
                     _etag: str | None = expected_conn_etag,
                 ) -> None:
-                    await self.renew_scope_lease(_scope)
                     latest_conn = await self._repository.get_billing_connection(
                         self._tenant_id, _conn_id
                     )
@@ -619,13 +498,32 @@ class BillingPricingScheduler:
                             },
                         )
 
-                try:
-                    run_view = await self._pricing.start_billing_run(
+                async def renew_schedule(_scope: str = scope) -> None:
+                    await self.renew_scope_lease(_scope)
+
+                async def start_scheduled(
+                    guard: Callable[[], Awaitable[None]],
+                    _connection_id: str = conn_id,
+                    _month: str = source_month,
+                    _validate: Callable[[], Awaitable[None]] = validate_schedule,
+                ) -> BillingRunDetailView:
+                    async def check_schedule() -> None:
+                        await guard()
+                        await _validate()
+
+                    return await self._pricing.start_billing_run(
                         self._actor,
-                        fresh_conn.id,
-                        BillingRunTriggerRequest(source_month=source_month),
+                        _connection_id,
+                        BillingRunTriggerRequest(source_month=_month),
                         acquisition_kind="scheduled",
-                        lease_renewer=renew_schedule_lease,
+                        lease_renewer=check_schedule,
+                    )
+
+                try:
+                    run_view = await with_billing_lease_heartbeat(
+                        start_scheduled,
+                        renew_schedule,
+                        lease_seconds=self._lease_seconds,
                     )
                 except ConflictError:
                     result.lease_conflicts.append(scope)
@@ -638,7 +536,8 @@ class BillingPricingScheduler:
                     continue
                 except Exception as exc:
                     try:
-                        await renew_schedule_lease()
+                        await self.renew_scope_lease(scope)
+                        await validate_schedule()
                         error_msg = _safe_billing_error_message(exc)
                         await self._update_connection_schedule_cas(
                             fresh_conn.id,
@@ -660,6 +559,7 @@ class BillingPricingScheduler:
                     and after_conn.schedule.last_run_id != run_view.id
                 ):
                     with suppress(ConflictError):
+                        await self.renew_scope_lease(scope)
                         await self._update_connection_schedule_cas(
                             fresh_conn.id,
                             source_month=source_month,

@@ -312,15 +312,27 @@ class GatewayRepository(Protocol):
     ) -> None:
         """Acquire an expiring lease on a scope that guards only MOSAIC's own records.
 
-        Unlike a publication lock, a lease expires. It is for short critical sections that make
-        no Azure Resource Manager calls, so an expired lease can't let an old writer resume
-        against API Management. Their writes are conditional, so a stalled holder can't overwrite
+        Unlike a publication lock, a lease expires. It is not a fencing mechanism for Azure
+        Resource Manager mutations, so an expired holder must never resume writes against
+        API Management. MOSAIC record writes are conditional, so a stalled holder can't overwrite
         a newer one either. Raises ``ConflictError`` while another owner holds an unexpired lease.
+        Long-running read-only billing retrievals renew throughout provider waits and check
+        ownership before publishing their results.
         """
         ...
 
     async def release_scope_lease(self, tenant_id: str, scope: str, owner_id: str) -> None:
         """Release the lease if this owner still holds it; otherwise leave the current holder."""
+        ...
+
+    async def renew_scope_lease(
+        self, tenant_id: str, scope: str, owner_id: str, *, lease_seconds: float
+    ) -> None:
+        """Atomically extend an unexpired lease owned by this operation, or raise ConflictError.
+
+        Renewal never releases or reacquires the lease. Callers doing long-running reads must
+        renew throughout their waits and stop processing when ownership is lost.
+        """
         ...
 
 
