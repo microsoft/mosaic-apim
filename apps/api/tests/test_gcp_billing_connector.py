@@ -313,7 +313,7 @@ async def test_wif_token_exchange_service_account_impersonation_and_check_access
                 json={"access_token": "sts-federated-token-123", "token_type": "Bearer"},
             )
 
-        if "iamcredentials.googleapis.com" in str(request.url):
+        if request.url.host == "iamcredentials.googleapis.com":
             assert request.headers["Authorization"] == "Bearer sts-federated-token-123"
             body = json.loads(request.content.decode("utf-8"))
             assert body["scope"] == [BIGQUERY_SCOPE]
