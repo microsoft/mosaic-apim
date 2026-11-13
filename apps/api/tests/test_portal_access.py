@@ -1,10 +1,13 @@
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from typing import Any, Literal, NoReturn
+from typing import Any, Literal, NoReturn, cast
+from unittest.mock import AsyncMock
 
+import httpx
 import pytest
-from apim_double import RESOURCE_GROUP, RESOURCE_ID, SERVICE_NAME, SUBSCRIPTION_ID
+from apim_double import RESOURCE_GROUP, RESOURCE_ID, SERVICE_NAME, SUBSCRIPTION_ID, FakeCredential
+from azure.core.credentials_async import AsyncTokenCredential
 from fastapi import Request
 from fastapi.testclient import TestClient
 from mosaic_api.auth import AuthContext
@@ -17,6 +20,7 @@ from mosaic_api.domain import (
     BindingSource,
     Entitlement,
     EntitlementBinding,
+    EntitlementEnforcement,
     EntitlementResource,
     EntitlementSubject,
     Gateway,
@@ -32,12 +36,30 @@ from mosaic_api.domain import (
     PublicationStatus,
     PublishedResource,
     PublishedResourceKind,
+    RequestEnforcement,
     TokenEnforcement,
     model_access_subscription_name,
     new_id,
     subject_kind_for,
 )
-from mosaic_api.errors import ConflictError, NotFoundError, UpstreamError
+from mosaic_api.errors import (
+    ChangeNotRecordedError,
+    ConflictError,
+    DirectoryDisabledError,
+    DirectoryError,
+    DirectoryForbiddenError,
+    DirectoryThrottledError,
+    DomainError,
+    NotFoundError,
+    UpstreamAuthorizationError,
+    UpstreamConflictError,
+    UpstreamError,
+    UpstreamNotFoundError,
+    UpstreamUnsupportedError,
+    ValidationError,
+)
+from mosaic_api.integrations.apim.client import ArmClient
+from mosaic_api.integrations.apim.credentials import ApimCredentialClient
 from mosaic_api.main import create_app
 from mosaic_api.repositories import (
     InMemoryDirectoryRepository,
@@ -718,6 +740,10 @@ async def test_portal_routes_are_self_scoped_and_secret_responses_are_no_store(
         secret = client.post("/api/v1/me/entitlements/grant/keys/reveal", json={"slot": "primary"})
         assert secret.status_code == 200
         assert secret.json()["key"] == KEY
+        assert set(secret.json()) == {
+            "entitlementId", "subscriptionName", "slot", "key", "costCenter",
+        }
+        assert secret.json()["subscriptionName"] == connection.json()["runtime"]["subscriptionName"]
         assert "no-store" in secret.headers["Cache-Control"]
         assert secret.headers["Pragma"] == "no-cache"
         admin_only = client.post("/api/v1/entitlements/grant/keys/reveal", json={"slot": "primary"})
@@ -984,6 +1010,373 @@ async def test_the_publication_keeps_apims_error_for_administrators(harness: Har
     assert response.json()["lastError"] == FAILED_APPLY
 
 
+@pytest.mark.parametrize("roles", [("User",), ("Admin", "User")], ids=["user", "admin"])
+@pytest.mark.parametrize("attribution_key", [None, "f" * 64], ids=["legacy", "attributed"])
+async def test_caller_json_narrows_grants_without_changing_internal_attribution(
+    harness: Harness, roles: tuple[str, ...], attribution_key: str | None
+) -> None:
+    policy = '@("internal-grant-counter")'
+    internal_note = f"Internal management note: {RESOURCE_ID}"
+    harness.entitlement = harness.entitlement.model_copy(
+        update={
+            "enforcement": EntitlementEnforcement(
+                tokens=TokenEnforcement(
+                    counter_key_expression=policy, tokens_per_minute=1200,
+                    token_quota=9000, token_quota_period="Daily", estimate_prompt_tokens=False,
+                ),
+                requests=RequestEnforcement(
+                    counter_key_expression=policy, calls=12, renewal_period_seconds=60,
+                    call_quota=500, call_quota_period="Monthly",
+                ),
+            ),
+            "binding": EntitlementBinding(
+                gateway_id="gateway", apim_product_name="legacy-product",
+                apim_subscription_name=harness.subscription, counter_key_expression=policy,
+                attribution_key=attribution_key, source=BindingSource.ORCHESTRATED,
+            ),
+            "notes": internal_note,
+        }
+    )
+    await harness.repository.save_entitlement(harness.entitlement, harness.audit())
+    limits = {
+        "tokens": {
+            "tokensPerMinute": 1200, "tokenQuota": 9000, "tokenQuotaPeriod": "Daily",
+            "estimatePromptTokens": False,
+        },
+        "requests": {
+            "calls": 12, "renewalPeriodSeconds": 60, "callQuota": 500,
+            "callQuotaPeriod": "Monthly",
+        },
+    }
+    with _routes(harness, Caller(roles=roles)) as client:
+        for path, grant_of in (
+            ("/api/v1/me/entitlements", lambda body: body[0]),
+            ("/api/v1/portal/entitlements", lambda body: body[0]["entitlement"]),
+        ):
+            response = client.get(path)
+            assert response.status_code == 200, response.text
+            grant = grant_of(response.json())
+            assert set(grant) == {
+                "id", "tenantId", "entityType", "createdAt", "updatedAt", "subject", "resource",
+                "costCenterId", "enabled", "managedBy", "enforcement", "binding", "runtime",
+                "revocation",
+            }
+            assert grant["enforcement"] == limits
+            assert grant["binding"] == {
+                "attributionKey": attribution_key,
+                "attributionPerMember": False,
+                "apimProductName": None if attribution_key else "legacy-product",
+                "apimSubscriptionName": None if attribution_key else harness.subscription,
+            }
+            assert grant["resource"] == {"kind": "modelApi", "id": "model-api", "scopeId": None}
+            assert grant["runtime"]["subscriptionName"] == harness.subscription
+            assert grant["runtime"]["error"] is None
+            assert internal_note not in response.text
+            assert "counterKeyExpression" not in response.text
+
+        response = client.get("/api/v1/me/entitlements/grant/connection")
+        assert response.status_code == 200, response.text
+        connection = response.json()
+        assert set(connection) == {
+            "entitlementId", "azureCloud", "publicationId", "gatewayId", "endpoint",
+            "deploymentName", "tenantId", "runtime", "appliedMethods", "entraAudience",
+            "entraScope", "entraClientId", "subscriptionHeader", "apiShape", "operations",
+            "publicationLimits", "grantLimits", "principalKind", "requiredAppRole",
+            "entraApplicationScope", "keysAvailable", "viaGroupId", "viaGroupName", "costCenter",
+            "costCenterHeader", "keyExists", "keysAllowedByCostCenter", "poolId", "poolModelId",
+            "keySharedWith", "tokenMetering",
+        }
+        assert connection["grantLimits"] == limits
+        assert connection["publicationLimits"] == {
+            "tokensPerMinute": 10000, "tokenQuota": None, "tokenQuotaPeriod": None,
+            "estimatePromptTokens": True,
+        }
+        assert connection["endpoint"] == "https://gateway.example/chat"
+        assert connection["operations"]
+        assert connection["tenantId"] == TENANT
+        assert connection["entraScope"] == f"api://{AUDIENCE}/Models.Invoke"
+        assert connection["entraClientId"] == MODEL_CLIENT
+        assert connection["costCenterHeader"] == "x-mosaic-cost-center"
+        assert connection["runtime"]["subscriptionName"] == harness.subscription
+        assert "counterKeyExpression" not in response.text
+        assert harness.reader.calls == 0
+
+        client.app.state.authenticator = Caller(roles=("Admin", "User"))
+        administrator = client.get("/api/v1/entitlements/grant").json()
+        assert administrator["notes"] == internal_note
+        assert administrator["binding"]["gatewayId"] == "gateway"
+        assert administrator["enforcement"]["tokens"]["counterKeyExpression"] == policy
+        admin_connection = client.get("/api/v1/entitlements/grant/connection").json()
+        assert admin_connection["grantLimits"]["requests"]["counterKeyExpression"] == policy
+
+        [internal] = await client.app.state.portal_service.my_entitlements(ACTOR)
+        assert internal.entitlement.binding.gateway_id == "gateway"
+        assert internal.entitlement.binding.apim_subscription_name == harness.subscription
+        assert internal.entitlement.binding.counter_key_expression == policy
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/api/v1/me/entitlements"),
+        ("GET", "/api/v1/portal/entitlements"),
+        ("GET", "/api/v1/me/entitlements/grant/connection"),
+        ("GET", "/api/v1/me/entitlements/grant/mcp-connection"),
+        ("POST", "/api/v1/me/entitlements/grant/keys/reveal"),
+        ("POST", "/api/v1/me/entitlements/grant/keys"),
+        ("POST", "/api/v1/me/entitlements/grant/keys/rotate"),
+        ("DELETE", "/api/v1/me/entitlements/grant/keys"),
+    ],
+)
+@pytest.mark.parametrize("roles", [("User",), ("Admin", "User")], ids=["user", "admin"])
+async def test_caller_error_boundary_preserves_status_but_not_upstream_details(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, method: str, path: str,
+    roles: tuple[str, ...],
+) -> None:
+    raw = f"Raw upstream policy expression @(context.Subscription.Id): {RESOURCE_ID}"
+    details = {
+        "url": f"https://management.azure.com{RESOURCE_ID}",
+        "scope": RESOURCE_ID, "reason": raw, "code": "AzureInternalCode",
+        "statusCode": 503, "retryAfter": 17, "nested": {"otherTenant": raw},
+    }
+    failure = UpstreamError(raw, details=details)
+    for name in ("get_entitlement", "list_entitlements", "resolve_for_object_id"):
+        monkeypatch.setattr(harness.entitlements, name, AsyncMock(side_effect=failure))
+    payload = {"slot": "primary"} if path.endswith(("reveal", "rotate")) else None
+    with _routes(harness, Caller(roles=roles)) as client:
+        response = client.request(
+            method, path, json=payload, headers={"X-Correlation-ID": "fixture-correlation"}
+        )
+        assert response.status_code == 502, response.text
+        assert response.json() == {
+            "code": "gateway_unreachable",
+            "message": "The gateway service did not complete this action. Try again in a moment.",
+            "details": {"statusCode": 503, "retryAfter": 17},
+        }
+        assert response.headers["X-Correlation-ID"] == "fixture-correlation"
+        assert "no-store" in response.headers["Cache-Control"]
+        assert raw not in response.text
+        assert RESOURCE_ID not in response.text
+
+        client.app.state.authenticator = Caller(roles=("Admin", "User"))
+        admin_path = (
+            "/api/v1/entitlements"
+            if path == "/api/v1/portal/entitlements"
+            else path.replace("/me/", "/")
+        )
+        administrator = client.request(method, admin_path, json=payload)
+        assert administrator.status_code == 502, administrator.text
+        assert administrator.json() == {
+            "code": failure.code, "message": raw, "details": details,
+        }
+        assert failure.details == details
+        assert harness.reader.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("kind", "status", "code"),
+    [
+        (NotFoundError, 404, "not_found"),
+        (ConflictError, 409, "conflict"),
+        (ValidationError, 422, "validation_error"),
+        (UpstreamAuthorizationError, 403, "gateway_forbidden"),
+        (UpstreamNotFoundError, 404, "gateway_not_found"),
+        (UpstreamConflictError, 409, "gateway_precondition_failed"),
+        (UpstreamUnsupportedError, 501, "gateway_capability_unsupported"),
+        (ChangeNotRecordedError, 503, "change_not_recorded"),
+        (DirectoryForbiddenError, 403, "directory_forbidden"),
+        (DirectoryDisabledError, 409, "directory_disabled"),
+        (DirectoryError, 502, "directory_unavailable"),
+        (DirectoryThrottledError, 429, "directory_throttled"),
+        (DomainError, 400, "domain_error"),
+    ],
+)
+async def test_caller_key_errors_keep_their_distinct_code_and_trusted_recovery(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, kind: type[DomainError],
+    status: int, code: str,
+) -> None:
+    raw = f"Untrusted provider message: {RESOURCE_ID}"
+    local = kind in (NotFoundError, ConflictError, ValidationError)
+    if kind is DirectoryThrottledError:
+        failure = DirectoryThrottledError(raw, retry_after=17)
+    else:
+        failure = kind(
+            raw,
+            summary=(
+                "Current Entra membership does not permit this individual key." if local else raw
+            ),
+        )
+    failure.details.update({
+        "reason": "notACostCenterMember", "statusCode": 503, "retryAfter": 17,
+        "scope": RESOURCE_ID, "nested": {"upstream": raw},
+    })
+    monkeypatch.setattr(harness.entitlements, "get_entitlement", AsyncMock(side_effect=failure))
+    with _routes(harness, Caller()) as client:
+        response = client.post(
+            "/api/v1/me/entitlements/grant/keys/reveal", json={"slot": "primary"}
+        )
+    assert response.status_code == status, response.text
+    body = response.json()
+    assert body["code"] == code
+    assert raw not in response.text
+    assert body["details"] == {
+        "statusCode": 503, "retryAfter": 17,
+        **({"reason": "notACostCenterMember"} if local else {}),
+    }
+    if kind is NotFoundError:
+        assert body["message"] == "Entitlement was not found"
+    elif local:
+        assert body["message"] == "Current Entra membership does not permit this individual key."
+    if kind is DirectoryThrottledError:
+        assert response.headers["Retry-After"] == "17"
+    assert harness.reader.calls == 0
+
+
+@pytest.mark.parametrize("kind", [NotFoundError, ConflictError, ValidationError])
+@pytest.mark.parametrize("explicit_summary", [False, True])
+@pytest.mark.parametrize("roles", [("User",), ("Admin", "User")], ids=["user", "admin"])
+async def test_local_caller_error_messages_and_summaries_are_not_trusted(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, kind: type[DomainError],
+    explicit_summary: bool, roles: tuple[str, ...],
+) -> None:
+    raw = (
+        "https://management.azure.com/subscriptions/fictional-subscription"
+        "/resourceGroups/fictional-rg APIM-RAW-SENTINEL"
+    )
+    summary = f"{raw} UNSAFE-SUMMARY" if explicit_summary else None
+    reason = (
+        "keyScopeChanged" if kind is ConflictError
+        else "notACostCenterMember" if kind is ValidationError
+        else None
+    )
+    details = {"url": raw, "statusCode": 412, "retryAfter": 17}
+    if reason is not None:
+        details["reason"] = reason
+    failure = kind(raw, summary=summary, details=details)
+    monkeypatch.setattr(harness.entitlements, "get_entitlement", AsyncMock(side_effect=failure))
+    with _routes(harness, Caller(roles=roles)) as client:
+        response = client.get("/api/v1/me/entitlements/grant/connection")
+        assert response.status_code == failure.status_code
+        body = response.json()
+        assert body["code"] == failure.code
+        assert body["details"] == {
+            "statusCode": 412, "retryAfter": 17,
+            **({"reason": reason} if reason is not None else {}),
+        }
+        assert "management.azure.com" not in response.text
+        assert "fictional-subscription" not in response.text
+        assert "fictional-rg" not in response.text
+        assert "APIM-RAW-SENTINEL" not in response.text
+        assert "UNSAFE-SUMMARY" not in response.text
+        if kind is NotFoundError:
+            assert body["message"] == "Entitlement was not found"
+        elif kind is ConflictError:
+            assert body["message"] == (
+                "This grant's key is no longer scoped to its model in API Management. "
+                "Ask an administrator to re-plan its access."
+            )
+        else:
+            assert body["message"] == (
+                "Current Entra membership does not permit this individual key."
+            )
+        client.app.state.authenticator = Caller(roles=("Admin", "User"))
+        administrator = client.get("/api/v1/entitlements/grant/connection")
+        assert administrator.status_code == failure.status_code
+        assert administrator.json() == {
+            "code": failure.code, "message": raw, "details": details,
+        }
+
+
+async def test_known_local_caller_copy_survives_an_unsafe_supplied_summary(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    message = "Synchronize the gateway to discover its model API endpoint"
+    failure = ConflictError(
+        message, summary=f"https://management.azure.com{RESOURCE_ID} UNSAFE-SUMMARY"
+    )
+    monkeypatch.setattr(harness.entitlements, "get_entitlement", AsyncMock(side_effect=failure))
+    with _routes(harness, Caller()) as client:
+        response = client.get("/api/v1/me/entitlements/grant/connection")
+    assert response.status_code == 409
+    assert response.json()["message"] == message
+    assert "UNSAFE-SUMMARY" not in response.text
+
+
+@pytest.mark.parametrize("stage", ["metadata", "secret"])
+@pytest.mark.parametrize("status", [400, 403, 404, 412, 429, 500, None])
+async def test_credential_transport_errors_have_caller_safe_serialized_details(
+    harness: Harness, stage: str, status: int | None, caplog: pytest.LogCaptureFixture
+) -> None:
+    raw = f"Raw Azure policy error @(context.Subscription.Id) at {RESOURCE_ID}"
+    primary = "fixture-sensitive-primary"
+    secondary = "fixture-sensitive-secondary"
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        if stage == "secret" and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={"properties": {"scope": "/apis/mosaic-chat", "state": "active"}},
+            )
+        if status is None:
+            raise httpx.ConnectError(raw, request=request)
+        return httpx.Response(
+            status,
+            json={"error": {
+                "message": f"{raw} {primary} {secondary}" if stage == "secret" else raw,
+                "code": secondary if stage == "secret" else "SyntheticProviderCode",
+            }},
+        )
+
+    async def no_sleep(_delay: float) -> None:
+        pass
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        arm = ArmClient(
+            cast(AsyncTokenCredential, FakeCredential()), client=http, sleep=no_sleep
+        )
+        harness.service = PortalAccessService(
+            harness.entitlements, repository=harness.repository,
+            directory_repository=harness.directory, gateway_repository=harness.gateways,
+            credential_factory=lambda resource: ApimCredentialClient(arm, resource),
+        )
+        with _routes(harness, Caller()) as client:
+            response = client.post(
+                "/api/v1/me/entitlements/grant/keys/reveal", json={"slot": "primary"}
+            )
+            expected = {
+                403: (403, "gateway_forbidden"),
+                404: (409, "conflict") if stage == "metadata" else (404, "gateway_not_found"),
+                412: (409, "gateway_precondition_failed"),
+            }.get(status, (502, "gateway_unreachable"))
+            assert response.status_code == expected[0], response.text
+            assert response.json()["code"] == expected[1]
+            assert RESOURCE_ID not in response.text
+            assert raw not in response.text
+            assert "no-store" in response.headers["Cache-Control"]
+            assert response.headers["Pragma"] == "no-cache"
+            if stage == "metadata":
+                assert "POST" not in methods
+            client.app.state.authenticator = Caller(roles=("Admin", "User"))
+            administrator = client.post(
+                "/api/v1/entitlements/grant/keys/reveal", json={"slot": "primary"}
+            )
+            assert administrator.status_code == expected[0], administrator.text
+            if stage == "secret" and status == 403:
+                assert administrator.json()["details"]["scope"] == RESOURCE_ID
+                assert administrator.json()["details"]["missingAction"].endswith(
+                    "listSecrets/action"
+                )
+            elif not (stage == "metadata" and status == 404):
+                assert RESOURCE_ID in administrator.text
+            for secret in (primary, secondary):
+                assert secret not in response.text
+                assert secret not in administrator.text
+                assert secret not in caplog.text
+                assert secret not in repr(harness.repository.reveals)
+
+
 def _refers_to(schema: object, name: str, schemas: dict[str, Any], seen: set[str]) -> bool:
     if isinstance(schema, list):
         return any(_refers_to(item, name, schemas, seen) for item in schema)
@@ -1014,11 +1407,18 @@ def test_every_portal_route_that_returns_runtime_state_is_redacted(settings: Set
         for path, operations in openapi["paths"].items()
         if path.startswith(("/api/v1/me/", "/api/v1/portal/"))
         for method, operation in operations.items()
-        if _refers_to(
-            {code: body for code, body in operation["responses"].items() if code.startswith("2")},
-            "EntitlementRuntime",
-            schemas,
-            set(),
+        if any(
+            _refers_to(
+                {
+                    code: body
+                    for code, body in operation["responses"].items()
+                    if code.startswith("2")
+                },
+                name,
+                schemas,
+                set(),
+            )
+            for name in ("EntitlementRuntime", "PortalEntitlementRuntime")
         )
     }
     tested = (*PORTAL_RUNTIME_ROUTES, *PORTAL_MCP_RUNTIME_ROUTES)

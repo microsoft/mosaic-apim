@@ -54,8 +54,11 @@ from mosaic_api.domain import (
     PolicyPreview,
     PolicyPreviewRequest,
     PortalAccessRequest,
+    PortalEntitlementView,
+    PortalMcpConnection,
+    PortalModelConnection,
     PortalProfile,
-    PortalResolvedEntitlement,
+    PortalResolvedEntitlementView,
     Principal,
     PrincipalCreate,
     PrincipalUpdate,
@@ -110,6 +113,12 @@ from mosaic_api.services import (
 )
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.environment_findings import EnvironmentFindingList
+from mosaic_api.services.model_access import (
+    portal_entitlement_view,
+    portal_mcp_connection,
+    portal_model_connection,
+    portal_resolved_entitlement_view,
+)
 from mosaic_api.services.portal_access import PortalAccessService
 from mosaic_api.services.usage import MyUsageReport, UsagePeriod
 
@@ -175,9 +184,12 @@ router = APIRouter(prefix="/api/v1", tags=["admin"])
 portal_router = APIRouter(prefix="/api/v1/me", tags=["portal"])
 
 
-@portal_router.get("/entitlements", response_model=list[Entitlement])
-async def my_entitlements(request: Request, auth: PortalUser) -> list[Entitlement]:
-    return await _portal_access(request).list_for_caller(_actor(auth))
+@portal_router.get("/entitlements", response_model=list[PortalEntitlementView])
+async def my_entitlements(request: Request, auth: PortalUser) -> list[PortalEntitlementView]:
+    return [
+        portal_entitlement_view(item)
+        for item in await _portal_access(request).list_for_caller(_actor(auth))
+    ]
 
 
 @portal_router.get("/usage", response_model=MyUsageReport)
@@ -187,20 +199,26 @@ async def my_usage(
     return await _usage(request).my_usage(_actor(auth), period)
 
 
-@portal_router.get("/entitlements/{entitlement_id}/connection", response_model=ModelConnection)
+@portal_router.get(
+    "/entitlements/{entitlement_id}/connection", response_model=PortalModelConnection
+)
 async def my_model_connection(
     request: Request, auth: PortalUser, entitlement_id: str
-) -> ModelConnection:
-    return await _portal_access(request).connection(_actor(auth), entitlement_id)
+) -> PortalModelConnection:
+    return portal_model_connection(
+        await _portal_access(request).connection(_actor(auth), entitlement_id)
+    )
 
 
 @portal_router.get(
-    "/entitlements/{entitlement_id}/mcp-connection", response_model=McpConnection
+    "/entitlements/{entitlement_id}/mcp-connection", response_model=PortalMcpConnection
 )
 async def my_mcp_connection(
     request: Request, auth: PortalUser, entitlement_id: str
-) -> McpConnection:
-    return await _portal_access(request).mcp_connection(_actor(auth), entitlement_id)
+) -> PortalMcpConnection:
+    return portal_mcp_connection(
+        await _portal_access(request).mcp_connection(_actor(auth), entitlement_id)
+    )
 
 
 @portal_router.post("/entitlements/{entitlement_id}/keys/reveal", response_model=KeyRevealResult)
@@ -1121,11 +1139,16 @@ async def portal_profile(request: Request, auth: PortalUser) -> PortalProfile:
     )
 
 
-@router.get("/portal/entitlements", response_model=list[PortalResolvedEntitlement], tags=["portal"])
+@router.get(
+    "/portal/entitlements", response_model=list[PortalResolvedEntitlementView], tags=["portal"]
+)
 async def portal_entitlements(
     request: Request, auth: PortalUser
-) -> list[PortalResolvedEntitlement]:
-    return await _portal(request).my_entitlements(_actor(auth))
+) -> list[PortalResolvedEntitlementView]:
+    return [
+        portal_resolved_entitlement_view(item)
+        for item in await _portal(request).my_entitlements(_actor(auth))
+    ]
 
 
 @router.get("/portal/catalog", response_model=list[CatalogEntry], tags=["portal"])

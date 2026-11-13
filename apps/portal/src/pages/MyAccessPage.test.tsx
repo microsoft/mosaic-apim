@@ -37,14 +37,12 @@ const baseEntitlement: Entitlement = {
   enabled: true,
   enforcement: {
     tokens: {
-      counterKeyExpression: '@(context.Subscription?.Key)',
       tokensPerMinute: 10_000,
       tokenQuota: null,
       tokenQuotaPeriod: null,
       estimatePromptTokens: true,
     },
     requests: {
-      counterKeyExpression: '@(context.Subscription?.Key)',
       calls: 600,
       renewalPeriodSeconds: 60,
       callQuota: 100_000,
@@ -52,7 +50,6 @@ const baseEntitlement: Entitlement = {
     },
   },
   binding: null,
-  notes: null,
   createdAt: '2026-01-01T00:00:00Z',
   updatedAt: '2026-01-01T00:00:00Z',
 }
@@ -467,10 +464,8 @@ describe('MyAccessPage', () => {
         ...baseEntitlement,
         subject: { kind: 'user', id: 'user-1' },
         binding: {
-          gatewayId: 'gateway-1',
           apimProductName: 'model-product',
           apimSubscriptionName: 'grant-subscription',
-          source: 'orchestrated',
         },
         runtime: {
           publicationId: 'publication-1',
@@ -502,12 +497,10 @@ describe('MyAccessPage', () => {
           resource: { ...baseEntitlement.resource, id: 'team' },
           subject: { kind: 'securityGroup', id: 'security-group-1' },
           binding: {
-            gatewayId: 'gateway-1',
             apimProductName: null,
             apimSubscriptionName: null,
             attributionKey: 'grant:per-person',
             attributionPerMember: true,
-            source: 'orchestrated',
           },
         },
         resourceSummary: { ...baseSummary, displayName: 'Team chat' },
@@ -521,12 +514,10 @@ describe('MyAccessPage', () => {
           id: 'gateway-grant',
           resource: { ...baseEntitlement.resource, id: 'gateway' },
           binding: {
-            gatewayId: 'gateway-1',
             apimProductName: null,
             apimSubscriptionName: null,
             attributionKey: 'grant:gateway',
             attributionPerMember: false,
-            source: 'orchestrated',
           },
         },
         resourceSummary: { ...baseSummary, displayName: 'Gateway chat' },
@@ -540,10 +531,8 @@ describe('MyAccessPage', () => {
           id: 'subscription-grant',
           resource: { ...baseEntitlement.resource, id: 'subscription' },
           binding: {
-            gatewayId: 'gateway-1',
             apimProductName: 'model-product',
             apimSubscriptionName: 'grant-subscription',
-            source: 'orchestrated',
           },
         },
         resourceSummary: { ...baseSummary, displayName: 'Subscription chat' },
@@ -557,10 +546,8 @@ describe('MyAccessPage', () => {
           id: 'gateway-only',
           resource: { ...baseEntitlement.resource, id: 'pending' },
           binding: {
-            gatewayId: 'gateway-1',
             apimProductName: null,
             apimSubscriptionName: null,
-            source: 'orchestrated',
           },
         },
         resourceSummary: { ...baseSummary, displayName: 'Pending chat' },

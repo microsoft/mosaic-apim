@@ -12,18 +12,32 @@ from mosaic_api.cost_centers import CostCenterBook, CostCenterResourceAccessMode
 from mosaic_api.domain import (
     BindingSource,
     Entitlement,
+    EntitlementBinding,
     EntitlementEnforcement,
     EntitlementResourceKind,
     EntitlementRuntime,
     EntitlementSubjectKind,
+    McpConnection,
     ModelAccessGrant,
     ModelAccessSettings,
     ModelAccessSnapshot,
     ModelApi,
+    ModelConnection,
+    PortalEnforcement,
+    PortalEntitlementBinding,
+    PortalEntitlementRuntime,
+    PortalEntitlementView,
+    PortalMcpConnection,
+    PortalModelConnection,
+    PortalRequestLimits,
+    PortalResolvedEntitlement,
+    PortalResolvedEntitlementView,
+    PortalTokenLimits,
     Principal,
     Publication,
     PublicationStatus,
     PublishedResourceKind,
+    TokenEnforcement,
     model_access_subscription_name,
     new_id,
 )
@@ -517,6 +531,179 @@ def portal_entitlement(entitlement: Entitlement) -> Entitlement:
     if runtime is entitlement.runtime:
         return entitlement
     return entitlement.model_copy(update={"runtime": runtime})
+
+
+def _portal_token_limits(tokens: TokenEnforcement | None) -> PortalTokenLimits | None:
+    if tokens is None:
+        return None
+    return PortalTokenLimits(
+        tokens_per_minute=tokens.tokens_per_minute,
+        token_quota=tokens.token_quota,
+        token_quota_period=tokens.token_quota_period,
+        estimate_prompt_tokens=tokens.estimate_prompt_tokens,
+    )
+
+
+def _portal_enforcement(
+    enforcement: EntitlementEnforcement | None,
+) -> PortalEnforcement | None:
+    if enforcement is None:
+        return None
+    requests = enforcement.requests
+    return PortalEnforcement(
+        tokens=_portal_token_limits(enforcement.tokens),
+        requests=(
+            PortalRequestLimits(
+                calls=requests.calls,
+                renewal_period_seconds=requests.renewal_period_seconds,
+                call_quota=requests.call_quota,
+                call_quota_period=requests.call_quota_period,
+            )
+            if requests is not None
+            else None
+        ),
+    )
+
+
+def _portal_binding(binding: EntitlementBinding | None) -> PortalEntitlementBinding | None:
+    if binding is None:
+        return None
+    show_subscription = not binding.attribution_key and bool(binding.apim_subscription_name)
+    return PortalEntitlementBinding(
+        attribution_key=binding.attribution_key,
+        attribution_per_member=binding.attribution_per_member,
+        apim_product_name=binding.apim_product_name if show_subscription else None,
+        apim_subscription_name=binding.apim_subscription_name if show_subscription else None,
+    )
+
+
+def _portal_runtime_view(
+    runtime: EntitlementRuntime | None,
+) -> PortalEntitlementRuntime | None:
+    runtime = portal_runtime(runtime)
+    if runtime is None:
+        return None
+    return PortalEntitlementRuntime(
+        publication_id=runtime.publication_id,
+        key_state=runtime.key_state,
+        key_error=runtime.key_error,
+        status=runtime.status,
+        applied_methods=runtime.applied_methods,
+        subscription_name=runtime.subscription_name,
+        key_exists=runtime.key_exists,
+        eligibility_recheck_pending=runtime.eligibility_recheck_pending,
+        key_revocation_pending=runtime.key_revocation_pending,
+        applied_at=runtime.applied_at,
+    )
+
+
+def portal_entitlement_view(entitlement: Entitlement) -> PortalEntitlementView:
+    """Project only at the HTTP edge; usage and budgets still need the full binding."""
+
+    return PortalEntitlementView(
+        id=entitlement.id,
+        tenant_id=entitlement.tenant_id,
+        entity_type=entitlement.entity_type,
+        created_at=entitlement.created_at,
+        updated_at=entitlement.updated_at,
+        subject=entitlement.subject,
+        resource=entitlement.resource,
+        cost_center_id=entitlement.cost_center_id,
+        enabled=entitlement.enabled,
+        managed_by=entitlement.managed_by,
+        enforcement=_portal_enforcement(entitlement.enforcement),
+        binding=_portal_binding(entitlement.binding),
+        runtime=_portal_runtime_view(entitlement.runtime),
+        revocation=entitlement.revocation,
+    )
+
+
+def portal_resolved_entitlement_view(
+    resolved: PortalResolvedEntitlement,
+) -> PortalResolvedEntitlementView:
+    return PortalResolvedEntitlementView(
+        entitlement=portal_entitlement_view(resolved.entitlement),
+        via=resolved.via,
+        via_group_id=resolved.via_group_id,
+        via_group_name=resolved.via_group_name,
+        effective=resolved.effective,
+        shadowed_by=resolved.shadowed_by,
+        resource_summary=resolved.resource_summary,
+        cost_center=resolved.cost_center,
+        resource_display_name=resolved.resource_display_name,
+        model=resolved.model,
+        access_origin=resolved.access_origin,
+    )
+
+
+def portal_model_connection(connection: ModelConnection) -> PortalModelConnection:
+    return PortalModelConnection(
+        entitlement_id=connection.entitlement_id,
+        azure_cloud=connection.azure_cloud,
+        publication_id=connection.publication_id,
+        gateway_id=connection.gateway_id,
+        endpoint=connection.endpoint,
+        deployment_name=connection.deployment_name,
+        tenant_id=connection.tenant_id,
+        runtime=_portal_runtime_view(connection.runtime),
+        applied_methods=connection.applied_methods,
+        entra_audience=connection.entra_audience,
+        entra_scope=connection.entra_scope,
+        entra_client_id=connection.entra_client_id,
+        subscription_header=connection.subscription_header,
+        api_shape=connection.api_shape,
+        operations=connection.operations,
+        publication_limits=_portal_token_limits(connection.publication_limits),
+        grant_limits=_portal_enforcement(connection.grant_limits),
+        principal_kind=connection.principal_kind,
+        required_app_role=connection.required_app_role,
+        entra_application_scope=connection.entra_application_scope,
+        keys_available=connection.keys_available,
+        via_group_id=connection.via_group_id,
+        via_group_name=connection.via_group_name,
+        cost_center=connection.cost_center,
+        cost_center_header=connection.cost_center_header,
+        key_exists=connection.key_exists,
+        keys_allowed_by_cost_center=connection.keys_allowed_by_cost_center,
+        pool_id=connection.pool_id,
+        pool_model_id=connection.pool_model_id,
+        key_shared_with=connection.key_shared_with,
+        token_metering=connection.token_metering,
+    )
+
+
+def portal_mcp_connection(connection: McpConnection) -> PortalMcpConnection:
+    return PortalMcpConnection(
+        entitlement_id=connection.entitlement_id,
+        azure_cloud=connection.azure_cloud,
+        applied_methods=connection.applied_methods,
+        subscription_header=connection.subscription_header,
+        keys_available=connection.keys_available,
+        key_exists=connection.key_exists,
+        keys_allowed_by_cost_center=connection.keys_allowed_by_cost_center,
+        mcp_server_id=connection.mcp_server_id,
+        publication_id=connection.publication_id,
+        gateway_id=connection.gateway_id,
+        display_name=connection.display_name,
+        tenant_id=connection.tenant_id,
+        server_url=connection.server_url,
+        transport=connection.transport,
+        enforced=connection.enforced,
+        status_message=connection.status_message,
+        runtime=_portal_runtime_view(connection.runtime),
+        entra_audience=connection.entra_audience,
+        delegated_scope=connection.delegated_scope,
+        application_scope=connection.application_scope,
+        required_app_role=connection.required_app_role,
+        client_id=connection.client_id,
+        principal_kind=connection.principal_kind,
+        via_group_id=connection.via_group_id,
+        via_group_name=connection.via_group_name,
+        resource_metadata_url=connection.resource_metadata_url,
+        limits=_portal_enforcement(connection.limits),
+        cost_center=connection.cost_center,
+        cost_center_header=connection.cost_center_header,
+    )
 
 
 def safe_access_snapshot(

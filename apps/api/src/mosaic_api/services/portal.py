@@ -173,14 +173,28 @@ class PortalService:
         )
         models = await self._models(actor.tenant_id, resources, records, visible=visible)
         return [
-            PortalAccessRequest.model_validate(
-                {
-                    **dict(item),
-                    "resource_display_name": name,
-                    "resource_summary": summary,
-                    "model": model,
-                    "cost_center": book.ref(item.cost_center_id),
-                }
+            PortalAccessRequest(
+                id=item.id,
+                tenant_id=item.tenant_id,
+                entity_type=item.entity_type,
+                created_at=item.created_at,
+                updated_at=item.updated_at,
+                requester_object_id=item.requester_object_id,
+                requester_principal_id=item.requester_principal_id,
+                resource=item.resource,
+                cost_center_id=item.cost_center_id,
+                justification=item.justification,
+                requested_environment=item.requested_environment,
+                resource_snapshot=item.resource_snapshot,
+                state=item.state,
+                decided_by_object_id=item.decided_by_object_id,
+                decided_at=item.decided_at,
+                decision_note=item.decision_note,
+                granted_entitlement_id=item.granted_entitlement_id,
+                resource_display_name=name,
+                resource_summary=summary,
+                model=model,
+                cost_center=book.ref(item.cost_center_id),
             )
             for item, name, summary, model in zip(requests, names, summaries, models, strict=True)
         ]
