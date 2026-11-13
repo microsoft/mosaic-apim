@@ -344,13 +344,14 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-government-gateway` | Console | `/gateways`, fictional Government gateway selected with AzGov and Production context | Light | Government gateway |
 | `console-gateway-overview` | Console | Contoso AI Gateway, **Overview** section | Dark | Gateway overview |
 | `console-gateway-apis` | Console | Contoso AI Gateway, **APIs and endpoints** section | Light | APIs and endpoints |
-| `console-models` | Console | `/models`, compact list with selected publication detail | Dark | Models |
+| `console-models` | Console | `/models`, compact list with selected publication detail, saved catalog summary, and explicit summary edit action | Dark | Models |
+| `console-catalog-summary-review` | Console | `/models`, GPT-4o mini **Edit catalog summary > Review summary**, before/after copy and exact-offering preview; never saved | Light | Review catalog copy |
 | `console-register-key-endpoint` | Console | `/models?register=1`, **Azure AI with an API key** tab with a pasted, masked key, filled in and never submitted | Light | Register with an API key |
 | `console-key-endpoint` | Console | `/models?tab=endpoints`, Fabrikam partner Foundry selected, scrolled to its **Access** card with **Replace API key** | Dark | Endpoint reached with an API key |
 | `console-deploy-model` | Console | `/models?tab=endpoints`, **Deploy model** on the fictional Azure OpenAI account; explicit deployment-management opt-in, fresh version/SKU/quota configuration, no Azure create | Light | Deploy an Azure model |
 | `console-deploy-model-review` | Console | The same workflow's **Review deployment** step with exact target, native capacity, quota, billing/residency warnings, and unsubmitted **Deploy to Azure** action | Dark | Review before Azure creation |
 | `console-pools` | Console | `/pools`, compact list with Anthropic Claude selected, **Overview** detail and separate Suggestions navigation | Light | Model pools |
-| `console-pool-detail` | Console | Anthropic Claude detail, **Models and deployments** section with both navigation rails compact | Dark | A model pool |
+| `console-pool-detail` | Console | Anthropic Claude detail, **Models and deployments** with public per-model summaries and private deployments, both navigation rails compact | Dark | A model pool |
 | `console-pool-access` | Console | Anthropic Claude detail, **Access and connection** section with both navigation rails compact | Light | Who can call a pool |
 | `console-pool-health` | Console | Anthropic Claude detail, **Health** section for the last 24 hours with both navigation rails compact | Dark | Pool health |
 | `console-pool-editor` | Console | `/pools?tab=suggestions`, **Create pool** on the Claude Haiku 4.5 suggestion, **3. Models** step, never saved | Light | Create a pool |
@@ -402,7 +403,7 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-email-settings` | Console | `/settings?tab=notifications&notificationView=email`, saved Graph mailbox, read-only access checks and last explicit test | Light | Email setup |
 | `console-teams-shared` | Console | `/settings?tab=notifications&notificationView=teams`, selected fictional Workflow with denied vault access, correction guidance and saved test | Light | Shared Teams access |
 | `console-teams-private` | Console | `/settings?tab=notifications&notificationView=personalTeams`, saved bot registration, caller-scoped runtime access check, installation, opt-in and test | Dark | Private Teams access |
-| `portal-request-access` | Portal | `/catalog`, GPT-4o mini's exact Commercial offering selected in the access drawer, never submitted | Light | Request access |
+| `portal-request-access` | Portal | `/catalog`, GPT-4o mini's exact Commercial offering with its administrator-authored summary selected in the access drawer, never submitted | Light | Request access |
 | `portal-access` | Portal | `/access`, grouped model rows and an exact grant's **Connection details** open in a drawer | Light | My access |
 | `portal-connection-cost-center` | Portal | `/access`, the GPT-4o grant under General with **Connection details** open, scrolled to **Cost center header** | Light | Choosing a cost center |
 | `portal-pool-connection` | Portal | `/access`, Claude Sonnet 4.5 selected, **Connection details** drawer scrolled to **Authentication** and the shared-key note | Dark | Models that share a key |

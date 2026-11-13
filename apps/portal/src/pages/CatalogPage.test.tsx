@@ -173,6 +173,36 @@ async function openAccessOptions(name = 'Weather tools') {
 }
 
 describe('CatalogPage', () => {
+  it('shows only the selected offering summary as plain text and can find it through search', async () => {
+    const user = userEvent.setup()
+    const first: CatalogEntry = { ...servedModelEntry,
+      model: { name: 'demo-chat', format: 'OpenAI', version: null },
+      summary: '<b>First offering</b>\nPublic draft copy.' }
+    const second: CatalogEntry = { ...first, scopeId: 'other-pool', summary: 'Second offering copy.' }
+    renderPage([first, second], [])
+    await openAccessOptions('demo-chat')
+    const drawer = screen.getByRole('dialog', { name: 'Access to demo-chat' })
+    const selector = within(drawer).getByRole('combobox', { name: 'Access option' })
+    expect(within(drawer).queryByText(/First offering/)).not.toBeInTheDocument()
+    await user.selectOptions(selector, resourceKey(resourceFromCatalog(first)))
+    expect(within(drawer).getByText('<b>First offering</b> Public draft copy.')).toBeVisible()
+    expect(drawer.querySelector('b')).not.toBeInTheDocument()
+    await user.selectOptions(selector, resourceKey(resourceFromCatalog(second)))
+    expect(within(drawer).queryByText(/First offering/)).not.toBeInTheDocument()
+    expect(within(drawer).getByText('Second offering copy.')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Close details' }))
+    await user.type(screen.getByRole('textbox', { name: 'Search catalog' }), 'Public draft copy')
+    expect(screen.getByRole('button', { name: 'View access options for demo-chat' })).toBeVisible()
+  })
+
+  it.each([null, '', ' \n '])('does not invent a summary for a legacy empty value (%s)', async (summary) => {
+    renderPage([{ ...servedModelEntry, summary }], [])
+    await openAccessOptions(servedModelEntry.displayName)
+    const drawer = screen.getByRole('dialog', { name: `Access to ${servedModelEntry.displayName}` })
+    expect(drawer.querySelector('.catalog-summary')).not.toBeInTheDocument()
+    expect(within(drawer).queryByText('No summary provided.')).not.toBeInTheDocument()
+  })
+
   it('shows Government key and network requirements before requesting and blocks key-disallowed cost centers', async () => {
     const { createAccessRequest } = renderPage(
       [{ ...catalogEntry, azureCloud: 'government', costCenterAccess: [{ ...requestOnlyChoices[0], keysAllowed: false }] }], [],

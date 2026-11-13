@@ -44,6 +44,7 @@ from mosaic_api.domain import (
     McpServerCandidateList,
     ModelApi,
     ModelApiCandidateList,
+    ModelApiCatalogUpdate,
     ModelConnection,
     ModelEndpoint,
     ModelEndpointCreate,
@@ -886,11 +887,9 @@ async def delete_mcp_server(request: Request, auth: Admin, mcp_server_id: str) -
 
 @router.patch("/model-apis/{model_api_id}/catalog", response_model=ModelApi)
 async def update_model_api_catalog(
-    request: Request, auth: Admin, model_api_id: str, payload: CatalogEntryUpdate
+    request: Request, auth: Admin, model_api_id: str, payload: ModelApiCatalogUpdate
 ) -> ModelApi:
-    return await _gateways(request).update_model_api_catalog(
-        _actor(auth), model_api_id, payload
-    )
+    return await _gateways(request).update_model_api_catalog(_actor(auth), model_api_id, payload)
 
 
 @router.patch("/mcp-servers/{mcp_server_id}/catalog", response_model=McpServer)

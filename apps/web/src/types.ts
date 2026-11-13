@@ -1965,6 +1965,7 @@ export interface PoolModel {
   id: string
   publicName: string
   displayName: string
+  summary?: string | null
   modelName?: string | null
   modelFormat?: string | null
   expectedVersion?: string | null
@@ -2110,6 +2111,7 @@ export interface PoolModelView {
   id: string
   publicName: string
   displayName: string
+  summary?: string | null
   modelName?: string | null
   modelFormat?: string | null
   expectedVersion?: string | null

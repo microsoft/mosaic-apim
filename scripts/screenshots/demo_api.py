@@ -87,6 +87,8 @@ from mosaic_api.domain import (
     McpModelCallerUpdate,
     McpPublicationCreate,
     ModelAccessSettings,
+    ModelApiCatalogUpdate,
+    ModelCatalogSummaryUpdate,
     ModelEndpointCreate,
     PrincipalCreate,
     PrincipalKind,
@@ -1595,7 +1597,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         await services.gateways.update_model_api_catalog(
             admin,
             model_api_id(tenant_id, gateway.id, api_name),
-            CatalogEntryUpdate(summary=summary),
+            ModelApiCatalogUpdate(summary=summary),
         )
     mcp_summaries = {
         "orders-mcp": ("catalog", "Look up orders, start returns, and track shipments."),
@@ -1633,7 +1635,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         await services.gateways.update_model_api_catalog(
             admin,
             model_api_id(tenant_id, dev_gateway.id, api_name),
-            CatalogEntryUpdate(summary=summary),
+            ModelApiCatalogUpdate(summary=summary),
         )
 
     aoai = await services.endpoints.register(
@@ -1851,7 +1853,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         estate.publications[display_name] = publication.id
         estate.model_apis[display_name] = published.model_api_id
         await services.gateways.update_model_api_catalog(
-            admin, published.model_api_id, CatalogEntryUpdate(summary=summary)
+            admin, published.model_api_id, ModelApiCatalogUpdate(summary=summary)
         )
 
     # Claude runs in three regions, and callers see one API with one name per model (ADR 0024).
@@ -1898,6 +1900,19 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         ModelPoolUpdate(governed_access=ModelAccessSettings(keys_enabled=True, entra_enabled=True)),
     )
     claude_models = {model.display_name: model.id for model in claude_pool.models}
+    for model_name, summary in (
+        ("Claude Opus 4.5", "Contoso's shared model offering for research and long-form drafts."),
+        (
+            "Claude Sonnet 4.5",
+            "Contoso's shared model offering for day-to-day drafting and coding.",
+        ),
+    ):
+        await services.pools.update_model_catalog(
+            admin,
+            claude_pool.id,
+            claude_models[model_name],
+            ModelCatalogSummaryUpdate(summary=summary),
+        )
     # A second pool, saved but not yet published. Evaluation runs start in North Central US and
     # move to East US 2 only when it fails.
     evaluation_pool = await services.pools.create(
@@ -2411,7 +2426,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     await services.gateways.update_model_api_catalog(
         admin,
         applied_government.model_api_id,
-        CatalogEntryUpdate(
+        ModelApiCatalogUpdate(
             summary="Government-hosted chat; an applied direct grant prepares a key."
         ),
     )

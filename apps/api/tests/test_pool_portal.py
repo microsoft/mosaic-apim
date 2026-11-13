@@ -19,6 +19,7 @@ from mosaic_api.domain import (
     EntitlementResource,
     ModelAccessSettings,
     ModelApi,
+    ModelCatalogSummaryUpdate,
     ModelProvider,
     Principal,
     Publication,
@@ -142,6 +143,24 @@ async def test_a_served_pool_model_is_offered_as_a_model(catalog: Catalog) -> No
         "azureOpenAi",
         "payAsYouGo",
     )
+
+
+async def test_the_portal_reads_only_the_public_model_summary(catalog: Catalog) -> None:
+    pool = await catalog.published()
+    _, reader = await catalog.reader("Catalog reader")
+    await catalog.service.update_model_catalog(
+        ACTOR,
+        pool.id,
+        pool.models[0].id,
+        ModelCatalogSummaryUpdate(summary="Draft internal notes.\nReview before sharing."),
+    )
+
+    [entry] = await catalog.entries(reader)
+
+    assert entry.summary == "Draft internal notes.\nReview before sharing."
+    assert entry.scope_id == pool.id
+    serialized = entry.model_dump_json()
+    assert not any(private in serialized for private in BEHIND_THE_MODEL)
 
 
 async def test_an_administrator_lists_a_pools_models_one_by_one(catalog: Catalog) -> None:

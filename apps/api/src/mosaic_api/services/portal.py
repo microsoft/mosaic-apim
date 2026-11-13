@@ -373,9 +373,7 @@ class PortalService:
                         id=model.id,
                         scope_id=pool.id,
                         display_name=model.display_name,
-                        # Never the pool's description: it may name the regions or endpoints
-                        # behind the model, which users aren't shown.
-                        summary=None,
+                        summary=model.summary,
                         gateway_id=pool.gateway_id,
                         gateway_name=gateway.name,
                         environment=gateway.environment,

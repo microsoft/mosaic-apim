@@ -108,10 +108,18 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
       backend it points at, what it exposes, the policies that govern it, and its operations.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="images/screenshots/console-models.png" alt="A compact published-model list beside selected publication details, gateway state, and actions">
+      <img src="images/screenshots/console-models.png" alt="A compact published-model list beside selected publication details, saved catalog summary, and edit action">
       <p><b>Models.</b> A compact publication list opens the selected model's gateway state,
-      API path, access settings, and actions in a detail workspace. Publishing changes APIM only when a reviewed plan is
+      API path, access settings, and catalog summary with an explicit summary editor. Publishing changes APIM only when a reviewed plan is
       applied, and only on a gateway in manage mode.</p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <img src="images/screenshots/console-catalog-summary-review.png" alt="The catalog summary Review step with saved and draft text, unchanged access settings, and an exact-offering portal preview">
+      <p><b>Review catalog copy.</b> Compare saved and draft summary text and read its portal
+      preview before explicitly saving. This changes only the exact offering's catalog copy,
+      not its visibility, grants, or gateway publishing.</p>
     </td>
   </tr>
   <tr>
@@ -151,10 +159,10 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
       on multiple reachable endpoints without a pool.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="images/screenshots/console-pool-detail.png" alt="A breaker pool serving Claude Opus 4.5 and Claude Sonnet 4.5 from five deployments in three regions, with weights, readiness, and drain switches">
-      <p><b>A model pool.</b> Compact navigation rails give the Models and deployments section room
-      to show each model's deployments, regions, capacity, readiness, weights, and drain controls. Overview, access, health, and
-      policy/run history are separate destinations.</p>
+      <img src="images/screenshots/console-pool-detail.png" alt="A breaker pool's public model summaries and private deployments, regions, weights, readiness, and drain switches">
+      <p><b>A model pool.</b> Each model's public catalog summary and edit action stay separate
+      from its private deployments, regions, capacity, readiness, weights, and drain controls.
+      Compact navigation rails leave room for both models in the selected section.</p>
     </td>
   </tr>
   <tr>
@@ -579,8 +587,8 @@ resource lists, forms, and connection drawers remain solid for readability.
     <td width="50%" valign="top">
       <img src="images/screenshots/portal-request-access.png" alt="The catalog with a contextual access request panel for a selected model">
       <p><b>Request access.</b> Open a model's options without shifting the catalog, then choose
-      the exact offering and cost center for a request. The drawer shows existing access or
-      pending requests and lets the person add a justification.</p>
+      the exact offering and cost center for a request. The drawer shows that offering's
+      administrator-authored summary, existing access or pending requests, and a justification field.</p>
     </td>
     <td width="50%" valign="top">
       <img src="images/screenshots/portal-usage-breakdowns.png" alt="Usage breakdowns with aggregate cost-center totals and pooled quotas">

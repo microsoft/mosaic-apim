@@ -34,6 +34,7 @@ from mosaic_api.domain import (
     PublishedResourceKind,
     QuotaPeriod,
     ReviewSnapshot,
+    _unset,
     apim_slug,
     deterministic_id,
 )
@@ -300,6 +301,7 @@ class PoolModel(MosaicModel):
     id: str
     public_name: str
     display_name: str
+    summary: str | None = Field(default=None, exclude_if=_unset)
     # Every member serves the same model, by name and format. Filled in from inventory when the
     # model is saved, and checked again by every plan.
     model_name: str | None = None
@@ -730,6 +732,7 @@ class PoolModelView(MosaicModel):
     id: str
     public_name: str
     display_name: str
+    summary: str | None = None
     model_name: str | None = None
     model_format: str | None = None
     expected_version: str | None = None
