@@ -800,6 +800,8 @@ describe('ModelsPage', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Remove publication' }))
 
     const refusal = await within(dialog).findByRole('alert')
+    expect(screen.getByRole('alertdialog', { name: 'Remove GPT-4o production?' })).toBe(dialog)
+    expect(dialog).toBeVisible()
     expect(refusal).toHaveTextContent("MOSAIC didn't remove this publication")
     expect(refusal).toHaveTextContent('Unpublish before removing this publication.')
     expect(screen.queryByText('Unable to load data')).not.toBeInTheDocument()
