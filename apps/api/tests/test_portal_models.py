@@ -221,7 +221,7 @@ async def test_declared_deployment_identity_is_read_without_cloud_calls() -> Non
 
 def test_model_descriptor_is_optional_and_only_on_portal_responses(settings: Settings) -> None:
     schemas = create_app(settings).openapi()["components"]["schemas"]
-    for name in ("CatalogEntry", "PortalAccessRequest", "PortalResolvedEntitlement"):
+    for name in ("CatalogEntry", "PortalAccessRequest", "PortalResolvedEntitlementView"):
         assert "model" in schemas[name]["properties"]
         assert "model" not in schemas[name]["required"]
     for name in ("AccessRequest", "ResolvedEntitlement", "ResourceSummary"):
