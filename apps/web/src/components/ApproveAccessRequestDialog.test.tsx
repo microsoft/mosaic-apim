@@ -8,6 +8,7 @@ import { GOVERNED_COUNTER_KEY } from '../entitlement-limits'
 import { modelPublication } from '../test/model-access'
 import { ApiError } from '../api'
 import type { AccessRequest, AccessRequestApproval, CostCenter, EnvironmentCatalogView } from '../types'
+import { requesterDisplay } from '../requester-display'
 import { ApproveAccessRequestDialog, type ApprovalRequester } from './ApproveAccessRequestDialog'
 
 const accessRequest: AccessRequest = {
@@ -180,23 +181,79 @@ describe('ApproveAccessRequestDialog', () => {
     [
       'a registered requester by label, then object ID',
       { label: 'Megan Bowen', objectId: 'user-object-1', registered: true },
-      ['Megan Bowen', 'user-object-1'],
+      ['MOSAIC label', 'Megan Bowen', 'No sign-in display details were recorded.', 'Object ID', 'user-object-1'],
     ],
     [
       'the object ID once when the label is that ID in another letter case',
-      { label: 'USER-OBJECT-1', objectId: 'user-object-1', registered: true },
-      ['user-object-1'],
+      { label: 'USER-OBJECT-1', savedLabel: 'USER-OBJECT-1', objectId: 'user-object-1', registered: true },
+      ['MOSAIC label', 'Uses the object ID shown below.', 'No sign-in display details were recorded.', 'Object ID', 'user-object-1'],
     ],
     [
       'an unregistered requester by object ID once, and that approving registers them',
       { label: 'user-object-1', objectId: 'user-object-1', registered: false },
-      ['user-object-1', 'Not registered in MOSAIC yet. Approving registers them as a user principal.'],
+      ['Requester name unavailable', 'No sign-in display details were recorded.', 'Object ID', 'user-object-1', 'Not registered in MOSAIC yet. Approving registers them as a user principal.'],
     ],
   ])('shows %s', async (_, requester, lines) => {
     renderDialog({ requester })
 
     await screen.findByRole('region', { name: 'Approve access request' })
     expect(requesterLines()).toEqual(lines)
+  })
+
+  it('separates the saved label from the captured sign-in identity without a new approval step', async () => {
+    renderDialog({ requester: {
+      label: 'Administrator label', savedLabel: 'Administrator label', registered: true,
+      capturedName: 'Jordan Rowan', username: 'jordan@example.invalid', objectId: 'user-object-1',
+    } })
+    const editor = await screen.findByRole('region', { name: 'Approve access request' })
+    const snapshot = within(editor).getByRole('region', { name: 'Sign-in identity at request time' })
+    expect(within(editor).getByText('MOSAIC label')).toBeVisible()
+    expect(within(editor).getByText('Administrator label')).toBeVisible()
+    expect(within(snapshot).getByText('Jordan Rowan')).toBeVisible()
+    expect(within(snapshot).getByText('jordan@example.invalid')).toBeVisible()
+    expect(within(editor).getAllByText('user-object-1')).toHaveLength(1)
+    expect(within(editor).queryByText('Label for new registration')).not.toBeInTheDocument()
+    expect(within(editor).getByRole('button', { name: 'Approve and create grant' })).toBeEnabled()
+  })
+
+  it('shows username-only provenance once and identifies an existing unlabeled principal honestly', async () => {
+    renderDialog({ requester: {
+      label: 'jordan@example.invalid', savedLabel: null, registered: true,
+      capturedName: null, username: 'jordan@example.invalid', objectId: 'user-object-1',
+    } })
+    const editor = await screen.findByRole('region', { name: 'Approve access request' })
+    expect(within(editor).getByText('Registered in MOSAIC; no saved label.')).toBeVisible()
+    expect(within(editor).getByRole('region', { name: 'Sign-in identity at request time' })).toBeVisible()
+    expect(within(editor).getByText('jordan@example.invalid')).toBeVisible()
+    expect(within(editor).queryByText('Label for new registration')).not.toBeInTheDocument()
+    expect(within(editor).queryByText(/Approving registers/)).not.toBeInTheDocument()
+  })
+
+  it('retains captured username provenance when a distinct captured name accompanies the username label', async () => {
+    renderDialog({ requester: {
+      label: 'jordan@example.invalid', savedLabel: 'jordan@example.invalid', registered: true,
+      capturedName: 'Jordan Rowan', username: 'jordan@example.invalid', objectId: 'user-object-1',
+    } })
+    const editor = await screen.findByRole('region', { name: 'Approve access request' })
+    const snapshot = within(editor).getByRole('region', { name: 'Sign-in identity at request time' })
+    expect(within(snapshot).getByText('Jordan Rowan')).toBeVisible()
+    expect(within(snapshot).getByText('The captured username is the label above.')).toBeVisible()
+    expect(within(editor).getAllByText('jordan@example.invalid')).toHaveLength(1)
+  })
+
+  it('does not claim new registration when snapshot metadata has no current registry evidence', async () => {
+    renderDialog({ requester: requesterDisplay({
+      requesterObjectId: 'user-object-1', requesterPrincipalId: 'known-principal',
+      requesterName: 'Jordan Rowan', requesterUsername: 'jordan@example.invalid',
+    }, undefined) })
+    const editor = await screen.findByRole('region', { name: 'Approve access request' })
+    expect(within(editor).getByText('MOSAIC registration status unavailable.')).toBeVisible()
+    expect(within(editor).queryByText('Label for new registration')).not.toBeInTheDocument()
+    expect(within(editor).queryByText(/Not registered in MOSAIC/)).not.toBeInTheDocument()
+    const snapshot = within(editor).getByRole('region', { name: 'Sign-in identity at request time' })
+    expect(within(snapshot).getByText('Jordan Rowan')).toBeVisible()
+    expect(within(snapshot).getByText('jordan@example.invalid')).toBeVisible()
+    expect(within(snapshot).getByText('user-object-1')).toBeVisible()
   })
 
   it('shows the requested cost center', async () => {

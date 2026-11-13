@@ -747,6 +747,8 @@ export interface AccessRequest {
   tenantId: string
   requesterObjectId: string
   requesterPrincipalId?: string | null
+  requesterName?: string | null
+  requesterUsername?: string | null
   resource: EntitlementResource
   costCenterId?: string | null
   costCenter?: CostCenterRef | null

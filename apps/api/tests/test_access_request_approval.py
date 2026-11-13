@@ -10,8 +10,9 @@ from collections.abc import Iterator, Sequence
 from typing import Any
 
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
-from mosaic_api.auth import LocalAuthenticator
+from mosaic_api.auth import AuthContext, LocalAuthenticator
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
 from mosaic_api.domain import (
     AccessRequest,
@@ -130,10 +131,16 @@ async def _seed(client: TestClient, *, published: bool = False) -> None:
     await gateways.save_model_api(_model_api("publication_seed" if published else None), _audit())
 
 
-async def _request(client: TestClient, object_id: str = REQUESTER) -> AccessRequest:
+async def _request(
+    client: TestClient,
+    object_id: str = REQUESTER,
+    *,
+    name: str | None = None,
+    username: str | None = None,
+) -> AccessRequest:
     service: EntitlementService = client.app.state.entitlement_service
     return await service.create_access_request(
-        Actor(object_id=object_id, tenant_id=TENANT),
+        Actor(object_id=object_id, tenant_id=TENANT, name=name, username=username),
         AccessRequestCreate(resource=RESOURCE, justification="Support bot needs chat"),
     )
 
@@ -163,7 +170,7 @@ def _stored(client: TestClient, request_id: str) -> AccessRequest:
 
 async def test_approval_creates_the_grant_intent_and_links_it(client: TestClient) -> None:
     await _seed(client, published=True)
-    created = await _request(client)
+    created = await _request(client, name="Jordan Rowan", username="jordan@example.invalid")
     publication_before = await client.app.state.gateway_repository.get_publication(
         TENANT, "publication_seed"
     )
@@ -225,12 +232,36 @@ async def test_approval_creates_the_grant_intent_and_links_it(client: TestClient
     }
 
 
-async def test_approval_registers_a_requester_mosaic_has_never_seen(client: TestClient) -> None:
+@pytest.mark.parametrize(
+    ("name", "username", "label"),
+    [
+        ("Jordan Rowan", "jordan@example.invalid", "Jordan Rowan"),
+        (None, "jordan@example.invalid", "jordan@example.invalid"),
+        (None, None, None),
+    ],
+)
+async def test_approval_registers_a_requester_mosaic_has_never_seen(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str | None,
+    username: str | None,
+    label: str | None,
+) -> None:
     await _seed(client)
-    created = await _request(client)
+    created = await _request(client, name=name, username=username)
     assert created.requester_principal_id is None
     assert client.get("/api/v1/principals").json() == []
 
+    async def reviewer(_request: Request) -> AuthContext:
+        return AuthContext(
+            object_id="local-admin",
+            tenant_id=TENANT,
+            roles=frozenset({"Admin"}),
+            name="Different reviewer",
+            username="reviewer@example.invalid",
+        )
+
+    monkeypatch.setattr(client.app.state.authenticator, "authenticate", reviewer)
     response = client.post(f"/api/v1/access-requests/{created.id}/approve", json={})
 
     assert response.status_code == 200, response.text
@@ -238,6 +269,11 @@ async def test_approval_registers_a_requester_mosaic_has_never_seen(client: Test
     assert principal["id"] == _principal_id()
     assert principal["objectId"] == REQUESTER
     assert principal["kind"] == "user"
+    assert principal["label"] == label
+    assert principal["detail"] is None
+    assert principal["directoryVerifiedAt"] is None
+    assert _stored(client, created.id).requester_name == name
+    assert _stored(client, created.id).requester_username == username
     assert response.json()["requesterPrincipalId"] == principal["id"]
     directory: InMemoryDirectoryRepository = client.app.state.repository
     assert [event.resource_id for event in directory.audit_events.values()] == [principal["id"]]
@@ -247,19 +283,21 @@ async def test_approval_registers_a_requester_mosaic_has_never_seen(client: Test
     assert grant.json()["enforcement"] is None
 
 
-async def test_approval_reuses_an_existing_principal(client: TestClient) -> None:
+@pytest.mark.parametrize("label", ["Administrator label", None])
+async def test_approval_reuses_an_existing_principal(client: TestClient, label: str | None) -> None:
     await _seed(client)
     registered = client.post(
         "/api/v1/principals",
-        json={"objectId": REQUESTER, "kind": "user", "label": "Ada Lovelace"},
+        json={"objectId": REQUESTER, "kind": "user", "label": label},
     ).json()
-    created = await _request(client)
+    created = await _request(client, name="Different token name", username="user@example.invalid")
 
     response = client.post(f"/api/v1/access-requests/{created.id}/approve", json={})
 
     assert response.status_code == 200, response.text
     assert response.json()["requesterPrincipalId"] == registered["id"]
     assert [item["id"] for item in client.get("/api/v1/principals").json()] == [registered["id"]]
+    assert client.get("/api/v1/principals").json()[0] == registered
     [approval_audit] = _audit_actions(client, "accessRequest.approved")
     assert approval_audit.details["principalCreated"] is False
 
@@ -328,9 +366,7 @@ async def test_approval_rejects_duplicate_requester_even_with_an_exact_match(
         ("legacy-app", f"{{{REQUESTER.upper()}}}", "servicePrincipal"),
     ):
         await client.app.state.repository.create_principal(
-            Principal(
-                id=principal_id, tenant_id=TENANT, object_id=object_id, kind=kind
-            ),
+            Principal(id=principal_id, tenant_id=TENANT, object_id=object_id, kind=kind),
             _audit(),
         )
     created = await _request(client)
@@ -406,7 +442,7 @@ async def test_approval_refuses_to_shadow_an_existing_grant(client: TestClient) 
 
 async def test_deny_is_unchanged_and_final(client: TestClient) -> None:
     await _seed(client)
-    created = await _request(client)
+    created = await _request(client, name="Jordan Rowan", username="jordan@example.invalid")
 
     denied = client.post(
         f"/api/v1/access-requests/{created.id}/deny", json={"note": "Use the shared pool"}
@@ -416,6 +452,8 @@ async def test_deny_is_unchanged_and_final(client: TestClient) -> None:
     assert denied.json()["state"] == "denied"
     assert denied.json()["decisionNote"] == "Use the shared pool"
     assert denied.json()["grantedEntitlementId"] is None
+    assert denied.json()["requesterName"] == "Jordan Rowan"
+    assert denied.json()["requesterUsername"] == "jordan@example.invalid"
     assert client.get("/api/v1/entitlements").json() == []
     assert client.get("/api/v1/principals").json() == []
     assert len(_audit_actions(client, "accessRequest.denied")) == 1
@@ -540,9 +578,14 @@ class _RacingRepository(InMemoryEntitlementRepository):
 
 
 class _Harness:
-    def __init__(self, repository: InMemoryEntitlementRepository) -> None:
+    def __init__(
+        self,
+        repository: InMemoryEntitlementRepository,
+        *,
+        directory: InMemoryDirectoryRepository | None = None,
+    ) -> None:
         self.repository = repository
-        self.directory = InMemoryDirectoryRepository()
+        self.directory = directory or InMemoryDirectoryRepository()
         self.gateways = InMemoryGatewayRepository()
         self.service = EntitlementService(
             repository,
@@ -554,8 +597,35 @@ class _Harness:
     async def pending_request(self) -> AccessRequest:
         await self.gateways.save_model_api(_model_api(), _audit())
         return await self.service.create_access_request(
-            Actor(object_id=REQUESTER, tenant_id=TENANT), AccessRequestCreate(resource=RESOURCE)
+            Actor(
+                object_id=REQUESTER,
+                tenant_id=TENANT,
+                name="Jordan Rowan",
+                username="jordan@example.invalid",
+            ),
+            AccessRequestCreate(resource=RESOURCE),
         )
+
+
+class _RegistrationRace(InMemoryDirectoryRepository):
+    async def create_principal(self, principal: Principal, audit_event: AuditEvent) -> Principal:
+        await super().create_principal(
+            principal.model_copy(update={"label": "Concurrent administrator label"}), audit_event
+        )
+        raise ConflictError("Another registration won")
+
+
+async def test_a_concurrent_registration_keeps_its_label_not_the_token_snapshot() -> None:
+    harness = _Harness(InMemoryEntitlementRepository(), directory=_RegistrationRace())
+    created = await harness.pending_request()
+    approved = await harness.service.approve_access_request(
+        ADMIN, created.id, AccessRequestApproval()
+    )
+    [principal] = harness.directory.principals.values()
+    assert principal.label == "Concurrent administrator label"
+    assert approved.requester_principal_id == principal.id
+    assert approved.requester_name == "Jordan Rowan"
+    assert list(harness.repository.entitlements) == [_grant_id(_principal_id())]
 
 
 async def test_a_concurrent_approval_converges_on_the_winning_grant() -> None:
@@ -604,6 +674,7 @@ async def test_a_failed_write_leaves_nothing_half_done_and_a_retry_succeeds() ->
     assert not [e for e in repository.audit_events.values() if e.action != "accessRequest.created"]
     # Registration grants nothing on its own, so it is left in place and the retry reuses it.
     assert list(harness.directory.principals) == [_principal_id()]
+    assert harness.directory.principals[_principal_id()].label == "Jordan Rowan"
 
     repository.fail = False
     approved = await harness.service.approve_access_request(
@@ -614,3 +685,5 @@ async def test_a_failed_write_leaves_nothing_half_done_and_a_retry_succeeds() ->
     assert approved.requester_principal_id == _principal_id()
     assert list(repository.entitlements) == [approved.granted_entitlement_id]
     assert len(harness.directory.principals) == 1
+    assert approved.requester_name == "Jordan Rowan"
+    assert harness.directory.principals[_principal_id()].label == "Jordan Rowan"

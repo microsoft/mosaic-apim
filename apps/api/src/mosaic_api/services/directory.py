@@ -75,6 +75,9 @@ class Actor:
     # True when the caller is in more groups than a token can list, so ``group_ids`` is incomplete
     # and the gateway can't match any group grant for them.
     groups_overage: bool = False
+    # Display-only token claims for a new access request, not principal or group evidence.
+    name: str | None = None
+    username: str | None = None
 
 
 async def find_unique_principal(

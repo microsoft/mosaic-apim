@@ -34,6 +34,8 @@ import type {
   QuotaPeriod,
 } from '../types'
 import { ErrorState } from './AsyncState'
+import { AccessRequestRequester } from './AccessRequestRequester'
+import type { RequesterDisplay } from '../requester-display'
 import {
   WorkspaceDialog as Dialog,
   WorkspaceDialogActions as DialogActions,
@@ -51,16 +53,7 @@ function personDefaultsFor(costCenter: CostCenter | undefined, resource: AccessR
   )?.person ?? null
 }
 
-export interface ApprovalRequester {
-  /**
-   * The registered principal's label. Otherwise `objectId`: the requester isn't registered, or their
-   * principal has no label.
-   */
-  label: string
-  /** The requester's Entra object ID, as the request recorded it. */
-  objectId: string
-  registered: boolean
-}
+export type ApprovalRequester = RequesterDisplay
 
 /**
  * Confirms an access request's grant limits before approval creates the grant. Render it only
@@ -203,16 +196,7 @@ export function ApproveAccessRequestDialog({
                 <div>
                   <dt>Requester</dt>
                   <dd className={styles.cellStack}>
-                    {/* Entra object IDs are GUIDs, so a label that matches the ID in any letter case is the ID again. */}
-                    {requester.label.toLowerCase() !== requester.objectId.toLowerCase() && (
-                      <Text className={styles.primaryCell}>{requester.label}</Text>
-                    )}
-                    <Text className={styles.codeValue}>{requester.objectId}</Text>
-                    {!requester.registered && (
-                      <Text size={200}>
-                        Not registered in MOSAIC yet. Approving registers them as a user principal.
-                      </Text>
-                    )}
+                    <AccessRequestRequester requester={requester} showRegistrationEffect />
                   </dd>
                 </div>
                 <div>
