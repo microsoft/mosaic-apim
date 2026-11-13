@@ -2676,8 +2676,14 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"unknown shots: {', '.join(sorted(unknown))}")
     shots = [shot for shot in SHOTS if not args.only or shot.name in args.only]
     needs_console_access = any(shot.console_access for shot in shots)
+    needs_normal_apps = any(not shot.console_access for shot in shots)
     if not args.reuse_servers:
-        for port in (args.api_port, args.console_port, args.portal_port):
+        ports = (
+            (args.api_port, args.console_port, args.portal_port)
+            if needs_normal_apps
+            else (args.api_port,)
+        )
+        for port in ports:
             if not _port_free(port):
                 parser.error(f"port {port} is in use; pick another with the --*-port options")
     if needs_console_access and not _port_free(args.console_access_port):
@@ -2720,7 +2726,7 @@ def main(argv: list[str] | None = None) -> int:
                         "api", api, REPO_ROOT, f"http://127.0.0.1:{args.api_port}/healthz", logs
                     )
                 )
-                if any(not shot.console_access for shot in shots):
+                if needs_normal_apps:
                     for app, (app_dir, port) in apps.items():
                         stack.enter_context(
                             _running(

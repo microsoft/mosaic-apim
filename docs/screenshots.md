@@ -19,7 +19,8 @@ user and intercepts the role check; neither product build gains a preview route 
 bypass. These shots demonstrate the handoff layout, not live Entra sign-in or portal authorization.
 The fixture starts only when its shots are selected, on `--console-access-port` (default 15175),
 and uses source components even with `--preview`. A handoff-only capture does not need the normal
-console/portal dev servers, but still starts the fictional demo API.
+console/portal dev servers or require their ports to be free, but still starts the fictional demo
+API and checks its port and the isolated fixture port.
 
 The fictional estate uses one shared fake Graph directory for lookup, group creation, verification,
 and direct membership operations. Custom cost centers get dedicated verified Entra groups through
@@ -107,6 +108,12 @@ python -m scripts.screenshots.capture
 With `--check-navigation`, handoff shots also verify the configured same-tab link, absence of
 administrator content, keyboard order, 320px reflow and action fit, and missing/invalid-address
 recovery with Sign out. These checks use the isolated fictional fixture, not a live Entra session.
+
+The focused port-validation regression checks do not start browsers or servers:
+
+```powershell
+uv run --with "playwright>=1.58,<2" python -m pytest apps\web\tests\test_console_handoff_capture.py
+```
 
 If `uv` isn't on your `PATH`, run it as `python -m uv`. On a network that can't reach PyPI's file
 host, point uv at a mirror for the run and leave the lock file alone:
