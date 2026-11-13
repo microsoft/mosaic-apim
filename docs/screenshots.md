@@ -170,6 +170,18 @@ uv run --with "playwright>=1.58,<2" python -m pytest apps\web\tests\test_cost_ce
 These checks start and stop their own fictional API and console. They write redacted verification
 captures into an ignored test cache, not the gallery; they do not prove live Entra connectivity.
 
+### Focused requester identity regressions
+
+Verify request-time identity and full-workspace review with 200-character display values at
+1440px and 320px, in both themes and forced colors. These fictional checks exercise keyboard
+navigation and reflow without submitting an approval or calling a model:
+
+```powershell
+uv run --with "playwright>=1.58,<2" python -m pytest apps\web\tests\test_requester_identity_browser.py
+```
+
+Verification captures stay in the same ignored test cache, not the documentation gallery.
+
 ### Browse the demo estate
 
 To find a view worth capturing, run the demo API on its default ports and start each app with
@@ -212,8 +224,11 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
   regions but served by no pool, so the **Pools** page suggests one for it. Anthropic Claude is
   then governed: Megan Bowen holds both its models under Customer Insights, the Market Research
   Agent holds Opus, and the Agent Builders group holds Sonnet. Customer Insights sets a per-person
-  Sonnet limit and a pooled quota that counts every region, and Isaiah Langer's request for Opus is
-  pending. Commercial grants' subscription keys exist only where someone asked for one: the support copilot's,
+  Sonnet limit and a pooled quota that counts every region. Jordan Rowan's request for Opus under
+  General is pending, with captured sign-in metadata but no MOSAIC principal registration.
+  The resource queue also includes a changed sign-in name and a legacy request without a snapshot;
+  captured names are display metadata, not fresh directory verification.
+  Commercial grants' subscription keys exist only where someone asked for one: the support copilot's,
   the one Megan Bowen's notebook uses, and the one she calls both Claude models with. Eligible
   Government model and MCP grants receive their initial keys automatically after reviewed apply.
   One MCP
@@ -385,7 +400,8 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-security-group-members` | Console | `/identity?tab=security-groups`, **AI Model Users** selected, scrolled to read-only **Security group members** | Dark | Security group members |
 | `console-directory-verification` | Console | `/identity?tab=security-groups`, **AI Model Users** selected, explicit complete-read check against the fictional directory, scrolled to its scoped diagnostic status | Light | Complete group-read verification |
 | `console-entitlements` | Console | `/entitlements`, selected grant with detailed state and limits | Light | Entitlements |
-| `console-access-requests` | Console | `/entitlements?tab=requests`, pending queue with the first request selected in **Selected access request** detail | Light | Access requests |
+| `console-access-requests` | Console | `/entitlements?tab=requests`, pending queue with an unknown requester's captured identity in **Selected access request** detail | Light | Access requests |
+| `console-access-request-approval` | Console | `/entitlements?tab=requests`, unknown requester in full-workspace **Approve access request**, with initial label, token snapshot, and grant limits; never submitted | Light | Unknown requester approval |
 | `console-model-access-settings` | Console | `/entitlements?tab=settings`, GPT-4o selected | Dark | Model access settings |
 | `console-overlapping-grants` | Console | `/entitlements?tab=effective`, **Overlapping grants** | Dark | Overlapping grants |
 | `console-cost-centers` | Console | `/cost-centers`, selected detail beside the compact list | Light | Cost centers |
@@ -403,7 +419,7 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-analytics` | Console | `/analytics`, **Overview** section | Dark | Analytics |
 | `console-analytics-filters` | Console | `/analytics`, grouped draft **Filters** open, never applied | Light | Analytics filters |
 | `console-request-notifications` | Console | `/dashboard`, pending-approvals popover open, separate from unread inbox bell | Light | Pending approvals |
-| `console-bulk-approval` | Console | `/entitlements?tab=requests`, two explicit pending requests in **Review bulk approvals**, never submitted | Dark | Bulk approval review |
+| `console-bulk-approval` | Console | `/entitlements?tab=requests`, two explicit pending requests with label and token-snapshot provenance in **Review bulk approvals**, never submitted | Dark | Bulk approval review |
 | `console-approval-policy` | Console | `/entitlements?tab=approvalPolicies`, disabled **Development office hours** policy in the full-workspace editor, never saved or enabled | Light | Scheduled approval policy |
 | `console-notification-inbox` | Console | `/notifications`, category/unread filters and selected exact notification | Dark | Administrator inbox |
 | `console-notification-preferences` | Console | `/profile`, **Edit preferences** workspace with independent administrator channel/cadence and digest controls, never saved | Light | Administrator preferences |

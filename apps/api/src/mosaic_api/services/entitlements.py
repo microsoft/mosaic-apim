@@ -2470,6 +2470,8 @@ class EntitlementService:
             tenant_id=actor.tenant_id,
             requester_object_id=actor.object_id,
             requester_principal_id=principal.id if principal else None,
+            requester_name=actor.name,
+            requester_username=actor.username,
             resource=request.resource,
             cost_center_id=cost_center.id,
             cost_center_group_ids=(
@@ -2608,7 +2610,11 @@ class EntitlementService:
                 raise _existing_grant_conflict(existing)
         principal_created = principal is None
         if principal is None:
-            principal = await self._register_requester(actor, access_request.requester_object_id)
+            principal = await self._register_requester(
+                actor,
+                access_request.requester_object_id,
+                label=access_request.requester_name or access_request.requester_username,
+            )
 
         # The requester's token showed which of the cost center's groups they were in when they
         # asked. Without Microsoft Graph to check again, that's the only evidence there is, and it
@@ -2984,9 +2990,11 @@ class EntitlementService:
     async def _requester_principal(self, actor: Actor, object_id: str) -> Principal | None:
         return await find_unique_principal(self._directory, actor.tenant_id, object_id)
 
-    async def _register_requester(self, actor: Actor, object_id: str) -> Principal:
+    async def _register_requester(
+        self, actor: Actor, object_id: str, *, label: str | None = None
+    ) -> Principal:
         try:
-            request = PrincipalCreate(object_id=object_id, kind=PrincipalKind.USER)
+            request = PrincipalCreate(object_id=object_id, kind=PrincipalKind.USER, label=label)
         except SchemaValidationError as exc:
             raise ValidationError(
                 "The requester's Entra object ID cannot be registered as a principal",

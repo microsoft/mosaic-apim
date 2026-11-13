@@ -31,6 +31,7 @@ import { EntitlementConnectionDialog } from '../components/EntitlementConnection
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PrincipalKindBadge } from '../components/PrincipalKindBadge'
 import { IdentityAvatar } from '../components/IdentityAvatar'
+import { AccessRequestRequester } from '../components/AccessRequestRequester'
 import { ModelAccessSettingsPanel } from '../components/ModelAccessSettingsPanel'
 import { ApprovalPolicies } from '../components/ApprovalPolicies'
 import { BulkApprovalWorkspace } from '../components/BulkApprovalWorkspace'
@@ -64,6 +65,7 @@ import { environmentLabel, useEnvironmentCatalog } from '../environments'
 import { holdsApi } from '../publication-state'
 import { runtimeConfig } from '../runtime-config'
 import { adminRequestKey, combineAdminRequests } from '../request-queue'
+import { requesterDisplay, requestingPrincipal } from '../requester-display'
 import {
   ENTITLEMENT_SUBJECT_KIND_LABELS,
   GRANT_OVERLAP_KIND_LABELS,
@@ -85,7 +87,6 @@ import type {
   QuotaPeriod,
   Publication,
   PublishPlan,
-  Principal,
   PrincipalKind,
   ResolvedEntitlement,
 } from '../types'
@@ -162,18 +163,6 @@ function poolGrantSaved(lead: string, pool: Pick<ModelPool, 'id' | 'displayName'
   }
 }
 
-/**
- * The registered principal who made a request: the one the request recorded, or the one with the
- * requester's Entra object ID in any letter case. Undefined for a requester MOSAIC doesn't know,
- * and while principals are loading or failed to load.
- */
-function requestingPrincipal(accessRequest: { requesterObjectId: string; requesterPrincipalId?: string | null }, principals: Principal[] = []) {
-  const objectId = accessRequest.requesterObjectId.toLowerCase()
-  return principals.find(
-    (item) => item.id === accessRequest.requesterPrincipalId || item.objectId.toLowerCase() === objectId,
-  )
-}
-
 function requestResourceLabel(accessRequest: AccessRequest, fallback?: string) {
   // A pool model's summary names only the model. The console's own label names its pool too.
   if (accessRequest.resource.kind === 'poolModel' && fallback) return fallback
@@ -199,9 +188,9 @@ interface ApprovalContext {
 }
 
 function approvalBanner({ accessRequest, requester, publication, reviewable, pool, governed }: ApprovalContext): Banner {
-  const lead = requester.registered
-    ? `Approved the request and created grant intent for ${requester.label}.`
-    : `Approved the request, registered ${requester.label} as a user principal, and created their grant intent.`
+  const lead = requester.registered === false
+    ? `Approved the request, registered ${requester.label} as a user principal, and created their grant intent.`
+    : `Approved the request and created grant intent for ${requester.label}.`
   if (accessRequest.resource.kind === 'poolModel') {
     return poolGrantSaved(lead, pool)
   }
@@ -723,11 +712,7 @@ export function EntitlementsPage() {
     const publication = publicationFor(accessRequest)
     return {
       accessRequest,
-      requester: {
-        label: principal?.label || accessRequest.requesterObjectId,
-        objectId: accessRequest.requesterObjectId,
-        registered: Boolean(principal),
-      },
+      requester: requesterDisplay(accessRequest, principals.data),
       resourceLabel: requestResourceLabel(accessRequest, resourceLabel(resource)),
       publication,
       reviewable: publishedModels.find((item) => item.id === publication?.id),
@@ -887,9 +872,9 @@ export function EntitlementsPage() {
   const selectedPool = selectedResource ? poolFor(selectedResource) : editingGrant ? poolFor(editingGrant.resource) : undefined
   const connectionGrant = rows.find((entitlement) => entitlement.id === connectionGrantId)
 
-  if (activeSection === 'requests' && bulkStage === 'select') return <BulkRequestSelection requests={pendingRequests.data ?? []} principals={principals.data ?? []}
+  if (activeSection === 'requests' && bulkStage === 'select') return <BulkRequestSelection requests={pendingRequests.data ?? []} principals={principals.data}
     onBack={() => setBulkStage(null)} onReview={ids => { setBulkIds(ids); setBulkStage('review') }} />
-  if (activeSection === 'requests' && bulkStage === 'review') return <BulkApprovalWorkspace requestIds={bulkIds} principals={principals.data ?? []} costCenters={costCenters.data ?? []}
+  if (activeSection === 'requests' && bulkStage === 'review') return <BulkApprovalWorkspace requestIds={bulkIds} principals={principals.data} principalsPending={principals.isPending} costCenters={costCenters.data ?? []}
     onBack={() => setBulkStage(null)} onComplete={() => {
       void queryClient.invalidateQueries({ queryKey: ['access-requests'] })
       void queryClient.invalidateQueries({ queryKey: ['request-counts'] })
@@ -1430,13 +1415,17 @@ export function EntitlementsPage() {
             : selectedRequestQuery.isError
               ? <><ErrorState error={selectedRequestQuery.error} /><Button onClick={() => void selectedRequestQuery.refetch()}>Retry selected request</Button></>
               : <EmptyState title="Request unavailable">This exact request was removed or is inaccessible. <Button onClick={() => selectQueueRecord(null)}>Back to list</Button></EmptyState>}
-          renderListItem={(item) => <div className={styles.listSummary}>
-            <Text weight="semibold"><RequesterName objectId={item.request.requesterObjectId} name={requestingPrincipal(item.request, principals.data)?.label} retryButton={false} /></Text>
+          renderListItem={(item) => {
+            const requester = requesterDisplay(item.request, principals.data)
+            return <div className={styles.listSummary}>
+            <Text weight="semibold"><RequesterName objectId={item.request.requesterObjectId} name={requester.displayName} retryButton={false} /></Text>
+            {item.requestKind === 'resource' && requester.username && requester.username !== requester.displayName &&
+              <Text className={styles.secondaryCell}><bdi>{requester.username}</bdi></Text>}
             <Text className={styles.secondaryCell}>{item.requestKind === 'costCenter' ? item.request.name : item.requestKind === 'costCenterMembership' ? item.request.costCenter.name : requestResourceLabel(item.request, resourceLabel(item.request.resource))}</Text>
             <Badge appearance="outline">{item.requestKind === 'costCenter' ? 'Cost-center creation' : item.requestKind === 'costCenterMembership' ? 'Cost-center membership' : 'Resource access'}</Badge>
             <Badge appearance="outline">{item.request.state}</Badge>
             {(item.requestKind === 'costCenter' && item.request.needsAdministratorAttention || item.requestKind === 'costCenterMembership' && membershipNeedsAttention(item.request)) && <Badge appearance="tint" color="warning">Action needed</Badge>}
-          </div>}
+          </div>}}
           toolbar={
             <>
             <Button disabled={!pendingRequests.isSuccess || !pendingRequests.data.length} onClick={() => setBulkStage('select')}>Bulk resource approval review</Button>
@@ -1479,8 +1468,7 @@ export function EntitlementsPage() {
             <Title3 as="h3">{requestResourceLabel(accessRequest, resourceLabel(accessRequest.resource))}</Title3>
             <dl className={styles.detailList}>
               <div><dt>Requester</dt><dd className={styles.cellStack}>
-                {requestingPrincipal(accessRequest, principals.data)?.label && <Text className={styles.primaryCell}>{requestingPrincipal(accessRequest, principals.data)?.label}</Text>}
-                <Text className={styles.codeValue}>{accessRequest.requesterObjectId}</Text>
+                <AccessRequestRequester requester={requesterDisplay(accessRequest, principals.data)} registrationPending={principals.isPending} />
               </dd></div>
               <div><dt>Cost center</dt><dd>{accessRequest.costCenter ? `${accessRequest.costCenter.name} (${accessRequest.costCenter.code})` : 'Subject default'}</dd></div>
               <div><dt>Requested environment</dt><dd><EnvironmentBadge azureCloud={accessRequest.resourceSnapshot?.azureCloud ?? 'commercial'} environment={accessRequest.requestedEnvironment ?? null} catalog={environmentCatalog.data} /></dd></div>
@@ -1499,7 +1487,7 @@ export function EntitlementsPage() {
             {accessRequest.resourceSummary?.available === false && <Text>No longer available</Text>}
             {accessRequest.grantedEntitlementId && <Button onClick={() => showGrant(accessRequest.grantedEntitlementId!)}>Go to grant</Button>}
                           <RowActions
-                            label={`More actions for request from ${requestingPrincipal(accessRequest, principals.data)?.label ?? accessRequest.requesterObjectId}`}
+                            label={`More actions for request from ${requesterDisplay(accessRequest, principals.data).label}`}
                             primary={<Button
                               appearance="primary"
                               size="small"

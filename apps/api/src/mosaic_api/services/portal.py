@@ -175,7 +175,11 @@ class PortalService:
         return [
             PortalAccessRequest.model_validate(
                 {
-                    **dict(item),
+                    **{
+                        key: value
+                        for key, value in item
+                        if key not in {"requester_name", "requester_username"}
+                    },
                     "resource_display_name": name,
                     "resource_summary": summary,
                     "model": model,
