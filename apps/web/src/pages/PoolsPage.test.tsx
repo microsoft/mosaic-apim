@@ -13,6 +13,7 @@ const api = {
   listGateways: vi.fn(), getPoolCandidates: vi.fn(), createModelPool: vi.fn(), updateModelPool: vi.fn(),
   getModelPoolDetail: vi.fn(), listModelPoolRuns: vi.fn(), planModelPool: vi.fn(),
   planUnpublishModelPool: vi.fn(),
+  updatePoolModelCatalog: vi.fn(),
 }
 const suggestion: PoolSuggestion = {
   gatewayId: poolGateway.id, gatewayName: poolGateway.name, gatewayEnvironment: 'production',
@@ -72,6 +73,56 @@ describe('PoolsPage workbench', () => {
     expect(url).toContain(`selected=${anthropicPool.id}`)
     expect(url).toContain('poolTab=models')
     expect(screen.getByRole('button', { name: /^Anthropic Claude/ })).toHaveAttribute('aria-pressed', 'true')
+  })
+  it('opens embedded summary editing in the full workspace and retains a canceled draft', async () => {
+    const user = userEvent.setup()
+    const model = anthropicPool.models[0]
+    renderPage(`/pools?selected=${anthropicPool.id}&poolTab=models&gateway=all&filter=keep`)
+    await user.click(await screen.findByRole('button', { name: `Edit catalog summary for ${model.displayName}` }))
+    const editor = await screen.findByRole('region', { name: 'Edit catalog summary' })
+    expect(screen.queryByRole('list', { name: 'Model pools' })).not.toBeInTheDocument()
+    expect(document.querySelector('[data-resource-workbench]')).not.toBeInTheDocument()
+    const input = within(editor).getByRole('textbox', { name: 'Catalog summary (optional)' })
+    await user.type(input, 'Keep this catalog draft')
+    await user.click(within(editor).getByRole('button', { name: 'Cancel' }))
+    await user.click(screen.getByRole('button', { name: 'Stay' }))
+    expect(input).toHaveValue('Keep this catalog draft')
+    await user.click(within(editor).getByRole('button', { name: 'Cancel' }))
+    await user.click(screen.getByRole('button', { name: 'Discard changes' }))
+    expect(await screen.findByRole('list', { name: 'Model pools' })).toBeVisible()
+    expect(screen.getByRole('button', { name: /^Anthropic Claude/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('location')).toHaveTextContent(`selected=${anthropicPool.id}`)
+    expect(screen.getByTestId('location')).toHaveTextContent('poolTab=models')
+    expect(screen.getByTestId('location')).toHaveTextContent('gateway=all')
+    expect(screen.getByTestId('location')).toHaveTextContent('filter=keep')
+    expect(screen.getByTestId('location')).not.toHaveTextContent('summaryMode=edit')
+    await waitFor(() => expect(screen.getByRole('button', { name: `Edit catalog summary for ${model.displayName}` })).toHaveFocus())
+    expect(api.updatePoolModelCatalog).not.toHaveBeenCalled()
+  })
+  it('returns an embedded summary save to the selected pool with success feedback and focus', async () => {
+    const user = userEvent.setup()
+    const model = anthropicPool.models[0]
+    api.updatePoolModelCatalog.mockResolvedValue({
+      ...anthropicPool,
+      models: anthropicPool.models.map((item) => item.id === model.id ? { ...item, summary: 'Saved catalog copy' } : item),
+    })
+    renderPage(`/pools?selected=${anthropicPool.id}&poolTab=models&filter=keep`)
+    await user.click(await screen.findByRole('button', { name: `Edit catalog summary for ${model.displayName}` }))
+    await user.type(screen.getByRole('textbox', { name: 'Catalog summary (optional)' }), 'Saved catalog copy')
+    await user.click(screen.getByRole('button', { name: 'Review summary' }))
+    expect(screen.queryByRole('list', { name: 'Model pools' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Save summary' }))
+    await waitFor(() => expect(api.updatePoolModelCatalog).toHaveBeenCalledExactlyOnceWith(
+      anthropicPool.id, model.id, { summary: 'Saved catalog copy' },
+    ))
+    expect(await screen.findByText('Catalog summary saved.')).toBeVisible()
+    expect(await screen.findByRole('list', { name: 'Model pools' })).toBeVisible()
+    expect(screen.getByRole('button', { name: /^Anthropic Claude/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('location')).toHaveTextContent(`selected=${anthropicPool.id}`)
+    expect(screen.getByTestId('location')).toHaveTextContent('filter=keep')
+    await waitFor(() => expect(screen.getByRole('button', { name: `Edit catalog summary for ${model.displayName}` })).toHaveFocus())
+    expect(api.updateModelPool).not.toHaveBeenCalled()
+    expect(api.planModelPool).not.toHaveBeenCalled()
   })
   it('loads deep selection and reports a missing selection honestly', async () => {
     renderPage('/pools?selected=missing')

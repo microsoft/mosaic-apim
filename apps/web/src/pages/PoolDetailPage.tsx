@@ -407,7 +407,9 @@ const poolDetailSections = [
   { value: 'plans', label: 'Policy and runs', icon: <HistoryRegular />, description: 'Reviewing a plan does not apply it. Unpublishing removes MOSAIC-owned gateway resources; removing a record only changes MOSAIC.' },
 ]
 
-function PoolDetail({ poolId, embedded = false }: { poolId: string; embedded?: boolean }) {
+function PoolDetail({ poolId, embedded = false, onSummarySaved }: {
+  poolId: string; embedded?: boolean; onSummarySaved?: () => void
+}) {
   const pendingOperations = useIsMutating({ mutationKey: POOL_DETAIL_MUTATION_KEY })
   const [section] = usePageSection(poolDetailSections, 'overview', embedded ? 'poolTab' : 'tab')
   const [params, setParams] = useSearchParams()
@@ -419,9 +421,7 @@ function PoolDetail({ poolId, embedded = false }: { poolId: string; embedded?: b
   const summaryFocus = useRef(new Map<string, HTMLButtonElement>())
   const [summaryTarget, setSummaryTarget] = useState<PoolModel | null>(null)
   function closeSummary() {
-    const modelId = summaryWorkspace.selectedId
     summaryWorkspace.close()
-    requestAnimationFrame(() => { if (modelId) summaryFocus.current.get(modelId)?.focus() })
   }
   function selectSection(value: string) {
     setParams((current) => {
@@ -487,7 +487,14 @@ function PoolDetail({ poolId, embedded = false }: { poolId: string; embedded?: b
     refetchInterval: applying ? 5000 : false,
   })
   const gateways = useQuery({ queryKey: ['gateways'], queryFn: () => api.listGateways() })
+  const summaryDetailReady = Boolean(detail.data)
 
+  useEffect(() => {
+    const modelId = summaryWorkspace.selectedId
+    if (summaryWorkspace.mode !== null || section !== 'models' || !modelId || !summaryDetailReady) return
+    const frame = requestAnimationFrame(() => summaryFocus.current.get(modelId)?.focus())
+    return () => cancelAnimationFrame(frame)
+  }, [summaryWorkspace.mode, summaryWorkspace.selectedId, section, summaryDetailReady])
   useEffect(() => {
     if (summaryWorkspace.mode !== 'edit') setSummaryTarget(null)
     else if (summaryTarget?.id !== summaryWorkspace.selectedId) {
@@ -591,6 +598,10 @@ function PoolDetail({ poolId, embedded = false }: { poolId: string; embedded?: b
       <EmptyState title="Catalog entry unavailable">This model is no longer available in this pool. Return to the model list and refresh it before editing.</EmptyState>
     </div>
     const listed = model.listed && pool.visibility === 'listed' && Boolean(pool.governedAccess)
+    const servesModel = Boolean(pool.appliedModelIds?.includes(model.id)) &&
+      pool.models.some((item) => item.id === model.id) &&
+      pool.resources.some((resource) => resource.kind === 'api' &&
+        resource.name === pool.apiName && resource.createdByMosaic)
     return <>
       {detail.isError && <ErrorState error={detail.error} title="Unable to refresh pool details" />}
       <CatalogSummaryEditor key={`${pool.id}:${model.id}`}
@@ -598,8 +609,8 @@ function PoolDetail({ poolId, embedded = false }: { poolId: string; embedded?: b
         context={<EnvironmentBadge azureCloud={pool.azureCloud ?? 'commercial'}
           environment={detail.data.gatewayEnvironment ?? null} catalog={catalog.data} />}
         visibilityLabel={listed ? 'Listed' : 'Hidden'}
-        availabilityNote={!listed || !pool.resources.some((resource) => resource.kind === 'api' && resource.createdByMosaic)
-          ? 'This offering is hidden while it is unlisted or its pool is not published. Saving a summary does not publish it.'
+        availabilityNote={!listed || !servesModel
+          ? 'This offering is hidden while it is unlisted or this model is not published through its pool. Saving a summary does not publish it.'
           : undefined}
         mutationKey={POOL_DETAIL_MUTATION_KEY}
         onSave={async (summary) => {
@@ -612,7 +623,11 @@ function PoolDetail({ poolId, embedded = false }: { poolId: string; embedded?: b
           }))
           void queryClient.invalidateQueries({ queryKey: ['model-pools'] })
         }}
-        onClose={closeSummary} onSaved={() => { closeSummary(); setNotice('Catalog summary saved.') }}
+        onClose={closeSummary} onSaved={() => {
+          closeSummary()
+          if (onSummarySaved) onSummarySaved()
+          else setNotice('Catalog summary saved.')
+        }}
       />
     </>
   }
@@ -929,9 +944,11 @@ function PoolDetail({ poolId, embedded = false }: { poolId: string; embedded?: b
 }
 
 /** One pool: its models and the deployments behind them, how it routes, and how callers reach it. */
-export function PoolDetailPage({ poolId: selectedPoolId, embedded = false }: { poolId?: string; embedded?: boolean } = {}) {
+export function PoolDetailPage({ poolId: selectedPoolId, embedded = false, onSummarySaved }: {
+  poolId?: string; embedded?: boolean; onSummarySaved?: () => void
+} = {}) {
   const { poolId: routePoolId = '' } = useParams()
   const poolId = selectedPoolId ?? routePoolId
   // Keyed so moving between pools starts each with fresh state.
-  return <PoolDetail key={poolId} poolId={poolId} embedded={embedded} />
+  return <PoolDetail key={poolId} poolId={poolId} embedded={embedded} onSummarySaved={onSummarySaved} />
 }
