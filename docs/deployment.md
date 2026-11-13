@@ -189,6 +189,17 @@ and [ADR 0030](adr/0030-entra-backed-cost-centers.md).
 
 ## Hosting and cost notes
 
+`infra/main.bicep` configures the same `MOSAIC_PORTAL_URL` origin on the API and the administrator
+console. The console container writes it into public `config.js` as `portalUrl` at startup so a
+User-only caller can deliberately continue to the end-user portal. It is not an authorization
+change or an automatic redirect. The value must be an HTTPS origin without credentials, a
+non-root path, query, or fragment, and cannot be the console's own origin.
+
+Roll out this setting with the infrastructure/app-setting update and a console container restart,
+as well as the updated web image. An image-only deployment leaves an unconfigured console showing
+**Portal link unavailable** with Sign out; it never guesses the portal address. No role or
+app-registration changes are required.
+
 The console and portal containers serve `index.html` and every SPA route with
 `Cache-Control: no-cache`, `/config.js` with `no-store`, and the content-hashed files under
 `/assets/` with `public, max-age=31536000, immutable`. After a redeploy, the next page load

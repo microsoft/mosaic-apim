@@ -355,6 +355,7 @@ class Shot:
     actions: Sequence[Action] = field(default_factory=tuple)
     height: int = 900
     width: int = 1440
+    console_access: bool = False
 
 
 class CaptureError(RuntimeError):
@@ -645,6 +646,24 @@ SHOTS: list[Shot] = [
     ),
     Shot("portal-catalog-light", "portal", "/catalog", "light", "Docs search MCP", height=1040),
     Shot("portal-catalog-dark", "portal", "/catalog", "dark", "Docs search MCP", height=1040),
+    Shot(
+        "console-portal-handoff-light",
+        "console",
+        "/",
+        "light",
+        "Open end-user portal",
+        height=800,
+        console_access=True,
+    ),
+    Shot(
+        "console-portal-handoff-dark",
+        "console",
+        "/",
+        "dark",
+        "Open end-user portal",
+        height=800,
+        console_access=True,
+    ),
     # Capability galleries: light shots sit in the README's left column and dark in its right.
     Shot(
         "console-gateways",
@@ -1642,6 +1661,15 @@ def _vite(app_dir: Path, port: int, preview: bool = False) -> list[str]:
     return [node, str(vite), *mode, "--port", str(port), "--strictPort", "--host", "127.0.0.1"]
 
 
+def _console_access_vite(port: int) -> list[str]:
+    command = _vite(REPO_ROOT / "apps" / "web", port)
+    return [
+        *command,
+        "--config",
+        str(REPO_ROOT / "scripts" / "screenshots" / "console-access" / "vite.config.mjs"),
+    ]
+
+
 def _ensure_chromium() -> None:
     """Install Playwright's Chromium build if it is missing; a no-op once it is present."""
 
@@ -1661,13 +1689,24 @@ def _stale_images(output: Path) -> list[Path]:
     return sorted(path for path in output.glob("*.png") if path.name not in names)
 
 
-def _config_script(api_port: int) -> str:
-    return (
-        "window.__MOSAIC_CONFIG__ = {"
-        f"apiBaseUrl: 'http://127.0.0.1:{api_port}', authMode: 'local', "
-        "entraTenantId: 'organizations', entraClientId: 'local-development', "
-        "entraApiScope: 'api://local-development/access_as_user'};"
-    )
+def _config_script(
+    api_port: int, *, portal_url: str | None = None, console_access: bool = False
+) -> str:
+    config = {
+        "apiBaseUrl": f"http://127.0.0.1:{api_port}",
+        "authMode": "entra" if console_access else "local",
+        "entraTenantId": "organizations",
+        "entraClientId": "local-development",
+        "entraApiScope": "api://local-development/access_as_user",
+    }
+    if portal_url is not None:
+        config["portalUrl"] = portal_url
+    return f"window.__MOSAIC_CONFIG__ = {json.dumps(config)};"
+
+
+def _config_route(script: str) -> Callable[[Route], None]:
+    # Playwright passes Request to a second positional parameter, even when it has a default.
+    return lambda route: route.fulfill(content_type="application/javascript", body=script)
 
 
 def _blur(
@@ -2453,6 +2492,63 @@ def _check_console_reflow(page: Page) -> None:
     print("verified both themes, all rail combinations, width recovery, reflow, and control lines")
 
 
+def _check_console_handoff(page: Page, shot: Shot, api_port: int, portal_url: str) -> None:
+    link = page.get_by_role("link", name="Open end-user portal", exact=True)
+    if link.get_attribute("href") != portal_url or link.get_attribute("target") is not None:
+        raise CaptureError(f"{shot.name}: expected an explicit same-tab portal link")
+    if (
+        page.get_by_role("navigation").count()
+        or page.get_by_text("Unexpected administrator content", exact=True).count()
+    ):
+        raise CaptureError(f"{shot.name}: the User-only fixture exposed administrator content")
+    page.keyboard.press("Tab")
+    if not link.evaluate("(element) => element === document.activeElement"):
+        raise CaptureError(f"{shot.name}: the portal link is not first in keyboard order")
+    page.keyboard.press("Tab")
+    sign_out = page.get_by_role("button", name="Sign out", exact=True)
+    if not sign_out.evaluate("(element) => element === document.activeElement"):
+        raise CaptureError(f"{shot.name}: Sign out is not keyboard reachable after the portal")
+    for width in sorted({shot.width, 390, 320}, reverse=True):
+        page.set_viewport_size({"width": width, "height": 900})
+        _assert_no_document_overflow(page, f"{shot.name} at {width}px", expected_width=width)
+        layout = page.evaluate(
+            """() => {
+              const rect = selector => document.querySelector(selector).getBoundingClientRect()
+              const explanation = rect('.portal-handoff-explanation')
+              const destination = rect('.portal-handoff-destination')
+              const account = rect('.portal-handoff-account')
+              const link = document.querySelector('.portal-handoff-panel a')
+              return {
+                columns: destination.left >= explanation.right,
+                stacked: destination.top >= explanation.bottom && account.top >= destination.bottom,
+                actionFits: link.scrollWidth <= link.clientWidth,
+              }
+            }"""
+        )
+        if not layout["actionFits"] or not layout["columns" if width > 720 else "stacked"]:
+            raise CaptureError(
+                f"{shot.name}: invalid destination-panel layout at {width}px: {layout}"
+            )
+    for setting, message in (
+        (None, "The portal address is not configured."),
+        ("javascript:alert(1)", "This deployment's portal address is invalid."),
+    ):
+        page.context.route(
+            "**/config.js",
+            _config_route(_config_script(api_port, portal_url=setting, console_access=True)),
+        )
+        page.reload()
+        page.get_by_text("Portal link unavailable", exact=True).wait_for()
+        page.get_by_text(message, exact=False).wait_for()
+        if link.count():
+            raise CaptureError(f"{shot.name}: invalid configuration still offers a portal link")
+        _assert_no_document_overflow(page, f"{shot.name}: fallback at 320px", expected_width=320)
+        sign_out.press("Enter")
+        if page.locator("body").get_attribute("data-screenshot-signed-out") != "true":
+            raise CaptureError(f"{shot.name}: fallback Sign out did not reach the MSAL fixture")
+    print(f"verified {shot.name}: link, role boundary, keyboard, 320px reflow, and URL fallbacks")
+
+
 def capture(
     shots: Sequence[Shot],
     *,
@@ -2462,6 +2558,7 @@ def capture(
     logs: Path,
     headed: bool = False,
     check_navigation: bool = False,
+    console_access_url: str | None = None,
 ) -> list[Path]:
     output.mkdir(parents=True, exist_ok=True)
     literals = sorted(
@@ -2493,15 +2590,30 @@ def capture(
                     context.add_init_script(f"localStorage.setItem('mosaic-theme', '{shot.theme}')")
                     context.route(
                         "**/config.js",
-                        lambda route: route.fulfill(
-                            content_type="application/javascript", body=_config_script(api_port)
+                        _config_route(
+                            _config_script(
+                                api_port,
+                                portal_url=urls["portal"],
+                                console_access=shot.console_access,
+                            )
                         ),
                     )
+                    if shot.console_access:
+                        if console_access_url is None:
+                            raise CaptureError("Console-access shots require the isolated fixture")
+                        context.route(
+                            "**/api/v1/console/me",
+                            lambda route: route.fulfill(json={"roles": ["User"], "isAdmin": False}),
+                        )
                     page = context.new_page()
                     page.set_default_timeout(45_000)
                     page.set_default_navigation_timeout(60_000)
-                    written.append(_capture_one(page, shot, urls[shot.app], literals, output, logs))
-                    if check_navigation and shot.app not in verified:
+                    url = console_access_url if shot.console_access else urls[shot.app]
+                    assert url is not None
+                    written.append(_capture_one(page, shot, url, literals, output, logs))
+                    if check_navigation and shot.console_access:
+                        _check_console_handoff(page, shot, api_port, urls["portal"])
+                    if check_navigation and not shot.console_access and shot.app not in verified:
                         verified.add(shot.app)
                         _check_navigation(page, shot.app)
                     if (
@@ -2537,6 +2649,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--api-port", type=int, default=18000)
     parser.add_argument("--console-port", type=int, default=15173)
     parser.add_argument("--portal-port", type=int, default=15174)
+    parser.add_argument("--console-access-port", type=int, default=15175)
     parser.add_argument("--headed", action="store_true", help="Show the browser while capturing")
     parser.add_argument(
         "--preview",
@@ -2562,10 +2675,13 @@ def main(argv: list[str] | None = None) -> int:
     if unknown:
         parser.error(f"unknown shots: {', '.join(sorted(unknown))}")
     shots = [shot for shot in SHOTS if not args.only or shot.name in args.only]
+    needs_console_access = any(shot.console_access for shot in shots)
     if not args.reuse_servers:
         for port in (args.api_port, args.console_port, args.portal_port):
             if not _port_free(port):
                 parser.error(f"port {port} is in use; pick another with the --*-port options")
+    if needs_console_access and not _port_free(args.console_access_port):
+        parser.error("--console-access-port is in use; pick another fixture port")
 
     # Keep scratch data in the project's ignored cache, never in a shared system temp folder.
     logs = (
@@ -2604,10 +2720,25 @@ def main(argv: list[str] | None = None) -> int:
                         "api", api, REPO_ROOT, f"http://127.0.0.1:{args.api_port}/healthz", logs
                     )
                 )
-                for app, (app_dir, port) in apps.items():
-                    stack.enter_context(
-                        _running(app, _vite(app_dir, port, args.preview), app_dir, urls[app], logs)
+                if any(not shot.console_access for shot in shots):
+                    for app, (app_dir, port) in apps.items():
+                        stack.enter_context(
+                            _running(
+                                app, _vite(app_dir, port, args.preview), app_dir, urls[app], logs
+                            )
+                        )
+            console_access_url = None
+            if needs_console_access:
+                console_access_url = f"http://127.0.0.1:{args.console_access_port}"
+                stack.enter_context(
+                    _running(
+                        "console-access",
+                        _console_access_vite(args.console_access_port),
+                        REPO_ROOT,
+                        console_access_url,
+                        logs,
                     )
+                )
             capture(
                 shots,
                 output=args.output,
@@ -2616,6 +2747,7 @@ def main(argv: list[str] | None = None) -> int:
                 logs=logs,
                 headed=args.headed,
                 check_navigation=args.check_navigation,
+                console_access_url=console_access_url,
             )
     except Exception:
         print(f"Screenshot capture failed. Server logs and debug captures: {logs}", file=sys.stderr)

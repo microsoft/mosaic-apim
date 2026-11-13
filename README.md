@@ -128,6 +128,10 @@ including membership discovery and requests, administrator controls, and incompl
 rather than treating approval as usable access.
 [Screenshot maintenance](docs/screenshots.md) explains capture, redaction, and the shot inventory.
 
+The gallery also shows the [User-only portal handoff](docs/gallery.md#portal-handoff-for-end-users):
+an explanation and a deliberate portal action for someone who opened the administrator console
+with the User role.
+
 ## Important boundaries
 
 APIM's native limits are not the same as the analytics figures. Usage is rolled up from gateway
