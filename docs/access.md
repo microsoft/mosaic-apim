@@ -103,6 +103,7 @@ Administrators can explicitly reveal/copy an applied grant's key. Portal clients
 | --- | --- | --- |
 | GET | `/me/entitlements` | The caller's own direct grants and deployment state; no keys |
 | GET | `/me/entitlements/{id}/connection` | Endpoint, operations, runtime audience/scope, model client ID, limits, cost center, and the `x-mosaic-cost-center` header |
+| GET | `/me/entitlements/{id}/mcp-connection` | MCP server URL, transport, authentication, call limits, cost center, and runtime state |
 | POST | `/me/entitlements/{id}/keys` | Create the grant's key; 201 |
 | POST | `/me/entitlements/{id}/keys/rotate` | Regenerate one slot; body `{"slot":"primary"}` or `{"slot":"secondary"}` |
 | DELETE | `/me/entitlements/{id}/keys` | Delete the grant's key |
@@ -131,6 +132,37 @@ When an apply fails, the `/me` and `/portal` routes report it through `runtime.s
 return `runtime.error` as null, even to an administrator. That field holds API Management's raw
 error, which names MOSAIC's internal resources and is shared by every grant on the model, so only
 the administrator routes return it.
+
+Caller grant and connection responses use explicit field allowlists, not the administrator's
+record shapes. Limits retain their quantities, periods and prompt-estimation settings but omit
+`counterKeyExpression`. Bindings omit `gatewayId`, `counterKeyExpression`, `source` and `boundAt`;
+grant `notes` and the administrator's `poolName` are not returned. The opaque `attributionKey`
+and per-member flag remain. APIM product/subscription display names in a binding are returned
+only when the legacy **Usage attribution** fallback displays them; otherwise both are null.
+The internal binding is unchanged, so usage attribution, quotas and cost-center accounting do
+not lose their gateway/subscription links.
+
+Connection publication/gateway/pool/MCP IDs remain scoped references for connection verification
+and existing Advanced details. `runtime.subscriptionName` and key-result `subscriptionName`
+remain key-association metadata: the portal checks that a reveal describes the requested grant,
+slot and subscription, and discards a key when its connection changes. Runtime endpoints,
+operation paths, MCP resource-metadata URLs, Entra tenant/client/scope values, and cost-center
+headers remain usable connection inputs, not ARM management locators. Generated clients should
+use the caller response schemas rather than administrator enforcement models.
+
+Caller grant, connection and key failures keep their HTTP status and MOSAIC `code`, `message`,
+`details` envelope. Details contain only approved, locally authored recovery reasons and valid
+numeric upstream status/retry information when available, not Azure's raw text, upstream codes,
+ARM URLs/resource paths, permission scopes, or policy expressions. Caller authorization,
+missing grants, conflicts, validation and upstream failures remain distinct; `gateway_forbidden`
+means MOSAIC's gateway permissions need administrator review, not that the caller simply needs
+another role. Existing retry/correlation and no-store behavior is preserved. Administrator routes
+keep their management diagnostics, but sensitive credential responses never appear in errors or
+logs for either role.
+
+Portal access-request responses also project explicit caller fields. They retain readable
+justification, decision notes, states and resource/cost-center routing, but do not inherit stored
+eligibility-group snapshots, approval provenance, or administrator-only requester snapshots.
 
 In the portal, each model grant on **My access** has a **Connection details** button. The
 connection loads only when it is expanded, and it shows the endpoint, full operation URLs,

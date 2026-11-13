@@ -25,7 +25,6 @@ export const directGrant: Entitlement = {
   enabled: true,
   enforcement: {
     tokens: {
-      counterKeyExpression: '@(context.Subscription?.Key)',
       tokensPerMinute: 5_000,
       tokenQuota: null,
       tokenQuotaPeriod: null,
@@ -34,10 +33,8 @@ export const directGrant: Entitlement = {
     requests: null,
   },
   binding: {
-    gatewayId: 'gateway_1',
     apimProductName: null,
     apimSubscriptionName: 'grant-subscription',
-    source: 'orchestrated',
   },
   runtime: {
     publicationId: 'publication_1',
@@ -47,7 +44,6 @@ export const directGrant: Entitlement = {
     appliedAt: timestamp,
     error: null,
   },
-  notes: null,
   createdAt: timestamp,
   updatedAt: timestamp,
 }
@@ -110,7 +106,6 @@ export const mcpGrant: Entitlement = {
   enforcement: {
     tokens: null,
     requests: {
-      counterKeyExpression: 'mosaic:mcp:grant',
       calls: 120,
       renewalPeriodSeconds: 60,
       callQuota: 10_000,
@@ -278,7 +273,6 @@ export const connection: ModelConnection = {
     { name: 'responses', method: 'POST', path: '/openai/responses' },
   ],
   publicationLimits: {
-    counterKeyExpression: 'publication-counter',
     tokensPerMinute: 20_000,
     tokenQuota: 1_000_000,
     tokenQuotaPeriod: 'Monthly',
@@ -318,7 +312,6 @@ export const claudeConnection: ModelConnection = {
   grantLimits: {
     tokens: null,
     requests: {
-      counterKeyExpression: '@(context.Subscription?.Key)',
       calls: 60,
       renewalPeriodSeconds: 60,
       callQuota: null,
@@ -377,7 +370,6 @@ export const poolConnection: ModelConnection = {
   apiShape: 'anthropicMessages',
   operations: [{ name: 'messages', method: 'POST', path: '/anthropic/v1/messages' }],
   publicationLimits: {
-    counterKeyExpression: 'pool_model_opus',
     tokensPerMinute: 400_000,
     tokenQuota: null,
     tokenQuotaPeriod: null,

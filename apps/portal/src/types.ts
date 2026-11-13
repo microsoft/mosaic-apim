@@ -236,7 +236,6 @@ export interface AccessRequest {
 }
 
 export interface TokenEnforcement {
-  counterKeyExpression: string
   tokensPerMinute: number | null
   tokenQuota: number | null
   tokenQuotaPeriod: QuotaPeriod | null
@@ -244,7 +243,6 @@ export interface TokenEnforcement {
 }
 
 export interface RequestEnforcement {
-  counterKeyExpression: string
   calls: number | null
   renewalPeriodSeconds: number | null
   callQuota: number | null
@@ -257,12 +255,10 @@ export interface EntitlementEnforcement {
 }
 
 export interface EntitlementBinding {
-  gatewayId: string
   apimProductName: string | null
   apimSubscriptionName: string | null
   attributionKey?: string | null
   attributionPerMember?: boolean
-  source: 'inferred' | 'manual' | 'orchestrated' | null
 }
 
 export interface ModelAccessSettings {
@@ -308,7 +304,6 @@ export interface Entitlement {
   costCenterId?: string | null
   revocation?: GrantRevocation | null
   runtime?: EntitlementRuntime | null
-  notes: string | null
   createdAt: string
   updatedAt: string
 }

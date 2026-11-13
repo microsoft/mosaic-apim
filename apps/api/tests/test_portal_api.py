@@ -9,12 +9,14 @@ import json
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
 from mosaic_api.auth import LocalAuthenticator
 from mosaic_api.config import Settings
 from mosaic_api.domain import (
+    AccessRequest,
     AccessRequestCreate,
     AccessRequestState,
     CatalogVisibility,
@@ -774,6 +776,83 @@ def test_only_the_portal_responses_gain_a_resource_display_name(settings: Settin
     # Additive: the administrator's shapes are unchanged, and the portal's new field is optional.
     for unchanged in ("AccessRequest", "ResolvedEntitlement"):
         assert "resourceDisplayName" not in schemas[unchanged]["properties"], unchanged
-    for portal in ("PortalAccessRequest", "PortalResolvedEntitlement"):
+    for portal in ("PortalAccessRequest", "PortalResolvedEntitlementView"):
         assert "resourceDisplayName" in schemas[portal]["properties"], portal
         assert "resourceDisplayName" not in schemas[portal]["required"], portal
+
+
+async def test_portal_request_projection_does_not_inherit_admin_snapshots(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RequestWithSnapshots(AccessRequest):
+        requester_name: str | None = None
+        requester_username: str | None = None
+
+    client = _portal_client(settings, roles=["User"])
+    try:
+        state = client.app.state
+        await state.gateway_repository.create_gateway(_gateway(), _audit())
+        await state.gateway_repository.save_model_api(
+            ModelApi(
+                id="api-snapshot", tenant_id=TENANT, gateway_id="gateway_1",
+                api_name="api-snapshot", display_name="Requested model", path="api-snapshot",
+                imported_from_snapshot_id="snapshot",
+            ),
+            _audit(),
+        )
+        request = RequestWithSnapshots(
+            id="request-with-snapshots", tenant_id=TENANT, requester_object_id="local-admin",
+            resource=EntitlementResource(kind="modelApi", id="api-snapshot"),
+            justification="Needed for a fictional application.",
+            requester_name="Fictional Requester",
+            requester_username="fictional-requester@example.invalid",
+            cost_center_group_ids=["internal-group-snapshot"],
+            approval_provenance={"internalPolicy": "private-approval-context"},
+        )
+        await state.entitlement_repository.create_access_request(request, _audit())
+        monkeypatch.setattr(
+            state.entitlement_service, "create_catalog_access_request",
+            AsyncMock(return_value=request),
+        )
+        monkeypatch.setattr(
+            state.entitlement_service, "withdraw_access_request",
+            AsyncMock(return_value=request.model_copy(update={"state": "withdrawn"})),
+        )
+        created = client.post(
+            "/api/v1/portal/access-requests",
+            json={"resource": {"kind": "modelApi", "id": "api-snapshot"}},
+        )
+        assert created.status_code == 201, created.text
+        listed = client.get("/api/v1/portal/access-requests")
+        assert listed.status_code == 200, listed.text
+        withdrawn = client.post(
+            f"/api/v1/portal/access-requests/{request.id}/withdraw"
+        )
+        assert withdrawn.status_code == 200, withdrawn.text
+        for response, body in (
+            (created, created.json()), (listed, listed.json()[0]), (withdrawn, withdrawn.json()),
+        ):
+            assert set(body) == {
+                "id", "tenantId", "entityType", "createdAt", "updatedAt", "requesterObjectId",
+                "requesterPrincipalId", "resource", "costCenterId", "justification",
+                "requestedEnvironment", "resourceSnapshot", "state", "decidedByObjectId",
+                "decidedAt", "decisionNote", "grantedEntitlementId", "resourceDisplayName",
+                "resourceSummary", "model", "costCenter",
+            }
+            assert body["id"] == request.id
+            assert body["requesterObjectId"] == request.requester_object_id
+            assert body["resourceDisplayName"] == "Requested model"
+            assert body["justification"] == request.justification
+            for private in (
+                "requesterName", "requesterUsername", "costCenterGroupIds", "approvalProvenance",
+                "Fictional Requester", "fictional-requester@example.invalid",
+                "internal-group-snapshot", "private-approval-context",
+            ):
+                assert private not in response.text
+        assert withdrawn.json()["state"] == "withdrawn"
+        stored = await state.entitlement_repository.get_access_request(TENANT, request.id)
+        assert isinstance(stored, RequestWithSnapshots)
+        assert stored.requester_name == request.requester_name
+        assert stored.approval_provenance == request.approval_provenance
+    finally:
+        client.__exit__(None, None, None)
