@@ -1,5 +1,6 @@
 window.__MOSAIC_CONFIG__ = {
   apiBaseUrl: '${MOSAIC_API_BASE_URL}',
+  portalUrl: '${MOSAIC_PORTAL_URL}',
   authMode: 'entra',
   entraTenantId: '${MOSAIC_ENTRA_TENANT_ID}',
   entraClientId: '${MOSAIC_ENTRA_CLIENT_ID}',
