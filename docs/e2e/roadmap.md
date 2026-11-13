@@ -150,14 +150,20 @@ The test fix is for web tests that G11 added and that failed intermittently. Abo
 Fluent dialog opens, the rest of the page becomes `aria-hidden`, and it stays hidden for about
 250 ms after the dialog closes. Role queries skip hidden content, so the tests failed whenever
 they queried the page inside one of those windows. #33 changes only the tests. It left two
-follow-ups, neither of which blocks this plan. Both are filed as
+follow-ups, neither of which blocks this plan. Both were filed as
 [#48](https://github.com/microsoft/mosaic-apim/issues/48):
 
-- "surfaces the conflict message when removing a publication that still owns resources" would
-  still pass if the dialog closed on refusal, because it can query a dialog that's no longer in
+- "surfaces the conflict message when removing a publication that still owns resources" could
+  still pass if the dialog closed on refusal, because it queried a dialog that's no longer in
   the page.
-- The web app's Vitest setup has globals turned off, so Testing Library never sets
-  `IS_REACT_ACT_ENVIRONMENT`, and `act()` warnings can't appear.
+- With Vitest globals turned off, Testing Library did not set `IS_REACT_ACT_ENVIRONMENT`,
+  so `act()` warnings could not appear.
+
+Both are now addressed: the refusal test re-queries the named dialog from the live document
+and checks it is visible, and the setup explicitly enables act diagnostics without changing
+cleanup or the Happy DOM/Fluent focus and animation accommodations. Enabling diagnostics exposed
+eight warnings in Identity's guarded-section navigation tests; those interactions now await
+user events within their existing act scopes. The warnings are not filtered or suppressed.
 
 Before those five merged, #25, G13 (both commits), G9, G12, G10 and G11 were merged onto `main`
 locally, in that order, and combined cleanly except for two test files. G10 merged last and
