@@ -368,6 +368,7 @@ export function EntitlementsPage() {
     queryFn: () => api.listEntitlements(costCenterFilter === 'all' ? undefined : { costCenter: costCenterFilter }),
   })
   const principals = useQuery({ queryKey: ['principals'], queryFn: () => api.listPrincipals() })
+  const requesterPrincipals = principals.isSuccess ? principals.data : undefined
   const groups = useQuery({ queryKey: ['groups'], queryFn: () => api.listGroups() })
   const modelApis = useQuery({ queryKey: ['model-apis'], queryFn: () => api.listModelApis() })
   const mcpServers = useQuery({ queryKey: ['mcp-servers'], queryFn: () => api.listMcpServers() })
@@ -703,7 +704,7 @@ export function EntitlementsPage() {
   }
 
   function approvalContext(accessRequest: AccessRequest): ApprovalContext {
-    const principal = requestingPrincipal(accessRequest, principals.data)
+    const principal = requestingPrincipal(accessRequest, requesterPrincipals)
     const subject: EntitlementSubject = {
       kind: principal ? subjectKindForPrincipal(principal.kind) : 'user',
       id: principal?.id ?? accessRequest.requesterObjectId,
@@ -712,7 +713,7 @@ export function EntitlementsPage() {
     const publication = publicationFor(accessRequest)
     return {
       accessRequest,
-      requester: requesterDisplay(accessRequest, principals.data),
+      requester: requesterDisplay(accessRequest, requesterPrincipals),
       resourceLabel: requestResourceLabel(accessRequest, resourceLabel(resource)),
       publication,
       reviewable: publishedModels.find((item) => item.id === publication?.id),
@@ -872,9 +873,9 @@ export function EntitlementsPage() {
   const selectedPool = selectedResource ? poolFor(selectedResource) : editingGrant ? poolFor(editingGrant.resource) : undefined
   const connectionGrant = rows.find((entitlement) => entitlement.id === connectionGrantId)
 
-  if (activeSection === 'requests' && bulkStage === 'select') return <BulkRequestSelection requests={pendingRequests.data ?? []} principals={principals.data}
+  if (activeSection === 'requests' && bulkStage === 'select') return <BulkRequestSelection requests={pendingRequests.data ?? []} principals={requesterPrincipals}
     onBack={() => setBulkStage(null)} onReview={ids => { setBulkIds(ids); setBulkStage('review') }} />
-  if (activeSection === 'requests' && bulkStage === 'review') return <BulkApprovalWorkspace requestIds={bulkIds} principals={principals.data} principalsPending={principals.isPending} costCenters={costCenters.data ?? []}
+  if (activeSection === 'requests' && bulkStage === 'review') return <BulkApprovalWorkspace requestIds={bulkIds} principals={requesterPrincipals} principalsPending={principals.isPending} costCenters={costCenters.data ?? []}
     onBack={() => setBulkStage(null)} onComplete={() => {
       void queryClient.invalidateQueries({ queryKey: ['access-requests'] })
       void queryClient.invalidateQueries({ queryKey: ['request-counts'] })
@@ -1416,7 +1417,7 @@ export function EntitlementsPage() {
               ? <><ErrorState error={selectedRequestQuery.error} /><Button onClick={() => void selectedRequestQuery.refetch()}>Retry selected request</Button></>
               : <EmptyState title="Request unavailable">This exact request was removed or is inaccessible. <Button onClick={() => selectQueueRecord(null)}>Back to list</Button></EmptyState>}
           renderListItem={(item) => {
-            const requester = requesterDisplay(item.request, principals.data)
+            const requester = requesterDisplay(item.request, requesterPrincipals)
             return <div className={styles.listSummary}>
             <Text weight="semibold"><RequesterName objectId={item.request.requesterObjectId} name={requester.displayName} retryButton={false} /></Text>
             {item.requestKind === 'resource' && requester.username && requester.username !== requester.displayName &&
@@ -1468,7 +1469,7 @@ export function EntitlementsPage() {
             <Title3 as="h3">{requestResourceLabel(accessRequest, resourceLabel(accessRequest.resource))}</Title3>
             <dl className={styles.detailList}>
               <div><dt>Requester</dt><dd className={styles.cellStack}>
-                <AccessRequestRequester requester={requesterDisplay(accessRequest, principals.data)} registrationPending={principals.isPending} />
+                <AccessRequestRequester requester={requesterDisplay(accessRequest, requesterPrincipals)} registrationPending={principals.isPending} />
               </dd></div>
               <div><dt>Cost center</dt><dd>{accessRequest.costCenter ? `${accessRequest.costCenter.name} (${accessRequest.costCenter.code})` : 'Subject default'}</dd></div>
               <div><dt>Requested environment</dt><dd><EnvironmentBadge azureCloud={accessRequest.resourceSnapshot?.azureCloud ?? 'commercial'} environment={accessRequest.requestedEnvironment ?? null} catalog={environmentCatalog.data} /></dd></div>
@@ -1487,7 +1488,7 @@ export function EntitlementsPage() {
             {accessRequest.resourceSummary?.available === false && <Text>No longer available</Text>}
             {accessRequest.grantedEntitlementId && <Button onClick={() => showGrant(accessRequest.grantedEntitlementId!)}>Go to grant</Button>}
                           <RowActions
-                            label={`More actions for request from ${requesterDisplay(accessRequest, principals.data).label}`}
+                            label={`More actions for request from ${requesterDisplay(accessRequest, requesterPrincipals).label}`}
                             primary={<Button
                               appearance="primary"
                               size="small"
@@ -1754,7 +1755,7 @@ export function EntitlementsPage() {
         <ApproveAccessRequestDialog
           key={approving.accessRequest.id}
           accessRequest={approving.accessRequest}
-          requester={approving.requester}
+          requester={requesterDisplay(approving.accessRequest, requesterPrincipals)}
           resourceLabel={approving.resourceLabel}
           costCenters={costCenters.data ?? []}
           environmentCatalog={environmentCatalog.data}

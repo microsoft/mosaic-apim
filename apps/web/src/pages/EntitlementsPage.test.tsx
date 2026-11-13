@@ -9,6 +9,7 @@ import { GOVERNED_COUNTER_KEY, callRateError, describeLimits } from '../entitlem
 import { EntitlementsPage } from './EntitlementsPage'
 import { accessPlan, connectionInfo, directGrant, modelPublication, publishedModelApi } from '../test/model-access'
 import { ApiError } from '../api'
+import type { ApprovalPreview } from '../admin-types'
 import { anthropicPool, governedAnthropicPool } from '../test/pool-fixtures'
 import { costCenterCreationRequest, costCenterMembershipRequest, readyCostCenter } from '../test/cost-center-fixtures'
 
@@ -59,6 +60,7 @@ const api = {
   listCostCenterMembershipRequests: vi.fn(), getCostCenterMembershipRequest: vi.fn(),
   approveCostCenterMembershipRequest: vi.fn(), denyCostCenterMembershipRequest: vi.fn(), resumeCostCenterMembershipRequest: vi.fn(),
   getCostCenter: vi.fn(), getDirectoryObject: vi.fn(),
+  previewBulkApprovals: vi.fn(), getApprovalRecommendations: vi.fn(),
 }
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
@@ -123,6 +125,7 @@ describe('Entitlements workbench', () => {
     api.createEntitlement.mockResolvedValue({ ...entitlement, id: 'saved_grant' })
     api.updateEntitlement.mockResolvedValue(entitlement)
     api.approveAccessRequest.mockResolvedValue({ ...request, state: 'approved' })
+    api.getApprovalRecommendations.mockResolvedValue([])
   })
 
   it('deep-links to membership review independently from resource and creation requests', async () => {
@@ -703,6 +706,52 @@ describe('Entitlements workbench', () => {
     expect(within(snapshot).getByText('jordan@example.invalid')).toBeVisible()
     expect(within(detail).getByRole('button', { name: 'Approve' })).toBeDisabled()
     expect(api.getDirectoryObject).not.toHaveBeenCalled()
+  })
+
+  it.each(['detail', 'single review', 'bulk review'])('discards cached registry evidence after a failed refetch in %s', async (view) => {
+    const user = userEvent.setup()
+    api.listPrincipals.mockResolvedValueOnce([]).mockRejectedValue(new Error('Registry refetch failed'))
+    const requested: AccessRequest = {
+      ...request, requesterName: 'Jordan Rowan', requesterUsername: 'jordan@example.invalid',
+      resourceSnapshot: { displayName: 'Fictional model', gatewayId: null, gatewayName: null },
+    }
+    api.listAccessRequests.mockResolvedValue([requested])
+    const preview: ApprovalPreview = {
+      request: requested, blockers: [], revision: { contextRevision: 'request-context' },
+      production: false, mutationLocked: false, limitsSource: 'unrestricted',
+      requiresPlanApply: true, effectiveEnforcement: null, currentEnvironment: null,
+    }
+    api.previewBulkApprovals.mockResolvedValue({ items: [preview], unavailable: [] })
+    const { queryClient } = renderPage('/entitlements?tab=requests&selected=request_1')
+    let detail = await screen.findByRole('region', { name: 'Selected access request' })
+    expect(await within(detail).findByText('Label for new registration')).toBeVisible()
+    if (view === 'single review') {
+      detail = await openApproval(user)
+      expect(within(detail).getByText('Label for new registration')).toBeVisible()
+    } else if (view === 'bulk review') {
+      await user.click(screen.getByRole('button', { name: 'Bulk resource approval review' }))
+      await user.click(await screen.findByRole('checkbox', { name: 'Jordan Rowan · Fictional model' }))
+      await user.click(screen.getByRole('button', { name: 'Review 1 requests' }))
+      detail = await screen.findByRole('region', { name: 'Review bulk approvals' })
+      expect(await within(detail).findByText('Label for new registration')).toBeVisible()
+    }
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['principals'], exact: true })
+    })
+    expect(queryClient.getQueryState(['principals'])?.status).toBe('error')
+    expect(queryClient.getQueryData(['principals'])).toEqual([])
+    expect(await within(detail).findByText('MOSAIC registration status unavailable.')).toBeVisible()
+    expect(within(detail).queryByText('Label for new registration')).not.toBeInTheDocument()
+    expect(within(detail).queryByText(/Not registered in MOSAIC/)).not.toBeInTheDocument()
+    const snapshot = within(detail).getByRole('region', { name: 'Sign-in identity at request time' })
+    expect(within(snapshot).getByText('Jordan Rowan')).toBeVisible()
+    expect(within(snapshot).getByText('jordan@example.invalid')).toBeVisible()
+    if (view === 'detail') {
+      expect(screen.getByText('Registry refetch failed')).toBeVisible()
+      expect(within(detail).getByRole('button', { name: 'Approve' })).toBeDisabled()
+    }
+    expect(api.getDirectoryObject).not.toHaveBeenCalled()
+    expect(api.approveAccessRequest).not.toHaveBeenCalled()
   })
 
   it('does not fabricate requester names when principals fail', async () => {

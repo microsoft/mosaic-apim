@@ -41,7 +41,7 @@ export function AccessRequestRequester({ requester, showRegistrationEffect = fal
       {capturedName && <Text className={styles.primaryCell}><bdi>{capturedName}</bdi></Text>}
       {username && username !== capturedName && !usernameIsLabel &&
         <Text><bdi>{username}</bdi></Text>}
-      {!capturedName && usernameIsLabel &&
+      {username && username !== capturedName && usernameIsLabel &&
         <Text size={200}>The captured username is the label above.</Text>}
       {identity}
     </section> : <>

@@ -229,6 +229,18 @@ describe('ApproveAccessRequestDialog', () => {
     expect(within(editor).queryByText(/Approving registers/)).not.toBeInTheDocument()
   })
 
+  it('retains captured username provenance when a distinct captured name accompanies the username label', async () => {
+    renderDialog({ requester: {
+      label: 'jordan@example.invalid', savedLabel: 'jordan@example.invalid', registered: true,
+      capturedName: 'Jordan Rowan', username: 'jordan@example.invalid', objectId: 'user-object-1',
+    } })
+    const editor = await screen.findByRole('region', { name: 'Approve access request' })
+    const snapshot = within(editor).getByRole('region', { name: 'Sign-in identity at request time' })
+    expect(within(snapshot).getByText('Jordan Rowan')).toBeVisible()
+    expect(within(snapshot).getByText('The captured username is the label above.')).toBeVisible()
+    expect(within(editor).getAllByText('jordan@example.invalid')).toHaveLength(1)
+  })
+
   it('does not claim new registration when snapshot metadata has no current registry evidence', async () => {
     renderDialog({ requester: requesterDisplay({
       requesterObjectId: 'user-object-1', requesterPrincipalId: 'known-principal',
