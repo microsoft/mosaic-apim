@@ -13,6 +13,15 @@ and complete-group-read results are simulated, not evidence of live Graph connec
 This is a screenshot-only fixture arrangement: normal local-authentication deployments disable
 Graph lookup and complete group checks.
 
+The User-only console handoff shots render the real access gate and theme in the isolated
+`scripts/screenshots/console-access` fixture. Only that tooling aliases MSAL to the fictional demo
+user and intercepts the role check; neither product build gains a preview route or authentication
+bypass. These shots demonstrate the handoff layout, not live Entra sign-in or portal authorization.
+The fixture starts only when its shots are selected, on `--console-access-port` (default 15175),
+and uses source components even with `--preview`. A handoff-only capture does not need the normal
+console/portal dev servers or require their ports to be free, but still starts the fictional demo
+API and checks its port and the isolated fixture port.
+
 The fictional estate uses one shared fake Graph directory for lookup, group creation, verification,
 and direct membership operations. Custom cost centers get dedicated verified Entra groups through
 the normal services, not MOSAIC-local shadow rosters. The fixture explicitly simulates group-create
@@ -94,6 +103,17 @@ python -m scripts.screenshots.capture
 | `--check-navigation` | Also verify all four administrator rail combinations in both themes, full width recovery, single-line controls and document reflow, every Pool section and Pricing at exactly 1440px document width with local table scrolling and `scrollIntoView`, mobile focus/inert behavior, workspace drafts and section-change discard decisions, forced colors, usage-first portal landing, portal primary/section rail width recovery, expanded/compact appearance controls, unchanged portal list geometry, and drawer/credential teardown against the fictional estate. For each captured portal theme, check resource, request, and cost-center pages at desktop/mobile widths, glass chrome, opaque panels/drawers, panel spacing, and reduced-transparency/forced-colors/unsupported-blur fallbacks |
 | `--reuse-servers` | Use a demo API and apps that are already running instead of starting them |
 | `--api-port`, `--console-port`, `--portal-port` | Change the ports, which default to 18000, 15173, and 15174 |
+| `--console-access-port` | Change the isolated User-only handoff fixture's port (default 15175). It starts when handoff shots are selected, including with `--reuse-servers`; choose an unused port |
+
+With `--check-navigation`, handoff shots also verify the configured same-tab link, absence of
+administrator content, keyboard order, 320px reflow and action fit, and missing/invalid-address
+recovery with Sign out. These checks use the isolated fictional fixture, not a live Entra session.
+
+The focused port-validation regression checks do not start browsers or servers:
+
+```powershell
+uv run --with "playwright>=1.58,<2" python -m pytest apps\web\tests\test_console_handoff_capture.py
+```
 
 If `uv` isn't on your `PATH`, run it as `python -m uv`. On a network that can't reach PyPI's file
 host, point uv at a mirror for the run and leave the lock file alone:
@@ -339,6 +359,7 @@ to include both the daily trend and the complete last-24-hours chart.
 | Shot | App | Route and state | Theme | Gallery entry |
 | --- | --- | --- | --- | --- |
 | `console-dashboard-light`, `console-dashboard-dark` | Console | `/dashboard` | Both | Light and dark: console overview |
+| `console-portal-handoff-light`, `console-portal-handoff-dark` | Console | `/` in the isolated fictional User-only access fixture; separate administrator explanation, configured portal link, and Sign out | Both | Portal handoff for end users |
 | `portal-catalog-light`, `portal-catalog-dark` | Portal | `/catalog`, full-width model-grouped rows with filters, blue-tinted glass navigation, and appearance controls | Both | Light and dark: portal catalog |
 | `console-gateways` | Console | `/gateways`, compact list with selected gateway overview | Light | Gateways |
 | `console-government-gateway` | Console | `/gateways`, fictional Government gateway selected with AzGov and Production context | Light | Government gateway |

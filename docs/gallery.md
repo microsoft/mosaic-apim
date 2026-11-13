@@ -11,7 +11,9 @@ The [README](../README.md#screenshots) keeps a short selection; this is the comp
 
 These show the administrator console (`apps/web`) and the end-user portal (`apps/portal`) running
 against a fictional Contoso estate that [`scripts/screenshots`](../scripts/screenshots) seeds
-locally, not a real tenant; that is why the console reports **Local mode**. Directory data,
+locally, not a real tenant; most console views therefore report **Local mode**. The User-only
+handoff uses the real access component with an isolated fictional sign-in/role fixture, not a live
+Entra session. Directory data,
 Graph permission claims, and verification results are simulated to illustrate Entra-backed
 workflows; they are not live connectivity evidence. Normal local-authentication deployments
 cannot perform Graph lookups. Endpoint URLs, host
@@ -85,6 +87,26 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
 </table>
 
 ## Administrator console
+
+### Portal handoff for end users
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/console-portal-handoff-light.png" alt="A User-only console access explanation beside a primary link to the end-user portal in the light theme">
+      <p><b>User-only handoff, light.</b> An account without the Admin role sees one explanation
+      and a separate portal destination instead of administrator navigation. Open the portal
+      deliberately, or sign out; the link does not grant access.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/console-portal-handoff-dark.png" alt="The same User-only portal destination and sign-out controls in the dark theme">
+      <p><b>User-only handoff, dark.</b> The same role boundary, portal action, and sign-out recovery
+      follow the dark theme. The portal checks access separately and may ask the person to sign in.</p>
+    </td>
+  </tr>
+</table>
+
+### Estate administration
 
 <table>
   <tr>
