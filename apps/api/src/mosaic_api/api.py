@@ -177,6 +177,8 @@ def _actor(auth: AuthContext) -> Actor:
         tenant_id=auth.tenant_id,
         group_ids=auth.group_ids,
         groups_overage=auth.groups_overage,
+        name=auth.name,
+        username=auth.username,
     )
 
 

@@ -27,6 +27,20 @@ and permits only one registration per object ID within a tenant, regardless of p
 A GUID's syntax does not verify its existence or kind in Entra; manual enrollment does not
 silently require additional Microsoft Graph permissions.
 
+Resource access requests capture optional name and username claims from the requester's validated
+sign-in token when submitted. Administrator review keeps the current MOSAIC label separate from
+that request-time snapshot and leaves the object ID visible. The name is preferred; username
+falls back through `preferred_username`, `upn`, and `unique_name`. Values are normalized and
+bounded to 200 characters, are display metadata only, and do not change tenant/object identity,
+roles, group eligibility, resource scope, or limits. The request body cannot supply those fields.
+
+Approval uses the snapshot's name, or username if no name is available, as the initial label only
+when registering a requester MOSAIC does not yet know. It never overwrites or fills an existing
+principal's label. Older requests and tokens without display claims remain valid and can produce
+an unlabeled registration; no migration, backfill, or extra Graph consent is required. Existing
+directory lookup remains a display fallback where available, not evidence added to the snapshot.
+Approval still saves grant intent only; gateway plan review and apply remain separate.
+
 Existing registrations remain readable, including older non-GUID IDs. Self-service direct
 access requires one unambiguous registration for the caller and a grant naming that same
 principal with its matching user/application subject kind. Duplicate registrations block

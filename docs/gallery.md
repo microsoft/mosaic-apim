@@ -436,9 +436,9 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="images/screenshots/console-access-requests.png" alt="A compact access-request list beside the selected request's resource, cost center, justification, and approval or denial actions">
-      <p><b>Access requests.</b> The focused list-and-detail approval queue is reachable from the header's
-      pending count or the Entitlements section menu. Approval saves grant intent; administrators
+      <img src="images/screenshots/console-access-requests.png" alt="A compact request queue beside an unknown requester's captured name, username, object ID, resource, cost center, and decision actions">
+      <p><b>Access requests.</b> Review requester labels and their request-time sign-in identity
+      alongside the selected resource, cost center, and justification. Approval saves grant intent; administrators
       still review and apply the gateway changes separately.</p>
     </td>
     <td width="50%" valign="top">
@@ -446,6 +446,14 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
       <p><b>Model access settings.</b> A dedicated section configures authentication for a
       selected published model, distinct from filtering individual grants. Review includes all
       saved grants and settings for that model and does not apply them automatically.</p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <img src="images/screenshots/console-access-request-approval.png" alt="Full-workspace approval of an unknown requester with the initial registration label separated from captured sign-in identity and grant limits">
+      <p><b>Unknown requester approval.</b> Inspect the proposed initial label, captured name,
+      username and object ID before registering an unknown requester. Approval saves a grant
+      without activating gateway access or changing an existing principal's label.</p>
     </td>
   </tr>
   <tr>
@@ -464,8 +472,8 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   <tr>
     <td colspan="2" valign="top">
       <img src="images/screenshots/console-request-notifications.png" alt="The pending-approvals popover with requester names, requested resources, and exact review links, separate from the unread notification inbox">
-      <p><b>Pending approvals.</b> Each pending request separates the requester, requested
-      resource, and time, and opens that exact request for review. This queue is separate from
+      <p><b>Pending approvals.</b> Each pending request uses the registered label or captured
+      sign-in name, separates resource and time, and opens that exact request for review. This queue is separate from
       the persistent notification inbox and its unread count.</p>
     </td>
   </tr>
@@ -493,9 +501,9 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
       Preview pending requests without approving them, and enable automation explicitly.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="images/screenshots/console-bulk-approval.png" alt="Full-workspace bulk approval review with two explicit requests, current environment facts, inherited limits, per-request controls, and advisory AI actions">
-      <p><b>Bulk approval review.</b> Review an explicit selection against current environment,
-      cost-center, and limit facts, with independent inclusion and advisory AI controls.
+      <img src="images/screenshots/console-bulk-approval.png" alt="Full-workspace bulk review separating requester labels from captured sign-in identities beside current environment, cost-center, limit, and independent approval controls">
+      <p><b>Bulk approval review.</b> Compare requester labels and captured sign-in identity
+      with current environment, cost-center, and limit facts, retaining independent inclusion and advisory AI controls.
       Approvals save grant intent; gateway plans still require separate review and apply.</p>
     </td>
   </tr>

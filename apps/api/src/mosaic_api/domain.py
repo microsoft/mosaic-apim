@@ -2227,10 +2227,20 @@ class AccessRequestState(StrEnum):
     WITHDRAWN = "withdrawn"
 
 
+REQUESTER_DISPLAY_MAX_LENGTH = 200
+
+
 class AccessRequest(Entity):
     entity_type: Literal["accessRequest"] = "accessRequest"
     requester_object_id: str
     requester_principal_id: str | None = None
+    # Display-only claims captured when the requester authenticated, never identity or authority.
+    requester_name: str | None = Field(
+        default=None, max_length=REQUESTER_DISPLAY_MAX_LENGTH, exclude_if=_unset
+    )
+    requester_username: str | None = Field(
+        default=None, max_length=REQUESTER_DISPLAY_MAX_LENGTH, exclude_if=_unset
+    )
     resource: EntitlementResource
     # The cost center the requester chose. Approval grants under it unless the administrator
     # chooses another the requester may charge. None only for requests made before cost centers,

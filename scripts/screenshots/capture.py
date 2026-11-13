@@ -53,6 +53,8 @@ Action = Callable[[Page], None]
 RESOURCE_NAMES = [
     *(person.label for person in PEOPLE),
     *(person.label.lower().replace(" ", "-") for person in PEOPLE),
+    "jordan-rowan",
+    "Pradeep G.",
     *(person.display_name for person in EXTRA_DIRECTORY_OBJECTS),
     *(name for name, _description, _members in GROUPS),
     *(f"Contoso {code} access" for code, *_rest in COST_CENTERS),
@@ -563,9 +565,9 @@ def review_demo_changes(page: Page) -> None:
 def review_demo_requests(page: Page) -> None:
     click_button("Bulk resource approval review")(page)
     _settle(page)
-    # Two explicit requests keep the facts readable without changing any approval state.
-    for checkbox in page.get_by_role("checkbox").all()[:2]:
-        checkbox.check()
+    # Show the unknown requester and the registered requester with a changed sign-in name.
+    for name in ("Jordan Rowan", "Pradeep Gupta"):
+        page.get_by_role("checkbox", name=re.compile(rf"^{re.escape(name)}\s")).check()
     click_button("Review 2 requests")(page)
 
 
@@ -978,7 +980,21 @@ SHOTS: list[Shot] = [
         "light",
         "Requests",
         actions=(select_resource_request,),
-        height=1250,
+        height=1750,
+    ),
+    Shot(
+        "console-access-request-approval",
+        "console",
+        "/entitlements?tab=requests",
+        "light",
+        "Requests",
+        actions=(
+            select_resource_request,
+            click_button("Approve"),
+            wait_for_text("Approve access request"),
+            wait_for_text("Label for new registration"),
+        ),
+        height=1700,
     ),
     Shot(
         "console-bulk-approval",
@@ -987,7 +1003,7 @@ SHOTS: list[Shot] = [
         "dark",
         "Requests",
         actions=(review_demo_requests, wait_for_text("Compatible shared limits")),
-        height=1950,
+        height=2100,
     ),
     Shot(
         "console-approval-policy",
