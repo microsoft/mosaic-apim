@@ -1,7 +1,7 @@
 import { Button, Field, MessageBar, MessageBarBody, Select, Text } from '@fluentui/react-components'
 import { AddRegular, LayerRegular, LightbulbRegular } from '@fluentui/react-icons'
 import { useQuery } from '@tanstack/react-query'
-import { Fragment, useMemo } from 'react'
+import { Fragment, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
@@ -53,6 +53,12 @@ export function PoolsPage() {
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
   const workbench = useWorkbenchLocation({ section })
+  const summaryWorkspace = useWorkbenchLocation({
+    section: `pool-catalog:${workbench.selectedId ?? ''}`, selectedParameter: 'summaryModel',
+    modeParameter: 'summaryMode', scopeParameter: 'summaryWorkbench',
+  })
+  const [summaryNotice, setSummaryNotice] = useState('')
+  function summarySaved() { setSummaryNotice('Catalog summary saved.') }
   const catalog = useEnvironmentCatalog()
   const gatewayFilter = params.get('gateway') ?? 'all'
 
@@ -111,8 +117,8 @@ export function PoolsPage() {
             {suggestions.isError ? <ErrorState error={suggestions.error} /> : <EmptyState title="Suggestion no longer available">Return to the list and choose another suggestion.</EmptyState>}</>
       : <PoolEditorDialog initialGatewayId={gatewayFilter === 'all' ? null : gatewayFilter}
           onClose={() => workbench.close()} onSaved={saved} />
-  } else if (section === 'pools' && (workbench.mode === 'edit' || workbench.mode === 'review') && workbench.selectedId) {
-    body = <PoolDetailPage poolId={workbench.selectedId} embedded />
+  } else if (section === 'pools' && (workbench.mode === 'edit' || workbench.mode === 'review' || summaryWorkspace.mode === 'edit') && workbench.selectedId) {
+    body = <PoolDetailPage poolId={workbench.selectedId} embedded onSummarySaved={summarySaved} />
   } else if (section === 'pools') {
     body = <ResourceWorkbench title="Pools" actions={newAction} toolbar={filter}
       description={`${shown.length} of ${plural(all.length, 'pool')}`}
@@ -129,7 +135,7 @@ export function PoolsPage() {
           <ReadinessSummaryBadge readiness={item.readiness} />
           {item.unappliedChanges && <UnappliedChangesBadge />}</div>
       </div>}
-      renderDetail={(item) => <PoolDetailPage key={item.pool.id} poolId={item.pool.id} embedded />}
+      renderDetail={(item) => <PoolDetailPage key={item.pool.id} poolId={item.pool.id} embedded onSummarySaved={summarySaved} />}
       missingSelection={<EmptyState title="Pool not in this list">It may have been removed or excluded by the gateway filter. Clear the selection or change the filter.</EmptyState>}
     />
   } else {
@@ -172,6 +178,8 @@ export function PoolsPage() {
 
   return <div className={styles.page}>
     <PageHeader title="Model pools" description="Serve models across endpoints and regions through one API. Saved intent, reviewed plans, and applied gateway state stay separate." />
+    {summaryNotice && summaryWorkspace.mode !== 'edit' &&
+      <MessageBar intent="success"><MessageBarBody>{summaryNotice}</MessageBarBody></MessageBar>}
     {summaries.isError && summaries.data && <ErrorState error={summaries.error} />}
     {section === 'suggestions' && suggestions.isError && suggestions.data && <ErrorState error={suggestions.error} />}
     {noGateways && <MessageBar intent="info"><MessageBarBody>A pool runs on an API Management gateway.{' '}

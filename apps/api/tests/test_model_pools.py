@@ -23,6 +23,7 @@ from mosaic_api.domain import (
     GatewayUpdate,
     ManagementMode,
     ModelAccessSettings,
+    ModelCatalogSummaryUpdate,
     ModelEndpoint,
     ModelEndpointCapabilities,
     ModelProvider,
@@ -79,8 +80,10 @@ from mosaic_api.repositories import (
     InMemoryMcpEndpointRepository,
     InMemoryModelEndpointRepository,
 )
+from mosaic_api.repositories.cosmos import CosmosRepositoryBase
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.model_endpoints import ModelEndpointService
+from mosaic_api.services.model_pools import intent_digest
 from pydantic import ValidationError as SchemaError
 
 # A tenant ID like Entra's: a governed pool's Entra policy names the tenant whose tokens it takes.
@@ -386,6 +389,117 @@ async def estate() -> Estate:
     built = Estate()
     await built.setup()
     return built
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [None, "Administrator-authored catalog copy.", "x" * 2001],
+    ids=["unused", "authored", "legacy-oversized"],
+)
+def test_pool_model_summary_storage_round_trip(summary: str | None) -> None:
+    model = PoolModel(
+        id="model",
+        public_name="chat",
+        display_name="Chat",
+        backend_pool_name="backend",
+        summary=summary,
+    )
+
+    document = CosmosRepositoryBase._document(model)
+
+    if summary is None:
+        assert "summary" not in document
+    else:
+        assert document["summary"] == summary
+    assert PoolModel.model_validate(document).summary == summary
+
+
+async def test_public_model_summary_preserves_the_reviewed_pool_and_runtime(estate: Estate) -> None:
+    pool = await estate.create("Public chat", _gpt4o("aoai-east", "aoai-sweden"))
+    await estate.publish(pool.id)
+    reviewed = await estate.service.plan(ACTOR, pool.id)
+    before = await estate.pool(pool.id)
+    estate.apim.writes.clear()
+
+    saved = await estate.service.update_model_catalog(
+        ACTOR,
+        pool.id,
+        pool.models[0].id,
+        ModelCatalogSummaryUpdate(summary="  Team drafting.\nReview output before sharing.  "),
+    )
+
+    assert saved.models[0].summary == "Team drafting.\nReview output before sharing."
+    assert saved.model_dump(exclude={"models", "updated_at", "etag"}) == before.model_dump(
+        exclude={"models", "updated_at", "etag"}
+    )
+    assert saved.models[0].model_dump(exclude={"summary"}) == before.models[0].model_dump(
+        exclude={"summary"}
+    )
+    assert intent_digest(saved) == intent_digest(before)
+    assert not estate.apim.writes
+    [view] = (await estate.service.detail(ACTOR, pool.id)).models
+    assert view.summary == saved.models[0].summary
+    event = next(
+        event
+        for event in estate.gateway_repository.audit_events.values()
+        if event.action == "modelPool.modelCatalogUpdated"
+    )
+    assert event.details == {"poolId": pool.id, "modelId": pool.models[0].id}
+    assert (await estate.apply(pool.id, reviewed)).status == PublishRunStatus.SUCCEEDED
+
+
+async def test_pool_model_summary_survives_routing_edits_and_is_scoped(estate: Estate) -> None:
+    first = await estate.create("First chat", _gpt4o("aoai-east", "aoai-sweden"))
+    second = await estate.create("Second chat", _gpt4o("aoai-east", "aoai-sweden"))
+    model_id = first.models[0].id
+    await estate.gateway_repository.save_model_pool(
+        second.model_copy(
+            update={"models": [second.models[0].model_copy(update={"id": model_id})]}
+        ),
+        _audit(),
+    )
+    await estate.service.update_model_catalog(
+        ACTOR, first.id, model_id, ModelCatalogSummaryUpdate(summary="First offering only.")
+    )
+    assert (await estate.pool(second.id)).models[0].summary is None
+    spec = _gpt4o("aoai-east", "aoai-sweden")
+    spec["members"][0]["drained"] = True
+    edited = await estate.update(first.id, models=[spec])
+    assert edited.models[0].summary == "First offering only."
+    edited_document = CosmosRepositoryBase._document(edited)
+    assert edited_document["models"][0]["summary"] == "First offering only."
+    restored = CosmosRepositoryBase._model(ModelPool, edited_document)
+    assert restored.models[0].summary == edited.models[0].summary
+    omitted = await estate.service.update_model_catalog(
+        ACTOR, first.id, model_id, ModelCatalogSummaryUpdate()
+    )
+    assert omitted.models[0].summary == edited.models[0].summary
+    cleared = await estate.service.update_model_catalog(
+        ACTOR, first.id, model_id, ModelCatalogSummaryUpdate(summary=" \n ")
+    )
+    assert cleared.models[0].summary is None
+    cleared_document = CosmosRepositoryBase._document(cleared)
+    assert "summary" not in cleared_document["models"][0]
+    assert CosmosRepositoryBase._model(ModelPool, cleared_document).models[0].summary is None
+    with pytest.raises(NotFoundError):
+        await estate.service.update_model_catalog(
+            ACTOR, first.id, "missing-model", ModelCatalogSummaryUpdate(summary="Wrong model")
+        )
+
+
+@pytest.mark.parametrize(
+    "changes", [{"status": PublicationStatus.APPLYING}, {"access_state": "unknown"}]
+)
+async def test_model_summary_respects_pool_write_locks(
+    estate: Estate, changes: dict[str, Any]
+) -> None:
+    pool = await estate.create("Locked chat", _gpt4o("aoai-east"))
+    await estate.gateway_repository.save_model_pool(pool.model_copy(update=changes), _audit())
+    with pytest.raises(ConflictError):
+        await estate.service.update_model_catalog(
+            ACTOR, pool.id, pool.models[0].id, ModelCatalogSummaryUpdate(summary="Not saved")
+        )
+    assert (await estate.pool(pool.id)).models[0].summary is None
 
 
 @pytest.fixture
@@ -2360,6 +2474,15 @@ async def test_an_administrator_publishes_and_unpublishes_a_pool_over_http(
     assert created.status_code == 201, created.text
     pool = created.json()
     pool_id = pool["id"]
+    catalog_path = f"/api/v1/model-pools/{pool_id}/models/{pool['models'][0]['id']}/catalog"
+    copied = client.patch(catalog_path, json={"summary": "  Public catalog copy.  "})
+    assert copied.status_code == 200, copied.text
+    assert copied.json()["models"][0]["summary"] == "Public catalog copy."
+    assert (
+        client.patch(catalog_path, json={}).json()["models"][0]["summary"] == "Public catalog copy."
+    )
+    assert client.patch(catalog_path, json={"summary": "x" * 2001}).status_code == 422
+    assert "summary" not in client.patch(catalog_path, json={"summary": None}).json()["models"][0]
     assert (pool["apiName"], pool["poolType"], pool["status"]) == (
         "mosaic-pool-openai",
         "breaker",
@@ -2378,6 +2501,7 @@ async def test_an_administrator_publishes_and_unpublishes_a_pool_over_http(
     detail = client.get(f"/api/v1/model-pools/{pool_id}/detail")
     assert detail.status_code == 200, detail.text
     [model] = detail.json()["models"]
+    assert model["summary"] is None
     assert [member["endpointName"] for member in model["members"]] == ["aoai-east", "aoai-sweden"]
     assert detail.json()["problems"] == []
     [summary] = client.get(f"/api/v1/model-pool-summaries?gateway={gateway_id}").json()

@@ -1469,6 +1469,21 @@ class CatalogEntryUpdate(MosaicModel):
     summary: str | None = None
 
 
+class ModelCatalogSummaryUpdate(MosaicModel):
+    """Public model copy, validated only when intentionally written."""
+
+    summary: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def normalize_summary(cls, value: Any) -> Any:
+        return value.strip() or None if isinstance(value, str) else value
+
+
+class ModelApiCatalogUpdate(ModelCatalogSummaryUpdate):
+    visibility: CatalogVisibility | None = None
+
+
 def model_api_id(tenant_id: str, gateway_id: str, api_name: str) -> str:
     """Deterministic so re-importing an API updates the record instead of duplicating it."""
 

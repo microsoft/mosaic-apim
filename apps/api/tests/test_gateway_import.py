@@ -19,6 +19,7 @@ from mosaic_api.domain import (
     ImportSelection,
     McpServerKind,
     McpTransportType,
+    ModelApiCatalogUpdate,
 )
 from mosaic_api.errors import NotFoundError, ValidationError
 from mosaic_api.observed import AiBackendKind
@@ -279,7 +280,7 @@ async def test_reimporting_preserves_administrator_authored_catalog_metadata(
     await gateway_service.update_model_api_catalog(
         ACTOR,
         imported[0].id,
-        CatalogEntryUpdate(visibility=CatalogVisibility.PRIVATE, summary="Restricted"),
+        ModelApiCatalogUpdate(visibility=CatalogVisibility.PRIVATE, summary="Restricted"),
     )
 
     await gateway_service.sync_now(ACTOR, gateway.id)

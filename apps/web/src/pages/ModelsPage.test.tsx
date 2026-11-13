@@ -203,6 +203,8 @@ const api = {
   listEnvironmentFindings: vi.fn(),
   listGateways: vi.fn(),
   listModelApis: vi.fn(),
+  updateModelApiCatalog: vi.fn(),
+  linkPublicationModelApi: vi.fn(),
   deletePublication: vi.fn(),
   planUnpublishPublication: vi.fn(),
   unpublishPublication: vi.fn(),
@@ -867,6 +869,35 @@ describe('ModelsPage', () => {
 
     await waitFor(() => expect(api.createPublishPlan).toHaveBeenCalledWith('pub_1'))
     expect(await screen.findByRole('button', { name: 'Apply all pending changes' })).toBeEnabled()
+  })
+
+  it.each(['published', 'imported'])('edits the exact %s catalog offering through Write and Review without publishing', async (section) => {
+    const user = userEvent.setup()
+    let record: ModelApi = { ...modelApi, publicationId: publication.id, visibility: 'private', summary: 'Before editing' }
+    api.listModelApis.mockImplementation(async () => [record])
+    api.listPublications.mockResolvedValue([{ ...publication, modelApiId: record.id }])
+    api.updateModelApiCatalog.mockImplementation(async (_id: string, payload: { summary: string | null }) => {
+      record = { ...record, ...payload }
+      return record
+    })
+    renderPage(`/models?tab=${section}&filter=keep`)
+    await user.click(await screen.findByRole('button', { name: `Edit catalog summary for ${section === 'published' ? publication.displayName : record.displayName}` }))
+    const editor = await screen.findByRole('region', { name: 'Edit catalog summary' })
+    const input = within(editor).getByRole('textbox', { name: 'Catalog summary (optional)' })
+    await user.clear(input)
+    await user.type(input, 'New catalog copy')
+    await user.click(within(editor).getByRole('button', { name: 'Review summary' }))
+    expect(api.updateModelApiCatalog).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Save summary' }))
+    await waitFor(() => expect(api.updateModelApiCatalog).toHaveBeenCalledExactlyOnceWith(record.id, { summary: 'New catalog copy' }))
+    expect(await screen.findByText('Catalog summary saved.')).toBeVisible()
+    expect(screen.getByTestId('location')).toHaveTextContent(`selected=${section === 'published' ? publication.id : record.id}`)
+    expect(screen.getByTestId('location')).toHaveTextContent('filter=keep')
+    expect(screen.getByTestId('location')).not.toHaveTextContent('mode=edit')
+    expect(record.visibility).toBe('private')
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+    expect(api.createPublishPlan).not.toHaveBeenCalled()
+    expect(api.linkPublicationModelApi).not.toHaveBeenCalled()
   })
 
   it('says an imported model API is hidden from the portal while its publication is unpublished', async () => {

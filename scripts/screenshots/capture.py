@@ -712,6 +712,26 @@ SHOTS: list[Shot] = [
         "dark",
         "GPT-4o mini",
         actions=(click_button("GPT-4o mini"),),
+        height=1100,
+    ),
+    Shot(
+        "console-catalog-summary-review",
+        "console",
+        "/models",
+        "light",
+        "GPT-4o mini",
+        actions=(
+            click_button("GPT-4o mini"),
+            click_button("Edit catalog summary for GPT-4o mini"),
+            fill_textbox(
+                "Catalog summary (optional)",
+                "Use for internal drafting and knowledge-search workflows. "
+                "Review generated content before sharing it.",
+            ),
+            click_button("Review summary"),
+            wait_for_text("What will change"),
+        ),
+        height=1200,
     ),
     Shot(
         "console-register-key-endpoint",
@@ -793,8 +813,8 @@ SHOTS: list[Shot] = [
             click_tab("Models and deployments"),
             scroll_to_text("served by 5 active deployments", margin=160),
         ),
-        # Include both models' deployments in the selected section.
-        height=1482,
+        # Include each model's public summary and its private deployment details.
+        height=1650,
     ),
     Shot(
         "console-pool-access",

@@ -58,6 +58,7 @@ import { ModelEndpointEditor, ModelEndpointEnvironmentEditor } from '../componen
 import { DeployModelWorkspace } from '../components/DeployModelWorkspace'
 import { completeWorkspaceNavigation } from '../components/WorkspaceLeaveGuard'
 import { UnpublishDialog } from '../components/UnpublishDialog'
+import { CatalogSummaryDetails, CatalogSummaryEditor } from '../components/CatalogSummaryEditor'
 import { AI_KIND_LABELS, CAPACITY_TYPE_LABELS, PROCESSING_SCOPE_LABELS } from '../labels'
 import {
   PUBLICATION_STATUS_LABELS,
@@ -74,6 +75,7 @@ import type {
   GatewayRuntimeAccess,
   EnvironmentCompatibilityCell,
   ModelEndpoint,
+  ModelApi,
   ModelEndpointCapabilities,
   ModelEndpointSuggestion,
   ModelEndpointStatus,
@@ -163,6 +165,36 @@ function PublicationStatusBadge({ publication }: { publication: Publication }) {
   )
 }
 
+function ModelSummaryWorkspace({
+  record, gateway, hidden, onClose, onSaved,
+}: {
+  record: ModelApi
+  gateway?: Gateway
+  hidden?: boolean
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const api = useMosaicApi()
+  const queryClient = useQueryClient()
+  const catalog = useEnvironmentCatalog()
+  return <CatalogSummaryEditor
+    displayName={record.displayName} summary={record.summary}
+    context={gateway ? <EnvironmentBadge azureCloud={gateway.azureCloud ?? 'commercial'}
+      environment={gateway.environment} catalog={catalog.data} /> :
+      <Text size={200}>Gateway context unavailable</Text>}
+    visibilityLabel={record.visibility === 'catalog' ? 'Discoverable' : 'Entitled users only'}
+    availabilityNote={hidden ? "Hidden from the portal catalog while it isn't published." : undefined}
+    mutationKey={MODELS_PAGE_MUTATION_KEY}
+    onSave={async (summary) => {
+      const saved = await api.updateModelApiCatalog(record.id, { summary })
+      queryClient.setQueryData<ModelApi[]>(['model-apis'], (current) =>
+        current?.map((item) => item.id === saved.id ? saved : item))
+      void queryClient.invalidateQueries({ queryKey: ['model-apis'] })
+    }}
+    onClose={onClose} onSaved={onSaved}
+  />
+}
+
 function PublishedModels({ onMessage, onPublish }: { onMessage: (message: string) => void; onPublish: () => void }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
@@ -173,6 +205,8 @@ function PublishedModels({ onMessage, onPublish }: { onMessage: (message: string
   const [unpublishing, setUnpublishing] = useState<Publication | null>(null)
   const [review, setReview] = useState<{ publication: Publication; plan: PublishPlan } | null>(null)
   const previousReviewMode = useRef(workspace.mode)
+  const summaryFocus = useRef<HTMLButtonElement>(null)
+  const [summaryTarget, setSummaryTarget] = useState<{ publication: Publication; record: ModelApi } | null>(null)
 
   useEffect(() => {
     const exitedReview = previousReviewMode.current === 'review' && workspace.mode !== 'review'
@@ -187,6 +221,27 @@ function PublishedModels({ onMessage, onPublish }: { onMessage: (message: string
   const gateways = useQuery({
     queryKey: ['gateways'],
     queryFn: () => api.listGateways(),
+  })
+  const modelApis = useQuery({
+    queryKey: ['model-apis'], queryFn: () => api.listModelApis(),
+    enabled: Boolean(workspace.selectedId) && Boolean(publications.data?.length),
+  })
+  function modelApiFor(publication: Publication) {
+    return modelApis.data?.find((record) => record.id === publication.modelApiId) ??
+      modelApis.data?.find((record) => record.publicationId === publication.id)
+  }
+  function closeSummary() {
+    workspace.close()
+    requestAnimationFrame(() => summaryFocus.current?.focus())
+  }
+  const linkCatalog = useMutation({
+    mutationKey: MODELS_PAGE_MUTATION_KEY,
+    mutationFn: (id: string) => api.linkPublicationModelApi(id),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['model-apis'] })
+      await queryClient.invalidateQueries({ queryKey: ['publications'] })
+      onMessage('Linked the catalog entry. Nothing changed in API Management.')
+    },
   })
 
   const gatewaysById = useMemo(() => {
@@ -251,11 +306,42 @@ function PublishedModels({ onMessage, onPublish }: { onMessage: (message: string
     }
   }, [workspace.mode, workspace.selectedId, publications.data, review, reviewPlan])
 
+  const summaryPublication = publications.data?.find((item) => item.id === workspace.selectedId)
+  const summaryRecord = summaryPublication && modelApiFor(summaryPublication)
+  useEffect(() => {
+    if (workspace.mode !== 'edit') setSummaryTarget(null)
+    else if (summaryTarget?.publication.id !== workspace.selectedId && summaryPublication && summaryRecord) {
+      setSummaryTarget({ publication: summaryPublication, record: summaryRecord })
+    }
+  }, [workspace.mode, workspace.selectedId, summaryPublication, summaryRecord, summaryTarget])
+
+  if (workspace.mode === 'edit') {
+    const active = summaryTarget?.publication.id === workspace.selectedId ? summaryTarget : null
+    const publication = active?.publication ?? summaryPublication
+    const record = active?.record ?? summaryRecord
+    if (!active && (publications.isPending || (publication && modelApis.isPending))) return <Loading label="Loading catalog summary" />
+    if (!publication || !record) return <>
+      <Button onClick={closeSummary}>Back to published models</Button>
+      {modelApis.isError ? <ErrorState error={modelApis.error} title="Unable to load catalog metadata" /> :
+        <EmptyState title="Catalog entry unavailable">Return to the model details to refresh or recover its catalog entry. Nothing has been published or changed.</EmptyState>}
+    </>
+    return <>
+      {modelApis.isError && <ErrorState error={modelApis.error} title="Unable to refresh catalog metadata" />}
+      <ModelSummaryWorkspace key={record.id} record={record}
+        gateway={gatewaysById.get(publication.gatewayId)} hidden={!holdsApi(publication)}
+        onClose={closeSummary} onSaved={() => { closeSummary(); onMessage('Catalog summary saved.') }} />
+    </>
+  }
+
   return (
     <>
       {reviewPlan.isError && <ErrorState error={reviewPlan.error} />}
       {publications.isPending && <Loading label="Loading published models" />}
       {publications.isError && <ErrorState error={publications.error} />}
+      {modelApis.isError && <div>
+        <ErrorState error={modelApis.error} title="Unable to refresh catalog metadata" />
+        <Button onClick={() => void modelApis.refetch()}>Retry catalog metadata</Button>
+      </div>}
       {!publications.isPending && (!publications.data?.length || workspace.selectedId || initializedSelection.current) && <ResourceWorkbench title="Published models"
         description="Publish registered deployments through reviewed plans. Reviewing does not apply changes to API Management."
         actions={<Button appearance="primary" icon={<AddRegular />} onClick={onPublish}>Publish a model</Button>}
@@ -296,6 +382,24 @@ function PublishedModels({ onMessage, onPublish }: { onMessage: (message: string
             <div><dt>API path</dt><dd>/{publication.apiPath}</dd></div>
             <div><dt>Last applied</dt><dd>{lastAppliedLabel(publication)}</dd></div>
           </dl>
+          {modelApis.isPending ? <Loading label="Loading catalog metadata" /> :
+            modelApiFor(publication) ? <CatalogSummaryDetails
+              displayName={publication.displayName} summary={modelApiFor(publication)?.summary}
+              editRef={summaryFocus} onEdit={() => {
+                const record = modelApiFor(publication)
+                if (record) setSummaryTarget({ publication, record })
+                workspace.open('edit', publication.id)
+              }} /> :
+              <div className={styles.selectedDetail}>
+                <Text>Catalog metadata is unavailable until this publication has a linked model API.</Text>
+                <div className={styles.inlineActions}>
+                  <Button onClick={() => void modelApis.refetch()}>Refresh catalog entry</Button>
+                  {modelApis.isSuccess && publication.status === 'published' && holdsApi(publication) &&
+                    publication.accessState !== 'applying' && publication.accessState !== 'unknown' &&
+                    <Button disabled={linkCatalog.isPending} onClick={() => linkCatalog.mutate(publication.id)}>Link catalog entry</Button>}
+                </div>
+                {linkCatalog.isError && <ErrorState error={linkCatalog.error} title="Unable to link the catalog entry" />}
+              </div>}
                       <RowActions
                         label={`More actions for ${publication.displayName}`}
                         primary={<Tooltip content="Preview the changes MOSAIC would apply. Nothing changes until you select Apply plan." relationship="description"><Button
@@ -414,6 +518,12 @@ function ImportedModelApis({ onRemoved, onImport }: { onRemoved: (message: strin
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const workspace = useWorkbenchLocation({ section: 'imported' })
+  const summaryFocus = useRef<HTMLButtonElement>(null)
+  const [summaryTarget, setSummaryTarget] = useState<ModelApi | null>(null)
+  function closeSummary() {
+    workspace.close()
+    requestAnimationFrame(() => summaryFocus.current?.focus())
+  }
 
   const modelApis = useQuery({
     queryKey: ['model-apis'],
@@ -469,6 +579,28 @@ function ImportedModelApis({ onRemoved, onImport }: { onRemoved: (message: strin
       onRemoved('Updated who can discover this API in the portal catalog.')
     },
   })
+
+  const selectedSummaryRecord = modelApis.data?.find((item) => item.id === workspace.selectedId)
+  useEffect(() => {
+    if (workspace.mode !== 'edit') setSummaryTarget(null)
+    else if (summaryTarget?.id !== workspace.selectedId && selectedSummaryRecord) setSummaryTarget(selectedSummaryRecord)
+  }, [workspace.mode, workspace.selectedId, selectedSummaryRecord, summaryTarget])
+
+  if (workspace.mode === 'edit') {
+    if (!summaryTarget && modelApis.isPending) return <Loading label="Loading catalog summary" />
+    const record = summaryTarget?.id === workspace.selectedId ? summaryTarget : selectedSummaryRecord
+    if (!record) return <>
+      <Button onClick={closeSummary}>Back to imported model APIs</Button>
+      {modelApis.isError ? <ErrorState error={modelApis.error} title="Unable to load catalog metadata" /> :
+        <EmptyState title="Catalog entry unavailable">This model API is no longer available. Return to the list and refresh it before editing.</EmptyState>}
+    </>
+    return <>
+      {modelApis.isError && <ErrorState error={modelApis.error} title="Unable to refresh catalog metadata" />}
+      <ModelSummaryWorkspace key={record.id} record={record}
+        gateway={gatewaysById.get(record.gatewayId)} hidden={hiddenFromPortal(record)}
+        onClose={closeSummary} onSaved={() => { closeSummary(); onRemoved('Catalog summary saved.') }} />
+    </>
+  }
 
   return (
     <>
@@ -527,6 +659,8 @@ function ImportedModelApis({ onRemoved, onImport }: { onRemoved: (message: strin
             </dd></div>
           </dl>
           {record.aiSignals.map((signal) => <Text key={signal} size={200}>{signal}</Text>)}
+          <CatalogSummaryDetails displayName={record.displayName} summary={record.summary}
+            editRef={summaryFocus} onEdit={() => { setSummaryTarget(record); workspace.open('edit', record.id) }} />
           <Field label="Catalog visibility">
                       <Select
                         aria-label={`Catalog visibility for ${record.displayName}`}

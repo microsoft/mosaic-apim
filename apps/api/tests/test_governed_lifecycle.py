@@ -21,7 +21,6 @@ from conftest import build_endpoint_service, build_gateway_service, reviewed_unp
 from mosaic_api.cost_centers import CostCenterUpdate
 from mosaic_api.domain import (
     BindingSource,
-    CatalogEntryUpdate,
     Entitlement,
     EntitlementBinding,
     EntitlementCreate,
@@ -34,6 +33,7 @@ from mosaic_api.domain import (
     GroupCreate,
     ImportRequest,
     ModelAccessSettings,
+    ModelApiCatalogUpdate,
     ModelEndpointCreate,
     PrincipalCreate,
     PrincipalUpdate,
@@ -710,7 +710,9 @@ async def test_model_materialization_linking_and_reimport_preserve_metadata(
     assert model and model.publication_id == publication.id
     assert model.imported_from_snapshot_id is None
     model = await harness.gateway_service.update_model_api_catalog(
-        ACTOR, model.id, CatalogEntryUpdate(visibility="private", summary="Keep this description")
+        ACTOR,
+        model.id,
+        ModelApiCatalogUpdate(visibility="private", summary="Keep this description"),
     )
     await harness.gateways.record_publication_state(
         publication.model_copy(update={"model_api_id": None})

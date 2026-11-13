@@ -694,6 +694,16 @@ def test_administrator_entitlement_routes_still_reject_a_portal_user(
         # The portal role must not be a way into the administrator surface.
         assert client.get("/api/v1/entitlements").status_code == 403
         assert client.get("/api/v1/gateways").status_code == 403
+        assert (
+            client.patch("/api/v1/model-apis/model/catalog", json={"summary": "No"}).status_code
+            == 403
+        )
+        assert (
+            client.patch(
+                "/api/v1/model-pools/pool/models/model/catalog", json={"summary": "No"}
+            ).status_code
+            == 403
+        )
     finally:
         client.__exit__(None, None, None)
 

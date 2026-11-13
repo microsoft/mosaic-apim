@@ -6,6 +6,7 @@ from fastapi import APIRouter, Query, Request, Response, status
 
 from mosaic_api.api import Admin, _actor
 from mosaic_api.domain import (
+    ModelCatalogSummaryUpdate,
     PublicationLockInfo,
     PublishPlan,
     PublishRecoveryRequest,
@@ -114,6 +115,19 @@ async def update_model_pool(
     request: Request, auth: Admin, pool_id: str, payload: ModelPoolUpdate
 ) -> ModelPool:
     return await _pools(request).update(_actor(auth), pool_id, payload)
+
+
+@model_pools_router.patch(
+    "/model-pools/{pool_id}/models/{model_id}/catalog", response_model=ModelPool
+)
+async def update_pool_model_catalog(
+    request: Request,
+    auth: Admin,
+    pool_id: str,
+    model_id: str,
+    payload: ModelCatalogSummaryUpdate,
+) -> ModelPool:
+    return await _pools(request).update_model_catalog(_actor(auth), pool_id, model_id, payload)
 
 
 @model_pools_router.delete("/model-pools/{pool_id}", status_code=status.HTTP_204_NO_CONTENT)
