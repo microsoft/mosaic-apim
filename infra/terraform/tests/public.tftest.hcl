@@ -107,10 +107,26 @@ run "public_reference" {
   }
   assert {
     condition = (
-      azurerm_role_assignment.gateway_secrets[0].scope == azurerm_key_vault.vault["backend"].id &&
-      local.api_roles.management.scope == azurerm_key_vault.vault["management"].id
+      length(azurerm_api_management.gateway) == 0 &&
+      length(azurerm_role_assignment.gateway_secrets) == 0 &&
+      length(azurerm_role_assignment.api_gateway) == 0 &&
+      length(azurerm_api_management_logger.insights) == 0 &&
+      length(azapi_resource.monitor_logger) == 0 &&
+      length(azapi_resource.insights_diagnostic) == 0 &&
+      !contains(keys(local.diagnostics), "gateway")
     )
-    error_message = "Gateway secret access must remain separate from API-only management secrets."
+    error_message = "Default hosting must not provision a gateway or gateway-specific permissions/telemetry."
+  }
+  assert {
+    condition = (
+      output.deployment.APIM_RESOURCE_ID == "" &&
+      output.deployment.APIM_GATEWAY_URL == "" &&
+      azurerm_linux_web_app.app["api"].app_settings.MOSAIC_APIM_SERVICE_NAME == "" &&
+      azurerm_linux_web_app.app["api"].app_settings.MOSAIC_APIM_GATEWAY_URL == "" &&
+      azurerm_linux_web_app.app["api"].app_settings.MOSAIC_APIM_SUBSCRIPTION_ID == var.subscription_id &&
+      azurerm_linux_web_app.app["api"].app_settings.MOSAIC_APIM_RESOURCE_GROUP == azurerm_resource_group.mosaic.name
+    )
+    error_message = "MOSAIC-only hosting must start without a bootstrap gateway and retain its discovery scope."
   }
   assert {
     condition = alltrue([for name, app in azurerm_linux_web_app.app :
@@ -131,9 +147,59 @@ run "external_gateway" {
       length(azurerm_api_management.gateway) == 0 &&
       length(azurerm_role_assignment.gateway_secrets) == 0 &&
       length(azurerm_role_assignment.api_gateway) == 0 &&
+      length(azurerm_api_management_logger.insights) == 0 &&
       length(azapi_resource.monitor_logger) == 0 &&
+      length(azapi_resource.insights_diagnostic) == 0 &&
       !contains(keys(local.diagnostics), "gateway")
     )
     error_message = "An external gateway must not be provisioned or mutated by this deployment."
+  }
+  assert {
+    condition = (
+      output.deployment.APIM_RESOURCE_ID == var.external_bootstrap_apim_resource_id &&
+      azurerm_linux_web_app.app["api"].app_settings.MOSAIC_APIM_SERVICE_NAME == "owned-elsewhere" &&
+      azurerm_linux_web_app.app["api"].app_settings.MOSAIC_APIM_RESOURCE_GROUP == "external" &&
+      output.deployment.APIM_GATEWAY_URL == "https://owned-elsewhere.azure-api.net"
+    )
+    error_message = "An external gateway reference must reach the API's bootstrap configuration."
+  }
+}
+
+run "created_gateway_requires_publisher" {
+  command = plan
+  variables {
+    deploy_apim = true
+  }
+  expect_failures = [azurerm_api_management.gateway]
+}
+
+run "created_gateway" {
+  command = apply
+  variables {
+    deploy_apim     = true
+    publisher_name  = "MOSAIC administrator"
+    publisher_email = "admin@example.com"
+  }
+  assert {
+    condition = (
+      length(azurerm_api_management.gateway) == 1 &&
+      output.deployment.APIM_RESOURCE_ID == azurerm_api_management.gateway[0].id &&
+      azurerm_linux_web_app.app["api"].app_settings.MOSAIC_APIM_SERVICE_NAME == "apim-example" &&
+      output.deployment.APIM_GATEWAY_URL == "https://apim-example.azure-api.net" &&
+      alltrue([for role in ["API Management Service Contributor", "Monitoring Reader"] :
+      azurerm_role_assignment.api_gateway[role].scope == azurerm_api_management.gateway[0].id]) &&
+      length(azurerm_api_management_logger.insights) == 1 &&
+      length(azapi_resource.monitor_logger) == 1 &&
+      length(azapi_resource.insights_diagnostic) == 1 &&
+      contains(keys(local.diagnostics), "gateway")
+    )
+    error_message = "Explicit opt-in must create and configure the gateway with its scoped permissions and telemetry."
+  }
+  assert {
+    condition = (
+      azurerm_role_assignment.gateway_secrets[0].scope == azurerm_key_vault.vault["backend"].id &&
+      local.api_roles.management.scope == azurerm_key_vault.vault["management"].id
+    )
+    error_message = "Gateway secret access must remain separate from API-only management secrets."
   }
 }

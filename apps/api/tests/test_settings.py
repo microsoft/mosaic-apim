@@ -109,6 +109,23 @@ def test_azure_rejects_local_auth_and_memory_repository() -> None:
         )
 
 
+@pytest.mark.parametrize("service_name", [None, ""])
+def test_azure_hosting_can_start_without_a_bootstrap_gateway(service_name: str | None) -> None:
+    settings = Settings(
+        _env_file=None,
+        environment=Environment.AZURE,
+        auth_mode=AuthMode.ENTRA,
+        repository_backend=RepositoryBackend.COSMOS,
+        tenant_id="tenant",
+        api_client_id=CONTROL_PLANE_CLIENT_ID,
+        cosmos_endpoint="https://cosmos.example.com",
+        apim_subscription_id="00000000-0000-0000-0000-000000000000",
+        apim_resource_group="rg-mosaic",
+        apim_service_name=service_name,
+    )
+    assert settings.apim_bootstrap_resource_id is None
+
+
 def test_azure_rejects_private_mcp_endpoints() -> None:
     # Allowing them would let a managed-identity token reach the instance metadata service.
     with pytest.raises(ValidationError, match="Private MCP endpoints"):

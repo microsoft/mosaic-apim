@@ -6,6 +6,11 @@ Check the [prerequisites](development.md#prerequisites) first. These commands pr
 reference hosting deployment; they are separate from publishing a model through a managed gateway.
 For identities and network paths, see [architecture](architecture.md).
 
+**APIM provisioning is opt-in.** By default, both paths deploy MOSAIC and its backing services
+without creating or requiring an APIM instance. Register existing gateways afterward; they can
+remain in their own networks. APIM is still required for runtime model/MCP calls, not for standing
+up MOSAIC. See [gateway deployment choices](#gateway-deployment-choices).
+
 For an existing environment, use [Upgrades and recovery](upgrades.md) instead of repeating
 initial provisioning.
 
@@ -25,14 +30,14 @@ reference deployment; do not bypass organizational policy to deploy it.
 
 | Prerequisite | What the administrator must arrange |
 | --- | --- |
-| Subscription and region | An active Azure subscription, approved resource group/location and sufficient regional App Service, APIM, Cosmos and ACR capacity/quota; review costs before provisioning |
+| Subscription and region | An active Azure subscription, approved resource group/location and sufficient regional App Service, Cosmos and ACR capacity/quota; APIM capacity is needed only if opting into a new gateway; review costs before provisioning |
 | Azure permissions | Resource creation and role-assignment permissions at the deployment scope, including Cosmos SQL role assignments; Contributor alone does not grant Azure RBAC role-assignment writes |
 | Entra permissions | A deploying user who can manage registrations/service principals and assign the initial Admin role; separately arrange privileged consent for the API managed identity's baseline Graph application permissions and the model client's delegated consent |
-| Resource providers | Ensure `Microsoft.Web`, `Microsoft.ContainerRegistry`, `Microsoft.DocumentDB`, `Microsoft.KeyVault`, `Microsoft.ApiManagement`, `Microsoft.OperationalInsights`, and `Microsoft.Insights` are registered; if the deployer cannot register them, have the subscription administrator do it first |
+| Resource providers | Ensure `Microsoft.Web`, `Microsoft.ContainerRegistry`, `Microsoft.DocumentDB`, `Microsoft.KeyVault`, `Microsoft.OperationalInsights`, and `Microsoft.Insights` are registered; `Microsoft.ApiManagement` is additionally needed in the subscription hosting a new gateway. If the deployer cannot register them, have the subscription administrator do it first |
 | Operator tools | Azure CLI and Python 3.12 for either path; Azure Developer CLI for Bicep/azd, or Terraform 1.7+ for standalone Terraform |
 | Build access | ACR Tasks access to source/build context, base images, npm/Python package sources and the selected Python index; default remote builds do not require local Docker |
 | Connectivity | Operator access to Azure management, Microsoft Graph and Entra; browser access to the public console, portal and API; required runtime service/identity/telemetry egress |
-| Inputs | Subscription, environment name, region, APIM publisher name/email and a Python package index; identity IDs are produced by bootstrap |
+| Inputs | Subscription, environment name, region and a Python package index; identity IDs are produced by bootstrap. Publisher name/email apply only when creating APIM; bootstrap derives defaults from the deploying user |
 | State for Terraform | Secure local state or administrator-provisioned remote backend storage/container and its RBAC; use a fresh environment, not an existing azd deployment |
 
 For example, an authorized administrator can register a missing provider with
@@ -51,7 +56,7 @@ deployment; actual model use needs an independently provisioned backend and perm
 | Cosmos DB, database and five containers | Created | Created | No |
 | Backend vault and isolated management vault | Created | Created | No |
 | Log Analytics, Application Insights, diagnostics | Created | Created | No |
-| Normal APIM gateway, loggers and scoped permissions | Created | Created | No; referencing an external bootstrap gateway is a separate operator choice |
+| Co-located APIM gateway, its loggers and scoped permissions | Optional; `MOSAIC_DEPLOY_APIM=true` | Optional; `deploy_apim=true` | No; omitted by default, with no existing gateway required |
 | Entra registrations, initial Admin assignment, redirect setup | azd hooks | Explicit Python bootstrap/configure | Tenant and required administrator permissions must exist; inspect consent warnings |
 | AI account/model deployment, other model providers or MCP servers | Not created | Not created | Only before using those optional backends; separately configure quota and inference access |
 | Email mailbox, Teams channels/bot, billing exports/connections | Not created | Not created | Only when enabling each capability; follow its setup guide |
@@ -59,8 +64,40 @@ deployment; actual model use needs an independently provisioned backend and perm
 | VNets, VPN/ExpressRoute, DNS resolvers/zones, private endpoints, private build runners | Not created | Not created | Administrator-owned design and implementation; see [private networking](private-networking.md) |
 
 `azd up` **will deploy the public hosting services and application images**, not the private
-reference diagram. Infrastructure provisioning alone does not publish an AI model, assign
+reference diagram. No APIM subnet, APIM private endpoint or APIM private DNS zone is required for
+MOSAIC-only hosting. Infrastructure provisioning alone does not publish an AI model, assign
 every portal user, or prove runtime authorization.
+
+## Gateway deployment choices
+
+| Choice | Bicep / azd input | Terraform input | Result |
+| --- | --- | --- | --- |
+| MOSAIC only (default) | `MOSAIC_DEPLOY_APIM=false`; leave external ID empty | `deploy_apim=false`; leave external ID empty | No gateway is created or bootstrapped; register existing gateways later |
+| Create a gateway alongside MOSAIC | `MOSAIC_DEPLOY_APIM=true` | `deploy_apim=true` | Creates a public APIM, its scoped permissions and telemetry; publisher name/email and APIM capacity are needed |
+| Reference an existing bootstrap gateway | `MOSAIC_DEPLOY_APIM=false` and `MOSAIC_EXTERNAL_BOOTSTRAP_APIM_RESOURCE_ID` | `deploy_apim=false` and `external_bootstrap_apim_resource_id` | Configures a bootstrap reference only; does not adopt or grant permissions/configure diagnostics on the existing gateway |
+
+For native Bicep, the corresponding parameters are `deployApim` and
+`externalBootstrapApimResourceId`. A reference is optional, not a prerequisite for deployment.
+When using existing gateways, an administrator must separately arrange the API identity's
+gateway permissions and telemetry access before checks/management can succeed.
+
+To opt into a new gateway with azd, run `azd env set MOSAIC_DEPLOY_APIM true` **before** `azd up`.
+The Entra bootstrap derives publisher metadata from the deploying user; inspect the saved
+publisher name/email. Native Bicep callers must supply `apimPublisherName` and `apimPublisherEmail`.
+For Terraform examples, see the [gateway choices](../infra/terraform/README.md#gateway-choices).
+
+**Existing deployments:** before provisioning with these new defaults, explicitly retain
+`MOSAIC_DEPLOY_APIM=true` / `deploy_apim=true` if the environment already owns an APIM.
+In Terraform, changing an existing owned gateway to `false` **plans its destruction**, including
+gateway-specific permissions and telemetry. It does not convert it to an external reference.
+Bicep's incremental deployment normally leaves the omitted resource in Azure, but clearing its
+bootstrap settings changes MOSAIC's configuration. Review the intended lifecycle and every
+resource/configuration change; see [upgrades](upgrades.md#when-provisioning-is-required).
+
+Private gateway networking remains an administrator-owned choice. The
+[primary private-network example](private-networking.md#address-plan-and-boundaries) reserves
+no APIM subnet or APIM endpoint capacity; a separate optional co-located example shows those
+additions. Existing gateways do not have to move into MOSAIC's VNet.
 
 ## Deploy with Terraform
 
@@ -80,8 +117,6 @@ az account set --subscription <your-subscription-id>
 azd env new mosaic-dev
 azd env set AZURE_SUBSCRIPTION_ID <your-subscription-id>
 azd env set AZURE_LOCATION eastus2
-azd env set MOSAIC_APIM_PUBLISHER_NAME "MOSAIC administrator"
-azd env set MOSAIC_APIM_PUBLISHER_EMAIL "your-admin-address@example.com"
 azd env set MOSAIC_PYTHON_INDEX_URL "https://pypi.org/simple"
 azd up
 ```
@@ -265,11 +300,12 @@ The console and portal containers serve `index.html` and every SPA route with
 revalidates `index.html` and picks up the new bundle and runtime configuration. The policy is in
 `apps/web/nginx.conf` and `apps/portal/nginx.conf`, which are kept identical.
 
-APIM Developer is the dominant cost (illustratively roughly USD 51/month at continuous use) and can take
-30–60 minutes or longer to provision. The shared B1 Linux plan is roughly USD 13–15/month; Basic ACR
-is roughly USD 5/month. Cosmos serverless, Key Vault, and monitoring are consumption-based. Expect
-an illustrative idle baseline near USD 70/month before meaningful telemetry volume. These are not
-a current quote: verify regional SKU prices and expected usage before provisioning.
+The default deployment has **no newly provisioned APIM cost**. The shared B1 Linux plan is
+illustratively roughly USD 13–15/month and Basic ACR roughly USD 5/month, before consumption-based
+Cosmos serverless, Key Vault and monitoring. If explicitly enabled, APIM Developer adds roughly
+USD 51/month at continuous use and can take 30–60 minutes or longer to provision. Existing
+gateways retain their own costs. These figures are not a current quote: verify regional SKU
+prices and expected usage before provisioning.
 
 Remove the environment when not in use:
 

@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import tempfile
 import unittest
@@ -177,15 +178,25 @@ class TerraformDeploymentTests(unittest.TestCase):
         self.assertIn("**/*.tfstate", ignore)
 
     def test_editable_diagram_and_render_stay_in_sync(self) -> None:
-        scene, svg = private_networking.generate()
         directory = private_networking.DESTINATION
-        self.assertEqual(
-            deploy.read_json(directory / "mosaic-private-networking.excalidraw"), scene
-        )
-        self.assertEqual(
-            (directory / "mosaic-private-networking.svg").read_text(encoding="utf-8"), svg
-        )
-        ET.fromstring(svg)
+        for include_apim in (False, True):
+            with self.subTest(include_apim=include_apim):
+                scene, svg = private_networking.generate(include_apim=include_apim)
+                name = "mosaic-private-networking" + ("-with-apim" if include_apim else "")
+                self.assertEqual(deploy.read_json(directory / f"{name}.excalidraw"), scene)
+                self.assertEqual((directory / f"{name}.svg").read_text(encoding="utf-8"), svg)
+                ET.fromstring(svg)
+
+    def test_primary_private_network_does_not_reserve_optional_gateway_capacity(self) -> None:
+        scene, svg = private_networking.generate()
+        optional_scene, optional_svg = private_networking.generate(include_apim=True)
+        for content in (json.dumps(scene), svg):
+            self.assertNotIn(private_networking.APIM_SUBNET, content)
+            self.assertNotIn("privatelink.azure-api.net", content)
+            self.assertNotIn("privatelink.openai.azure.com", content)
+        for content in (json.dumps(optional_scene), optional_svg):
+            self.assertIn(private_networking.APIM_SUBNET, content)
+            self.assertIn("privatelink.azure-api.net", content)
 
 
 if __name__ == "__main__":

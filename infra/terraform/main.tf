@@ -9,13 +9,15 @@ locals {
     managed-by         = "terraform"
     mosaic-environment = var.environment_name
   })
-  app_names  = { for app in ["api", "web", "portal"] : app => "${local.stem}-${app}" }
-  urls       = { for app, name in local.app_names : app => "https://${name}.azurewebsites.net" }
-  cors       = concat(var.localhost_origins, [local.urls.web, local.urls.portal])
-  apim_id    = var.deploy_apim ? azurerm_api_management.gateway[0].id : var.external_bootstrap_apim_resource_id
-  apim_parts = split("/", local.apim_id)
-  apim_name  = local.apim_parts[8]
-  apim_url   = "https://${local.apim_name}.azure-api.net"
+  app_names            = { for app in ["api", "web", "portal"] : app => "${local.stem}-${app}" }
+  urls                 = { for app, name in local.app_names : app => "https://${name}.azurewebsites.net" }
+  cors                 = concat(var.localhost_origins, [local.urls.web, local.urls.portal])
+  apim_id              = var.deploy_apim ? azurerm_api_management.gateway[0].id : var.external_bootstrap_apim_resource_id
+  apim_parts           = split("/", local.apim_id)
+  apim_name            = local.apim_id == "" ? "" : local.apim_parts[8]
+  apim_url             = local.apim_id == "" ? "" : "https://${local.apim_name}.azure-api.net"
+  apim_subscription_id = local.apim_id == "" ? var.subscription_id : local.apim_parts[2]
+  apim_resource_group  = local.apim_id == "" ? azurerm_resource_group.mosaic.name : local.apim_parts[4]
   vault_names = {
     backend    = "kv${substr(replace(local.label, "-", ""), 0, 10)}${local.suffix}"
     management = "kvm${substr(replace(local.label, "-", ""), 0, 10)}${local.suffix}"
@@ -27,10 +29,6 @@ resource "azurerm_resource_group" "mosaic" {
   location = var.location
   tags     = local.tags
   lifecycle {
-    precondition {
-      condition     = var.deploy_apim || var.external_bootstrap_apim_resource_id != ""
-      error_message = "Supply an external bootstrap gateway ID when deploy_apim is false."
-    }
     precondition {
       condition     = var.model_runtime_client_id == "" || var.model_runtime_client_id != var.api_client_id
       error_message = "The model-runtime audience must differ from the control-plane API."
@@ -171,6 +169,12 @@ resource "azurerm_api_management" "gateway" {
     frontend_tls11_enabled = false
   }
   tags = local.tags
+  lifecycle {
+    precondition {
+      condition     = trimspace(var.publisher_name) != "" && trimspace(var.publisher_email) != ""
+      error_message = "Creating APIM requires publisher_name and publisher_email."
+    }
+  }
 }
 
 locals {
@@ -191,8 +195,8 @@ locals {
     MOSAIC_PORTAL_URL                            = local.urls.portal
     MOSAIC_SCHEDULED_WORKERS_ALWAYS_ON           = "true"
     MOSAIC_APIM_GATEWAY_URL                      = local.apim_url
-    MOSAIC_APIM_SUBSCRIPTION_ID                  = local.apim_parts[2]
-    MOSAIC_APIM_RESOURCE_GROUP                   = local.apim_parts[4]
+    MOSAIC_APIM_SUBSCRIPTION_ID                  = local.apim_subscription_id
+    MOSAIC_APIM_RESOURCE_GROUP                   = local.apim_resource_group
     MOSAIC_APIM_SERVICE_NAME                     = local.apim_name
     MOSAIC_COSMOS_ENDPOINT                       = azurerm_cosmosdb_account.state.endpoint
     MOSAIC_COSMOS_OBSERVED_STATE_CONTAINER       = "observed-state"

@@ -9,10 +9,16 @@
       "value": "${AZURE_LOCATION}"
     },
     "apimPublisherName": {
-      "value": "${MOSAIC_APIM_PUBLISHER_NAME}"
+      "value": "${MOSAIC_APIM_PUBLISHER_NAME=}"
     },
     "apimPublisherEmail": {
-      "value": "${MOSAIC_APIM_PUBLISHER_EMAIL}"
+      "value": "${MOSAIC_APIM_PUBLISHER_EMAIL=}"
+    },
+    "deployApim": {
+      "value": "${MOSAIC_DEPLOY_APIM=false}"
+    },
+    "externalBootstrapApimResourceId": {
+      "value": "${MOSAIC_EXTERNAL_BOOTSTRAP_APIM_RESOURCE_ID=}"
     },
     "tenantId": {
       "value": "${MOSAIC_TENANT_ID}"

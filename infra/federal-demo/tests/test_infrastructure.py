@@ -173,7 +173,7 @@ class FederalInfrastructureTests(unittest.TestCase):
             scope = str(resource.get("scope", ""))
             if "apimResource" in scope or "ApiManagement/service" in scope:
                 self.assertEqual(resource.get("condition"), "[parameters('deployApim')]")
-        self.assertEqual(self.core["parameters"]["deployApim"]["defaultValue"], True)
+        self.assertEqual(self.core["parameters"]["deployApim"]["defaultValue"], False)
         self.assertIn("externalBootstrapApimResourceId", self.core["parameters"])
         self.assertEqual(self.core["outputs"]["APIM_PRINCIPAL_ID"]["value"][-6:], ", '')]")
 
@@ -608,9 +608,22 @@ class FederalInfrastructureTests(unittest.TestCase):
         for name in ("API_APP_NAME", "WEB_APP_URL", "PORTAL_APP_URL", "APIM_RESOURCE_ID"):
             self.assertIn(name, outputs)
 
-    def test_default_single_gateway_entrypoint_still_compiles_and_retains_defaults(self):
+    def test_default_hosting_entrypoint_does_not_require_a_gateway(self):
         normal = compile_template(Path("infra") / "main.bicep")
-        self.assertEqual(normal["parameters"]["deployApim"]["defaultValue"], True)
+        self.assertEqual(normal["parameters"]["deployApim"]["defaultValue"], False)
+        self.assertEqual(
+            normal["parameters"]["externalBootstrapApimResourceId"]["defaultValue"], ""
+        )
+        self.assertEqual(
+            one(normal, "Microsoft.Resources/deployments", "apim")["condition"],
+            "[parameters('deployApim')]",
+        )
+        parameters = json.loads((ROOT / "infra" / "main.parameters.json").read_text())["parameters"]
+        self.assertEqual(parameters["deployApim"]["value"], "${MOSAIC_DEPLOY_APIM=false}")
+        self.assertEqual(
+            parameters["externalBootstrapApimResourceId"]["value"],
+            "${MOSAIC_EXTERNAL_BOOTSTRAP_APIM_RESOURCE_ID=}",
+        )
         self.assertEqual(normal["parameters"]["apimSkuName"]["defaultValue"], "Developer_1")
         self.assertEqual(normal["parameters"]["location"]["defaultValue"], "eastus2")
         for name in ("api", "web", "portal"):

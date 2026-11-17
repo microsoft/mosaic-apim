@@ -29,9 +29,7 @@ az account set --subscription <subscription-id>
 # and existing bootstrap consent behavior. This is NOT a read-only planning command.
 python scripts\deploy_terraform.py bootstrap `
   --environment-name mosaic-dev `
-  --subscription-id <subscription-id> `
-  --publisher-name "MOSAIC administrator" `
-  --publisher-email "admin@example.com"
+  --subscription-id <subscription-id>
 
 # Review infra\terraform\mosaic.auto.tfvars.json before planning.
 python scripts\deploy_terraform.py plan
@@ -81,9 +79,10 @@ Scope/role IDs, identity lookup rules, and optional consent defaults are shared 
 Existing identity ownership tags are retained for bootstrap compatibility; the `azd` tag on
 these directory objects does not mean Terraform invokes azd or owns their deletion.
 
-Terraform owns the resource group, App Service plan/sites, public Basic ACR, Cosmos account and
-five containers, two RBAC vaults, workspace/Insights, APIM, role assignments, diagnostics, and
-app settings. Outputs are available with:
+By default, Terraform owns the resource group, App Service plan/sites, public Basic ACR, Cosmos
+account and five containers, two RBAC vaults, workspace/Insights, their role assignments,
+diagnostics and app settings. **No APIM is created or required.** Register existing gateways
+afterward; they can remain outside MOSAIC's network. Outputs are available with:
 
 ```powershell
 terraform -chdir=infra\terraform output -json deployment
@@ -95,10 +94,36 @@ Use the generated `mosaic.auto.tfvars.json` for infrastructure options such as
 `eastus2`. This first Terraform reference leaves private Teams bot hosting/authentication
 disabled; Graph email/shared Teams setup and external integrations remain separate.
 
-To reference an existing bootstrap gateway, set `deploy_apim=false` and
+### Gateway choices
+
+Leave `deploy_apim=false` (the default) and `external_bootstrap_apim_resource_id=""` to deploy
+MOSAIC without any bootstrap gateway. Gateway ID/URL outputs are empty, and no gateway-specific
+permissions, loggers or diagnostics are written. No APIM subnet, private endpoint or private DNS
+zone is required for MOSAIC-only hosting. APIM is still needed for actual runtime model/MCP calls.
+
+To create a new public gateway, merge these inputs into `mosaic.auto.tfvars.json` before planning:
+
+```json
+{
+  "deploy_apim": true,
+  "publisher_name": "MOSAIC administrator",
+  "publisher_email": "admin@example.com"
+}
+```
+
+Keep all other generated inputs. Bootstrap normally supplies publisher metadata; native Terraform
+callers must supply it when enabling APIM. Only this opt-in creates the gateway, grants and
+telemetry resources; it does not create private networking.
+
+Alternatively, to reference an existing bootstrap gateway, set `deploy_apim=false` and
 `external_bootstrap_apim_resource_id`. Terraform writes its location into the API configuration
 but does **not** create permissions, loggers, or diagnostics on that gateway. An administrator
-must separately arrange those and register the gateway. This is not resource adoption.
+must separately arrange those before gateway checks/management can succeed. This is not
+resource adoption.
+
+Do not reserve the optional APIM integration subnet or APIM endpoint addresses unless your
+administrator-owned network design actually includes them. See the separate MOSAIC-only and
+optional gateway [private-network examples](../../docs/private-networking.md).
 
 The AzureRM provider lacks the required `azureMonitor` logger and diagnostic `metrics` fields.
 Only those two APIM child resources use AzAPI; other infrastructure uses native AzureRM.
@@ -136,6 +161,12 @@ deleted with it. Protect local bootstrap metadata too; restoring only remote sta
 bootstrap/adoption mechanism.
 
 ## Updates, failures, and removal
+
+**Upgrading an existing deployment that created APIM:** explicitly persist `"deploy_apim": true`
+in its input file **before** planning with these defaults. Otherwise Terraform plans to destroy
+the owned APIM and gateway-specific permissions/telemetry. Setting an external resource ID does
+not transfer ownership or preserve an owned gateway when its creation flag is disabled. Review
+and stop any unexpected deletion; never apply it just to adopt the new MOSAIC-only default.
 
 - Retry the failed phase after correcting its reported error. Infrastructure and Entra bootstrap
   are independently resumable; no command treats a partial failure as completion.

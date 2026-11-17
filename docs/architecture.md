@@ -18,7 +18,9 @@ for concise answers about permissions, timing, costs, and failure behavior.
 The reference deployment runs a FastAPI API, React administrator console, and separate React portal
 in three containers on Linux Web Apps. It uses Cosmos for governance and retained usage, Key Vault
 for backend secrets, and Azure Monitor for operational and gateway telemetry. Registered gateways
-and model resources can exist outside that deployment.
+and model resources can exist outside that deployment. Both deployment paths create **no APIM
+by default**: stand up MOSAIC first, then register existing gateways, or explicitly opt into a
+new co-located gateway. Gateway runtime dependencies are not mandatory hosting resources.
 
 ```mermaid
 flowchart TB
