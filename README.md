@@ -141,6 +141,10 @@ rather than treating approval as usable access.
 grant limits and shared safeguards with field-specific recovery and a retained draft. Historical
 embeddings are unverified read-only intent, not current enforcement evidence.
 
+**Capture warning (PR #182):** the previously pending gateway-feedback shot and other refreshed
+views are inherited from merged `main`, not independently regenerated on this branch.
+See the [capture provenance warning](docs/screenshots.md#shot-inventory).
+
 The gallery also shows the [User-only portal handoff](docs/gallery.md#portal-handoff-for-end-users):
 an explanation and a deliberate portal action for someone who opened the administrator console
 with the User role.
