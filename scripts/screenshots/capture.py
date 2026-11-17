@@ -2239,8 +2239,9 @@ def _check_identity_workspace(page: Page) -> None:
     editor = page.get_by_role("region", name="Edit Megan Bowen", exact=True)
     editor.wait_for()
     label = editor.get_by_role("textbox", name="Local label", exact=True)
+    heading = editor.get_by_role("heading", name="Edit Megan Bowen", level=2, exact=True)
     page.wait_for_function(
-        "(element) => element === document.activeElement", arg=label.element_handle()
+        "(element) => element === document.activeElement", arg=heading.element_handle()
     )
     label.fill("Megan Bowen review draft")
     page.locator("[data-workspace-editor]").get_by_role("button", name="Back", exact=True).click()

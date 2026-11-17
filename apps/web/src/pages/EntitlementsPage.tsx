@@ -11,6 +11,7 @@ import {
   Switch,
   Text,
   Title3,
+  useRestoreFocusTarget,
 } from '@fluentui/react-components'
 import { AddRegular, KeyRegular, PersonClockRegular, ShieldCheckmarkRegular, SettingsRegular } from '@fluentui/react-icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -144,6 +145,7 @@ function formForGrant(grant: Entitlement): GrantForm {
 
 interface Banner {
   text: string
+  feedbackKey?: number
   /** A published model whose plan must be reviewed and applied before the change takes effect. */
   review?: { publicationId: string; displayName: string }
   /** A pool whose plan, on its own page, must be reviewed and applied before the change takes effect. */
@@ -317,8 +319,12 @@ export function EntitlementsPage() {
   const requestStatus = ['pending', 'approved', 'denied', 'withdrawn', 'all'].includes(requestedStatus)
     ? requestedStatus : 'pending'
   const costCenterFilter = searchParams.get('costCenter') ?? 'all'
-  const [banner, setBanner] = useState<Banner | null>(null)
-  const announce = useCallback((text: string) => setBanner({ text }), [])
+  const [banner, setBannerState] = useState<Banner | null>(null)
+  const bannerKey = useRef(0)
+  const setBanner = useCallback((next: Banner | null) => {
+    setBannerState(next ? { ...next, feedbackKey: ++bannerKey.current } : null)
+  }, [])
+  const announce = useCallback((text: string) => setBanner({ text }), [setBanner])
   const [inspectedPrincipal, setInspectedPrincipal] = useState('')
   const [form, setForm] = useState<GrantForm>(emptyForm)
   const editBase = useRef<Entitlement | undefined>(undefined)
@@ -330,6 +336,13 @@ export function EntitlementsPage() {
   const directModelId = mode === 'new' ? searchParams.get('model') : null
   const dialogOpen = activeSection === 'grants' && (mode === 'new' || mode === 'edit')
   const [connectionGrantId, setConnectionGrantId] = useState<string | null>(null)
+  const restoreFocus = useRestoreFocusTarget()
+  const connectionOpenerRef = useRef<HTMLElement>(null)
+  const focusFallback = useRef<HTMLElement>(null)
+  function openConnection(id: string) {
+    connectionOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    setConnectionGrantId(id)
+  }
   const [review, setReview] = useState<{ publication: Publication; plan: PublishPlan } | null>(null)
   const [approving, setApproving] = useState<ApprovalContext | null>(null)
   const [bulkStage, setBulkStage] = useState<'select' | 'review' | null>(null)
@@ -899,6 +912,7 @@ export function EntitlementsPage() {
   return (
     <section className={styles.page}>
       <PageHeader
+        focusReturnRef={focusFallback}
         title="Entitlements"
         description="Manage grants, inspect access paths, and decide requests. Saving intent never changes API Management; review and apply the affected resource's plan separately."
       />
@@ -921,7 +935,7 @@ export function EntitlementsPage() {
         {requestCounts.isError && <Button onClick={() => void requestCounts.refetch()}>Pending count unavailable — retry</Button>}
       </div>
       {banner && (
-        <MessageBar intent="success" layout="multiline">
+        <MessageBar key={banner.feedbackKey} intent="success" politeness="polite" layout="multiline">
           <MessageBarBody>
             {banner.text}
             {banner.review && (
@@ -1268,7 +1282,7 @@ export function EntitlementsPage() {
                               Re-enable
                             </Button>
                           ) : primaryAction === 'connection' ? (
-                            <Button onClick={() => setConnectionGrantId(entitlement.id)}>Connection info</Button>
+                            <Button {...restoreFocus} onClick={() => openConnection(entitlement.id)}>Connection info</Button>
                           ) : primaryAction === 'model' && relatedPublication ? (
                             <Button onClick={() => openReview(relatedPublication.id)}>Manage model</Button>
                           ) : primaryAction === 'pool' && relatedPool ? (
@@ -1289,7 +1303,7 @@ export function EntitlementsPage() {
                             }] : []),
                             ...(connectionAvailable && primaryAction !== 'connection' ? [{
                               label: 'Connection info',
-                              onClick: () => setConnectionGrantId(entitlement.id),
+                              onClick: () => openConnection(entitlement.id),
                             }] : []),
                           ]}
                           destructiveActions={[{
@@ -1772,6 +1786,8 @@ export function EntitlementsPage() {
       )}
       {activeSection === 'grants' && !mode && connectionGrant && connectionGrant.id === selectedId && (
         <EntitlementConnectionDialog
+          openerRef={connectionOpenerRef}
+          fallbackFocusRef={focusFallback}
           open
           entitlement={connectionGrant}
           onClose={() => setConnectionGrantId(null)}

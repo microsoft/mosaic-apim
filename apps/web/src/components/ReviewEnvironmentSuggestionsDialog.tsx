@@ -1,5 +1,6 @@
 import {
   Button,
+  AnnounceProvider,
   Checkbox,
   Dialog,
   DialogActions,
@@ -19,7 +20,7 @@ import {
   Text,
 } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useMemo, useState } from 'react'
+import { type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, useMosaicApi } from '../api'
 import {
   environmentSuggestionsQueryKey,
@@ -32,15 +33,29 @@ import { environmentAssignmentResourceNoun } from '../labels'
 import type { EnvironmentAssignment, EnvironmentAssignmentResult } from '../types'
 import { EnvironmentPicker } from './EnvironmentPicker'
 import { GrantsAcknowledgmentRefusal, PublicationsBlockedRefusal } from './EnvironmentRefusal'
+import { ErrorState } from './AsyncState'
+import { useFocusAwareAnnounce } from './useFocusAwareAnnounce'
+import { useDialogFocusReturn } from './useDialogFocusReturn'
 import styles from './EnvironmentComponents.module.css'
 
-export function ReviewEnvironmentSuggestionsDialog({
-  open,
-  onClose,
-}: {
+interface ReviewEnvironmentSuggestionsProps {
   open: boolean
   onClose: () => void
-}) {
+  fallbackFocusRef?: RefObject<HTMLElement | null>
+}
+
+export function ReviewEnvironmentSuggestionsDialog(props: ReviewEnvironmentSuggestionsProps) {
+  const [session, setSession] = useState({ open: props.open, key: 0 })
+  if (props.open && !session.open) setSession({ open: true, key: session.key + 1 })
+  else if (!props.open && session.open) setSession({ ...session, open: false })
+  return <ReviewEnvironmentSuggestionsSession key={session.key} {...props} />
+}
+
+function ReviewEnvironmentSuggestionsSession({
+  open,
+  onClose,
+  fallbackFocusRef,
+}: ReviewEnvironmentSuggestionsProps) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const catalog = useEnvironmentCatalog()
@@ -53,6 +68,10 @@ export function ReviewEnvironmentSuggestionsDialog({
   const [environments, setEnvironments] = useState<Record<string, string | null>>({})
   const [error, setError] = useState<unknown>(null)
   const [acknowledged, setAcknowledged] = useState(false)
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const outcomeRef = useRef<HTMLDivElement>(null)
+  const announcement = useFocusAwareAnnounce(outcomeRef)
+  const surfaceMotion = useDialogFocusReturn({ open, surfaceRef, fallbackRef: fallbackFocusRef })
   const rows = useMemo(() => suggestions.data?.items ?? [], [suggestions.data?.items])
   useEffect(() => {
     if (rows.length === 0) return
@@ -83,12 +102,14 @@ export function ReviewEnvironmentSuggestionsDialog({
         : [],
     )
   const mutation = useMutation({
+    onMutate: () => setError(null),
     mutationFn: (payload: { extra?: EnvironmentAssignment[]; acknowledgeGrants?: boolean }) =>
       api.assignEnvironments({
         assignments: [...assignments(), ...(payload.extra ?? [])],
         acknowledgeGrants: payload.acknowledgeGrants,
       }),
     onSuccess: (result) => {
+      setError(null)
       invalidateEnvironmentQueries(queryClient)
       queryClient.setQueryData<EnvironmentAssignmentResult>(
         ['last-environment-assignment-result'],
@@ -102,19 +123,28 @@ export function ReviewEnvironmentSuggestionsDialog({
   const blockedSuggestionNoun = environmentAssignmentResourceNoun(blocked?.suggestedAssignments ?? [])
   const message =
     error instanceof ApiError ? error.message : error instanceof Error ? error.message : null
+  const outcomeKey = mutation.isSuccess || error ? mutation.submittedAt : null
+  const shownOutcome = useRef<number | null>(null)
+  useLayoutEffect(() => {
+    const previous = shownOutcome.current
+    shownOutcome.current = outcomeKey
+    if (open && outcomeKey !== null && outcomeKey !== previous) outcomeRef.current?.focus()
+  }, [open, outcomeKey])
   return (
     <Dialog
       open={open}
+      surfaceMotion={surfaceMotion}
       onOpenChange={(_, data) => {
         if (!data.open && !mutation.isPending) onClose()
       }}
     >
-      <DialogSurface>
+      <DialogSurface ref={surfaceRef}>
         <DialogBody>
           <DialogTitle>Review environment suggestions</DialogTitle>
           <DialogContent className={styles.dialogContent}>
             {suggestions.isLoading && <Spinner label="Loading suggestions" />}
-            {!suggestions.isLoading && rows.length === 0 && (
+            {suggestions.isError && <ErrorState error={suggestions.error} />}
+            {suggestions.isSuccess && rows.length === 0 && (
               <Text>No unclassified resources need review.</Text>
             )}
             {rows.length > 0 && (
@@ -162,13 +192,16 @@ export function ReviewEnvironmentSuggestionsDialog({
                 </TableBody>
               </Table>
             )}
-            {blocked && <PublicationsBlockedRefusal details={blocked} catalog={catalog.data} />}
+            <AnnounceProvider value={announcement}>
+            {blocked && <div ref={outcomeRef} tabIndex={-1}><PublicationsBlockedRefusal details={blocked} catalog={catalog.data} /></div>}
             {blocked && blocked.suggestedAssignments.length > 0 && (
-              <Button onClick={() => mutation.mutate({ extra: blocked.suggestedAssignments })}>
+              <Button disabledFocusable={mutation.isPending} onClick={() => {
+                if (!mutation.isPending) mutation.mutate({ extra: blocked.suggestedAssignments })
+              }}>
                 Also classify suggested {blockedSuggestionNoun}
               </Button>
             )}
-            {grants && <GrantsAcknowledgmentRefusal details={grants} catalog={catalog.data} />}
+            {grants && <div ref={outcomeRef} tabIndex={-1}><GrantsAcknowledgmentRefusal details={grants} catalog={catalog.data} /></div>}
             {grants && (
               <Checkbox
                 checked={acknowledged}
@@ -177,7 +210,7 @@ export function ReviewEnvironmentSuggestionsDialog({
               />
             )}
             {mutation.data && (
-              <MessageBar intent="success">
+              <div ref={outcomeRef} tabIndex={-1}><MessageBar key={mutation.submittedAt} intent="success" politeness="polite">
                 <MessageBarBody>
                   {mutation.data.results
                     .map(
@@ -186,26 +219,31 @@ export function ReviewEnvironmentSuggestionsDialog({
                     )
                     .join('; ')}
                 </MessageBarBody>
-              </MessageBar>
+              </MessageBar></div>
             )}
             {message && !blocked && !grants && (
-              <MessageBar intent="error">
+              <div ref={outcomeRef} tabIndex={-1}><MessageBar key={mutation.submittedAt} intent="error">
                 <MessageBarBody>{message}</MessageBarBody>
-              </MessageBar>
+              </MessageBar></div>
             )}
+            </AnnounceProvider>
           </DialogContent>
           <DialogActions>
-            <Button disabled={mutation.isPending} onClick={onClose}>
+            <Button disabledFocusable={mutation.isPending} onClick={onClose}>
               Close
             </Button>
             <Button
               appearance="primary"
               disabled={
-                mutation.isPending ||
                 assignments().length === 0 ||
                 (Boolean(grants) && !acknowledged)
               }
-              onClick={() => mutation.mutate({ acknowledgeGrants: acknowledged })}
+              disabledFocusable={mutation.isPending}
+              onClick={() => {
+                if (!mutation.isPending && assignments().length > 0 && (!grants || acknowledged)) {
+                  mutation.mutate({ acknowledgeGrants: acknowledged })
+                }
+              }}
             >
               {mutation.isPending
                 ? 'Submitting…'

@@ -1,5 +1,6 @@
 import {
   Badge,
+  AnnounceProvider,
   Button,
   Checkbox,
   Dialog,
@@ -24,7 +25,7 @@ import {
   Title3,
 } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useMosaicApi } from '../api'
 import { creationContext, useEditContext } from '../change-review'
 import { environmentBlockedVerdict, useEnvironmentCatalog } from '../environments'
@@ -44,6 +45,7 @@ import type {
   TokenEnforcement,
 } from '../types'
 import { ErrorState, Loading } from './AsyncState'
+import { useFocusAwareAnnounce } from './useFocusAwareAnnounce'
 import { ChangeReview, TechnicalExecution } from './ChangeReview'
 import { EnvironmentBadge } from './EnvironmentBadge'
 import { PolicyFacetItem } from './PolicyFacets'
@@ -478,6 +480,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
   // focus into the step the dialog opens on, and a field the administrator is typing in keeps focus.
   const stepRef = useRef<HTMLElement>(null)
   const outcomeRef = useRef<HTMLDivElement>(null)
+  const announcement = useFocusAwareAnnounce(outcomeRef)
   const finishedRun = currentRun && terminalRunStatuses.includes(currentRun.status) ? currentRun : null
   const outcome = {
     choose: null,
@@ -486,7 +489,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
     apply: finishedRun?.id ?? null,
   }[step]
   const shownRef = useRef({ step, outcome })
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return
     const shown = shownRef.current
     shownRef.current = { step, outcome }
@@ -708,7 +711,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                   </>
                 )}
                 {createAndPlan.isError && (
-                  <div ref={outcomeRef} tabIndex={-1}>
+                  <AnnounceProvider value={announcement}><div ref={outcomeRef} tabIndex={-1}>
                     {createEnvironmentBlocked ? (
                       <MessageBar intent="error">
                         <MessageBarBody>
@@ -717,9 +720,9 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                         </MessageBarBody>
                       </MessageBar>
                     ) : (
-                      <ErrorState error={createAndPlan.error} />
+                      <ErrorState context="action" title="Unable to create the publish plan" error={createAndPlan.error} announcementKey={createAndPlan.submittedAt} />
                     )}
-                  </div>
+                  </div></AnnounceProvider>
                 )}
               </div>
             )}
@@ -727,7 +730,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
             {step === 'review' && plan && (
               <div className={styles.nameCell}>
                 {reviewMessage && (
-                  <div ref={applyError ? undefined : outcomeRef} tabIndex={-1}>
+                  <AnnounceProvider value={announcement}><div ref={applyError ? undefined : outcomeRef} tabIndex={-1}>
                     <MessageBar intent="warning">
                       <MessageBarBody>
                         <MessageBarTitle>MOSAIC didn't apply the plan you reviewed</MessageBarTitle>
@@ -737,7 +740,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                         )}
                       </MessageBarBody>
                     </MessageBar>
-                  </div>
+                  </div></AnnounceProvider>
                 )}
                 {nothingToApply && (
                   <MessageBar intent="info">
@@ -803,22 +806,22 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                   </MessageBar>
                 )}
                 {applyError && !applyEnvironmentBlocked && (
-                  <div ref={outcomeRef} tabIndex={-1}>
-                    <ErrorState error={applyError} />
-                  </div>
+                  <AnnounceProvider value={announcement}><div ref={outcomeRef} tabIndex={-1}>
+                    <ErrorState context="action" title="Unable to apply the publish plan" error={applyError} announcementKey={apply.submittedAt} />
+                  </div></AnnounceProvider>
                 )}
-                {refreshError && <ErrorState error={refreshError} />}
+                {refreshError && <ErrorState context="action" title="Unable to refresh the publish plan" error={refreshError} announcementKey={apply.submittedAt} />}
               </div>
             )}
 
             {step === 'apply' && (
               <div className={styles.nameCell}>
                 {!currentRun || currentRun.status === 'running' ? <Loading label="Applying publish plan" /> : null}
-                {run.isError && <ErrorState error={run.error} />}
+                {run.isError && <ErrorState title="Unable to refresh the publish run" error={run.error} announcementKey={`${runId}:${run.error.message}`} />}
                 {currentRun && (
-                  <div ref={finishedRun ? outcomeRef : undefined} tabIndex={-1}>
+                  <AnnounceProvider value={announcement}><div ref={finishedRun ? outcomeRef : undefined} tabIndex={-1}>
                     <RunResult run={currentRun} />
-                  </div>
+                  </div></AnnounceProvider>
                 )}
               </div>
             )}

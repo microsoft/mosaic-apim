@@ -246,6 +246,26 @@ dependencies as well.
 The [federal demo runtime](../demo/federal/README.md#run-and-validate) has its own pinned environment
 and isolated test/lint commands. Its CI job does not make live directory, gateway, or model calls.
 
+### Focused keyboard and feedback checks
+
+`apps\web\tests\test_dialog_accessibility_browser.py` exercises the real apps against the
+fictional screenshot estate. It reserves API/console/portal ports 18049/15149/15249, uses
+isolated Chromium contexts, and refuses external browser requests. Run it from the repository
+root with the matching API development environment and Playwright installed:
+
+```powershell
+$env:PYTHONPATH = "$($PWD.Path)\apps\api\src;$($PWD.Path)\apps\api\tests"
+$env:NODE_OPTIONS = ($env:NODE_OPTIONS + ' --no-experimental-webstorage').Trim()
+uv run --frozen --with "playwright>=1.58,<2" python -m pytest apps\web\tests\test_dialog_accessibility_browser.py
+```
+
+The tests verify keyboard focus and delivery to Fluent's native/fallback announcement mechanism,
+including repeated clipboard outcomes, late credential results, eligibility changes, and the
+identity editor's heading/draft return targets. They do not verify speech from NVDA or Narrator;
+report any unperformed screen-reader spot check explicitly.
+Keep failed/debug captures out of Git; documentation images still come only from the official
+[fictional redacted capture](screenshots.md).
+
 ## Merging into `main`
 
 Changes reach `main` only through a pull request. Two rulesets protect the branch:

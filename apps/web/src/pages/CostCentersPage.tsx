@@ -1,5 +1,6 @@
 import {
   Badge,
+  AnnounceProvider,
   Button,
   Dialog,
   DialogActions,
@@ -15,10 +16,12 @@ import {
   Select,
   Text,
   Title3,
+  useAnnounce,
+  useRestoreFocusTarget,
 } from '@fluentui/react-components'
 import { AddRegular, BuildingRegular, MoneyRegular, PeopleRegular, SettingsRegular, GaugeRegular } from '@fluentui/react-icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { type FormEvent, type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link as RouterLink, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { ApiError, useMosaicApi } from '../api'
 import { BUDGET_LEVEL_LABELS, budgetBadgeColor } from '../budgets'
@@ -33,6 +36,8 @@ import { CostCenterDirectoryOperations } from '../components/CostCenterDirectory
 import { CostCenterResourceAccessFields } from '../components/CostCenterResourceAccess'
 import { WorkspaceLeaveGuard, completeWorkspaceNavigation } from '../components/WorkspaceLeaveGuard'
 import { useWorkbenchLocation } from '../components/useWorkbenchLocation'
+import { useDialogFocusReturn } from '../components/useDialogFocusReturn'
+import { useFocusAwareAnnounce } from '../components/useFocusAwareAnnounce'
 import { COST_CENTER_SETUP_LABELS, costCenterSetupState } from '../cost-centers'
 import type { BudgetUpdate, CostCenter, CostCenterLimit, QuotaPeriod } from '../types'
 import styles from './CostCentersPage.module.css'
@@ -125,6 +130,7 @@ function CostCenterBadges({ costCenter, showKeys = true }: { costCenter: CostCen
 }
 
 export function CostCentersPage() {
+  const focusFallback = useRef<HTMLElement>(null)
   const sections = [
     { value: 'centers', label: 'Cost centers', icon: <BuildingRegular /> },
     { value: 'organization', label: 'Organization-wide budget', icon: <MoneyRegular />, description: 'Aggregate monthly spending across all cost centers and gateways. Warn-only: this budget never blocks calls.' },
@@ -171,6 +177,7 @@ export function CostCentersPage() {
   return (
     <section className={styles.page}>
       <PageHeader
+        focusReturnRef={focusFallback}
         title="Cost centers"
         description="Connect dedicated Entra groups, choose exact resource access, and charge grants and individual keys across gateways."
       />
@@ -181,7 +188,7 @@ export function CostCentersPage() {
         workbench.mode === 'new' ? (
           <CostCenterEditor onCancel={() => workbench.close()} onSaved={(id) => workbench.close(id)} />
         ) : workbench.mode === 'edit' && workbench.selectedId ? (
-          <CostCenterWorkspace key={workbench.selectedId} costCenterId={workbench.selectedId} embedded />
+          <CostCenterWorkspace key={workbench.selectedId} costCenterId={workbench.selectedId} embedded fallbackFocusRef={focusFallback} />
         ) : (
           <div className={styles.stack}>
             <ResourceWorkbench
@@ -208,7 +215,7 @@ export function CostCentersPage() {
                   </span>
                 </span>
               }}
-              renderDetail={(costCenter) => <CostCenterWorkspace key={costCenter.id} costCenterId={costCenter.id} embedded />}
+              renderDetail={(costCenter) => <CostCenterWorkspace key={costCenter.id} costCenterId={costCenter.id} embedded fallbackFocusRef={focusFallback} />}
               emptyList={<EmptyState title="No cost centers">Create a cost center to charge grants separately.</EmptyState>}
               emptySelection={<EmptyState title="Select a cost center">Inspect group setup, actual directory members, resource access, limits, and budget.</EmptyState>}
             />
@@ -308,7 +315,9 @@ export function CostCenterDetailPage() {
   return <CostCenterWorkspace costCenterId={costCenterId} />
 }
 
-function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId: string; embedded?: boolean }) {
+function CostCenterWorkspace({ costCenterId, embedded = false, fallbackFocusRef }: {
+  costCenterId: string; embedded?: boolean; fallbackFocusRef?: RefObject<HTMLElement | null>
+}) {
   const sections = [
     { value: 'overview', label: 'Overview', icon: <BuildingRegular /> },
     { value: 'members', label: 'Members', icon: <PeopleRegular /> },
@@ -324,6 +333,16 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
   const navigate = useNavigate()
   const location = useLocation()
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const outcomeRef = useRef<HTMLDivElement>(null)
+  const navigationFallback = useRef<HTMLElement>(null)
+  const restoreFocus = useRestoreFocusTarget()
+  const { announce } = useAnnounce()
+  const motion = useDialogFocusReturn({ open: deleteOpen, surfaceRef, fallbackRef: fallbackFocusRef ?? navigationFallback })
+  const announcement = useFocusAwareAnnounce(outcomeRef)
+  useLayoutEffect(() => {
+    navigationFallback.current = document.querySelector<HTMLElement>('[aria-label="Primary navigation"] a[href="/cost-centers"]')
+  }, [])
   const [limitDraft, setLimitDraft] = useState<LimitDraft>(emptyLimitDraft)
   const [limitValidation, setLimitValidation] = useState<string | null>(null)
   const [limits, setLimits] = useState<CostCenterLimit[]>([])
@@ -386,8 +405,10 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['cost-centers'] })
       completeWorkspaceNavigation(() => embedded ? workbench.close(null) : navigate('/cost-centers'))
+      announce('Cost center record deleted. Its Entra group and applied gateway access are unchanged.', { polite: true })
     },
   })
+  useLayoutEffect(() => { if (deleteOpen && deleteCostCenter.isError) outcomeRef.current?.focus() }, [deleteOpen, deleteCostCenter.isError, deleteCostCenter.submittedAt])
   const recheck = useMutation({
     mutationFn: () => api.recheckCostCenter(costCenterId),
     onSuccess: async () => {
@@ -553,9 +574,9 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
           {data.setupState !== 'exempt' && (
             <>
               {deleteCostCenter.isError && (
-                <MessageBar intent="error"><MessageBarBody>{errorMessage(deleteCostCenter.error, 'Unable to delete this cost center.')}</MessageBarBody></MessageBar>
+                <AnnounceProvider value={announcement}><MessageBar key={deleteCostCenter.submittedAt} intent="error"><MessageBarBody>{errorMessage(deleteCostCenter.error, 'Unable to delete this cost center.')}</MessageBarBody></MessageBar></AnnounceProvider>
               )}
-              <Button className={styles.dangerButton} appearance="subtle" onClick={() => setDeleteOpen(true)}>Delete cost center</Button>
+              <Button {...restoreFocus} className={styles.dangerButton} appearance="subtle" onClick={() => { deleteCostCenter.reset(); setDeleteOpen(true) }}>Delete cost center</Button>
             </>
           )}
         </div>
@@ -680,16 +701,19 @@ function CostCenterWorkspace({ costCenterId, embedded = false }: { costCenterId:
       </div>}
       </SectionLayout>
 
-      <Dialog open={deleteOpen} onOpenChange={(_, dialogData) => !dialogData.open && setDeleteOpen(false)}>
-        <DialogSurface>
+      <Dialog open={deleteOpen} surfaceMotion={motion} onOpenChange={(_, dialogData) => !dialogData.open && setDeleteOpen(false)}>
+        <DialogSurface ref={surfaceRef}>
           <DialogBody>
             <DialogTitle>Delete cost center</DialogTitle>
             <DialogContent>
               <Text>Delete <strong>{data.name}</strong>? This is refused while it is the tenant default, a principal default, or has grants. Deleting a MOSAIC record never deletes its Entra group, and does not remove previously applied gateway access.</Text>
+              {deleteCostCenter.isError && <AnnounceProvider value={announcement}><div ref={outcomeRef} tabIndex={-1}>
+                <MessageBar key={deleteCostCenter.submittedAt} intent="error"><MessageBarBody>{errorMessage(deleteCostCenter.error, 'Unable to delete this cost center.')}</MessageBarBody></MessageBar>
+              </div></AnnounceProvider>}
             </DialogContent>
             <DialogActions>
               <Button appearance="secondary" onClick={() => setDeleteOpen(false)}>Cancel</Button>
-              <Button appearance="primary" onClick={() => deleteCostCenter.mutate()} disabled={deleteCostCenter.isPending}>Delete</Button>
+              <Button appearance="primary" onClick={() => { if (!deleteCostCenter.isPending) deleteCostCenter.mutate() }} disabledFocusable={deleteCostCenter.isPending}>Delete</Button>
             </DialogActions>
           </DialogBody>
         </DialogSurface>

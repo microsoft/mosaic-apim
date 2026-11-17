@@ -227,7 +227,7 @@ describe('ImportFromGatewayDialog', () => {
     expect(echo).toBeChecked()
   })
 
-  it('leaves focus where Fluent puts it when the dialog opens again, still showing the last failure', async () => {
+  it('reopens with fresh error state and the workspace heading focused', async () => {
     const user = userEvent.setup()
     api.importModelApis.mockRejectedValue(new Error(failure))
     renderDialog()
@@ -238,7 +238,7 @@ describe('ImportFromGatewayDialog', () => {
     await user.click(await screen.findByRole('button', { name: 'Import from a gateway' }))
 
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Import APIs from a gateway' })).toHaveFocus())
-    expect(screen.getByText(failure)).toBeVisible()
+    expect(screen.queryByText(failure)).not.toBeInTheDocument()
   })
 
   it('keeps focus on Clear once it leaves nothing to clear', async () => {

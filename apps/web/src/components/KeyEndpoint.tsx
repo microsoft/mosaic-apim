@@ -1,5 +1,6 @@
 import {
   Button,
+  AnnounceProvider,
   Card,
   Dialog,
   DialogActions,
@@ -22,9 +23,11 @@ import {
 } from '@fluentui/react-components'
 import { AddRegular, DismissRegular } from '@fluentui/react-icons'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { type FormEvent, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, useMosaicApi } from '../api'
 import { EmptyState, ErrorState } from './AsyncState'
+import { useDialogFocusReturn } from './useDialogFocusReturn'
+import { useFocusAwareAnnounce } from './useFocusAwareAnnounce'
 import { DeploymentPoolsCell } from './EndpointPools'
 import { poolsByDeployment, useEndpointPools } from '../endpoint-pools'
 import {
@@ -191,7 +194,7 @@ export function DeclarationFields({
 function useFocusOnChange<T>(value: T, active: boolean) {
   const ref = useRef<HTMLDivElement>(null)
   const shown = useRef(value)
-  useEffect(() => {
+  useLayoutEffect(() => {
     const previous = shown.current
     shown.current = value
     if (!active || !value || Object.is(value, previous)) return
@@ -211,6 +214,8 @@ function DeclareDeploymentDialog({
 }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const motion = useDialogFocusReturn({ open, surfaceRef })
   const bedrock = endpoint.provider === 'awsBedrock'
   const [deploymentName, setDeploymentName] = useState('')
   const [modelName, setModelName] = useState('')
@@ -234,6 +239,7 @@ function DeclareDeploymentDialog({
   })
   // A refusal says why at the top of the dialog, and takes focus so a screen reader reads it.
   const errorRef = useFocusOnChange(declare.error, open)
+  const announcement = useFocusAwareAnnounce(errorRef)
 
   function close() {
     setDeploymentName('')
@@ -258,11 +264,12 @@ function DeclareDeploymentDialog({
   return (
     <Dialog
       open={open}
+      surfaceMotion={motion}
       onOpenChange={(_, data) => {
         if (!data.open && !declare.isPending) close()
       }}
     >
-      <DialogSurface>
+      <DialogSurface ref={surfaceRef}>
         <form onSubmit={submit}>
           <DialogBody>
             <DialogTitle>
@@ -270,7 +277,7 @@ function DeclareDeploymentDialog({
             </DialogTitle>
             <DialogContent className={styles.form}>
               {declare.isError && (
-                <div ref={errorRef} tabIndex={-1}>
+                <AnnounceProvider value={announcement}><div ref={errorRef} tabIndex={-1}>
                   <ErrorState
                     title={
                       bedrock
@@ -279,7 +286,7 @@ function DeclareDeploymentDialog({
                     }
                     error={declare.error}
                   />
-                </div>
+                </div></AnnounceProvider>
               )}
               {bedrock ? (
                 <>
@@ -402,6 +409,8 @@ function ReplaceKeyDialog({
 }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const motion = useDialogFocusReturn({ open, surfaceRef })
   const bedrock = endpoint.provider === 'awsBedrock'
   // Held only while the dialog is open, and cleared when it closes.
   const [apiKey, setApiKey] = useState('')
@@ -440,6 +449,7 @@ function ReplaceKeyDialog({
   })
   // A refusal says why at the top of the dialog, and takes focus so a screen reader reads it.
   const errorRef = useFocusOnChange(replace.error, open)
+  const announcement = useFocusAwareAnnounce(errorRef)
 
   function close() {
     setApiKey('')
@@ -460,19 +470,20 @@ function ReplaceKeyDialog({
   return (
     <Dialog
       open={open}
+      surfaceMotion={motion}
       onOpenChange={(_, data) => {
         if (!data.open && !replace.isPending) close()
       }}
     >
-      <DialogSurface>
+      <DialogSurface ref={surfaceRef}>
         <form onSubmit={submit}>
           <DialogBody>
             <DialogTitle>Replace the API key for {endpoint.name}</DialogTitle>
             <DialogContent className={styles.form}>
               {replace.isError && (
-                <div ref={errorRef} tabIndex={-1}>
+                <AnnounceProvider value={announcement}><div ref={errorRef} tabIndex={-1}>
                   <ErrorState title="MOSAIC didn't replace the key" error={replace.error} />
-                </div>
+                </div></AnnounceProvider>
               )}
               {bedrock ? (
                 <Text size={200} className={styles.muted}>

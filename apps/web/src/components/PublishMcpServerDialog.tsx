@@ -1,5 +1,6 @@
 import {
   Badge,
+  AnnounceProvider,
   Button,
   Checkbox,
   Dialog,
@@ -24,7 +25,7 @@ import {
   Title3,
 } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useMosaicApi } from '../api'
 import { creationContext, useEditContext } from '../change-review'
 import { describeLimits } from '../entitlement-limits'
@@ -43,6 +44,7 @@ import type {
   PublishStepStatus,
 } from '../types'
 import { ErrorState, Loading } from './AsyncState'
+import { useFocusAwareAnnounce } from './useFocusAwareAnnounce'
 import { ChangeReview, TechnicalExecution } from './ChangeReview'
 import { EnvironmentBadge } from './EnvironmentBadge'
 import { ModelAccessRecovery } from './ModelAccessRecovery'
@@ -520,6 +522,7 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
   // stay inside the modal, but leave initial focus to Fluent and don't interrupt an edited field.
   const stepRef = useRef<HTMLElement>(null)
   const outcomeRef = useRef<HTMLDivElement>(null)
+  const announcement = useFocusAwareAnnounce(outcomeRef)
   const finishedRun = currentRun && terminalRunStatuses.includes(currentRun.status) ? currentRun : null
   const outcome = {
     choose: null,
@@ -528,7 +531,7 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
     apply: finishedRun?.id ?? null,
   }[step]
   const shownRef = useRef({ step, outcome })
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return
     const shown = shownRef.current
     shownRef.current = { step, outcome }
@@ -694,7 +697,7 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
                   <Input value={form.apiPath} onChange={(_, data) => setForm({ ...form, apiPath: data.value })} />
                 </Field>
                 {createAndPlan.isError && (
-                  <div ref={outcomeRef} tabIndex={-1}>
+                  <AnnounceProvider value={announcement}><div ref={outcomeRef} tabIndex={-1}>
                     {createEnvironmentBlocked ? (
                       <MessageBar intent="error">
                         <MessageBarBody>
@@ -703,9 +706,9 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
                         </MessageBarBody>
                       </MessageBar>
                     ) : (
-                      <ErrorState error={createAndPlan.error} />
+                      <ErrorState context="action" title="Unable to create the MCP publish plan" error={createAndPlan.error} announcementKey={createAndPlan.submittedAt} />
                     )}
-                  </div>
+                  </div></AnnounceProvider>
                 )}
               </div>
             )}
@@ -713,7 +716,7 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
             {step === 'review' && plan && (
               <div className={styles.nameCell}>
                 {reviewMessage && (
-                  <div ref={applyError ? undefined : outcomeRef} tabIndex={-1}>
+                  <AnnounceProvider value={announcement}><div ref={applyError ? undefined : outcomeRef} tabIndex={-1}>
                     <MessageBar intent="warning">
                       <MessageBarBody>
                         <MessageBarTitle>MOSAIC didn't apply the plan you reviewed</MessageBarTitle>
@@ -723,7 +726,7 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
                         )}
                       </MessageBarBody>
                     </MessageBar>
-                  </div>
+                  </div></AnnounceProvider>
                 )}
                 {nothingToApply && (
                   <MessageBar intent="info">
@@ -779,7 +782,7 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
                 )}
                 </TechnicalExecution>
                 {applyError && (
-                  <div ref={outcomeRef} tabIndex={-1}>
+                  <AnnounceProvider value={announcement}><div ref={outcomeRef} tabIndex={-1}>
                     {applyEnvironmentBlocked ? (
                       <MessageBar intent="error">
                         <MessageBarBody>
@@ -787,21 +790,21 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
                           {applyEnvironmentBlocked.reason}
                         </MessageBarBody>
                       </MessageBar>
-                    ) : <ErrorState error={applyError} />}
-                  </div>
+                    ) : <ErrorState context="action" title="Unable to apply the MCP publish plan" error={applyError} announcementKey={apply.submittedAt} />}
+                  </div></AnnounceProvider>
                 )}
-                {refreshError && <ErrorState error={refreshError} />}
+                {refreshError && <ErrorState context="action" title="Unable to refresh the MCP publish plan" error={refreshError} announcementKey={apply.submittedAt} />}
               </div>
             )}
 
             {step === 'apply' && (
               <div className={styles.nameCell}>
                 {!currentRun || currentRun.status === 'running' ? <Loading label="Applying MCP publish plan" /> : null}
-                {run.isError && <ErrorState error={run.error} />}
+                {run.isError && <ErrorState title="Unable to refresh the MCP publish run" error={run.error} announcementKey={`${runId}:${run.error.message}`} />}
                 {currentRun && (
-                  <div ref={finishedRun ? outcomeRef : undefined} tabIndex={-1}>
+                  <AnnounceProvider value={announcement}><div ref={finishedRun ? outcomeRef : undefined} tabIndex={-1}>
                     <RunResult run={currentRun} />
-                  </div>
+                  </div></AnnounceProvider>
                 )}
               </div>
             )}

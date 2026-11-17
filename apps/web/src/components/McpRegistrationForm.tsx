@@ -106,7 +106,7 @@ export function McpRegistrationForm({
           onChange={(value) => { setEnvironment(value); setEnvironmentTouched(true) }}
           required label="Environment"
           validationMessage={environmentTouched && !environment ? 'Choose an environment.' : undefined} />
-        {register.isError && <ErrorState error={register.error} />}
+        {register.isError && <ErrorState context="action" title="Unable to register the MCP server" error={register.error} announcementKey={register.submittedAt} />}
       </form>
     </WorkspaceEditorFrame>
   )

@@ -1,5 +1,6 @@
 import {
   Button,
+  AnnounceProvider,
   Dialog,
   DialogActions,
   DialogBody,
@@ -12,8 +13,10 @@ import {
   Text,
   useId,
 } from '@fluentui/react-components'
-import type { ReactNode } from 'react'
+import { type ReactNode, type RefObject, useLayoutEffect, useRef } from 'react'
 import { ApiError } from '../api'
+import { useDialogFocusReturn } from './useDialogFocusReturn'
+import { useFocusAwareAnnounce } from './useFocusAwareAnnounce'
 import styles from './RemovalDialog.module.css'
 
 interface BlockingRecord {
@@ -52,6 +55,7 @@ export function RemovalDialog({
   statusLabel = (status) => status,
   onConfirm,
   onCancel,
+  fallbackFocusRef,
 }: {
   open: boolean
   title: string
@@ -63,20 +67,27 @@ export function RemovalDialog({
   statusLabel?: (status: string) => string
   onConfirm: () => void
   onCancel: () => void
+  fallbackFocusRef?: RefObject<HTMLElement | null>
 }) {
   const textId = useId('removal-dialog-')
   const blocking = blockingRecords(error, 'publications')
   const blockingPools = blockingRecords(error, 'modelPools')
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const outcomeRef = useRef<HTMLDivElement>(null)
+  const motion = useDialogFocusReturn({ open, surfaceRef, fallbackRef: fallbackFocusRef })
+  const announcement = useFocusAwareAnnounce(outcomeRef)
+  useLayoutEffect(() => { if (open && error != null) outcomeRef.current?.focus() }, [open, error])
 
   return (
     <Dialog
       modalType="alert"
       open={open}
+      surfaceMotion={motion}
       onOpenChange={(_, data) => {
         if (!data.open && !pending) onCancel()
       }}
     >
-      <DialogSurface aria-describedby={textId}>
+      <DialogSurface ref={surfaceRef} aria-describedby={textId}>
         <DialogBody>
           <DialogTitle>{title}</DialogTitle>
           <DialogContent className={styles.content}>
@@ -84,12 +95,12 @@ export function RemovalDialog({
               {children}
             </div>
             {error != null && (
-              <MessageBar intent="error" role="alert">
+              <AnnounceProvider value={announcement}><div ref={outcomeRef} tabIndex={-1}><MessageBar intent="error">
                 <MessageBarBody>
                   <MessageBarTitle>{refusalTitle}</MessageBarTitle>
                   {error instanceof Error ? error.message : 'An unexpected error occurred.'}
                 </MessageBarBody>
-              </MessageBar>
+              </MessageBar></div></AnnounceProvider>
             )}
             {blocking.length > 0 && (
               <div className={styles.content}>
@@ -117,10 +128,10 @@ export function RemovalDialog({
             )}
           </DialogContent>
           <DialogActions>
-            <Button appearance="secondary" disabled={pending} onClick={onCancel}>
+            <Button appearance="secondary" disabledFocusable={pending} onClick={onCancel}>
               Cancel
             </Button>
-            <Button appearance="primary" disabledFocusable={pending} onClick={onConfirm}>
+            <Button appearance="primary" disabledFocusable={pending} onClick={() => { if (!pending) onConfirm() }}>
               {pending ? 'Removing…' : confirmLabel}
             </Button>
           </DialogActions>

@@ -5,10 +5,11 @@ import {
   MessageBarTitle,
   Spinner,
   Text,
+  useAnnounce,
 } from '@fluentui/react-components'
 import { CopyRegular, EyeOffRegular, EyeRegular } from '@fluentui/react-icons'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { usePortalApi } from '../api'
 import {
@@ -23,7 +24,7 @@ import {
   type KeyAvailability,
   type KeyConnection,
 } from '../connection-format'
-import { useFocusHandoff, type FocusHandoff } from '../focus-handoff'
+import { useFocusHandoff, useFocusHandoffSource, type FocusHandoff } from '../focus-handoff'
 import type { KeySlot } from '../types'
 
 interface RevealVariables {
@@ -50,17 +51,31 @@ const slotLabels: Record<KeySlot, string> = {
  * state changes, which discards any key on screen. If keyboard focus was inside when that
  * happens, `focusHandoff` moves it to the new instance's explanation or heading.
  */
-export function KeyReveal({
-  entitlementId,
-  connection,
-  onConflict,
-  focusHandoff,
-}: {
+interface KeyRevealProps {
   entitlementId: string
   connection: KeyConnection
   onConflict: () => void
   focusHandoff?: FocusHandoff
-}) {
+}
+
+export function KeyReveal(props: KeyRevealProps) {
+  const handoff = useFocusHandoffSource()
+  const { connection } = props
+  const session = JSON.stringify([
+    props.entitlementId, connection.entitlementId, connection.keysAvailable,
+    connection.keysAllowedByCostCenter, connection.keyExists, connection.runtime?.status,
+    connection.runtime?.keyState, connection.runtime?.subscriptionName,
+    connection.appliedMethods?.keysEnabled, connection.runtime?.appliedMethods?.keysEnabled,
+  ])
+  return <KeyRevealSession key={session} {...props} focusHandoff={props.focusHandoff ?? handoff} />
+}
+
+function KeyRevealSession({
+  entitlementId,
+  connection,
+  onConflict,
+  focusHandoff,
+}: KeyRevealProps) {
   const api = usePortalApi()
   const queryClient = useQueryClient()
   const headingId = useId()
@@ -74,10 +89,22 @@ export function KeyReveal({
   const [secret, setSecret] = useState<{ slot: KeySlot; key: string } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [copyFailed, setCopyFailed] = useState(false)
+  const [copyAttempt, setCopyAttempt] = useState(0)
   const [confirming, setConfirming] = useState<{ kind: 'rotate'; slot: KeySlot } | { kind: 'delete' } | null>(null)
+  const confirmation = useRef<HTMLDivElement>(null)
+  const confirmationOpener = useRef<HTMLElement | null>(null)
+  const returnAfterConfirmation = useRef(false)
   const generation = useRef(0)
   const controller = useRef<AbortController | null>(null)
   const mounted = useRef(false)
+  const { announce } = useAnnounce()
+  const announceRef = useRef(announce)
+  useLayoutEffect(() => { announceRef.current = announce }, [announce])
+  const reportNotice = useCallback((message: string) => {
+    if (!mounted.current) return
+    setNotice(message)
+    announceRef.current(message, { polite: true })
+  }, [])
   const display = useRef<HTMLDivElement | null>(null)
   const showButtons = useRef<Record<KeySlot, HTMLElement | null>>({
     primary: null,
@@ -87,6 +114,22 @@ export function KeyReveal({
   const heading = useRef<HTMLHeadingElement | null>(null)
   const reasonText = useRef<HTMLElement | null>(null)
   useFocusHandoff(focusHandoff, section, reasonText, heading)
+  useLayoutEffect(() => {
+    if (confirming || !returnAfterConfirmation.current) return
+    returnAfterConfirmation.current = false
+    const target = confirmationOpener.current?.isConnected ? confirmationOpener.current : heading.current
+    if (mounted.current) target?.focus({ preventScroll: true })
+  }, [confirming])
+
+  function openConfirmation(next: NonNullable<typeof confirming>) {
+    confirmationOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    setConfirming(next)
+  }
+
+  function closeConfirmation() {
+    returnAfterConfirmation.current = confirmation.current?.contains(document.activeElement) ?? false
+    setConfirming(null)
+  }
 
   const reveal = useMutation<RevealOutcome, Error, RevealVariables>({
     gcTime: 0,
@@ -98,7 +141,7 @@ export function KeyReveal({
         if (!current()) return { slot, shown: false }
         if (!isExpectedKey(result, connection, slot)) throw new UnexpectedCredentialError()
         setSecret({ slot, key: result.key })
-        setNotice(`${slotLabels[slot]} shown. It hides automatically after 60 seconds.`)
+        reportNotice(`${slotLabels[slot]} shown. It hides automatically after 60 seconds.`)
         return { slot, shown: true }
       } catch (failure) {
         // A superseded or abandoned request must neither show a key nor report an error.
@@ -133,7 +176,7 @@ export function KeyReveal({
       setCopyFailed(false)
     },
     onSuccess: async () => {
-      setNotice('Key created. You can show either slot now.')
+      reportNotice('Key created. You can show either slot now.')
       await refreshAfterKeyChange()
     },
     onError: (failure) => {
@@ -150,8 +193,8 @@ export function KeyReveal({
       setCopyFailed(false)
     },
     onSuccess: async (_result, slot) => {
-      setConfirming(null)
-      setNotice(`${slotLabels[slot]} rotated. Apps using that old value must be updated.`)
+      closeConfirmation()
+      reportNotice(`${slotLabels[slot]} rotated. Apps using that old value must be updated.`)
       await refreshAfterKeyChange()
     },
     onError: (failure) => {
@@ -168,8 +211,8 @@ export function KeyReveal({
       setCopyFailed(false)
     },
     onSuccess: async () => {
-      setConfirming(null)
-      setNotice('Key deleted. You can create a new one if you need key access again.')
+      closeConfirmation()
+      reportNotice('Key deleted. You can create a new one if you need key access again.')
       await refreshAfterKeyChange()
     },
     onError: (failure) => {
@@ -207,14 +250,14 @@ export function KeyReveal({
       const hadFocus = display.current?.contains(document.activeElement) ?? false
       setSecret(null)
       setCopyFailed(false)
-      setNotice('Key hidden automatically after 60 seconds.')
+      reportNotice('Key hidden automatically after 60 seconds.')
       if (hadFocus) showButtons.current[secret.slot]?.focus()
     }, KEY_VISIBLE_MS)
     return () => clearTimeout(timer)
-  }, [secret])
+  }, [secret, reportNotice])
 
   function show(slot: KeySlot) {
-    if (!availability.available) return
+    if (!availability.available || reveal.isPending) return
     const request = ++generation.current
     controller.current?.abort()
     const abort = new AbortController()
@@ -231,20 +274,21 @@ export function KeyReveal({
     controller.current?.abort()
     setSecret(null)
     setCopyFailed(false)
-    setNotice('Key hidden.')
+    reportNotice('Key hidden.')
     showButtons.current[slot]?.focus()
   }
 
   async function copy() {
     if (!secret) return
     const request = generation.current
+    setCopyAttempt((attempt) => attempt + 1)
     setCopyFailed(false)
     setNotice(null)
     try {
       if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable')
       await navigator.clipboard.writeText(secret.key)
       if (mounted.current && generation.current === request) {
-        setNotice('Key copied. The clipboard is sensitive and is not cleared automatically.')
+        reportNotice('Key copied. The clipboard is sensitive and is not cleared automatically.')
       }
     } catch {
       if (mounted.current && generation.current === request) setCopyFailed(true)
@@ -305,8 +349,12 @@ export function KeyReveal({
           <div className="key-actions">
             <Button
               appearance="primary"
-              onClick={() => preparingKey || connection.runtime?.keyState === 'failed' ? onConflict() : createKey.mutate()}
-              disabled={createKey.isPending}
+              onClick={() => {
+                if (createKey.isPending) return
+                if (preparingKey || connection.runtime?.keyState === 'failed') onConflict()
+                else createKey.mutate()
+              }}
+              disabledFocusable={createKey.isPending}
             >
               {preparingKey || connection.runtime?.keyState === 'failed' ? 'Refresh key status' : 'Create key'}
             </Button>
@@ -365,13 +413,13 @@ export function KeyReveal({
             </Button>
             {availability.available && keyExists && (
               <>
-                <Button disabled={rotateKey.isPending} onClick={() => setConfirming({ kind: 'rotate', slot: 'primary' })}>
+                <Button disabledFocusable={rotateKey.isPending} onClick={() => { if (!rotateKey.isPending) openConfirmation({ kind: 'rotate', slot: 'primary' }) }}>
                   Rotate primary key
                 </Button>
-                <Button disabled={rotateKey.isPending} onClick={() => setConfirming({ kind: 'rotate', slot: 'secondary' })}>
+                <Button disabledFocusable={rotateKey.isPending} onClick={() => { if (!rotateKey.isPending) openConfirmation({ kind: 'rotate', slot: 'secondary' }) }}>
                   Rotate secondary key
                 </Button>
-                <Button disabled={deleteKey.isPending} onClick={() => setConfirming({ kind: 'delete' })}>
+                <Button disabledFocusable={deleteKey.isPending} onClick={() => { if (!deleteKey.isPending) openConfirmation({ kind: 'delete' }) }}>
                   Delete key
                 </Button>
               </>
@@ -380,29 +428,29 @@ export function KeyReveal({
         </>
       )}
       {confirming?.kind === 'rotate' && (
-        <div className="inline-confirmation" role="group" aria-label={`Confirm rotate ${confirming.slot} key`}>
+        <div ref={confirmation} className="inline-confirmation" role="group" aria-label={`Confirm rotate ${confirming.slot} key`}>
           <Text>
             Apps using the old {confirming.slot} value stop working{alsoAffected}. The other slot
             keeps working.
           </Text>
           <div className="key-actions">
-            <Button appearance="primary" onClick={() => rotateKey.mutate(confirming.slot)} disabled={rotateKey.isPending}>
+            <Button appearance="primary" onClick={() => { if (!rotateKey.isPending) rotateKey.mutate(confirming.slot) }} disabledFocusable={rotateKey.isPending}>
               Rotate {confirming.slot} key
             </Button>
-            <Button onClick={() => setConfirming(null)} disabled={rotateKey.isPending}>Cancel</Button>
+            <Button onClick={() => { if (!rotateKey.isPending) closeConfirmation() }} disabledFocusable={rotateKey.isPending}>Cancel</Button>
           </div>
         </div>
       )}
       {confirming?.kind === 'delete' && (
-        <div className="inline-confirmation" role="group" aria-label="Confirm delete key">
+        <div ref={confirmation} className="inline-confirmation" role="group" aria-label="Confirm delete key">
           <Text>
             Every app using this key stops working{alsoAffected}. You can create a new one later.
           </Text>
           <div className="key-actions">
-            <Button appearance="primary" onClick={() => deleteKey.mutate()} disabled={deleteKey.isPending}>
+            <Button appearance="primary" onClick={() => { if (!deleteKey.isPending) deleteKey.mutate() }} disabledFocusable={deleteKey.isPending}>
               Delete key
             </Button>
-            <Button onClick={() => setConfirming(null)} disabled={deleteKey.isPending}>Cancel</Button>
+            <Button onClick={() => { if (!deleteKey.isPending) closeConfirmation() }} disabledFocusable={deleteKey.isPending}>Cancel</Button>
           </div>
         </div>
       )}
@@ -420,14 +468,14 @@ export function KeyReveal({
         </MessageBar>
       )}
       {copyFailed && (
-        <MessageBar intent="warning">
+        <MessageBar key={copyAttempt} intent="warning" politeness="polite">
           <MessageBarBody>
             Could not copy the key. Your browser may require clipboard permission; copy it
             manually or try again.
           </MessageBarBody>
         </MessageBar>
       )}
-      <Text as="p" size={200} role="status" aria-live="polite" className="key-status">
+      <Text as="p" size={200} className="key-status">
         {notice}
       </Text>
     </section>

@@ -9,6 +9,7 @@ import { CatalogPage } from './CatalogPage'
 import { resourceFromCatalog } from '../entitlement-format'
 import { resourceKey } from '../model-presentation'
 import { directResolved, securityGroupResolved } from '../test/connection'
+import { MosaicThemeProvider } from '../theme'
 
 const mocks = vi.hoisted(() => ({
   api: {} as PortalApi,
@@ -161,9 +162,9 @@ function renderPage(entries: CatalogEntry[], requests: AccessRequest[], centers:
   } as unknown as PortalApi
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
-    <QueryClientProvider client={queryClient}>
+    <MosaicThemeProvider><QueryClientProvider client={queryClient}>
       <MemoryRouter><CatalogPage /></MemoryRouter>
-    </QueryClientProvider>,
+    </QueryClientProvider></MosaicThemeProvider>,
   )
   return { createAccessRequest, withdrawAccessRequest }
 }
@@ -191,7 +192,7 @@ describe('CatalogPage', () => {
     expect(within(drawer).queryByText(/First offering/)).not.toBeInTheDocument()
     expect(within(drawer).getByText('Second offering copy.')).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Close details' }))
-    await user.type(screen.getByRole('textbox', { name: 'Search catalog' }), 'Public draft copy')
+    await user.type(await screen.findByRole('textbox', { name: 'Search catalog' }), 'Public draft copy')
     expect(screen.getByRole('button', { name: 'View access options for demo-chat' })).toBeVisible()
   })
 

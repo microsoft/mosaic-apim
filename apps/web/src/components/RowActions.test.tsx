@@ -9,9 +9,11 @@ import {
 } from '@fluentui/react-components'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { RowActions } from './RowActions'
+import { useDialogFocusReturn } from './useDialogFocusReturn'
+import { WorkspaceEditorFrame } from './WorkspaceEditorFrame'
 
 describe('RowActions', () => {
   it('keeps the frequent action visible and exposes secondary and destructive actions by keyboard', async () => {
@@ -113,5 +115,35 @@ describe('RowActions', () => {
     </FluentProvider>)
     expect(screen.getByRole('button', { name: 'Set facts' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'More actions for Endpoint' })).not.toBeInTheDocument()
+  })
+
+  it.each([false, true])('uses a local removed-opener fallback without overriding a new workspace (%s)', async (openEditor) => {
+    const user = userEvent.setup()
+    function Surface() {
+      const [open, setOpen] = useState(false)
+      const [removed, setRemoved] = useState(false)
+      const surfaceRef = useRef<HTMLDivElement>(null)
+      const fallbackRef = useRef<HTMLHeadingElement>(null)
+      const motion = useDialogFocusReturn({ open, surfaceRef, fallbackRef })
+      return <>
+        <h2 ref={fallbackRef} tabIndex={-1}>Resource list</h2>
+        {!removed && <RowActions label="More actions for Record"
+          destructiveActions={[{ label: 'Remove record', onClick: () => setOpen(true) }]} />}
+        {removed && openEditor && <WorkspaceEditorFrame title="Next workspace" onBack={() => undefined}>Draft</WorkspaceEditorFrame>}
+        <Dialog open={open} surfaceMotion={motion} onOpenChange={(_, data) => setOpen(data.open)}>
+          <DialogSurface ref={surfaceRef}><DialogBody>
+            <DialogTitle>Remove record?</DialogTitle>
+            <Button onClick={() => { setRemoved(true); setOpen(false) }}>Confirm removal</Button>
+          </DialogBody></DialogSurface>
+        </Dialog>
+      </>
+    }
+    render(<Surface />)
+    await user.click(screen.getByRole('button', { name: 'More actions for Record' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Remove record' }))
+    await user.click(await screen.findByRole('button', { name: 'Confirm removal' }))
+    await waitFor(() => expect(screen.getByRole('heading', {
+      name: openEditor ? 'Next workspace' : 'Resource list',
+    })).toHaveFocus())
   })
 })
