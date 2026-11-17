@@ -663,7 +663,7 @@ class TestGatewayReadiness:
                 "permissions": {"secrets": ["Get", "List"]},
             }
         ]
-        [row] = await world.service.runtime_access(ACTOR, endpoint.id)
+        [row] = (await world.service.preflight(ACTOR, endpoint.id)).runtime_access
         assert row.can_invoke is True
         assert row.reason == RuntimeAccessReason.GRANTED
 
@@ -701,17 +701,21 @@ class TestGatewayReadiness:
         assert rows[SERVICE_NAME].reason == RuntimeAccessReason.NO_GATEWAY_IDENTITY
         assert rows["apim-unread"].reason == RuntimeAccessReason.IDENTITY_NOT_OBSERVED
 
-    async def test_rechecking_gateways_never_reads_the_key(self, world: KeyWorld) -> None:
+    async def test_reading_gateway_evidence_never_reads_or_rechecks_the_key(
+        self, world: KeyWorld
+    ) -> None:
         endpoint = await world.register()
         world.grant()
         reads = list(world.secret_reads)
 
         [row] = await world.service.runtime_access(ACTOR, endpoint.id)
 
-        assert row.can_invoke is True
+        assert row == endpoint.runtime_access[0]
         assert world.secret_reads == reads
         stored = await world.endpoint_repository.get_endpoint(ACTOR.tenant_id, endpoint.id)
-        assert stored is not None and stored.runtime_access[0].can_invoke is True
+        assert stored is not None and stored.runtime_access == endpoint.runtime_access
+        [rechecked] = (await world.service.preflight(ACTOR, endpoint.id)).runtime_access
+        assert rechecked.can_invoke is True
 
 
 class TestDeclaredDeployments:

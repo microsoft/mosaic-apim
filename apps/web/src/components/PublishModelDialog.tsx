@@ -30,7 +30,7 @@ import { useMosaicApi } from '../api'
 import { creationContext, useEditContext } from '../change-review'
 import { environmentBlockedVerdict, useEnvironmentCatalog } from '../environments'
 import { isGatewayPolicyCapabilities } from '../policy-capabilities'
-import { CANNOT_INVOKE, NOT_CONFIRMED, runtimeVerdict } from '../runtime-access'
+import { CANNOT_INVOKE, NOT_CONFIRMED, checkFreshness, runtimeVerdict } from '../runtime-access'
 import { runtimeConfig } from '../runtime-config'
 import type {
   ApiShape,
@@ -192,6 +192,17 @@ function RuntimeAccessNote({ model }: { model: PublishableModel }) {
         <MessageBarBody>
           <MessageBarTitle>Runtime access not evaluated</MessageBarTitle>
           MOSAIC has not evaluated whether this gateway can call the model.
+        </MessageBarBody>
+      </MessageBar>
+    )
+  }
+  if (checkFreshness(access) === 'stale') {
+    return (
+      <MessageBar intent="warning">
+        <MessageBarBody>
+          <MessageBarTitle>Runtime access check out of date</MessageBarTitle>
+          Run Check access on the endpoint before relying on its recorded result.
+          Previous verdicts and role advice are historical, not current recommendations.
         </MessageBarBody>
       </MessageBar>
     )

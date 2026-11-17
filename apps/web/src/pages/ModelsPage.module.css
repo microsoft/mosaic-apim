@@ -350,6 +350,38 @@
   gap: 0.5rem;
 }
 
+.factEvidence {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.evidence {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.historicalEvidence {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: var(--borderRadiusMedium);
+  background: var(--mosaic-surface-subtle);
+}
+
+.historicalEvidence summary {
+  cursor: pointer;
+  color: var(--mosaic-text-muted);
+}
+
+.historicalEvidence > div {
+  margin-top: 16px;
+}
+
 .settingsList {
   display: grid;
   grid-template-columns: max-content 1fr;

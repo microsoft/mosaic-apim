@@ -132,6 +132,8 @@ identifiers and secrets blurred. Directory data and checks are simulated, not li
 The [full gallery](docs/gallery.md) includes publishing reviews, model pools, Entra directory
 lookups, grants, cost centers, budgets, analytics, notifications, Government connections, and
 [billing-rate review](docs/gallery.md#billing-data-and-rate-review).
+The gallery's [endpoint evidence](docs/gallery.md#endpoint-evidence) distinguishes unconfirmed
+account facts from dated access checks recorded under older readiness rules.
 It also shows [cost-center requests and Automatic access](docs/gallery.md#cost-center-requests-and-automatic-access),
 including membership discovery and requests, administrator controls, and incomplete setup
 rather than treating approval as usable access.

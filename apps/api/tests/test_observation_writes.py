@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import pytest
@@ -8,15 +9,20 @@ from azure.cosmos import exceptions
 from azure.cosmos.aio import CosmosClient
 from mosaic_api.domain import (
     AuditEvent,
+    EndpointAccess,
+    EndpointDetailEvidence,
     Gateway,
+    GatewayRuntimeAccess,
     GatewayStatus,
     McpEndpoint,
     McpEndpointStatus,
     ModelEndpoint,
+    ModelEndpointCapabilities,
     ModelEndpointStatus,
     ModelProvider,
     new_id,
 )
+from mosaic_api.endpoint_readiness import ENDPOINT_READINESS_RULES_REVISION
 from mosaic_api.repositories import (
     InMemoryGatewayRepository,
     InMemoryMcpEndpointRepository,
@@ -216,6 +222,80 @@ def model_endpoint() -> ModelEndpoint:
         environment="dev",
         credential_reference_id="credential-old",
     )
+
+
+@pytest.mark.parametrize("cosmos_backed", [False, True])
+@pytest.mark.parametrize(
+    "runtime_transition", ["legacy-clock-skew", "empty-to-nonempty", "nonempty-to-empty"]
+)
+async def test_stale_inventory_retry_preserves_newer_endpoint_evidence(
+    cosmos_backed: bool, runtime_transition: str,
+) -> None:
+    cosmos = Cosmos()
+    repo = (
+        CosmosModelEndpointRepository(
+            cast(CosmosClient, cosmos), "db", "desired", "audit", "sync", "observed"
+        )
+        if cosmos_backed
+        else HookedMemoryModelEndpointRepository()
+    )
+    later = datetime(2026, 11, 1, tzinfo=UTC)
+    legacy = runtime_transition == "legacy-clock-skew"
+    previous_check = later + timedelta(days=1) if legacy else later - timedelta(seconds=1)
+    previous_revision = None if legacy else ENDPOINT_READINESS_RULES_REVISION
+    original = await repo.create_endpoint(model_endpoint().model_copy(update={
+        "access": EndpointAccess(
+            checked_at=previous_check, rules_revision=previous_revision
+        ),
+        "runtime_access": (
+            [] if runtime_transition == "empty-to-nonempty" else [GatewayRuntimeAccess(
+                gateway_id="gateway", gateway_name="Gateway",
+                checked_at=previous_check, rules_revision=previous_revision,
+            )]
+        ),
+    }), audit())
+    checked = ModelEndpoint.model_validate({
+        **original.model_dump(by_alias=False),
+        "endpoint": "https://confirmed.services.ai.azure.com",
+        "provider": ModelProvider.AZURE_AI_FOUNDRY,
+        "detail_evidence": EndpointDetailEvidence(
+            endpoint_source="account",
+            provider_source="accountKind",
+            endpoint_confirmed_at=later,
+            provider_confirmed_at=later,
+            account_read_at=later,
+        ),
+        "capabilities": ModelEndpointCapabilities(kind="AIServices", location="westus"),
+        "access": EndpointAccess(
+            can_read=True, checked_at=later, rules_revision=ENDPOINT_READINESS_RULES_REVISION,
+        ),
+        "runtime_access": (
+            [] if runtime_transition == "nonempty-to-empty" else [GatewayRuntimeAccess(
+                gateway_id="gateway", gateway_name="Gateway",
+                checked_at=later, rules_revision=ENDPOINT_READINESS_RULES_REVISION,
+            )]
+        ),
+    })
+
+    async def finish_newer_check() -> None:
+        await repo.record_endpoint_state(checked)
+
+    if isinstance(repo, HookedMemoryModelEndpointRepository):
+        repo.before_replace = finish_newer_check
+    else:
+        cosmos.containers["desired"].before_replace = finish_newer_check
+    recorded = await repo.record_endpoint_state(original.model_copy(update={
+        "last_synced_at": later + timedelta(seconds=1),
+    }))
+
+    assert recorded is not None
+    assert recorded.endpoint == checked.endpoint
+    assert recorded.provider == checked.provider
+    assert recorded.detail_evidence == checked.detail_evidence
+    assert recorded.capabilities == checked.capabilities
+    assert recorded.access == checked.access
+    assert recorded.runtime_access == checked.runtime_access
+    assert recorded.last_synced_at == later + timedelta(seconds=1)
 
 
 def mcp_endpoint() -> McpEndpoint:

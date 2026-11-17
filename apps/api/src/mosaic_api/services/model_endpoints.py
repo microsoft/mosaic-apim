@@ -44,6 +44,7 @@ from mosaic_api.domain import (
     DeclaredDeploymentCreate,
     EndpointAccess,
     EndpointAuthMode,
+    EndpointDetailEvidence,
     Gateway,
     GatewayRuntimeAccess,
     GatewaySyncStatus,
@@ -60,15 +61,18 @@ from mosaic_api.domain import (
     ModelInventorySummary,
     ModelProvider,
     Publication,
+    RuntimeAccessEvaluation,
     SubscriptionScanIssue,
     SubscriptionScanStatus,
     SuggestionSource,
+    account_kind_provider,
     azure_ai_account_subdomain,
     deterministic_id,
     new_id,
     utc_now,
     validate_declarations,
 )
+from mosaic_api.endpoint_readiness import ENDPOINT_READINESS_RULES_REVISION
 from mosaic_api.environments import EnvironmentCatalog, azure_environment_tag, suggest_environment
 from mosaic_api.errors import (
     ChangeNotRecordedError,
@@ -176,11 +180,9 @@ _PROVIDER_BY_HOST_SUFFIX: tuple[tuple[str, ModelProvider], ...] = (
 def provider_for(kind: str | None, endpoint: str | None) -> ModelProvider:
     """Classify an Azure AI resource, preferring its ARM ``kind`` over its hostname."""
 
-    normalized = (kind or "").casefold()
-    if normalized == "openai":
-        return ModelProvider.AZURE_OPENAI
-    if normalized in {"aiservices", "cognitiveservices"}:
-        return ModelProvider.AZURE_AI_FOUNDRY
+    observed_provider = account_kind_provider(kind)
+    if observed_provider is not None:
+        return observed_provider
     host = (urlparse(endpoint or "").hostname or "").casefold()
     for suffix, provider in _PROVIDER_BY_HOST_SUFFIX:
         if host.endswith(suffix):
@@ -470,6 +472,10 @@ class ModelEndpointService:
                 f"https://{resource.account_name}."
                 f"{cloud_profile(resource.azure_cloud).cognitive_audience.removeprefix('https://')}"
             ),
+            detail_evidence=EndpointDetailEvidence(
+                endpoint_source="resourceIdPlaceholder",
+                provider_source="registrationHint" if request.provider else "default",
+            ),
             azure_resource_id=resource.canonical,
             azure_cloud=resource.azure_cloud,
             azure_connection_id=resource.azure_connection_id,
@@ -706,6 +712,12 @@ class ModelEndpointService:
             name=(request.name or target.default_name).strip(),
             provider=request.provider,
             endpoint=target.origin,
+            detail_evidence=EndpointDetailEvidence(
+                endpoint_source="registeredUrl",
+                provider_source=(
+                    "registrationHint" if "provider" in request.model_fields_set else "urlInference"
+                ),
+            ),
             azure_cloud=request.azure_cloud,
             azure_connection_id=request.azure_connection_id,
             account_name=target.account_name,
@@ -802,6 +814,9 @@ class ModelEndpointService:
             name=(request.name or host).strip(),
             provider=ModelProvider.OPENAI_COMPATIBLE,
             endpoint=request.endpoint,
+            detail_evidence=EndpointDetailEvidence(
+                endpoint_source="registeredUrl", provider_source="registrationHint"
+            ),
             azure_cloud=request.azure_cloud,
             azure_connection_id=request.azure_connection_id,
             environment_label=request.environment_label,
@@ -1441,26 +1456,35 @@ class ModelEndpointService:
                 )
         provider = provider_for(result.capabilities.kind, result.endpoint_url)
         runtime = await self._runtime_access(
-            client, endpoint.tenant_id, result.capabilities, provider
+            client, endpoint.tenant_id, result.capabilities
         )
         update: dict[str, object] = {
             "access": result.access,
-            "capabilities": result.capabilities,
             "runtime_access": runtime,
             "status": result.status,
-            "provider": provider,
-            # A failed read leaves the tag as last seen rather than claiming it was removed.
-            "azure_environment_tag": (
-                azure_environment_tag(result.tags)
-                if result.tags is not None
-                else endpoint.azure_environment_tag
-            ),
             "updated_at": utc_now(),
         }
-        if result.endpoint_url:
-            # ``model_copy`` does not validate, so the URL is coerced here rather than storing a
-            # bare string in a field typed as a URL.
-            update["endpoint"] = AnyHttpUrl(result.endpoint_url)
+        if result.account_read_at is not None:
+            evidence = endpoint.detail_evidence or EndpointDetailEvidence()
+            facts: dict[str, object] = {"account_read_at": result.account_read_at}
+            update["capabilities"] = result.capabilities
+            update["azure_environment_tag"] = azure_environment_tag(result.tags or {})
+            if account_kind_provider(result.capabilities.kind) is not None:
+                update["provider"] = provider
+                facts.update(
+                    provider_source="accountKind",
+                    provider_confirmed_at=result.account_read_at,
+                )
+            elif result.endpoint_url and evidence.provider_confirmed_at is None:
+                update["provider"] = provider
+                facts["provider_source"] = "urlInference"
+            if result.endpoint_url:
+                update["endpoint"] = AnyHttpUrl(result.endpoint_url)
+                facts.update(
+                    endpoint_source="account",
+                    endpoint_confirmed_at=result.account_read_at,
+                )
+            update["detail_evidence"] = evidence.model_copy(update=facts)
         return endpoint.model_copy(update=update)
 
     async def _key_secret(
@@ -1510,7 +1534,10 @@ class ModelEndpointService:
         notes = BEDROCK_ENDPOINT_NOTES if endpoint.is_bedrock() else KEYED_ENDPOINT_NOTES
         return endpoint.model_copy(
             update={
-                "access": access.model_copy(update={"checked_at": checked_at}),
+                "access": access.model_copy(update={
+                    "checked_at": checked_at,
+                    "rules_revision": ENDPOINT_READINESS_RULES_REVISION,
+                }),
                 "status": status,
                 "runtime_access": runtime,
                 "capabilities": endpoint.capabilities.model_copy(update={"notes": list(notes)}),
@@ -1720,6 +1747,7 @@ class ModelEndpointService:
                 )
             except Exception:
                 logger.warning("endpoint_key_access_failed", gateway_id=gateway.id)
+                results.append(self._unavailable_runtime_access(gateway))
         return results
 
     async def _runtime_access(
@@ -1727,7 +1755,6 @@ class ModelEndpointService:
         client: CognitiveServicesClient,
         tenant_id: str,
         capabilities: ModelEndpointCapabilities,
-        provider: ModelProvider,
     ) -> list[GatewayRuntimeAccess]:
         """Report, for every registered gateway, whether it could call this endpoint.
 
@@ -1737,6 +1764,7 @@ class ModelEndpointService:
         """
 
         gateways: list[Gateway] = await self._gateways.list_gateways(tenant_id)
+        observed_provider = account_kind_provider(capabilities.kind)
         check = RuntimeAccessCheck(client)
         results: list[GatewayRuntimeAccess] = []
         for gateway in gateways:
@@ -1748,7 +1776,7 @@ class ModelEndpointService:
                         client,
                         gateway,
                         kind=capabilities.kind,
-                        provider=provider,
+                        provider=observed_provider,
                         capabilities=capabilities,
                         check=check,
                     )
@@ -1757,7 +1785,22 @@ class ModelEndpointService:
                 logger.warning(
                     "endpoint_runtime_access_failed", gateway_id=gateway.id
                 )
+                results.append(self._unavailable_runtime_access(gateway))
         return results
+
+    @staticmethod
+    def _unavailable_runtime_access(gateway: Gateway) -> GatewayRuntimeAccess:
+        return GatewayRuntimeAccess(
+            gateway_id=gateway.id,
+            gateway_name=gateway.name,
+            evaluation=RuntimeAccessEvaluation.NOT_EVALUATED,
+            checked_at=utc_now(),
+            rules_revision=ENDPOINT_READINESS_RULES_REVISION,
+            message=(
+                "MOSAIC could not finish this gateway's access check. This is not a denial. "
+                "Run Check access again."
+            ),
+        )
 
     async def start_sync(self, actor: Actor, endpoint_id: str) -> ModelEndpointSyncRun:
         run, _task = await self._start_sync(actor, endpoint_id)
@@ -1989,32 +2032,10 @@ class ModelEndpointService:
     async def runtime_access(
         self, actor: Actor, endpoint_id: str
     ) -> list[GatewayRuntimeAccess]:
-        """Re-evaluate gateway runtime access on demand, without a full preflight."""
+        """Read saved evidence. Only explicit preflight re-evaluates an existing endpoint."""
 
         endpoint = await self.get_endpoint(actor, endpoint_id)
-        if endpoint.uses_backend_key():
-            secret = await self._key_secret(endpoint)
-            vault_id = (
-                await self._vault_locator.locate(secret.vault_name)
-                if secret is not None and self._vault_locator is not None
-                else None
-            )
-            results = await self._key_runtime_access(actor.tenant_id, secret, vault_id)
-            await self._repository.record_endpoint_state(
-                endpoint.model_copy(update={"runtime_access": results, "updated_at": utc_now()})
-            )
-            return results
-        if not endpoint.azure_resource_id:
-            return []
-        resource = endpoint.arm_resource()
-        client = self._client_factory(resource)
-        results = await self._runtime_access(
-            client, actor.tenant_id, endpoint.capabilities, endpoint.provider
-        )
-        await self._repository.record_endpoint_state(
-            endpoint.model_copy(update={"runtime_access": results, "updated_at": utc_now()})
-        )
-        return results
+        return list(endpoint.runtime_access)
 
     async def suggestions(
         self, actor: Actor, *, azure_cloud: AzureCloud = "commercial",

@@ -42,6 +42,7 @@ from mosaic_api.domain import (
     RuntimeRoleFindingKind,
     utc_now,
 )
+from mosaic_api.endpoint_readiness import ENDPOINT_READINESS_RULES_REVISION
 from mosaic_api.errors import DomainError, UpstreamAuthorizationError, UpstreamError
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.aoai.runtime_access import (
@@ -334,6 +335,7 @@ def _result(
         evaluation=evaluation,
         reason=reason,
         checked_at=utc_now(),
+        rules_revision=ENDPOINT_READINESS_RULES_REVISION,
         required_role_name=required_role[0],
         required_role_definition_id=required_role[1] or None,
         granted_role_name=granted_name or (granted.role_name if granted else None),

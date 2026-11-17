@@ -1,4 +1,4 @@
-import type { EnvironmentCompatibilityCell, GatewayRuntimeAccess, RuntimeRoleFinding } from './types'
+import type { EndpointAccess, EnvironmentCompatibilityCell, GatewayRuntimeAccess, ReadinessFreshness, RuntimeRoleFinding } from './types'
 
 export interface RuntimeVerdict {
   intent: 'success' | 'warning' | 'error'
@@ -9,6 +9,17 @@ export interface RuntimeVerdict {
 export const CAN_INVOKE: RuntimeVerdict = { intent: 'success', label: 'can invoke' }
 export const CANNOT_INVOKE: RuntimeVerdict = { intent: 'error', label: 'cannot invoke' }
 export const NOT_CONFIRMED: RuntimeVerdict = { intent: 'warning', label: 'not confirmed' }
+
+export function checkFreshness(access: EndpointAccess | GatewayRuntimeAccess): ReadinessFreshness {
+  if (access.freshness === 'stale' || access.freshness === 'neverChecked') return access.freshness
+  if (access.freshness === 'current' && access.checkedAt && access.rulesRevision
+    && access.rulesRevision === access.currentRulesRevision) return 'current'
+  const recorded = Boolean(access.checkedAt || access.rulesRevision || access.message
+    || access.remediation || access.evaluation !== 'notEvaluated'
+    || ('canRead' in access ? access.canRead || access.missingActions.length
+      : access.canInvoke || access.reason || access.roleFindings?.length || access.requiredDataActions?.length))
+  return recorded ? 'stale' : 'neverChecked'
+}
 
 export function environmentRuntimeVerdict(cell: EnvironmentCompatibilityCell | undefined): RuntimeVerdict {
   if (!cell) return { intent: 'warning', label: 'environment not evaluated' }
@@ -22,6 +33,12 @@ export function environmentRuntimeVerdict(cell: EnvironmentCompatibilityCell | u
  * `evaluation` alone, so that "MOSAIC could not read or evaluate X" is never shown as a denial.
  */
 export function runtimeVerdict(access: GatewayRuntimeAccess): RuntimeVerdict {
+  if (checkFreshness(access) !== 'current') return NOT_CONFIRMED
+  return recordedRuntimeVerdict(access)
+}
+
+/** Interpret a dated historical result only inside an explicitly non-current evidence view. */
+export function recordedRuntimeVerdict(access: GatewayRuntimeAccess): RuntimeVerdict {
   switch (access.reason) {
     case 'granted':
       return access.canInvoke ? CAN_INVOKE : NOT_CONFIRMED
@@ -38,6 +55,7 @@ export function runtimeVerdict(access: GatewayRuntimeAccess): RuntimeVerdict {
     case 'assignmentsUnreadable':
     case 'identityNotObserved':
     case 'networkUnverified':
+    case 'accountKindUnconfirmed':
       return NOT_CONFIRMED
     default:
       // Recorded before the check reported a reason.

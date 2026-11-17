@@ -1,4 +1,5 @@
 import {
+  AnnounceProvider,
   Badge,
   Button,
   Card,
@@ -21,11 +22,12 @@ import {
   Text,
   Title3,
   Tooltip,
+  useAnnounce,
   useRestoreFocusTarget,
 } from '@fluentui/react-components'
 import { AddRegular, ArrowDownloadRegular, ArrowUploadRegular, ServerRegular } from '@fluentui/react-icons'
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { environmentLabel, lookupCompatibility, useEnvironmentCatalog } from '../environments'
@@ -59,6 +61,7 @@ import { DeployModelWorkspace } from '../components/DeployModelWorkspace'
 import { completeWorkspaceNavigation } from '../components/WorkspaceLeaveGuard'
 import { UnpublishDialog } from '../components/UnpublishDialog'
 import { CatalogSummaryDetails, CatalogSummaryEditor } from '../components/CatalogSummaryEditor'
+import { useFocusAwareAnnounce } from '../components/useFocusAwareAnnounce'
 import { AI_KIND_LABELS, CAPACITY_TYPE_LABELS, PROCESSING_SCOPE_LABELS } from '../labels'
 import {
   PUBLICATION_STATUS_LABELS,
@@ -68,9 +71,11 @@ import {
   lastAppliedLabel,
   publicationStatusLabel,
 } from '../publication-state'
-import { CAN_INVOKE, describeScope, environmentRuntimeVerdict, findingSummary, runtimeVerdict } from '../runtime-access'
+import { CAN_INVOKE, checkFreshness, describeScope, environmentRuntimeVerdict, findingSummary, recordedRuntimeVerdict, runtimeVerdict } from '../runtime-access'
 import type {
   CatalogVisibility,
+  EndpointAccess,
+  EndpointDetailEvidence,
   Gateway,
   GatewayRuntimeAccess,
   EnvironmentCompatibilityCell,
@@ -88,6 +93,8 @@ import type {
 import styles from './ModelsPage.module.css'
 
 const MODELS_PAGE_MUTATION_KEY = ['models-page'] as const
+// Explicit checks announce one outcome; reading their static evidence must not repeat it.
+const SNAPSHOT_ANNOUNCEMENT = { announce: () => {} }
 
 const statusLabels: Record<ModelEndpointStatus, string> = {
   pending: 'Not checked',
@@ -474,7 +481,66 @@ function EndpointStatusBadge({ status }: { status: ModelEndpointStatus }) {
   )
 }
 
-function CommandBlock({ command }: { command: string }) {
+function EndpointAccessBadge({ endpoint }: { endpoint: ModelEndpoint }) {
+  const freshness = endpoint.runtimeAccess.some(row => checkFreshness(row) === 'stale')
+    ? 'stale' : checkFreshness(endpoint.access)
+  if (freshness === 'current') return <EndpointStatusBadge status={endpoint.status} />
+  return <Badge appearance="tint" color={freshness === 'stale' ? 'warning' : 'informative'} className={freshness === 'stale' ? styles.degradedBadge : styles.pendingBadge}>
+    {freshness === 'stale' ? 'Check out of date' : 'Not checked'}
+  </Badge>
+}
+
+function EndpointFactEvidence({ endpoint, field }: { endpoint: ModelEndpoint; field: 'endpoint' | 'provider' }) {
+  const evidence = endpoint.detailEvidence
+  const confirmedAt = field === 'endpoint' ? evidence?.endpointConfirmedAt : evidence?.providerConfirmedAt
+  const source = field === 'endpoint' ? evidence?.endpointSource : evidence?.providerSource
+  const registered = source === 'registeredUrl' || (!endpoint.azureResourceId && field === 'endpoint')
+  const confirmed = Boolean(confirmedAt && (source === 'account' || source === 'accountKind'))
+  const label = confirmed ? 'Account-confirmed'
+    : registered ? 'Registered URL'
+      : source === 'urlInference' ? 'Inferred from URL'
+        : source === 'registrationHint' ? 'Registered, not account-confirmed'
+          : source ? 'Unconfirmed' : 'Confirmation not recorded'
+  const explanation = confirmed ? `Last confirmed ${formatTimestamp(confirmedAt)}.`
+    : source === 'resourceIdPlaceholder' ? 'Placeholder generated from the resource ID.'
+      : source === 'default' ? 'Default label. MOSAIC has not confirmed the account kind.'
+        : 'This is not verification of model runtime or API-schema support.'
+  return <div className={styles.factEvidence}>
+    <Badge appearance="tint" color={confirmed ? 'success' : registered ? 'informative' : 'warning'}>{label}</Badge>
+    <Text size={200} className={styles.muted}>{explanation}</Text>
+  </div>
+}
+
+function CheckEvidence({ access, title, children }: {
+  access: EndpointAccess | GatewayRuntimeAccess
+  title: string
+  children: ReactNode
+}) {
+  const freshness = checkFreshness(access)
+  if (freshness === 'neverChecked') return <AnnounceProvider value={SNAPSHOT_ANNOUNCEMENT}><MessageBar intent="info"><MessageBarBody>
+    <MessageBarTitle>No access check recorded for {title}</MessageBarTitle>
+    Run Check access to evaluate and record this relationship. No model is called.
+  </MessageBarBody></MessageBar></AnnounceProvider>
+  const checkedAt = access.checkedAt ? formatTimestamp(access.checkedAt) : 'Time unavailable'
+  const stamp = <>Last checked: {checkedAt}. Recorded rules: {access.rulesRevision ?? 'not recorded'}.
+    {' '}Current rules: {access.currentRulesRevision ?? 'unavailable'}.</>
+  if (freshness === 'stale') return <AnnounceProvider value={SNAPSHOT_ANNOUNCEMENT}><div className={styles.evidence}>
+    <MessageBar intent="warning"><MessageBarBody>
+      <MessageBarTitle>{title} check out of date</MessageBarTitle>
+      {stamp} Run Check access before relying on this result.
+    </MessageBarBody></MessageBar>
+    <details className={styles.historicalEvidence}>
+      <summary>Previous {title} check and role advice — historical, not current</summary>
+      <div className={styles.evidence}>{children}</div>
+    </details>
+  </div></AnnounceProvider>
+  return <AnnounceProvider value={SNAPSHOT_ANNOUNCEMENT}><div className={styles.evidence}>
+    <Text size={200} className={styles.muted}>{stamp} This is recorded evidence, not a live model call.</Text>
+    {children}
+  </div></AnnounceProvider>
+}
+
+function CommandBlock({ command, historical = false }: { command: string; historical?: boolean }) {
   const [copied, setCopied] = useState(false)
 
   async function copy() {
@@ -490,7 +556,7 @@ function CommandBlock({ command }: { command: string }) {
     <div className={styles.remediation}>
       <pre className={styles.commandBlock}>{command}</pre>
       <Button appearance="secondary" onClick={() => void copy()}>
-        {copied ? 'Copied' : 'Copy command'}
+        {copied ? 'Copied' : historical ? 'Copy historical command' : 'Copy command'}
       </Button>
     </div>
   )
@@ -712,6 +778,7 @@ function AccessPanel({
 }) {
   const api = useMosaicApi()
   const { access, runtimeAccess } = endpoint
+  const historical = checkFreshness(access) === 'stale'
   const keyed = usesBackendKey(endpoint)
   const bedrock = endpoint.provider === 'awsBedrock'
   const keptByMosaic = keyed && endpoint.keyStoredByMosaic === true
@@ -749,11 +816,13 @@ function AccessPanel({
   return (
     <section className={styles.detailSection}>
       <Title3 as="h3">Access</Title3>
+      {gateways.isError && <ErrorState title="MOSAIC could not load gateway context" error={gateways.error} />}
 
       <section className={styles.accessSection}>
-        <MessageBar intent={accessIntent} layout="multiline">
+        <CheckEvidence access={access} title="MOSAIC access">
+        <MessageBar intent={historical ? 'info' : accessIntent} layout="multiline">
           <MessageBarBody>
-            <MessageBarTitle>{accessTitle}</MessageBarTitle>
+            <MessageBarTitle>{historical ? `Previous result: ${accessTitle}` : accessTitle}</MessageBarTitle>
             {access.message}
           </MessageBarBody>
         </MessageBar>
@@ -775,15 +844,14 @@ function AccessPanel({
                   'and never keeps it. API Management reads it from Key Vault itself.'
                 : 'This is what lets MOSAIC list the models deployed here. It grants no ability to call them.'}
         </Text>
-        {keptByMosaic && <StoredKeyActions endpoint={endpoint} onReplaced={onMessage} />}
         {access.remediation && (
           <>
             <Text block>
-              Grant the <strong>{access.remediation.roleName}</strong> role to MOSAIC
+              {historical ? 'Previous advice: grant' : 'Grant'} the <strong>{access.remediation.roleName}</strong> role to MOSAIC
               {keyed ? ' on the vault' : ' at this scope'}. Someone with permission to assign roles
               must run:
             </Text>
-            <CommandBlock command={access.remediation.command} />
+            <CommandBlock command={access.remediation.command} historical={historical} />
             {access.remediation.customRoleDefinition && (
               <Text size={200} className={styles.muted}>
                 Reader is the narrowest built-in role that grants this without also granting
@@ -793,9 +861,11 @@ function AccessPanel({
             )}
           </>
         )}
+        </CheckEvidence>
+        {keptByMosaic && <StoredKeyActions endpoint={endpoint} onReplaced={onMessage} />}
       </section>
 
-      {endpoint.azureResourceId && <EndpointSettings capabilities={endpoint.capabilities} />}
+      {endpoint.azureResourceId && <EndpointSettings capabilities={endpoint.capabilities} evidence={endpoint.detailEvidence} />}
 
       <section className={styles.accessSection}>
         <Text weight="semibold">Gateways calling this endpoint</Text>
@@ -808,7 +878,9 @@ function AccessPanel({
               'role on this endpoint. MOSAIC reports this and never assigns it.'}
         </Text>
         {runtimeAccess.length === 0 ? (
-          <Text size={200}>No gateways are registered yet.</Text>
+          <Text size={200}>{gateways.data?.length === 0
+            ? 'No gateways are registered yet.'
+            : 'No gateway access results are recorded. Run Check access to evaluate the registered gateways.'}</Text>
         ) : (
           runtimeAccess.map((entry) => (
             <RuntimeAccessRow
@@ -833,9 +905,12 @@ function plural(count: number, noun: string): string {
  * What MOSAIC read about the resource itself. Network settings decide whether a gateway can reach
  * the endpoint at all, whatever roles it holds, so they sit beside the gateway verdicts.
  */
-function EndpointSettings({ capabilities }: { capabilities: ModelEndpointCapabilities }) {
+function EndpointSettings({ capabilities, evidence }: {
+  capabilities: ModelEndpointCapabilities
+  evidence?: EndpointDetailEvidence | null
+}) {
   const facts: Array<[string, string]> = [
-    ['Resource kind', capabilities.kind ?? 'Not known yet. MOSAIC cannot read this resource.'],
+    ['Resource kind', capabilities.kind ?? 'Not confirmed by an account read.'],
   ]
   if (capabilities.publicNetworkAccess) {
     facts.push(['Public network access', capabilities.publicNetworkAccess])
@@ -861,8 +936,10 @@ function EndpointSettings({ capabilities }: { capabilities: ModelEndpointCapabil
     <section className={styles.accessSection} aria-label="Endpoint settings">
       <Text weight="semibold">Endpoint settings</Text>
       <Text size={200} className={styles.muted}>
-        Read from the Azure resource. Network settings decide whether a gateway can reach it at
-        all, whatever roles it holds.
+        {evidence?.accountReadAt
+          ? `Last account read: ${formatTimestamp(evidence.accountReadAt)}. These are last-observed settings.`
+          : 'Account-read confirmation was not recorded. These saved settings are not current verification.'}
+        {' '}Network settings decide whether a gateway can reach it at all, whatever roles it holds.
       </Text>
       <dl className={styles.settingsList}>
         {facts.map(([label, value]) => (
@@ -902,7 +979,8 @@ function RuntimeAccessRow({
   registeredScope?: string | null
   environmentCell?: EnvironmentCompatibilityCell
 }) {
-  const verdict = runtimeVerdict(access)
+  const historical = checkFreshness(access) === 'stale'
+  const verdict = historical ? recordedRuntimeVerdict(access) : runtimeVerdict(access)
   const verdictLabel = keyAccess
     ? verdict === CAN_INVOKE
       ? 'can read the key'
@@ -920,20 +998,13 @@ function RuntimeAccessRow({
 
   return (
     <div className={styles.runtimeRow}>
-      <MessageBar intent={verdict.intent} layout="multiline">
+      <CheckEvidence access={access} title={access.gatewayName}>
+      <MessageBar intent={historical ? 'info' : verdict.intent} layout="multiline">
         <MessageBarBody>
           <MessageBarTitle>
-            {access.gatewayName}: {verdictLabel}
+            {historical ? 'Previous result — ' : ''}{access.gatewayName}: {verdictLabel}
           </MessageBarTitle>
           {access.message}
-        </MessageBarBody>
-      </MessageBar>
-      <MessageBar intent={environmentVerdict.intent} layout="multiline">
-        <MessageBarBody>
-          <MessageBarTitle>
-            Environment rules: {environmentVerdict.label}
-          </MessageBarTitle>
-          {environmentCell?.reason ?? 'MOSAIC has not evaluated the gateway and endpoint environments yet.'}
         </MessageBarBody>
       </MessageBar>
       {grantedRole && access.assignmentScope ? (
@@ -993,7 +1064,7 @@ function RuntimeAccessRow({
               </>
             ) : (
               <>
-                Recommended: grant <strong>{access.remediation.roleName}</strong> on{' '}
+                {historical ? 'Previous advice: grant' : 'Recommended: grant'} <strong>{access.remediation.roleName}</strong> on{' '}
                 <ScopeName scope={access.remediation.scope} />.{' '}
                 {keyAccess
                   ? 'Any role that can read secrets is also accepted.'
@@ -1002,7 +1073,7 @@ function RuntimeAccessRow({
               </>
             )}
           </Text>
-          <CommandBlock command={access.remediation.command} />
+          <CommandBlock command={access.remediation.command} historical={historical} />
           {requiredDataActions.length > 0 && !accessPolicy && (
             <details className={styles.dataActions}>
               <summary>
@@ -1019,11 +1090,21 @@ function RuntimeAccessRow({
           )}
         </>
       )}
+      </CheckEvidence>
+      <AnnounceProvider value={SNAPSHOT_ANNOUNCEMENT}><MessageBar intent={environmentVerdict.intent} layout="multiline">
+        <MessageBarBody>
+          <MessageBarTitle>Environment rules: {environmentVerdict.label}</MessageBarTitle>
+          {environmentCell?.reason ?? 'MOSAIC has not evaluated the gateway and endpoint environments yet.'}
+        </MessageBarBody>
+      </MessageBar></AnnounceProvider>
     </div>
   )
 }
 
 function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void }) {
+  const { announce } = useAnnounce()
+  const checkOutcomeRef = useRef<HTMLDivElement>(null)
+  const checkAnnouncement = useFocusAwareAnnounce(checkOutcomeRef)
   const focusFallback = useRef<HTMLElement>(null)
   const api = useMosaicApi()
   const location = useLocation()
@@ -1100,6 +1181,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
     await queryClient.invalidateQueries({ queryKey: ['model-deployments'] })
     // A pool's candidates are the models on these endpoints.
     await queryClient.invalidateQueries({ queryKey: ['model-pools'] })
+    await queryClient.invalidateQueries({ queryKey: ['publishable-models'] })
   }
 
   const register = useMutation({
@@ -1146,8 +1228,18 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
   }, [register.error, registerOrigin])
   const recheck = useMutation({
     mutationKey: MODELS_PAGE_MUTATION_KEY,
-    mutationFn: api.preflightModelEndpoint,
-    onSuccess: refresh,
+    mutationFn: (id: string) => api.preflightModelEndpoint(id),
+    onSuccess: async (checked) => {
+      queryClient.setQueryData<ModelEndpoint[]>(['model-endpoints'], current =>
+        current?.map(endpoint => endpoint.id === checked.id ? checked : endpoint))
+      announce(
+        `Access check completed for ${checked.name}. ` +
+        `${checked.access.canRead ? 'MOSAIC access was observed.' : 'MOSAIC access is not confirmed or was refused.'} ` +
+        'Inspect the separate gateway results.',
+        { polite: true },
+      )
+      await refresh()
+    },
   })
   const remove = useMutation({
     mutationKey: MODELS_PAGE_MUTATION_KEY,
@@ -1349,7 +1441,6 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
         {endpoints.isPending && <Loading label="Loading model endpoints" />}
         {endpoints.isError && <ErrorState error={endpoints.error} />}
         {sync.isError && <ErrorState error={sync.error} />}
-        {recheck.isError && <ErrorState error={recheck.error} />}
         {!endpoints.isPending && (!filteredEndpoints.length || workspace.selectedId || initializedSelection.current) && <ResourceWorkbench focusReturnRef={focusFallback} title="Model endpoints"
           description="Discover provider models and deploy new models to opted-in Azure accounts. Publishing through API Management remains a separate action; MOSAIC never calls a model."
           actions={<Button appearance="primary" icon={<AddRegular />} onClick={openDialog} {...restoreFocus}>Register endpoint</Button>}
@@ -1382,19 +1473,21 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
           </EmptyState>}
           renderListItem={(endpoint) => <div className={styles.resourceRow} data-resource-name={endpoint.name}>
             <span className={styles.primaryCell}>{endpoint.name}</span>
-            <span className={styles.secondaryCell}>{providerLabels[endpoint.provider]} · {usesBackendKey(endpoint) ? `${endpoint.declaredDeployments?.length ?? 0} declared models` : `${endpoint.inventory.deployments} models`}</span>
-            <div className={styles.resourceBadges}><EndpointStatusBadge status={endpoint.status} /><EnvironmentBadge azureCloud={endpoint.azureCloud ?? 'commercial'} environment={endpoint.environment} catalog={catalog.data} /></div>
+            <span className={styles.secondaryCell}>{endpoint.azureResourceId && !endpoint.detailEvidence?.providerConfirmedAt
+              ? endpoint.detailEvidence ? 'Provider unconfirmed' : 'Provider confirmation not recorded'
+              : providerLabels[endpoint.provider]} · {usesBackendKey(endpoint) ? `${endpoint.declaredDeployments?.length ?? 0} declared models` : endpoint.lastSyncedAt ? `${endpoint.inventory.deployments} models` : 'Not synced'}</span>
+            <div className={styles.resourceBadges}><EndpointAccessBadge endpoint={endpoint} /><EnvironmentBadge azureCloud={endpoint.azureCloud ?? 'commercial'} environment={endpoint.environment} catalog={catalog.data} /></div>
           </div>}
           renderDetail={(endpoint) => <div key={endpoint.id} className={styles.selectedDetail}>
             <Title3 as="h3">{endpoint.name}</Title3>
             <EndpointNotificationRun endpointId={endpoint.id} kind="model" />
             <dl className={styles.detailList}>
-              <div><dt>Endpoint URL</dt><dd>{endpoint.endpoint}</dd></div>
+              <div><dt>Endpoint URL</dt><dd>{endpoint.endpoint}<EndpointFactEvidence endpoint={endpoint} field="endpoint" /></dd></div>
               {endpoint.azureResourceId && <div><dt>Azure resource ID</dt><dd>{endpoint.azureResourceId}</dd></div>}
-              <div><dt>Provider</dt><dd>{providerLabels[endpoint.provider]}</dd></div>
+              <div><dt>Provider</dt><dd>{providerLabels[endpoint.provider]}<EndpointFactEvidence endpoint={endpoint} field="provider" /></dd></div>
               <div><dt>Environment</dt><dd><EnvironmentBadge azureCloud={endpoint.azureCloud ?? 'commercial'} environment={endpoint.environment} catalog={catalog.data} /></dd></div>
-              <div><dt>Status</dt><dd><EndpointStatusBadge status={endpoint.status} /></dd></div>
-              <div><dt>Models</dt><dd>{usesBackendKey(endpoint) ? `${endpoint.declaredDeployments?.length ?? 0} declared` : endpoint.inventory.deployments}</dd></div>
+              <div><dt>Recorded status</dt><dd><EndpointStatusBadge status={endpoint.status} /><Text block size={200}>Inventory/registration status, not proof of current gateway access.</Text></dd></div>
+              <div><dt>Models</dt><dd>{usesBackendKey(endpoint) ? `${endpoint.declaredDeployments?.length ?? 0} declared` : endpoint.lastSyncedAt ? endpoint.inventory.deployments : 'Not synced'}</dd></div>
               <div><dt>Management authentication</dt><dd>{usesBackendKey(endpoint) ? 'API key from Key Vault' : endpoint.azureConnectionId ? 'Selected Azure connection' : 'Host managed identity'}</dd></div>
               {supportsModelDeployment(endpoint) && <div><dt>Deployment management</dt><dd>{endpoint.managementMode === 'manage' ? 'Manage deployments' : 'Read-only'}</dd></div>}
               <div><dt>Last synced</dt><dd>{usesBackendKey(endpoint) ? 'Not applicable — declared models' : formatTimestamp(endpoint.lastSyncedAt)}</dd></div>
@@ -1403,7 +1496,11 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
             <RowActions label={`More actions for ${endpoint.name}`}
               primary={<>
                 {supportsModelDeployment(endpoint) && <Button appearance="primary" onClick={() => setDeploying(endpoint)}>Deploy model</Button>}
-                <Button onClick={() => recheck.mutate(endpoint.id)} disabled={recheck.isPending}>Check access</Button>
+                <Button
+                  onClick={() => { if (!recheck.isPending) recheck.mutate(endpoint.id) }}
+                  disabledFocusable={recheck.isPending}
+                  aria-busy={recheck.isPending && recheck.variables === endpoint.id}
+                >{recheck.isPending && recheck.variables === endpoint.id ? 'Checking access…' : 'Check access'}</Button>
               </>}
               actions={[
                 { label: 'Edit endpoint', onClick: () => openEndpointEditor(endpoint) },
@@ -1412,6 +1509,17 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
               ]}
               destructiveActions={[{ label: 'Remove', disabled: remove.isPending, onClick: () => confirmRemoval(endpoint) }]}
             />
+            {recheck.variables === endpoint.id && recheck.isError && <AnnounceProvider value={checkAnnouncement}>
+              <div ref={checkOutcomeRef} tabIndex={-1}>
+                <ErrorState context="action" title="MOSAIC could not complete this access check"
+                  error={recheck.error} announcementKey={recheck.submittedAt} />
+              </div>
+            </AnnounceProvider>}
+            {recheck.variables === endpoint.id && recheck.isSuccess && <Text block>
+              Access check completed at {formatTimestamp(recheck.data.access.checkedAt)}.
+              {' '}{recheck.data.access.canRead ? 'MOSAIC access was observed.' : 'MOSAIC access is not confirmed or was refused.'}
+              {' '}Inspect the separate gateway results below.
+            </Text>}
             <Text size={200}>Removing an endpoint deletes only what MOSAIC stored about it. Nothing changes in Azure or AWS. MOSAIC refuses while a model from it is still published, on its own or in a model pool.</Text>
             <AccessPanel endpoint={endpoint} onMessage={onMessage} />
             {usesBackendKey(endpoint) ? <DeclaredDeploymentsCard endpoint={endpoint} className={styles.detailSection} /> : (

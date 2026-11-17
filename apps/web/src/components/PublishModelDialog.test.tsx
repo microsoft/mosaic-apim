@@ -56,7 +56,7 @@ const publishableModel: PublishableModel = {
     endpointEnvironment: 'production',
     viaException: false,
   },
-  runtimeAccess: { gatewayId: 'gateway_1', gatewayName: 'Managed gateway', apimPrincipalId: 'principal', canInvoke: true, evaluation: 'roleAssignments', checkedAt: '2026-09-01T12:00:00Z', requiredRoleName: 'Cognitive Services OpenAI User', requiredRoleDefinitionId: 'role', assignmentScope: null, inherited: false, remediation: null, message: 'Gateway can invoke this endpoint.' },
+  runtimeAccess: { gatewayId: 'gateway_1', gatewayName: 'Managed gateway', apimPrincipalId: 'principal', canInvoke: true, evaluation: 'roleAssignments', checkedAt: '2026-09-01T12:00:00Z', rulesRevision: 'test/1', currentRulesRevision: 'test/1', freshness: 'current', requiredRoleName: 'Cognitive Services OpenAI User', requiredRoleDefinitionId: 'role', assignmentScope: null, inherited: false, remediation: null, message: 'Gateway can invoke this endpoint.' },
 }
 
 const publication: Publication = {
@@ -267,6 +267,19 @@ describe('PublishModelDialog', () => {
 
     expect(await screen.findByText('Named value · mosaic-fabrikam-claude-key')).toBeVisible()
     expect(screen.getByText(/reads the model endpoint's API key through, from Key Vault/)).toBeVisible()
+  })
+
+  it('does not present a stale recorded success as current runtime permission evidence', async () => {
+    api.listPublishableModels.mockResolvedValue([{
+      ...publishableModel,
+      runtimeAccess: { ...publishableModel.runtimeAccess!, rulesRevision: null, freshness: 'stale' },
+    }])
+    renderDialog()
+
+    const table = await screen.findByRole('table', { name: 'Publishable models' })
+    expect(within(table).getByText('Runtime access check out of date')).toBeVisible()
+    expect(within(table).queryByText('Runtime permissions observed')).not.toBeInTheDocument()
+    expect(within(table).getByText(/Run Check access on the endpoint/)).toBeVisible()
   })
 
   it('does not present a conditional role assignment as either access or a denial', async () => {

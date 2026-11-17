@@ -128,6 +128,38 @@ connection throughout. See [ADR 0028](adr/0028-reviewed-azure-model-deployment.m
 
 On the Models page, select an endpoint to open its **Access** card.
 
+The endpoint URL and provider each carry their own evidence. A resource-ID registration starts
+with a generated URL and default or supplied provider label; these are **Unconfirmed** until an
+account read supplies the corresponding facts. A host-derived provider remains **Inferred from
+URL**, not account-confirmed. Older registrations whose provenance was not saved say
+**Confirmation not recorded**. A URL registered with an API key is a **Registered URL**, not proof
+that MOSAIC read the account. Signing in, a provider label, and account confirmation do not prove
+model/runtime or API-schema support.
+
+A successful account-description read can confirm the URL/provider even when MOSAIC still lacks
+permission to enumerate models. Confirmation records when each fact was observed. If a later read
+fails, the last-confirmed identity and account facts remain visible with their original times;
+the failed check is reported separately. An inventory count without a completed sync is **Not
+synced**, not evidence that the resource has no models.
+
+Access evidence is dated and names the readiness-rule revision that produced it. **Not checked**
+means no attempted check was recorded. **Check out of date** means a previous check has no
+revision or used rules different from this API's current rules, even if its old result said it
+could invoke or recommended a particular role. Previous verdicts and role commands are available
+under a disclosure explicitly marked historical, not as current recommendations. **Check access**
+records a new result and shows its outcome and time, including an unchanged verdict or a failed
+check. Matching rules mean checked under those rules, not continuously verified access or a
+successful model invocation; there is no age-based expiry.
+
+Reading, selecting, or refreshing saved endpoint/access evidence never runs an access check.
+This includes
+`GET /api/v1/model-endpoints/{id}/runtime-access`, which now retrieves saved evidence rather than
+re-evaluating access. API clients that intentionally want a new check must use the existing
+`POST /api/v1/model-endpoints/{id}/preflight` and consume its returned endpoint. GET retains its
+tenant-scoped list response and unknown-endpoint `404`. Model sync refreshes inventory only,
+not the access check. Pool readiness and publish warnings treat old verdicts as not confirmed
+without changing existing grants, publications, or applied gateway state.
+
 - **Gateways calling this endpoint** gives each gateway a verdict: *can invoke*, *cannot invoke*,
   or *not confirmed*.
   - When a role satisfies the check, it names the role and the scope where it is assigned.
@@ -139,6 +171,20 @@ On the Models page, select an endpoint to open its **Access** card.
   firewall, and key authentication. Those settings decide whether a gateway can reach the endpoint
   at all. Azure omits `disableLocalAuth` from accounts where it was never set, and its default is
   `false`, so MOSAIC shows an unset value as key authentication *Enabled*.
+
+**Persistence compatibility:** new `detailEvidence`, `access.rulesRevision`, and
+`runtimeAccess[].rulesRevision` metadata is optional and omitted while unset, so existing
+registrations load without a migration. Responses additionally project freshness and the running
+rules revision; those derived values are not stored. The first new registration or recorded
+access check (including existing key-replacement verification) can populate metadata that an
+older extra-forbid API binary cannot read. Reads and inventory sync alone do not backfill it.
+The new `accountKindUnconfirmed` runtime reason also requires a reader that understands it.
+Upgrade all readers before allowing those writes, using a compatible reader-first rollout or
+coordinated replacement. After the first populated write, image-only rollback to a strict older
+reader is not safe: follow the [durable-state compatibility and backup
+prerequisites](upgrades.md#check-durable-state-compatibility-and-backup-prerequisites) and
+quiescence guidance. No automatic metadata downgrade, migration, or deployment tooling is
+provided by this feature.
 
 Every role whose name begins `Cognitive Services` or `Foundry` that grants control-plane deployment
 read also grants data-plane inference, and most also grant `listKeys`. `Reader` is the only built-in

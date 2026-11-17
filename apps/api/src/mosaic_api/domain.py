@@ -1,5 +1,6 @@
 import math
 import re
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal, Self
@@ -926,6 +927,15 @@ class ApiShape(StrEnum):
     ANTHROPIC_MESSAGES = "anthropicMessages"
 
 
+def account_kind_provider(kind: str | None) -> ModelProvider | None:
+    normalized = (kind or "").casefold()
+    if normalized == "openai":
+        return ModelProvider.AZURE_OPENAI
+    if normalized in {"aiservices", "cognitiveservices"}:
+        return ModelProvider.AZURE_AI_FOUNDRY
+    return None
+
+
 def default_api_shape(provider: str) -> ApiShape | None:
     """The shape a provider's deployments used before shapes were chosen per model format."""
 
@@ -977,6 +987,7 @@ class RuntimeAccessReason(StrEnum):
     ASSIGNMENTS_UNREADABLE = "assignmentsUnreadable"
     NO_GATEWAY_IDENTITY = "noGatewayIdentity"
     IDENTITY_NOT_OBSERVED = "identityNotObserved"
+    ACCOUNT_KIND_UNCONFIRMED = "accountKindUnconfirmed"
 
 
 class RuntimeRoleFindingKind(StrEnum):
@@ -1017,12 +1028,19 @@ class NetworkReachability(StrEnum):
     UNKNOWN = "unknown"
 
 
+def _unset(value: object) -> bool:
+    """Omit unused additive fields so older extra-forbid readers can still load the document."""
+
+    return value is None or value == [] or value is False
+
+
 class EndpointAccess(MosaicModel):
     """Whether MOSAIC's own identity can enumerate models on an endpoint."""
 
     can_read: bool = False
     evaluation: AccessEvaluation = AccessEvaluation.NOT_EVALUATED
     checked_at: datetime | None = None
+    rules_revision: str | None = Field(default=None, exclude_if=_unset)
     missing_actions: list[str] = Field(default_factory=list)
     remediation: AccessRemediation | None = None
     message: str | None = None
@@ -1045,6 +1063,7 @@ class GatewayRuntimeAccess(MosaicModel):
         description="What the check found. Missing on results recorded before it was introduced.",
     )
     checked_at: datetime | None = None
+    rules_revision: str | None = Field(default=None, exclude_if=_unset)
     required_role_name: str | None = Field(
         default=None,
         description=(
@@ -1075,6 +1094,22 @@ class GatewayRuntimeAccess(MosaicModel):
     message: str | None = None
 
 
+class ReadinessFreshness(StrEnum):
+    NEVER_CHECKED = "neverChecked"
+    STALE = "stale"
+    CURRENT = "current"
+
+
+class EndpointAccessView(EndpointAccess):
+    freshness: ReadinessFreshness
+    current_rules_revision: str
+
+
+class GatewayRuntimeAccessView(GatewayRuntimeAccess):
+    freshness: ReadinessFreshness
+    current_rules_revision: str
+
+
 class ModelEndpointCapabilities(MosaicModel):
     kind: str | None = None
     sku_name: str | None = None
@@ -1103,17 +1138,6 @@ class ModelInventorySummary(MosaicModel):
     available_models: int = 0
     succeeded_deployments: int = 0
     deprecated_deployments: int = 0
-
-
-def _unset(value: object) -> bool:
-    """Whether a field added after release holds nothing, so it's left out of stored documents.
-
-    Every model forbids unknown fields, so a release reading a document another release wrote
-    fails on any field it doesn't know. Leaving a new field out while it's empty keeps records that
-    don't use it readable by the release before it.
-    """
-
-    return value is None or value == [] or value is False
 
 
 # Deployment names become literal operation paths and a pinned request model in the gateway policy,
@@ -1234,6 +1258,18 @@ def validate_declarations(
     return declarations
 
 
+class EndpointDetailEvidence(MosaicModel):
+    endpoint_source: Literal["resourceIdPlaceholder", "registeredUrl", "account"] | None = Field(
+        default=None, exclude_if=_unset
+    )
+    endpoint_confirmed_at: datetime | None = Field(default=None, exclude_if=_unset)
+    provider_source: Literal[
+        "default", "registrationHint", "urlInference", "accountKind"
+    ] | None = Field(default=None, exclude_if=_unset)
+    provider_confirmed_at: datetime | None = Field(default=None, exclude_if=_unset)
+    account_read_at: datetime | None = Field(default=None, exclude_if=_unset)
+
+
 class ModelEndpoint(Entity):
     """A registered provider endpoint MOSAIC reads models from.
 
@@ -1252,6 +1288,7 @@ class ModelEndpoint(Entity):
     name: str
     provider: ModelProvider
     endpoint: AnyHttpUrl
+    detail_evidence: EndpointDetailEvidence | None = Field(default=None, exclude_if=_unset)
     azure_resource_id: str | None = None
     azure_cloud: Literal["commercial", "government"] = "commercial"
     azure_connection_id: str | None = None
@@ -1278,7 +1315,7 @@ class ModelEndpoint(Entity):
     )
     status: ModelEndpointStatus = ModelEndpointStatus.PENDING
     access: EndpointAccess = Field(default_factory=EndpointAccess)
-    runtime_access: list[GatewayRuntimeAccess] = Field(default_factory=list)
+    runtime_access: Sequence[GatewayRuntimeAccess] = Field(default_factory=list)
     capabilities: ModelEndpointCapabilities = Field(default_factory=ModelEndpointCapabilities)
     inventory: ModelInventorySummary = Field(default_factory=ModelInventorySummary)
     last_synced_at: datetime | None = None
@@ -1312,6 +1349,11 @@ class ModelEndpoint(Entity):
             (item for item in self.declared_deployments if item.deployment_name == deployment_name),
             None,
         )
+
+
+class ModelEndpointView(ModelEndpoint):
+    access: EndpointAccessView = Field(...)
+    runtime_access: list[GatewayRuntimeAccessView] = Field(default_factory=list)
 
 
 class ModelEndpointSyncRun(Entity):
@@ -4374,7 +4416,7 @@ class PublishableModel(MosaicModel):
     publication_status: PublicationStatus | None = None
     suggested_api_name: str = ""
     suggested_api_path: str = ""
-    runtime_access: GatewayRuntimeAccess | None = None
+    runtime_access: GatewayRuntimeAccessView | None = None
     environment_verdict: EnvironmentVerdict
     # True when an administrator declared this deployment rather than MOSAIC reading it from Azure.
     declared: bool = False

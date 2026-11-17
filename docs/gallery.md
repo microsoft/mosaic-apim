@@ -164,10 +164,19 @@ embeddings remain disabled read-only intent, not current save or enforcement pro
       the API each one takes.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="images/screenshots/console-key-endpoint.png" alt="A key-authenticated endpoint's access card, with Replace API key, and its declared deployments">
+      <img src="images/screenshots/console-key-endpoint.png" alt="A key-authenticated endpoint's dated access evidence, with Replace API key, and its declared deployments">
       <p><b>Endpoint reached with an API key.</b> MOSAIC shows that the endpoint accepts the key it
       keeps, whether each gateway can read the key itself, and the deployments declared for
       publishing. An administrator can replace the key without ever seeing it again.</p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <a id="endpoint-evidence"></a>
+      <img src="images/screenshots/console-endpoint-evidence.png" alt="Inline unconfirmed endpoint URL and provider labels beside a dated, out-of-date access check">
+      <p><b>Endpoint facts and saved access evidence.</b> See which details MOSAIC has not
+      confirmed and when an access result was recorded under older readiness rules. Rechecking
+      is explicit; historical role advice is not presented as a current recommendation.</p>
     </td>
   </tr>
   <tr>

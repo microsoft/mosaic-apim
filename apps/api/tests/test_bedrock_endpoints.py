@@ -33,7 +33,9 @@ from mosaic_api.domain import (
     RuntimeAccessReason,
     deterministic_id,
     is_bedrock_host,
+    utc_now,
 )
+from mosaic_api.endpoint_readiness import ENDPOINT_READINESS_RULES_REVISION
 from mosaic_api.errors import (
     ConflictError,
     UpstreamAuthorizationError,
@@ -733,6 +735,8 @@ async def test_a_gateway_that_cant_read_the_bedrock_key_is_a_problem(estate: Est
                 can_invoke=False,
                 evaluation=RuntimeAccessEvaluation.ROLE_ASSIGNMENTS,
                 reason=RuntimeAccessReason.MISSING_ROLE,
+                checked_at=utc_now(),
+                rules_revision=ENDPOINT_READINESS_RULES_REVISION,
             )
         ],
     )
