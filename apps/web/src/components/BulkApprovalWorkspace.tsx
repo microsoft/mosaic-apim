@@ -26,13 +26,15 @@ function targetCenterId(item: ApprovalPreview, draft: ItemDraft) {
 }
 function inheritedLimits(item: ApprovalPreview, draft: ItemDraft, costCenters: CostCenter[]) {
   const centerId = targetCenterId(item, draft)
+  if (centerId === (item.effectiveCostCenterId ?? item.request.costCenterId)) {
+    return item.effectiveEnforcement ?? null
+  }
   const center = costCenters.find(value => value.id === centerId)
   if (center) {
     const person = personLimitsFor(center, item.request.resource)
     return person ? buildEnforcement(limitFormFromPerson(person), true) : null
   }
-  return centerId === (item.effectiveCostCenterId ?? item.request.costCenterId)
-    ? item.effectiveEnforcement ?? null : undefined
+  return undefined
 }
 export function RecommendationEvidence({ value, contextRevision }: { value: AiApprovalRecommendation; contextRevision: string }) {
   const stale = value.context.contextRevision !== contextRevision || new Date(value.expiresAt).getTime() <= Date.now()

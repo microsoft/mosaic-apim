@@ -82,6 +82,16 @@ beforeEach(() => {
   api.listPrincipals.mockResolvedValue([])
 })
 describe('bulk approval workspace', () => {
+  it.each([null, 99])('retains the authoritative original preview when cached original defaults are %s', async calls => {
+    api.previewBulkApprovals.mockResolvedValue({ items: [formedPreview()], unavailable: [] })
+    mount(<BulkApprovalWorkspace requestIds={['r1']} principals={[]}
+      costCenters={[reviewCenter('original', 'Original center', calls)]}
+      onBack={vi.fn()} onComplete={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Next: Grant settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Next: Confirm' }))
+    expect(screen.getByText('Effective grant limits').nextElementSibling).toHaveTextContent('20 calls per minute')
+    expect(api.approveBulkRequests).not.toHaveBeenCalled()
+  })
   it.each([
     { resource: { kind: 'modelApi' as const, id: 'model' }, calls: 40, expected: '40 calls per minute' },
     { resource: { kind: 'poolModel' as const, id: 'model', scopeId: 'pool-b' }, calls: 40, expected: '40 calls per minute' },
