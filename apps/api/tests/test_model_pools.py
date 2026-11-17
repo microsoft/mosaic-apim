@@ -278,7 +278,8 @@ class Estate:
         assert gateway is not None
         await self.gateway_repository.save_gateway(gateway.model_copy(update=changes), _audit())
 
-    async def set_gateway_sku(self, sku_name: str) -> None:
+    async def set_gateway_sku(self, sku_name: str | None) -> None:
+        self.apim.sku_name = sku_name
         gateway = await self.gateway_repository.get_gateway(TENANT, self.gateway_id)
         assert gateway is not None
         await self.update_gateway(
@@ -714,6 +715,33 @@ async def test_a_consumption_gateway_runs_only_linear_pools(estate: Estate) -> N
     candidates = await estate.service.candidates(ACTOR, estate.gateway_id)
     assert candidates.pool_types["linear"] is None
     assert candidates.pool_types["breaker"] is not None
+
+
+async def test_gateway_policy_consumption_safeguard_is_refused_at_save(estate: Estate) -> None:
+    await estate.set_gateway_sku("Consumption")
+    estate.apim.http_calls.clear()
+    with pytest.raises(ValidationError) as refused:
+        await estate.create(
+            "Limited linear", _gpt4o("aoai-east", "aoai-sweden"),
+            pool_type="linear", safeguard={"tokens_per_minute": 1000},
+        )
+    assert refused.value.details["boundary"] == "save"
+    assert refused.value.details["issues"][0]["resource"]["kind"] == "poolModel"
+    assert not any(call["method"] in {"PUT", "PATCH", "DELETE"} for call in estate.apim.http_calls)
+
+
+async def test_gateway_policy_pool_apply_refuses_live_tier_drift(estate: Estate) -> None:
+    pool = await estate.create(
+        "Limited linear", _gpt4o("aoai-east", "aoai-sweden"),
+        pool_type="linear", safeguard={"tokens_per_minute": 1000},
+    )
+    plan = await estate.service.plan(ACTOR, pool.id)
+    estate.apim.sku_name = "Consumption"
+    estate.apim.http_calls.clear()
+    with pytest.raises(ValidationError) as refused:
+        await estate.service.apply(ACTOR, pool.id, plan.id)
+    assert refused.value.details["boundary"] == "apply"
+    assert not any(call["method"] in {"PUT", "PATCH", "DELETE"} for call in estate.apim.http_calls)
 
 
 async def test_a_linear_pool_tries_at_most_ten_deployments_of_a_model(estate: Estate) -> None:
@@ -1982,16 +2010,19 @@ async def test_a_safeguard_needs_a_tier_that_meters_anthropic_tokens(estate: Est
     pool = await estate.create(
         "Claude",
         _model(_member("foundry-east", "claude-opus-4-5")),
-        safeguard={"tokens_per_minute": 1000},
     )
-
-    with pytest.raises(ConflictError, match="problems are fixed") as refused:
+    with pytest.raises(ValidationError) as saved:
+        await estate.update(pool.id, safeguard={"tokens_per_minute": 1000})
+    assert saved.value.details["boundary"] == "save"
+    assert (await estate.service.get_pool(ACTOR, pool.id)).safeguard is None
+    legacy = pool.model_copy(update={"safeguard": PoolSafeguard(tokens_per_minute=1000)})
+    await estate.gateway_repository.save_model_pool(legacy, _audit())
+    with pytest.raises(ValidationError) as refused:
         await estate.service.plan(ACTOR, pool.id)
-    [problem] = refused.value.details["problems"]
-    assert problem.startswith("This gateway can't apply the pool's safeguard.")
-    assert "classic tier" in problem
-    assert problem.endswith("Remove the safeguard to publish the pool here.")
-    assert (await estate.service.detail(ACTOR, pool.id)).problems == [problem]
+    [issue] = refused.value.details["issues"]
+    assert issue["field"] == "safeguard.tokensPerMinute"
+    assert issue["support"] == "unavailable"
+    assert "classic tier" in issue["message"]
 
     await estate.set_gateway_sku("StandardV2")
     await estate.publish(pool.id)

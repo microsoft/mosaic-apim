@@ -1,5 +1,6 @@
 import {
   Badge,
+  AnnounceProvider,
   Button,
   Card,
   Field,
@@ -15,7 +16,7 @@ import {
 } from '@fluentui/react-components'
 import { AddRegular, KeyRegular, PersonClockRegular, ShieldCheckmarkRegular, SettingsRegular } from '@fluentui/react-icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link as RouterLink, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { ApiError, useMosaicApi } from '../api'
 import { grantReviewValues, rememberEdit } from '../change-review'
@@ -24,6 +25,8 @@ import {
   type ApprovalRequester,
 } from '../components/ApproveAccessRequestDialog'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
+import { PolicyCapabilityError } from '../components/PolicyCapabilityFeedback'
+import { policyReviewFields } from '../policy-capabilities'
 import { PageHeader } from '../components/PageHeader'
 import { RowActions } from '../components/RowActions'
 import { SectionLayout, usePageSection } from '../components/SectionLayout'
@@ -37,6 +40,8 @@ import { ModelAccessSettingsPanel } from '../components/ModelAccessSettingsPanel
 import { ApprovalPolicies } from '../components/ApprovalPolicies'
 import { BulkApprovalWorkspace } from '../components/BulkApprovalWorkspace'
 import { BulkRequestSelection } from '../components/BulkRequestSelection'
+import { LimitFields, type LimitTargetContext } from '../components/GovernanceFields'
+import { useFocusAwareAnnounce } from '../components/useFocusAwareAnnounce'
 import { CostCenterRequestReview, CostCenterRequestSummary } from '../components/CostCenterRequestReview'
 import { CostCenterMembershipReview, CostCenterMembershipSummary, RequesterName } from '../components/CostCenterMembershipReview'
 import { membershipNeedsAttention } from '../request-queue'
@@ -52,13 +57,15 @@ import {
   WorkspaceDialogSurface as DialogSurface,
 } from '../components/WorkspaceDialog'
 import {
-  QUOTA_PERIODS,
   buildEnforcement,
-  callRateError,
+  callOnlyLimitForm,
   describeLimits,
   describePoolSafeguard,
   emptyLimitForm,
-  limitFormFrom,
+  limitFormFromEnforcement,
+  limitFormsEqual,
+  limitInputError,
+  personLimitsFor,
   type LimitForm,
 } from '../entitlement-limits'
 import { entitlementResourceCloud, entitlementResourceEnvironment } from '../entitlement-environment'
@@ -85,7 +92,6 @@ import type {
   EntitlementSubjectKind,
   CostCenter,
   ModelPool,
-  QuotaPeriod,
   Publication,
   PublishPlan,
   PrincipalKind,
@@ -133,9 +139,7 @@ const emptyForm: GrantForm = {
 
 function formForGrant(grant: Entitlement): GrantForm {
   return {
-    ...limitFormFrom(grant.enforcement?.tokens),
-    calls: grant.enforcement?.requests?.calls ? String(grant.enforcement.requests.calls) : '',
-    renewalPeriodSeconds: String(grant.enforcement?.requests?.renewalPeriodSeconds ?? 60),
+    ...limitFormFromEnforcement(grant.enforcement),
     subject: grant.subject.id,
     resource: resourceKey(grant.resource),
     costCenter: grant.costCenterId ?? '',
@@ -186,6 +190,8 @@ interface ApprovalContext {
   /** The pool of a requested pool model. */
   pool?: ModelPool
   governed: boolean
+  defaultCostCenterId?: string
+  targetContext: LimitTargetContext
   existingGrant: boolean
 }
 
@@ -545,8 +551,8 @@ export function EntitlementsPage() {
   })
 
   const editMutation = useMutation({
-    mutationFn: ({ id, enforcement, notes }: { id: string; enforcement: EntitlementEnforcement | null; notes: string | null; before: Entitlement }) =>
-      api.updateEntitlement(id, { enforcement, notes }),
+    mutationFn: ({ id, enforcement, notes }: { id: string; enforcement?: EntitlementEnforcement | null; notes: string | null; before: Entitlement }) =>
+      api.updateEntitlement(id, { ...(enforcement !== undefined ? { enforcement } : {}), notes }),
     onSuccess: async (saved, variables) => {
       rememberGrantEdit(saved, variables.before)
       await Promise.all([
@@ -557,9 +563,20 @@ export function EntitlementsPage() {
         queryClient.invalidateQueries({ queryKey: ['entitlement-connection'] }),
       ])
       completeWorkspaceNavigation(() => closeEditor(saved.id))
-      announce('Saved grant intent. API Management is unchanged; review and apply the affected resource plan separately.')
+      announce(grantTargetContext(saved) === 'desiredOnly'
+        ? 'Saved desired grant intent. No managed gateway plan is generated for this resource.'
+        : 'Saved grant intent. API Management is unchanged; review and apply the affected resource plan separately.')
     },
   })
+  const grantErrorRef = useRef<HTMLDivElement>(null)
+  const grantFormRef = useRef<HTMLFormElement>(null)
+  const grantErrorAnnouncement = useFocusAwareAnnounce(grantErrorRef)
+  const grantError = editMutation.error ?? createMutation.error
+  useLayoutEffect(() => {
+    if (dialogOpen && grantError && !createMutation.isPending && !editMutation.isPending) {
+      grantErrorRef.current?.focus()
+    }
+  }, [dialogOpen, grantError, createMutation.isPending, editMutation.isPending, createMutation.submittedAt, editMutation.submittedAt])
 
   const toggleMutation = useMutation({
     mutationFn: async ({ id, enabled }: { id: string; enabled: boolean }) => {
@@ -688,6 +705,13 @@ export function EntitlementsPage() {
     return modelPools.data?.find((pool) => pool.id === resource.scopeId)
   }
 
+  function grantTargetContext(target: Pick<Entitlement, 'resource' | 'subject'>): LimitTargetContext {
+    if (target.resource.kind === 'product' || target.resource.kind === 'modelDeployment'
+      || target.subject.kind === 'group') return 'desiredOnly'
+    if (publicationFor(target) || mcpPublicationFor(target) || poolFor(target.resource)) return 'managed'
+    return 'conditional'
+  }
+
   function rememberGrantEdit(saved: Entitlement, before?: Entitlement) {
     const target = saved.resource.kind === 'poolModel' ? poolFor(saved.resource)
       : saved.resource.kind === 'mcpServer' ? mcpPublicationFor(saved) : publicationFor(saved)
@@ -732,6 +756,9 @@ export function EntitlementsPage() {
       reviewable: publishedModels.find((item) => item.id === publication?.id),
       pool: poolFor(resource),
       governed: managedGrant({ resource, subject }),
+      defaultCostCenterId: principal?.defaultCostCenterId
+        ?? costCenters.data?.find(center => center.isTenantDefault)?.id,
+      targetContext: grantTargetContext({ resource, subject }),
       existingGrant: Boolean(principal) && (entitlements.data ?? []).some(
         (item) => item.subject.kind === subject.kind && item.subject.id === subject.id
           && item.resource.kind === resource.kind && item.resource.id === resource.id
@@ -772,30 +799,19 @@ export function EntitlementsPage() {
     event.preventDefault()
     if (mode === 'edit' && selectedId) {
       const grant = entitlements.data?.find((item) => item.id === selectedId)
-      if (!grant || grant.managedBy === 'costCenterAutomatic' || grantLocked(grant) || callRateError(form) || editMutation.isPending) return
-      let enforcement = buildEnforcement(form, managedGrant(grant))
-      const original = formForGrant(grant)
-      const limitsUnchanged = (['tokensPerMinute', 'tokenQuota', 'tokenQuotaPeriod', 'calls', 'renewalPeriodSeconds'] as const)
-        .every((key) => original[key] === form[key])
-      if (limitsUnchanged) enforcement = grant.enforcement ?? null
-      if (grant.enforcement?.requests?.callQuota) {
-        enforcement = {
-          ...enforcement,
-          requests: {
-            counterKeyExpression: grant.enforcement.requests.counterKeyExpression,
-            ...enforcement?.requests,
-            callQuota: grant.enforcement.requests.callQuota,
-            callQuotaPeriod: grant.enforcement.requests.callQuotaPeriod,
-          },
-        }
-      }
-      if (!editBase.current || editBase.current.id !== grant.id) return
-      editMutation.mutate({ id: grant.id, enforcement, notes: form.notes.trim() || null, before: editBase.current })
+      if (!grant || !editBase.current || editBase.current.id !== grant.id) return
+      const original = formForGrant(editBase.current)
+      if (grant.managedBy === 'costCenterAutomatic' || grantLocked(grant) || limitInputError(form, original) || editMutation.isPending) return
+      const limitsUnchanged = limitFormsEqual(form, original)
+      editMutation.mutate({
+        id: grant.id, notes: form.notes.trim() || null, before: editBase.current,
+        ...(!limitsUnchanged ? { enforcement: buildEnforcement(form, managedGrant(grant), editBase.current.enforcement) } : {}),
+      })
       return
     }
     const subject = subjectOptions.find((option) => option.id === form.subject)
     const resource = resourceOptions.find((option) => option.value === form.resource)
-    if (createMutation.isPending || !subject || !resource || callRateError(form) || (directModelId && subject.kind === 'group')) {
+    if (createMutation.isPending || !subject || !resource || limitInputError(form) || (directModelId && subject.kind === 'group')) {
       return
     }
     const target = {
@@ -878,12 +894,22 @@ export function EntitlementsPage() {
     })
   // A pool grant is never bound to its own subscription: the pool's policy checks it on every call.
   const unbound = rows.filter((item) => !item.binding && item.resource.kind !== 'poolModel').length
-  const rateError = callRateError(form)
+  const activatedGrant = editingGrant && editBase.current?.id === editingGrant.id ? editBase.current : undefined
+  const rateError = limitInputError(form, activatedGrant ? formForGrant(activatedGrant) : undefined)
   const selectedResource = resourceOptions.find((option) => option.value === form.resource)
   const newGrantLocked = Boolean(!editingGrant && selectedResource && grantLocked({ resource: selectedResource }))
   const mcpSelected = (selectedResource ?? editingGrant?.resource)?.kind === 'mcpServer'
   const poolSelected = (selectedResource ?? editingGrant?.resource)?.kind === 'poolModel'
   const selectedPool = selectedResource ? poolFor(selectedResource) : editingGrant ? poolFor(editingGrant.resource) : undefined
+  const formCostCenter = costCenterById.get(form.costCenter || editingGrant?.costCenterId
+    || principals.data?.find(item => item.id === form.subject)?.defaultCostCenterId
+    || costCenters.data?.find(center => center.isTenantDefault)?.id || '')
+  const formResource = selectedResource ?? editingGrant?.resource
+  const inheritedFormLimits = formResource ? personLimitsFor(formCostCenter, formResource) : undefined
+  const formTargetContext = formResource ? grantTargetContext({
+    resource: formResource,
+    subject: { id: form.subject, kind: editingGrant?.subject.kind ?? subjectOptions.find(item => item.id === form.subject)?.kind ?? 'user' },
+  }) : 'conditional'
   const connectionGrant = rows.find((entitlement) => entitlement.id === connectionGrantId)
 
   if (activeSection === 'requests' && bulkStage === 'select') return <BulkRequestSelection requests={pendingRequests.data ?? []} principals={requesterPrincipals}
@@ -1574,17 +1600,23 @@ export function EntitlementsPage() {
 
       <Dialog open={dialogOpen && (mode !== 'edit' || Boolean(editingGrant && editingGrant.managedBy !== 'costCenterAutomatic'))}
         title={mode === 'edit' ? 'Edit grant' : 'New grant'}
-        description="Save desired access intent. Nothing changes in API Management until the affected resource plan is reviewed and applied."
+        description={formTargetContext === 'desiredOnly'
+          ? 'Save desired access intent only. No managed gateway plan is generated for this resource.'
+          : 'Save desired access intent. Nothing changes in API Management until the affected resource plan is reviewed and applied.'}
         pending={createMutation.isPending || editMutation.isPending}
         onOpenChange={(_, data) => { if (!data.open) closeEditor() }}>
         <DialogSurface>
-          <form onSubmit={submit}>
+          <form ref={grantFormRef} onSubmit={submit}>
             <DialogBody>
               <DialogContent className={styles.dialogForm}>
-                {createMutation.isError && <ErrorState error={createMutation.error} />}
-                {editMutation.isError && <ErrorState error={editMutation.error} />}
+                {grantError && <AnnounceProvider value={grantErrorAnnouncement}>
+                  <div ref={grantErrorRef} tabIndex={-1}>
+                    <PolicyCapabilityError title="Unable to save grant" error={grantError}
+                      reviewFields={policyReviewFields(grantFormRef.current, grantError)}
+                      announcementKey={editMutation.isError ? editMutation.submittedAt : createMutation.submittedAt} />
+                  </div>
+                </AnnounceProvider>}
                 {newGrantLocked && <MessageBar intent="warning"><MessageBarBody>Access is applying or unknown. Recover the resource before saving grant intent.</MessageBarBody></MessageBar>}
-                {editingGrant?.enforcement?.requests?.callQuota && <Text>Existing call quota is retained when saving: {describeLimits(editingGrant).filter((sentence) => sentence.startsWith('Allows')).join(' ')}</Text>}
                 {editingGrant && grantLocked(editingGrant) && <ErrorState error={new Error('Access is applying or unknown. Recover the resource before saving grant intent.')} />}
                 {directModelId && <Text>Direct model grant: saving does not activate access. Review and apply the complete model plan afterward.</Text>}
                 <Field label="Subject" required>
@@ -1626,7 +1658,7 @@ export function EntitlementsPage() {
                       // MCP servers are limited by calls, never tokens. Clear token limits the
                       // form no longer shows, so none are sent or silently dropped.
                       setForm(mcp
-                        ? { ...form, resource: data.value, tokensPerMinute: '', tokenQuota: '' }
+                        ? { ...form, ...callOnlyLimitForm(form), resource: data.value }
                         : { ...form, resource: data.value })
                     }}
                   >
@@ -1655,8 +1687,8 @@ export function EntitlementsPage() {
                 </Field>
                 {mcpSelected ? (
                   <Text size={200}>
-                    MCP servers are limited by calls, not tokens. Leave the call rate empty to add
-                    no grant-specific limit.
+                    MCP servers are limited by calls, not tokens. Leave both call amounts empty
+                    to add no grant-specific call restriction.
                   </Text>
                 ) : (
                   <>
@@ -1674,60 +1706,16 @@ export function EntitlementsPage() {
                         safeguards still apply; this does not mean unrestricted gateway access.
                       </Text>
                     )}
-                    <div className={styles.dialogGrid}>
-                      <Field label="Tokens per minute">
-                        <Input
-                          type="number"
-                          min={1}
-                          value={form.tokensPerMinute}
-                          onChange={(_, data) => setForm({ ...form, tokensPerMinute: data.value })}
-                        />
-                      </Field>
-                      <Field label="Token quota">
-                        <Input
-                          type="number"
-                          min={1}
-                          value={form.tokenQuota}
-                          onChange={(_, data) => setForm({ ...form, tokenQuota: data.value })}
-                        />
-                      </Field>
-                      <Field label="Quota period">
-                        <Select
-                          value={form.tokenQuotaPeriod}
-                          onChange={(_, data) =>
-                            setForm({ ...form, tokenQuotaPeriod: data.value as QuotaPeriod })
-                          }
-                        >
-                          {QUOTA_PERIODS.map((period) => (
-                            <option key={period} value={period}>
-                              {period}
-                            </option>
-                          ))}
-                        </Select>
-                      </Field>
-                    </div>
                   </>
                 )}
-                <div className={styles.switchGrid}>
-                  <Field label="Calls" validationMessage={rateError ?? undefined}>
-                    <Input
-                      type="number"
-                      min={1}
-                      value={form.calls}
-                      onChange={(_, data) => setForm({ ...form, calls: data.value })}
-                    />
-                  </Field>
-                  <Field label="Per how many seconds">
-                    <Input
-                      type="number"
-                      min={1}
-                      value={form.renewalPeriodSeconds}
-                      onChange={(_, data) =>
-                        setForm({ ...form, renewalPeriodSeconds: data.value })
-                      }
-                    />
-                  </Field>
-                </div>
+                <LimitFields
+                  key={`${mode}:${selectedId ?? 'new'}:${formResource ? resourceKey(formResource) : ''}`}
+                  value={form} onChange={limits => setForm(current => ({ ...current, ...limits }))}
+                  mcp={mcpSelected} baseline={activatedGrant ? activatedGrant.enforcement ?? null : undefined}
+                  targetContext={formTargetContext}
+                  inherited={inheritedFormLimits}
+                  inheritedLabel={formCostCenter ? `${formCostCenter.name} per-person defaults` : 'Cost-center defaults (resolved on save)'}
+                />
                 <Field label="Notes">
                   <Input
                     value={form.notes}
@@ -1743,9 +1731,9 @@ export function EntitlementsPage() {
                     !form.subject ||
                     !form.resource ||
                     Boolean(rateError) ||
-                    createMutation.isPending || editMutation.isPending ||
                     Boolean(editingGrant && grantLocked(editingGrant)) || newGrantLocked
                   }
+                  disabledFocusable={createMutation.isPending || editMutation.isPending}
                 >
                   {mode === 'edit' ? 'Save grant' : 'Grant access'}
                 </Button>
@@ -1776,6 +1764,9 @@ export function EntitlementsPage() {
           publication={approving.publication}
           pool={approving.pool}
           governed={approving.governed}
+          defaultCostCenterId={approving.defaultCostCenterId}
+          errorKey={approveMutation.submittedAt}
+          targetContext={approving.targetContext}
           existingGrant={approving.existingGrant}
           locked={grantLocked(approving.accessRequest)}
           pending={approveMutation.isPending}

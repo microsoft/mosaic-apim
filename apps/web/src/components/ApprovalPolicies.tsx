@@ -5,8 +5,9 @@ import { useMosaicApi } from '../api'
 import type { ApprovalPolicy, ApprovalPolicyInput } from '../admin-types'
 import type { EntitlementResourceKind } from '../types'
 import { useEnvironmentCatalog } from '../environments'
-import { buildEnforcement, emptyLimitForm, limitFormFrom, describeLimits, type LimitForm } from '../entitlement-limits'
+import { buildEnforcement, callOnlyLimitForm, emptyLimitForm, hasLimitValues, limitFormFromEnforcement, describeLimits, type LimitForm } from '../entitlement-limits'
 import { ErrorState, Loading } from './AsyncState'
+import { PolicyCapabilityFeedback, PolicyCapabilityError } from './PolicyCapabilityFeedback'
 import { LimitFields, TimeWindowFields, TimeZoneField } from './GovernanceFields'
 import { limitInputError, validTimeZone } from '../admin-governance'
 import { ResourceWorkbench } from './ResourceWorkbench'
@@ -97,12 +98,13 @@ function PolicyEditor({ value, onBack, onSaved }: { value?: ApprovalPolicy; onBa
     productionOptIn: value.productionOptIn, schedule: structuredClone(value.schedule),
     minimumRequestAgeSeconds: value.minimumRequestAgeSeconds, grantTemplate: structuredClone(value.grantTemplate),
   } : newPolicy())
-  const [limits, setLimits] = useState<LimitForm>(() => value ? { ...limitFormFrom(value.grantTemplate.enforcement.tokens), calls: String(value.grantTemplate.enforcement.requests?.calls ?? ''), renewalPeriodSeconds: String(value.grantTemplate.enforcement.requests?.renewalPeriodSeconds ?? 60) } : { ...emptyLimitForm })
+  const [limits, setLimits] = useState<LimitForm>(() => value ? limitFormFromEnforcement(value.grantTemplate.enforcement) : { ...emptyLimitForm })
+  const originalLimits = value ? limitFormFromEnforcement(value.grantTemplate.enforcement) : undefined
   const [confirmed, setConfirmed] = useState(false)
   const [expectedRevision] = useState(value?.revision)
   const [resourceIdsText, setResourceIdsText] = useState(draft.scope.resourceIds.join(', '))
   const [dryIds, setDryIds] = useState<string[]>([])
-  const body = (): ApprovalPolicyInput => ({ ...draft, scope: { ...draft.scope, resourceIds: resourceIdsText.split(',').map(s => s.trim()).filter(Boolean) }, grantTemplate: { ...draft.grantTemplate, enforcement: buildEnforcement(limits, true) ?? {} } })
+  const body = (): ApprovalPolicyInput => ({ ...draft, scope: { ...draft.scope, resourceIds: resourceIdsText.split(',').map(s => s.trim()).filter(Boolean) }, grantTemplate: { ...draft.grantTemplate, enforcement: buildEnforcement(limits, true, value?.grantTemplate.enforcement) ?? {} } })
   const save = useMutation({ mutationFn: () => api.saveApprovalPolicy(value?.id ?? null, { ...body(), expectedRevision, enableConfirmed: draft.enabled && confirmed }), onSuccess: p => onSaved(p.id) })
   const dryRun = useMutation({ mutationFn: () => api.dryRunApprovalPolicy(dryIds, body()) })
   function update(change: Partial<ApprovalPolicyInput>) { setDraft(d => ({ ...d, ...change })); setConfirmed(false); dryRun.reset() }
@@ -110,14 +112,15 @@ function PolicyEditor({ value, onBack, onSaved }: { value?: ApprovalPolicy; onBa
   const invalid = !draft.name.trim() || !draft.scope.environments.length || !draft.scope.resourceKinds.length || !validTimeZone(draft.schedule.timeZone)
     || !Number.isInteger(draft.minimumRequestAgeSeconds) || draft.minimumRequestAgeSeconds < 0 || draft.minimumRequestAgeSeconds > 31536000
     || draft.schedule.windows.some(w => !w.daysOfWeek.length || !w.startTime || !w.endTime || w.startTime === w.endTime)
-    || Boolean(limitInputError(limits)) || !buildEnforcement(limits, true)
+    || Boolean(limitInputError(limits, originalLimits)) || !hasLimitValues(limits)
     || (draft.scope.resourceKinds.includes('mcpServer') && Boolean(limits.tokensPerMinute || limits.tokenQuota))
     || Boolean(productionSelected && !draft.productionOptIn)
     || (draft.enabled && !confirmed)
   return <WorkspaceEditorFrame title={value ? `Edit ${value.name}` : 'New approval policy'} onBack={onBack} onCancel={onBack} dirty pending={save.isPending}
     description="All conditions must match. Unclassified or moved resources require manual review. Saving a policy is not an immediate batch approval."
-    primaryAction={{ label: 'Save policy', onClick: () => save.mutate(), disabled: invalid }} errorKey={save.submittedAt}
-    error={save.isError ? <ErrorState context="action" title="Unable to save the policy" error={save.error} /> : undefined}>
+    primaryAction={{ label: 'Save policy', onClick: () => save.mutate(), disabled: invalid }}
+    errorKey={save.submittedAt}
+    error={save.isError ? <PolicyCapabilityFeedback title="Unable to save approval policy" error={save.error} /> : undefined}>
     <div className={styles.stack}>
       <div className={styles.form}>
         <Field label="Policy name" required><Input value={draft.name} maxLength={120} onChange={(_, d) => update({ name: d.value })} /></Field>
@@ -128,7 +131,7 @@ function PolicyEditor({ value, onBack, onSaved }: { value?: ApprovalPolicy; onBa
         {catalog.isError && <ErrorState error={catalog.error} />}
         <div className={styles.days}>{catalog.data?.environments.filter(e => e.key !== 'unclassified').map(e => <Checkbox key={e.key} label={`${e.displayName}${e.production ? ' (production)' : ''}`} checked={draft.scope.environments.includes(e.key)} onChange={(_, d) => update({ scope: { ...draft.scope, environments: d.checked ? [...draft.scope.environments, e.key] : draft.scope.environments.filter(k => k !== e.key) } })} />)}</div>
         <div className={styles.days}>{(['modelApi', 'poolModel', 'mcpServer', 'modelDeployment', 'product'] as EntitlementResourceKind[]).map(kind => <Checkbox key={kind} label={kind} checked={draft.scope.resourceKinds.includes(kind)} onChange={(_, d) => {
-          if (kind === 'mcpServer' && d.checked) setLimits(current => ({ ...current, tokensPerMinute: '', tokenQuota: '' }))
+          if (kind === 'mcpServer' && d.checked) setLimits(callOnlyLimitForm)
           update({ scope: { ...draft.scope, resourceKinds: d.checked ? [...draft.scope.resourceKinds, kind] : draft.scope.resourceKinds.filter(k => k !== kind) } })
         }} />)}</div>
         <Field label="Resource IDs" hint="Comma-separated exact IDs; empty means any resource of the selected kinds."><Input value={resourceIdsText} onChange={(_, d) => { setResourceIdsText(d.value); setConfirmed(false); dryRun.reset() }} /></Field>
@@ -145,15 +148,18 @@ function PolicyEditor({ value, onBack, onSaved }: { value?: ApprovalPolicy; onBa
       </section>
       <section className={styles.section}><Title3 as="h3">Bounded grant template</Title3>
         <Text>At least one positive grant limit is required. MCP policies support call limits only.</Text>
-        <LimitFields value={limits} onChange={next => { setLimits(next); setConfirmed(false); dryRun.reset() }} mcp={draft.scope.resourceKinds.includes('mcpServer')} />
+        <LimitFields value={limits} onChange={next => { setLimits(next); setConfirmed(false); dryRun.reset() }} mcp={draft.scope.resourceKinds.includes('mcpServer')}
+          baseline={value?.grantTemplate.enforcement} showSourceChoice={false} requireLimit
+          reviewLabel={value ? 'Saved grant template' : 'New conditional grant template'}
+          reviewDescription={value ? undefined : 'Concrete gateway support is evaluated for each matching request, not assumed for this template.'} />
         <Field label="Charged cost center"><Select value={draft.grantTemplate.costCenterId ?? ''} onChange={(_, d) => update({ grantTemplate: { ...draft.grantTemplate, costCenterId: d.value || null } })}><option value="">Use request cost center</option>{centers.data?.map(c => <option value={c.id} key={c.id}>{c.name}</option>)}</Select></Field>
         <Field label="Grant note"><Input value={draft.grantTemplate.note ?? ''} maxLength={1000} onChange={(_, d) => update({ grantTemplate: { ...draft.grantTemplate, note: d.value } })} /></Field>
       </section>
       <section className={styles.section}><Title3 as="h3">Dry-run pending requests</Title3><Text>Preview never approves a request. Select up to 100 exact requests.</Text>
         {pending.isPending && <Loading label="Loading pending requests" />}{pending.isError && <ErrorState error={pending.error} />}
         {pending.data?.slice(0, 100).map(r => <Checkbox key={r.id} label={`${r.resourceSummary?.displayName ?? r.resourceSnapshot?.displayName ?? 'Resource unavailable'} · ${new Date(r.createdAt).toLocaleString()}`} checked={dryIds.includes(r.id)} onChange={(_, d) => { setDryIds(ids => d.checked ? [...ids, r.id] : ids.filter(id => id !== r.id)); dryRun.reset() }} />)}
-        <Button disabled={!dryIds.length || dryRun.isPending} onClick={() => dryRun.mutate()}>Run policy preview</Button>
-        {dryRun.isError && <ErrorState error={dryRun.error} />}
+        <Button disabled={!dryIds.length || dryRun.isPending || Boolean(limitInputError(limits, originalLimits)) || !hasLimitValues(limits)} onClick={() => dryRun.mutate()}>Run policy preview</Button>
+        {dryRun.isError && <PolicyCapabilityError title="Unable to preview approval policy" error={dryRun.error} announcementKey={dryRun.submittedAt} />}
         {dryRun.data?.map(e => <div key={e.id}><Badge>{e.outcome}</Badge><Text>{e.explanation}</Text>{e.nextEligibleAt && <Text>Next eligible: {e.nextEligibleAt}</Text>}{e.blockers.map((b, i) => <Text key={i}>{b.message} {b.nextAction}</Text>)}</div>)}
       </section>
       <Checkbox label="Enable this approval policy" checked={draft.enabled} onChange={(_, d) => update({ enabled: Boolean(d.checked) })} />

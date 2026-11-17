@@ -31,7 +31,7 @@ import {
   readinessSummary,
   safeguardFields,
   safeguardFromFields,
-  safeguardTierNote,
+  safeguardPolicyNote,
   sameFamily,
   specsWithMemberDrained,
   suggestedWeights,
@@ -53,6 +53,7 @@ import {
   poolRun,
 } from './test/pool-fixtures'
 import type { CapacityType } from './types'
+import { developerChatPolicyCapabilities } from './test/policy-fixtures'
 
 function capacity(capacityType: CapacityType, skuCapacity: number | null) {
   return { capacityType, skuCapacity }
@@ -388,19 +389,52 @@ describe('pool summaries', () => {
   })
 })
 
-describe('safeguard tier', () => {
-  it('needs a v2 tier only for the Anthropic Messages API', () => {
-    expect(safeguardTierNote('anthropicMessages', 'StandardV2')).toBeNull()
-    expect(safeguardTierNote('anthropicMessages', ' premiumv2 ')).toBeNull()
-    expect(safeguardTierNote('azureOpenAi', 'Developer')).toBeNull()
-    expect(safeguardTierNote(null, 'Consumption')).toBeNull()
+describe('safeguard policy evidence', () => {
+  it('uses the recorded result for the chosen gateway and schema', () => {
+    expect(safeguardPolicyNote(developerChatPolicyCapabilities, 'gateway_1', 'azureOpenAi')).toBeNull()
+    expect(safeguardPolicyNote(developerChatPolicyCapabilities, 'other_gateway', 'azureOpenAi')).toMatch(/not confirmed/)
+    expect(safeguardPolicyNote(developerChatPolicyCapabilities, 'gateway_1', 'anthropicMessages')).toMatch(/not confirmed/)
+    expect(safeguardPolicyNote(developerChatPolicyCapabilities, 'gateway_1', null)).toMatch(/not confirmed/)
   })
 
-  it('says why each other tier cannot apply it', () => {
-    expect(safeguardTierNote('anthropicMessages', 'Premium')).toMatch(/uses the Premium tier, a classic tier/)
-    expect(safeguardTierNote('anthropicMessages', 'Consumption')).toMatch(/uses the Consumption tier/)
-    expect(safeguardTierNote('anthropicMessages', null)).toMatch(/hasn't read this gateway's tier/)
-    expect(safeguardTierNote('anthropicMessages', 'SomethingNew')).toMatch(/hasn't read this gateway's tier/)
+  it('retains unknown evidence rather than inferring support from a shape or SKU', () => {
+    expect(safeguardPolicyNote(undefined, 'gateway_1', 'azureOpenAi')).toMatch(/not confirmed/)
+    const capabilities = {
+      ...developerChatPolicyCapabilities,
+      policies: {
+        ...developerChatPolicyCapabilities.policies,
+        'llm-token-limit': {
+          ...developerChatPolicyCapabilities.policies['llm-token-limit'],
+          support: 'unknown' as const,
+          reason: 'unknownApiShape' as const,
+          message: 'Verify the observed deployment schema.',
+          nextAction: 'reviewResource' as const,
+        },
+      },
+    }
+    expect(safeguardPolicyNote(capabilities, 'gateway_1', 'azureOpenAi')).toMatch(/Verify the observed deployment schema/)
+  })
+
+  it('does not confuse available metrics with unavailable token limits', () => {
+    const unavailable = {
+      support: 'unavailable' as const,
+      reason: 'unsupportedTier' as const,
+      message: 'The recorded Consumption gateway cannot enforce this token safeguard.',
+      nextAction: 'chooseSupportedGateway' as const,
+    }
+    const policies = developerChatPolicyCapabilities.policies
+    const capabilities = {
+      ...developerChatPolicyCapabilities,
+      skuName: 'Consumption',
+      tier: 'consumption' as const,
+      policies: {
+        ...policies,
+        'rate-limit-by-key': { ...policies['rate-limit-by-key'], ...unavailable },
+        'quota-by-key': { ...policies['quota-by-key'], ...unavailable },
+        'llm-token-limit': { ...policies['llm-token-limit'], ...unavailable },
+      },
+    }
+    expect(safeguardPolicyNote(capabilities, 'gateway_1', 'azureOpenAi')).toMatch(/cannot enforce this token safeguard/)
   })
 })
 

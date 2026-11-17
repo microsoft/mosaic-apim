@@ -1,6 +1,8 @@
 import type {
+  CostCenter,
   Entitlement,
   EntitlementEnforcement,
+  EntitlementResource,
   ModelAccessSettings,
   PersonLimits,
   PoolSafeguard,
@@ -19,13 +21,19 @@ export const QUOTA_PERIODS: QuotaPeriod[] = [
   'Yearly',
 ]
 
-/** Grant limits as typed. Strings, so an empty field means "no limit" rather than zero. */
+export type LimitNumberField = 'tokensPerMinute' | 'tokenQuota' | 'calls' | 'renewalPeriodSeconds' | 'callQuota'
+const NUMBER_FIELDS: LimitNumberField[] = ['tokensPerMinute', 'tokenQuota', 'calls', 'renewalPeriodSeconds', 'callQuota']
+
+/** Empty amounts mean no limit; native badInput must not masquerade as an intentional clear. */
 export interface LimitForm {
   tokensPerMinute: string
   tokenQuota: string
   tokenQuotaPeriod: QuotaPeriod
   calls: string
   renewalPeriodSeconds: string
+  callQuota: string
+  callQuotaPeriod: QuotaPeriod
+  invalidNumbers?: Partial<Record<LimitNumberField, boolean>>
 }
 
 export const emptyLimitForm: LimitForm = {
@@ -34,6 +42,65 @@ export const emptyLimitForm: LimitForm = {
   tokenQuotaPeriod: 'Monthly',
   calls: '',
   renewalPeriodSeconds: '60',
+  callQuota: '',
+  callQuotaPeriod: 'Monthly',
+}
+
+export function copyLimitForm(form: LimitForm): LimitForm {
+  return {
+    tokensPerMinute: form.tokensPerMinute,
+    tokenQuota: form.tokenQuota,
+    tokenQuotaPeriod: form.tokenQuotaPeriod,
+    calls: form.calls,
+    renewalPeriodSeconds: form.renewalPeriodSeconds,
+    callQuota: form.callQuota,
+    callQuotaPeriod: form.callQuotaPeriod,
+    ...(form.invalidNumbers ? { invalidNumbers: { ...form.invalidNumbers } } : {}),
+  }
+}
+
+export function callOnlyLimitForm(form: LimitForm): LimitForm {
+  return {
+    ...copyLimitForm(form), tokensPerMinute: '', tokenQuota: '',
+    invalidNumbers: { ...form.invalidNumbers, tokensPerMinute: false, tokenQuota: false },
+  }
+}
+
+export function limitFormsEqual(left: LimitForm, right: LimitForm): boolean {
+  const fields: (keyof LimitForm)[] = [
+    'tokensPerMinute', 'tokenQuota', 'tokenQuotaPeriod', 'calls',
+    'renewalPeriodSeconds', 'callQuota', 'callQuotaPeriod',
+  ]
+  return fields.every(key => left[key] === right[key])
+    && NUMBER_FIELDS.every(key => Boolean(left.invalidNumbers?.[key]) === Boolean(right.invalidNumbers?.[key]))
+}
+
+export function hasLimitValues(form: LimitForm): boolean {
+  return [form.tokensPerMinute, form.tokenQuota, form.calls, form.callQuota]
+    .some(value => value.trim() !== '')
+    || NUMBER_FIELDS.some(key => Boolean(form.invalidNumbers?.[key]))
+}
+
+export function personLimitsFor(
+  costCenter: Pick<CostCenter, 'limits'> | undefined,
+  resource: Pick<EntitlementResource, 'kind' | 'id' | 'scopeId'>,
+): PersonLimits | null | undefined {
+  return costCenter ? costCenter.limits.find(
+    limit => limit.resource.kind === resource.kind && limit.resource.id === resource.id
+      && (limit.resource.scopeId ?? '') === (resource.scopeId ?? ''),
+  )?.person ?? null : undefined
+}
+
+export function limitFormFromPerson(person: PersonLimits): LimitForm {
+  return {
+    ...emptyLimitForm,
+    tokensPerMinute: person.tokensPerMinute == null ? '' : String(person.tokensPerMinute),
+    tokenQuota: person.tokenQuota == null ? '' : String(person.tokenQuota),
+    tokenQuotaPeriod: person.tokenQuotaPeriod ?? emptyLimitForm.tokenQuotaPeriod,
+    calls: person.callsPerMinute == null ? '' : String(person.callsPerMinute),
+    callQuota: person.callQuota == null ? '' : String(person.callQuota),
+    callQuotaPeriod: person.callQuotaPeriod ?? emptyLimitForm.callQuotaPeriod,
+  }
 }
 
 /**
@@ -50,28 +117,47 @@ export function limitFormFrom(tokens?: TokenEnforcement | null): LimitForm {
   }
 }
 
+export function limitFormFromEnforcement(enforcement?: EntitlementEnforcement | null): LimitForm {
+  return {
+    ...limitFormFrom(enforcement?.tokens),
+    calls: enforcement?.requests?.calls == null ? '' : String(enforcement.requests.calls),
+    renewalPeriodSeconds: String(enforcement?.requests?.renewalPeriodSeconds ?? 60),
+    callQuota: enforcement?.requests?.callQuota == null ? '' : String(enforcement.requests.callQuota),
+    callQuotaPeriod: enforcement?.requests?.callQuotaPeriod ?? emptyLimitForm.callQuotaPeriod,
+  }
+}
+
 /** Governed model grants must count on the subscription ID the managed policy keys on. */
-export function buildEnforcement(form: LimitForm, governed: boolean): EntitlementEnforcement | null {
+export function buildEnforcement(
+  form: LimitForm,
+  governed: boolean,
+  existing?: EntitlementEnforcement | null,
+): EntitlementEnforcement | null {
+  const original = existing ? limitFormFromEnforcement(existing) : undefined
+  if (original && limitFormsEqual(form, original)) return existing ?? null
+  const error = limitInputError(form, original)
+  if (error) throw new Error(error)
   const tokensPerMinute = Number(form.tokensPerMinute) || undefined
   const tokenQuota = Number(form.tokenQuota) || undefined
   const calls = Number(form.calls) || undefined
   const renewalPeriodSeconds = Number(form.renewalPeriodSeconds) || undefined
+  const callQuota = Number(form.callQuota) || undefined
   const counterKeyExpression = governed ? GOVERNED_COUNTER_KEY : DEFAULT_COUNTER_KEY
 
   const enforcement: EntitlementEnforcement = {}
   if (tokensPerMinute || tokenQuota) {
     enforcement.tokens = {
-      counterKeyExpression,
-      estimatePromptTokens: true,
+      counterKeyExpression: existing?.tokens?.counterKeyExpression ?? counterKeyExpression,
+      estimatePromptTokens: existing?.tokens?.estimatePromptTokens ?? true,
       ...(tokensPerMinute ? { tokensPerMinute } : {}),
       ...(tokenQuota ? { tokenQuota, tokenQuotaPeriod: form.tokenQuotaPeriod } : {}),
     }
   }
-  if (calls && renewalPeriodSeconds) {
+  if (calls || callQuota) {
     enforcement.requests = {
-      counterKeyExpression,
-      calls,
-      renewalPeriodSeconds,
+      counterKeyExpression: existing?.requests?.counterKeyExpression ?? counterKeyExpression,
+      ...(calls ? { calls, renewalPeriodSeconds } : {}),
+      ...(callQuota ? { callQuota, callQuotaPeriod: form.callQuotaPeriod } : {}),
     }
   }
   return enforcement.tokens || enforcement.requests ? enforcement : null
@@ -124,6 +210,47 @@ export function callRateError(form: {
     return 'Enter a call count above zero, or clear it.'
   }
   return null
+}
+
+export function limitFieldErrors(
+  form: LimitForm,
+  original?: LimitForm,
+): Partial<Record<keyof LimitForm, string>> {
+  const errors: Partial<Record<keyof LimitForm, string>> = {}
+  const changed = (key: keyof LimitForm) => !original || form[key] !== original[key]
+  for (const key of NUMBER_FIELDS) {
+    if (form.invalidNumbers?.[key]) errors[key] = 'Enter a positive whole number, or clear this field.'
+  }
+  for (const key of ['tokensPerMinute', 'tokenQuota', 'calls', 'callQuota'] as const) {
+    if (changed(key) && form[key].trim() !== ''
+      && (!Number.isSafeInteger(Number(form[key])) || Number(form[key]) <= 0)) {
+      errors[key] = 'Limits must be positive whole numbers, or left empty.'
+    }
+  }
+  if (changed('calls') || changed('renewalPeriodSeconds')) {
+    const pair = callRateError(form)
+    if (pair) errors.renewalPeriodSeconds = pair
+    else if (form.calls.trim() !== '') {
+      if (!Number.isSafeInteger(Number(form.renewalPeriodSeconds)) || Number(form.renewalPeriodSeconds) <= 0) {
+        errors.renewalPeriodSeconds = 'Call renewal period must be a positive whole number.'
+      } else if (Number(form.renewalPeriodSeconds) > 300) {
+        errors.renewalPeriodSeconds = 'A new or changed call rate must use 1-300 seconds. Use a call quota for longer periods.'
+      }
+    }
+  }
+  for (const [quota, period] of [
+    ['tokenQuota', 'tokenQuotaPeriod'], ['callQuota', 'callQuotaPeriod'],
+  ] as const) {
+    if ((changed(quota) || changed(period)) && form[quota].trim() !== ''
+      && !QUOTA_PERIODS.some(value => value === form[period])) {
+      errors[period] = `Choose a ${quota === 'callQuota' ? 'call' : 'token'} quota period.`
+    }
+  }
+  return errors
+}
+
+export function limitInputError(form: LimitForm, original?: LimitForm): string | null {
+  return Object.values(limitFieldErrors(form, original))[0] ?? null
 }
 
 export function describeLimits(

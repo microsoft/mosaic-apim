@@ -27,6 +27,7 @@ from mosaic_api.budgets import BLOCKED_COST_CENTERS_NAMED_VALUE
 from mosaic_api.domain import (
     AiBackendKind,
     ApimResourceId,
+    ApiShape,
     AppliedCostCenterPool,
     AuditEvent,
     BindingSource,
@@ -35,6 +36,8 @@ from mosaic_api.domain import (
     EntitlementBinding,
     EntitlementSubjectKind,
     Gateway,
+    GatewayPolicyCapabilities,
+    GatewayTier,
     KeyVaultSecretId,
     ManagementMode,
     ModelAccessGrant,
@@ -88,6 +91,13 @@ from mosaic_api.integrations.apim.model_apis import (
     suggested_names,
     token_limits_note,
 )
+from mosaic_api.integrations.apim.policy_capabilities import (
+    PolicyBoundary,
+    changed_limit_policies,
+    require_supported_limits,
+    required_emitted_policies,
+    required_limit_policies,
+)
 from mosaic_api.integrations.apim.writer import DEFAULT_SUBSCRIPTION_KEY_NAMES, ApimWriter
 from mosaic_api.integrations.backend_keys import backend_key_name
 from mosaic_api.integrations.policy import PublicationPolicy, render_publication_policy
@@ -121,6 +131,12 @@ from mosaic_api.services.model_access import (
     local_mutation_active,
     publication_lock,
     safe_access_snapshot,
+)
+from mosaic_api.services.policy_capabilities import (
+    deployment_policy_capabilities,
+    pooled_limit_policies,
+    publication_policy_capabilities,
+    refresh_policy_gateway,
 )
 
 logger = structlog.get_logger()
@@ -612,7 +628,6 @@ class PublishingService:
                     "capability": str(fit.capability),
                 },
             )
-        self._require_enforcement_fit(request.enforcement, fit.token_limits_note)
         if endpoint.uses_backend_key():
             self._require_key_identity(gateway)
 
@@ -660,6 +675,8 @@ class PublishingService:
             api_shape=fit.api_shape,
             created_at=existing.created_at if existing else utc_now(),
         )
+        capabilities = await publication_policy_capabilities(self._endpoints, publication, gateway)
+        self._require_enforcement_fit(request.enforcement, capabilities)
         return await self._repository.save_publication(
             publication, self._audit(actor, "publication.created", publication.id)
         )
@@ -704,7 +721,10 @@ class PublishingService:
 
     @staticmethod
     def _require_enforcement_fit(
-        enforcement: TokenEnforcement | None, unsupported_note: str | None
+        enforcement: TokenEnforcement | None,
+        capabilities: GatewayPolicyCapabilities,
+        *,
+        boundary: PolicyBoundary = "save",
     ) -> None:
         """Token enforcement is required exactly when the gateway can apply it.
 
@@ -712,10 +732,18 @@ class PublishingService:
         a publication that could be metered but isn't would be ungoverned by accident.
         """
 
-        if unsupported_note is not None and enforcement is not None:
-            raise ValidationError(unsupported_note)
-        if unsupported_note is None and enforcement is None:
+        unmetered = (
+            capabilities.api_shape == ApiShape.ANTHROPIC_MESSAGES
+            and capabilities.tier in {GatewayTier.CLASSIC, GatewayTier.CONSUMPTION}
+            and capabilities.policies["llm-token-limit"].reason == "unsupportedTier"
+        )
+        if enforcement is None and not unmetered:
             raise ValidationError("Token enforcement is required for this publication.")
+        require_supported_limits(
+            capabilities,
+            required_limit_policies(enforcement, counter_key_effective=True),
+            boundary=boundary,
+        )
 
     async def _require_known_deployment(
         self, actor: Actor, endpoint: ModelEndpoint, deployment_name: str
@@ -779,16 +807,32 @@ class PublishingService:
                 "Governed access cannot be cleared. Disable keys and Entra independently instead."
             )
         changes = request.model_dump(exclude_unset=True, by_alias=False)
-        changes = {key: value for key, value in changes.items() if value is not None}
+        changes = {
+            key: value for key, value in changes.items()
+            if value is not None or key == "enforcement"
+        }
         if not changes:
             return publication
-        if request.enforcement is not None:
-            gateway = await self._load_gateway(actor, publication.gateway_id)
-            note = token_limits_note(publication.api_shape, gateway.capabilities.sku_name)
-            if note is not None:
-                raise ValidationError(note)
         settings = request.governed_access or publication.governed_access
         gateway = await self._load_gateway(actor, publication.gateway_id)
+        if "enforcement" in changes and request.enforcement != publication.enforcement:
+            capabilities = await publication_policy_capabilities(
+                self._endpoints, publication, gateway
+            )
+            if request.enforcement is None:
+                self._require_enforcement_fit(None, capabilities)
+            else:
+                require_supported_limits(
+                    capabilities,
+                    changed_limit_policies(
+                        required_limit_policies(
+                            publication.enforcement, counter_key_effective=settings is None
+                        ),
+                        required_limit_policies(
+                            request.enforcement, counter_key_effective=settings is None
+                        ),
+                    ),
+                )
         validate_cloud_access(gateway.azure_cloud, settings)
         if settings:
             changes["subscription_required"] = not settings.entra_enabled
@@ -928,6 +972,14 @@ class PublishingService:
                 existing = publications.get(f"{endpoint.id}|{deployment.deployment_name}")
                 api_name, api_path = suggested_names(endpoint.name, deployment.deployment_name)
                 fit = self._fit(endpoint, deployment, gateway)
+                capabilities = deployment_policy_capabilities(gateway, endpoint, deployment)
+                token_capability = capabilities.policies["llm-token-limit"]
+                unmetered = (
+                    fit.api_shape == ApiShape.ANTHROPIC_MESSAGES
+                    and capabilities.tier in {GatewayTier.CLASSIC, GatewayTier.CONSUMPTION}
+                    and token_capability.reason == "unsupportedTier"
+                )
+                policy_fit = token_capability.support == CapabilitySupport.AVAILABLE or unmetered
                 verdict = permits(catalog, gateway.environment, endpoint.environment)
                 observed = deployment if isinstance(deployment, ObservedModelDeployment) else None
                 candidates.append(
@@ -942,10 +994,18 @@ class PublishingService:
                         model_publisher=observed.model_publisher if observed else None,
                         capability=fit.capability,
                         api_shape=fit.api_shape,
-                        publishable=fit.publishable,
-                        unpublishable_reason=fit.unpublishable_reason,
-                        token_limits_supported=fit.token_limits_supported,
-                        token_limits_note=fit.token_limits_note,
+                        publishable=fit.publishable and policy_fit,
+                        unpublishable_reason=fit.unpublishable_reason or (
+                            token_capability.message if not policy_fit else None
+                        ),
+                        token_limits_supported=(
+                            token_capability.support == CapabilitySupport.AVAILABLE
+                        ),
+                        token_limits_note=(
+                            token_capability.message
+                            if token_capability.support != CapabilitySupport.AVAILABLE else None
+                        ),
+                        policy_capabilities=capabilities,
                         publication_id=existing.id if existing else None,
                         publication_status=existing.status if existing else None,
                         suggested_api_name=api_name,
@@ -968,6 +1028,17 @@ class PublishingService:
             raise ConflictError("Recover this publication's interrupted apply before replanning")
         gateway = await self._load_gateway(actor, publication.gateway_id)
         self._require_writable(gateway)
+        resource = gateway.arm_resource()
+        client = self._client_factory(resource)
+        settings = publication.governed_access
+        if settings is None or settings.keys_enabled or settings.entra_enabled:
+            gateway = await refresh_policy_gateway(client, gateway)
+            if settings is None:
+                self._require_enforcement_fit(
+                    publication.enforcement,
+                    await publication_policy_capabilities(self._endpoints, publication, gateway),
+                    boundary="plan",
+                )
         endpoint = await self._load_endpoint(actor, publication.model_endpoint_id)
         catalog = await load_environment_catalog(self._environments, actor.tenant_id)
         verdict = permits(catalog, gateway.environment, endpoint.environment)
@@ -976,17 +1047,15 @@ class PublishingService:
             catalog, gateway.environment, endpoint.environment
         )
 
-        self._require_enforcement_fit(
-            publication.enforcement,
-            token_limits_note(publication.api_shape, gateway.capabilities.sku_name),
-        )
         backend = await self._backend(publication, endpoint, gateway)
         origin = backend.origin
         snapshot, access_warnings = await self._access_snapshot(publication, gateway)
         policy = self._policy(publication, snapshot)
-        resource = gateway.arm_resource()
-        client = self._client_factory(resource)
-
+        self._require_policy_fit(
+            publication, policy,
+            await publication_policy_capabilities(self._endpoints, publication, gateway),
+            boundary="plan",
+        )
         await self._reject_collisions(actor, publication, gateway, client)
 
         if snapshot:
@@ -1079,6 +1148,25 @@ class PublishingService:
 
         return render_governed_policy(publication, snapshot)
 
+    @staticmethod
+    def _require_policy_fit(
+        publication: Publication,
+        policy: PublicationPolicy,
+        capabilities: GatewayPolicyCapabilities,
+        *,
+        boundary: PolicyBoundary,
+    ) -> None:
+        emitted = required_emitted_policies(policy.fragment_xml, policy.api_policy_xml)
+        configured = (
+            required_limit_policies(
+                publication.enforcement,
+                counter_key_effective=publication.governed_access is None,
+            )
+            if any(requirement.policy == "llm-token-limit" for requirement in emitted)
+            else ()
+        )
+        require_supported_limits(capabilities, (*configured, *emitted), boundary=boundary)
+
     async def _backend(
         self, publication: Publication, endpoint: ModelEndpoint, gateway: Gateway
     ) -> _Backend:
@@ -1132,7 +1220,8 @@ class PublishingService:
         return _Backend(origin, secret.versionless)
 
     async def _access_snapshot(
-        self, publication: Publication, gateway: Gateway
+        self, publication: Publication, gateway: Gateway, *,
+        boundary: PolicyBoundary = "plan",
     ) -> tuple[ModelAccessSnapshot | None, list[str]]:
         settings = publication.governed_access
         validate_cloud_access(gateway.azure_cloud, settings)
@@ -1231,7 +1320,20 @@ class PublishingService:
                     )
                     continue
                 enforcement = effective_enforcement(entitlement, intent)
+                if entitlement.enabled:
+                    capabilities = await publication_policy_capabilities(
+                        self._endpoints, publication, gateway, resource=entitlement.resource
+                    )
+                    requirements = required_limit_policies(enforcement)
+                    if intent.pool is not None:
+                        requirements += pooled_limit_policies(
+                            intent.pool.monthly_tokens, intent.pool.monthly_calls,
+                            field_prefix="costCenter.limits.pool",
+                        )
+                    require_supported_limits(capabilities, requirements, boundary=boundary)
                 if (
+                    entitlement.enabled
+                    and
                     publication.enforcement is None
                     and enforcement is not None
                     and enforcement.tokens is not None
@@ -1246,6 +1348,8 @@ class PublishingService:
                     )
                     continue
                 if (
+                    entitlement.enabled
+                    and
                     publication.enforcement is None
                     and intent.pool is not None
                     and intent.pool.monthly_tokens is not None
@@ -1705,6 +1809,16 @@ class PublishingService:
             raise ConflictError("Recover this publication's interrupted apply before applying")
         gateway = await self._load_gateway(actor, publication.gateway_id)
         self._require_writable(gateway)
+        client = self._client_factory(gateway.arm_resource())
+        settings = publication.governed_access
+        if settings is None or settings.keys_enabled or settings.entra_enabled:
+            gateway = await refresh_policy_gateway(client, gateway)
+            if settings is None:
+                self._require_enforcement_fit(
+                    publication.enforcement,
+                    await publication_policy_capabilities(self._endpoints, publication, gateway),
+                    boundary="apply",
+                )
         endpoint = await self._load_endpoint(actor, publication.model_endpoint_id)
 
         resolved = plan_id or publication.last_plan_id
@@ -1736,8 +1850,13 @@ class PublishingService:
             catalog, gateway.environment, endpoint.environment
         )
         backend = await self._backend(publication, endpoint, gateway)
-        snapshot, _ = await self._access_snapshot(publication, gateway)
+        snapshot, _ = await self._access_snapshot(publication, gateway, boundary="apply")
         policy = self._policy(publication, snapshot)
+        self._require_policy_fit(
+            publication, policy,
+            await publication_policy_capabilities(self._endpoints, publication, gateway),
+            boundary="apply",
+        )
         if (
             publication_digest(
                 publication,

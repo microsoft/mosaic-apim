@@ -44,7 +44,7 @@ import {
   poolPublishBlocker,
   safeguardFields,
   safeguardFromFields,
-  safeguardTierNote,
+  safeguardPolicyNote,
   specsFromDrafts,
 } from '../pools'
 import type { DraftPoolModel, PoolFamily, PoolPrefill, SafeguardFields } from '../pools'
@@ -60,6 +60,7 @@ import type {
   QuotaPeriod,
 } from '../types'
 import { ErrorState, Loading } from './AsyncState'
+import { PolicyCapabilityFeedback } from './PolicyCapabilityFeedback'
 import { EnvironmentBadge } from './EnvironmentBadge'
 import { PoolModelsEditor } from './PoolModelsEditor'
 import { PoolTypeDiagram } from './PoolTypeDiagram'
@@ -152,7 +153,6 @@ export function PoolEditorDialog({ pool, initialGatewayId, prefill, onClose, onS
   const [blockedSaves, setBlockedSaves] = useState(0)
   const tabRefs = useRef<Partial<Record<EditorStep, HTMLButtonElement | null>>>({})
   const problemsRef = useRef<HTMLDivElement>(null)
-  const errorRef = useRef<HTMLDivElement>(null)
 
   const update = (patch: Partial<FormState>) => setForm((current) => ({ ...current, ...patch }))
   const updateSafeguard = (patch: Partial<SafeguardFields>) =>
@@ -206,10 +206,11 @@ export function PoolEditorDialog({ pool, initialGatewayId, prefill, onClose, onS
   const apiPathIssue = pool ? null : apiPathProblem(apiPath)
   const safeguard = safeguardFromFields(form.safeguard)
   const unavailableType = typeReason(poolType)
+  const inventory = candidates.data ? deploymentLookup(candidates.data.models) : undefined
   const draftCheck = checkDrafts(
     drafts,
     poolType,
-    candidates.data ? deploymentLookup(candidates.data.models) : undefined,
+    inventory,
     retriesValid ? retries : (pool?.maxRetries ?? DEFAULT_POOL_RETRIES),
   )
   const problems = [
@@ -225,8 +226,12 @@ export function PoolEditorDialog({ pool, initialGatewayId, prefill, onClose, onS
       ...draftCheck.problems,
     ]),
   ]
-  const tierNote = safeguard.safeguard ? safeguardTierNote(apiShape, gateway?.capabilities.skuName) : null
-  const cautions = [...draftCheck.cautions, ...(tierNote ? [tierNote] : [])]
+  const safeguardNotes = safeguard.safeguard ? drafts.flatMap((draft) => draft.members.flatMap((member) => {
+    const deployment = inventory?.(member)
+    const note = safeguardPolicyNote(deployment?.policyCapabilities, gatewayId, draft.apiShape)
+    return note ? [`${member.deploymentName}${deployment ? ` on ${deployment.endpointName}` : ''}: ${note}`] : []
+  })) : []
+  const cautions = [...new Set([...draftCheck.cautions, ...safeguardNotes])]
   const blocker =
     poolPublishBlocker(gateway) ?? (drafts.length === 0 ? 'Add at least one model before you publish the pool.' : null)
 
@@ -271,9 +276,6 @@ export function PoolEditorDialog({ pool, initialGatewayId, prefill, onClose, onS
   useEffect(() => {
     if (blockedSaves) problemsRef.current?.focus()
   }, [blockedSaves])
-  useEffect(() => {
-    if (save.error) errorRef.current?.focus()
-  }, [save.error])
 
   const index = STEPS.indexOf(step)
   const move = (next: EditorStep) => {
@@ -300,6 +302,8 @@ export function PoolEditorDialog({ pool, initialGatewayId, prefill, onClose, onS
       backLabel="Back to pools"
       dirty={dirty}
       pending={save.isPending}
+      errorKey={save.submittedAt}
+      error={save.error ? <PolicyCapabilityFeedback error={save.error} title="Unable to save pool" /> : undefined}
       actions={<>
         {index > 0 && <Button onClick={() => move(STEPS[index - 1])}>Previous step</Button>}
         {(pool || step === 'review') && (
@@ -674,11 +678,6 @@ export function PoolEditorDialog({ pool, initialGatewayId, prefill, onClose, onS
               </div>
             )}
 
-            {save.error && (
-              <div ref={errorRef} tabIndex={-1}>
-                <ErrorState error={save.error} title="MOSAIC couldn’t save the pool" />
-              </div>
-            )}
           </div>
     </WorkspaceEditorFrame>
   )

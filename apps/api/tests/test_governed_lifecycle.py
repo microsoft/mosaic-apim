@@ -20,6 +20,7 @@ from azure.core.credentials_async import AsyncTokenCredential
 from conftest import build_endpoint_service, build_gateway_service, reviewed_unpublish
 from mosaic_api.cost_centers import CostCenterUpdate
 from mosaic_api.domain import (
+    AuditEvent,
     BindingSource,
     Entitlement,
     EntitlementBinding,
@@ -1220,7 +1221,7 @@ async def test_opt_in_reviews_legacy_counter_mapping_without_rewriting_saved_int
     assert await harness.service.get_lock_owner(ACTOR, harness.publication_id) is None
 
 
-async def test_governed_claude_on_a_classic_tier_keeps_call_limits_and_drops_token_grants() -> None:
+async def test_classic_claude_refuses_token_grants_and_keeps_call_limits() -> None:
     cognitive = FakeCognitiveServices(kind="AIServices")
     cognitive.deployments = [
         {
@@ -1237,19 +1238,23 @@ async def test_governed_claude_on_a_classic_tier_keeps_call_limits_and_drops_tok
     try:
         # The APIM double reports the Developer tier, where Anthropic can't be token-metered.
         await harness.setup(deployment="claude-sonnet-4-5", enforcement=None)
+        await harness.govern()
         token_limited = await harness.grant()
-        await harness.grants.update_entitlement(
-            ACTOR,
-            token_limited.id,
-            EntitlementUpdate(
-                enforcement=EntitlementEnforcement(
-                    tokens=TokenEnforcement(
-                        counter_key_expression="@(context.Subscription.Id)",
-                        tokens_per_minute=100,
-                    )
-                )
-            ),
+        token_limits = EntitlementEnforcement(
+            tokens=TokenEnforcement(
+                counter_key_expression="@(context.Subscription.Id)",
+                tokens_per_minute=100,
+            )
         )
+        with pytest.raises(ValidationError) as rejected_save:
+            await harness.grants.update_entitlement(
+                ACTOR, token_limited.id, EntitlementUpdate(enforcement=token_limits)
+            )
+        assert rejected_save.value.details["reason"] == "gatewayPolicyLimitsRejected"
+        assert rejected_save.value.details["boundary"] == "save"
+        unchanged = await harness.entitlements.get_entitlement(TENANT, token_limited.id)
+        assert unchanged is not None and unchanged.enforcement is None
+
         call_limited = await harness.grant(APPLICATION, application=True)
         await harness.grants.update_entitlement(
             ACTOR,
@@ -1264,18 +1269,41 @@ async def test_governed_claude_on_a_classic_tier_keeps_call_limits_and_drops_tok
                 )
             ),
         )
-        await harness.govern()
+        # Older persisted intent must refuse the plan rather than silently lose its grant.
+        legacy = unchanged.model_copy(update={"enforcement": token_limits})
+        await harness.entitlements.save_entitlement(
+            legacy,
+            AuditEvent(
+                id="legacy-token-seed",
+                tenant_id=TENANT,
+                action="test.seed",
+                resource_type="entitlement",
+                resource_id=legacy.id,
+                actor_object_id=ACTOR.object_id,
+            ),
+        )
+        harness.apim.writes.clear()
+        with pytest.raises(ValidationError) as rejected_plan:
+            await harness.service.plan(ACTOR, harness.publication_id)
+        assert rejected_plan.value.details["reason"] == "gatewayPolicyLimitsRejected"
+        assert rejected_plan.value.details["boundary"] == "plan"
+        assert [
+            (issue["policy"], issue["support"])
+            for issue in rejected_plan.value.details["issues"]
+        ] == [("llm-token-limit", "unavailable")]
+        assert not harness.apim.writes
+        assert await harness.entitlements.get_entitlement(TENANT, legacy.id) == legacy
 
+        await harness.grants.update_entitlement(
+            ACTOR, token_limited.id, EntitlementUpdate(enabled=False)
+        )
         plan = await harness.service.plan(ACTOR, harness.publication_id)
 
         assert plan.access_snapshot
         assert plan.access_snapshot.publication_enforcement is None
-        assert [grant.entitlement_id for grant in plan.access_snapshot.grants] == [
-            call_limited.id
-        ]
-        assert any(
-            token_limited.id in warning and "call limits" in warning for warning in plan.warnings
-        )
+        assert [
+            grant.entitlement_id for grant in plan.access_snapshot.grants if grant.enabled
+        ] == [call_limited.id]
         assert (await harness.apply()).status == PublishRunStatus.SUCCEEDED
         publication = await harness.service.get_publication(ACTOR, harness.publication_id)
         fragment = harness.apim.written[f"policyFragments/{publication.fragment_name}"][

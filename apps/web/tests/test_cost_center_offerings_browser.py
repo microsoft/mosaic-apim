@@ -4,6 +4,7 @@ import contextlib
 import re
 import socket
 import sys
+import tempfile
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -14,6 +15,9 @@ from playwright.sync_api import Page, expect
 
 from scripts.screenshots import capture
 
+_QUOTA_PORTS = (18052, 15152, 15252)
+_SYSTEM_TEMP = tempfile.gettempdir()
+
 
 def _free_port() -> int:
     with socket.socket() as listener:
@@ -22,14 +26,23 @@ def _free_port() -> int:
 
 
 @pytest.fixture(scope="module")
-def fictional_console() -> Iterator[tuple[str, int, Path]]:
-    api_port, console_port, portal_port = (_free_port() for _ in range(3))
+def fictional_console(request: pytest.FixtureRequest) -> Iterator[tuple[str, int, Path]]:
+    api_port, console_port, portal_port = getattr(
+        request, "param", tuple(_free_port() for _ in range(3))
+    )
+    for port in (api_port, console_port, portal_port):
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", port))
     console_url = f"http://127.0.0.1:{console_port}"
     logs = Path(__file__).parent / "__pycache__" / f"cost-center-offerings-browser-{time.time_ns()}"
     logs.mkdir(parents=True)
-    with pytest.MonkeyPatch.context() as environment, contextlib.ExitStack() as servers:
-        environment.setenv("TEMP", str(logs.resolve()))
-        environment.setenv("TMP", str(logs.resolve()))
+    with (
+        pytest.MonkeyPatch.context() as environment,
+        tempfile.TemporaryDirectory(prefix="mosaic-offerings-", dir=_SYSTEM_TEMP) as browser_temp,
+        contextlib.ExitStack() as servers,
+    ):
+        environment.setenv("TEMP", browser_temp)
+        environment.setenv("TMP", browser_temp)
         servers.enter_context(
             capture._running(
                 "api",
@@ -98,7 +111,7 @@ def _nested_read_only(page: Page) -> None:
         compact.select_option("access")
     _offerings(page)
     offerings = page.get_by_role("list", name="Exact resource offerings", exact=True)
-    row = offerings.get_by_role("button", name=re.compile(r"^Text embeddings \(large\)"))
+    row = offerings.get_by_role("button", name=re.compile(r"^GPT-4o mini Model API"))
     row.focus()
     row.press("Enter")
     detail = page.get_by_role("region", name="Selected resource access", exact=True)
@@ -132,7 +145,7 @@ def _editor(page: Page, *, existing: bool) -> None:
     _offerings(page)
     offerings = page.get_by_role("list", name="Exact resource offerings", exact=True)
     field = page.get_by_label("Filter resource offerings", exact=True)
-    field.fill("Text embeddings (large)")
+    field.fill("GPT-4o mini Model API")
     expect(offerings.get_by_role("button")).to_have_count(1)
     field.fill("")
     offerings.get_by_role("button").last.press("Enter")
@@ -147,6 +160,9 @@ def _editor(page: Page, *, existing: bool) -> None:
     page.get_by_role("heading", name="Exact offerings", exact=True).scroll_into_view_if_needed()
 
 
+@pytest.mark.parametrize(
+    "fictional_console", [_QUOTA_PORTS], indirect=True, scope="function"
+)
 @pytest.mark.parametrize("width,height", [(1440, 1000), (390, 844)])
 def test_cost_center_offerings_layout(
     fictional_console: tuple[str, int, Path], width: int, height: int
@@ -171,7 +187,7 @@ def test_cost_center_offerings_layout(
             ]
         ],
         output=logs / "redacted",
-        urls={"console": console_url},
+        urls={"console": console_url, "portal": f"http://127.0.0.1:{_QUOTA_PORTS[2]}"},
         api_port=api_port,
         logs=logs,
     )

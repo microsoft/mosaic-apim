@@ -27,6 +27,18 @@
 .setupSteps code { overflow-wrap: anywhere; }
 .setupColumns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: start; }
 .setupSummary { cursor: pointer; font-weight: 600; }
+.limitEditor { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; min-width: 0; container-type: inline-size; }
+.limitLayout { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(240px, 1fr); gap: 24px; align-items: start; min-width: 0; }
+.limitInputs { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; min-width: 0; }
+.limitGroup { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; padding: 16px; border: 1px solid var(--mosaic-border-soft); border-radius: 8px; min-width: 0; }
+.limitGroup h3, .limitSummary h3 { margin: 0; }
+.limitPair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: 16px; min-width: 0; }
+.limitGroup > button { justify-self: start; }
+.limitSummary { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; min-width: 0; padding: 20px; background: var(--mosaic-surface-subtle); border: 1px solid var(--mosaic-border-soft); border-radius: 8px; overflow-wrap: anywhere; }
+.limitAfter { display: grid; gap: 12px; border-top: 1px solid var(--mosaic-border-soft); padding-top: 16px; }
+@container (max-width: 760px) {
+  .limitLayout { grid-template-columns: minmax(0, 1fr); }
+}
 @media (max-width: 1100px) {
   .setupColumns { grid-template-columns: minmax(0, 1fr); }
 }

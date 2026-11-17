@@ -45,6 +45,7 @@ import type {
 } from '../types'
 import { ErrorState, Loading } from './AsyncState'
 import { useFocusAwareAnnounce } from './useFocusAwareAnnounce'
+import { PolicyCapabilityError } from './PolicyCapabilityFeedback'
 import { ChangeReview, TechnicalExecution } from './ChangeReview'
 import { EnvironmentBadge } from './EnvironmentBadge'
 import { ModelAccessRecovery } from './ModelAccessRecovery'
@@ -706,7 +707,8 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
                         </MessageBarBody>
                       </MessageBar>
                     ) : (
-                      <ErrorState context="action" title="Unable to create the MCP publish plan" error={createAndPlan.error} announcementKey={createAndPlan.submittedAt} />
+                      <PolicyCapabilityError title="Unable to save or plan MCP publication"
+                        error={createAndPlan.error} announcementKey={createAndPlan.submittedAt} />
                     )}
                   </div></AnnounceProvider>
                 )}
@@ -790,7 +792,7 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
                           {applyEnvironmentBlocked.reason}
                         </MessageBarBody>
                       </MessageBar>
-                    ) : <ErrorState context="action" title="Unable to apply the MCP publish plan" error={applyError} announcementKey={apply.submittedAt} />}
+                    ) : <PolicyCapabilityError title="Unable to apply MCP publication" error={applyError} announcementKey={apply.submittedAt} />}
                   </div></AnnounceProvider>
                 )}
                 {refreshError && <ErrorState context="action" title="Unable to refresh the MCP publish plan" error={refreshError} announcementKey={apply.submittedAt} />}

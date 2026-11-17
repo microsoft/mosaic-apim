@@ -1912,6 +1912,59 @@ class EntitlementResource(MosaicModel):
         return self
 
 
+GatewayPolicyName = Literal[
+    "rate-limit-by-key", "quota-by-key", "llm-token-limit", "llm-emit-token-metric"
+]
+PolicyCapabilityReason = Literal[
+    "documentedSupport",
+    "unsupportedTier",
+    "unknownTier",
+    "unverifiedSku",
+    "unsupportedApiShape",
+    "unknownApiShape",
+]
+PolicyCapabilityNextAction = Literal[
+    "none", "checkGatewayAccess", "reviewResource", "chooseSupportedGateway", "reviewLimit"
+]
+
+
+class PolicyCapability(MosaicModel):
+    policy: GatewayPolicyName
+    support: CapabilitySupport
+    reason: PolicyCapabilityReason
+    message: str
+    next_action: PolicyCapabilityNextAction
+    documentation_url: str
+    maximum_renewal_period_seconds: int | None = None
+
+
+class GatewayPolicyCapabilities(MosaicModel):
+    gateway_id: str | None
+    sku_name: str | None
+    tier: GatewayTier
+    api_shape: ApiShape | None
+    observed_at: datetime | None = None
+    resource: EntitlementResource | None = None
+    policies: dict[GatewayPolicyName, PolicyCapability]
+
+
+class PolicyCapabilityIssue(MosaicModel):
+    field: str
+    resource: EntitlementResource | None
+    gateway_id: str | None
+    sku_name: str | None
+    tier: GatewayTier
+    api_shape: ApiShape | None
+    policy: GatewayPolicyName
+    support: CapabilitySupport
+    reason: PolicyCapabilityReason | Literal["invalidPolicyValue"]
+    message: str
+    next_action: PolicyCapabilityNextAction
+    documentation_url: str
+    minimum: int | None = None
+    maximum: int | None = None
+
+
 class BindingSource(StrEnum):
     INFERRED = "inferred"
     MANUAL = "manual"
@@ -4316,6 +4369,7 @@ class PublishableModel(MosaicModel):
     unpublishable_reason: str | None = None
     token_limits_supported: bool = True
     token_limits_note: str | None = None
+    policy_capabilities: GatewayPolicyCapabilities | None = None
     publication_id: str | None = None
     publication_status: PublicationStatus | None = None
     suggested_api_name: str = ""

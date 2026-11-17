@@ -1,5 +1,5 @@
 import { NOTIFICATION_CATEGORIES, type BulkApprovalItemResult, type DigestPeriod, type DigestSchedule, type NotificationPreferencesInput, type NotificationSubject } from './admin-types'
-import { callRateError, type LimitForm } from './entitlement-limits'
+export { limitInputError } from './entitlement-limits'
 
 export function unresolvedRequestIds(items: BulkApprovalItemResult[]) {
   return items.filter(item => item.status !== 'approved' && item.status !== 'alreadyApproved').map(item => item.requestId)
@@ -9,11 +9,6 @@ export function validTimeZone(value: string) {
     new Intl.DateTimeFormat('en', { timeZone: value })
     return Boolean(value.trim())
   } catch { return false }
-}
-export function limitInputError(form: LimitForm): string | null {
-  if ([form.calls, form.tokensPerMinute, form.tokenQuota].some(v => v !== '' && (!Number.isSafeInteger(Number(v)) || Number(v) <= 0))) return 'Limits must be positive whole numbers, or left empty.'
-  if (form.calls && (!Number.isSafeInteger(Number(form.renewalPeriodSeconds)) || Number(form.renewalPeriodSeconds) <= 0)) return 'Call renewal period must be a positive whole number.'
-  return callRateError(form)
 }
 export function schedulesFor(periods: DigestPeriod[], saved: DigestSchedule[]) {
   return [...new Set(periods)].map(period => saved.find(s => s.period === period) ?? { period, deliveryTime: '09:00', dayOfWeek: 0, dayOfMonth: 1 })

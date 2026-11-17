@@ -26,6 +26,7 @@ import { Link as RouterLink, useLocation, useNavigate, useParams } from 'react-r
 import { ApiError, useMosaicApi } from '../api'
 import { BUDGET_LEVEL_LABELS, budgetBadgeColor } from '../budgets'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
+import { PolicyCapabilityError } from '../components/PolicyCapabilityFeedback'
 import { BudgetDetails, BudgetForm, BudgetMeter } from '../components/BudgetEditor'
 import { PageHeader } from '../components/PageHeader'
 import { SectionLayout, usePageSection } from '../components/SectionLayout'
@@ -643,7 +644,8 @@ function CostCenterWorkspace({ costCenterId, embedded = false, fallbackFocusRef 
             Per-person limits apply to each grant under this cost center that sets none of its own. A pooled quota is shared by every grant under the cost center on that model, per gateway. MCP servers use calls only.
           </Text>
           {saveLimits.isError && (
-            <MessageBar intent="error"><MessageBarBody>{errorMessage(saveLimits.error, 'Unable to save limits.')}</MessageBarBody></MessageBar>
+            <PolicyCapabilityError title="Unable to save limits" error={saveLimits.error}
+              announcementKey={saveLimits.submittedAt} />
           )}
           <div className={styles.limitList}>
             {limits.length === 0 ? <Text className={styles.muted}>No cost-center defaults are set.</Text> : limits.map((limit) => {

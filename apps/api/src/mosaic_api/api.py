@@ -18,9 +18,12 @@ from mosaic_api.domain import (
     DeclaredDeploymentCreate,
     Entitlement,
     EntitlementCreate,
+    EntitlementResource,
+    EntitlementResourceKind,
     EntitlementUpdate,
     Gateway,
     GatewayCreate,
+    GatewayPolicyCapabilities,
     GatewayRuntimeAccess,
     GatewaySuggestion,
     GatewaySyncRun,
@@ -82,6 +85,7 @@ from mosaic_api.environments import (
     EnvironmentUpdate,
     PortalEnvironment,
 )
+from mosaic_api.errors import ValidationError
 from mosaic_api.integrations.policy import render_policy_preview
 from mosaic_api.observed import (
     GatewayPolicyView,
@@ -99,6 +103,7 @@ from mosaic_api.observed import (
     ObservedSubscription,
     ScopedPolicyView,
 )
+from mosaic_api.repositories import ModelEndpointRepository
 from mosaic_api.services import (
     DirectoryService,
     EntitlementService,
@@ -521,6 +526,35 @@ async def suggested_gateways(
 @router.get("/gateways/{gateway_id}", response_model=Gateway)
 async def get_gateway(request: Request, auth: Admin, gateway_id: str) -> Gateway:
     return await _gateways(request).get_gateway(_actor(auth), gateway_id)
+
+
+@router.get(
+    "/gateways/{gateway_id}/policy-capabilities", response_model=GatewayPolicyCapabilities
+)
+async def gateway_policy_capabilities(
+    request: Request,
+    auth: Admin,
+    gateway_id: str,
+    resource_kind: Annotated[EntitlementResourceKind | None, Query(alias="resourceKind")] = None,
+    resource_id: Annotated[str | None, Query(alias="resourceId")] = None,
+    scope_id: Annotated[str | None, Query(alias="scopeId")] = None,
+) -> GatewayPolicyCapabilities:
+    if "apiShape" in request.query_params:
+        raise ValidationError("API shape is resolved from resource records, not a caller hint.")
+    if (resource_kind is None) != (resource_id is None):
+        raise ValidationError("A policy target needs both resourceKind and resourceId.")
+    if resource_kind in {"poolModel", "product", "modelDeployment"} and not scope_id:
+        raise ValidationError("This policy target needs its exact scopeId.")
+    if scope_id is not None and resource_kind is None:
+        raise ValidationError("scopeId needs a resource target.")
+    resource = (
+        EntitlementResource(kind=resource_kind, id=resource_id, scope_id=scope_id)
+        if resource_kind is not None and resource_id is not None else None
+    )
+    endpoints = cast(ModelEndpointRepository, request.app.state.model_endpoint_repository)
+    return await _gateways(request).policy_capabilities(
+        _actor(auth), gateway_id, resource, endpoints=endpoints
+    )
 
 
 @router.patch("/gateways/{gateway_id}", response_model=Gateway)

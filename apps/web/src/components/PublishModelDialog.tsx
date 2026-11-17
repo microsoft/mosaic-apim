@@ -29,6 +29,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useMosaicApi } from '../api'
 import { creationContext, useEditContext } from '../change-review'
 import { environmentBlockedVerdict, useEnvironmentCatalog } from '../environments'
+import { isGatewayPolicyCapabilities } from '../policy-capabilities'
 import { CANNOT_INVOKE, NOT_CONFIRMED, runtimeVerdict } from '../runtime-access'
 import { runtimeConfig } from '../runtime-config'
 import type {
@@ -42,10 +43,12 @@ import type {
   PublishRun,
   PublishRunStatus,
   PublishStepStatus,
+  PolicyCapability,
   TokenEnforcement,
 } from '../types'
 import { ErrorState, Loading } from './AsyncState'
 import { useFocusAwareAnnounce } from './useFocusAwareAnnounce'
+import { PolicyCapabilityError } from './PolicyCapabilityFeedback'
 import { ChangeReview, TechnicalExecution } from './ChangeReview'
 import { EnvironmentBadge } from './EnvironmentBadge'
 import { PolicyFacetItem } from './PolicyFacets'
@@ -68,6 +71,7 @@ type FormState = {
   tokenQuota: string
   tokenQuotaPeriod: '' | QuotaPeriod
   estimatePromptTokens: boolean
+  tokenLimits: boolean
 }
 
 const quotaPeriods: QuotaPeriod[] = ['Hourly', 'Daily', 'Weekly', 'Monthly', 'Yearly']
@@ -99,13 +103,34 @@ const shapeLabels: Record<ApiShape, string> = {
   anthropicMessages: 'Anthropic Messages API',
 }
 
-// Older services omit these fields; they then meant "publishable, with token limits".
-function isPublishable(model: PublishableModel): boolean {
-  return model.publishable !== false
+function tokenCapability(model: PublishableModel | null, gatewayId: string): PolicyCapability | null {
+  const result = model?.policyCapabilities
+  return isGatewayPolicyCapabilities(result)
+    && result.gatewayId === gatewayId
+    && result.apiShape !== null
+    && result.apiShape === model?.apiShape
+    ? result.policies['llm-token-limit']
+    : null
 }
 
-function supportsTokenLimits(model: PublishableModel | null): boolean {
-  return model?.tokenLimitsSupported !== false
+function supportsTokenLimits(model: PublishableModel | null, gatewayId: string): boolean {
+  return tokenCapability(model, gatewayId)?.support === 'available'
+}
+
+function isPublishable(model: PublishableModel, gatewayId: string): boolean {
+  const support = tokenCapability(model, gatewayId)?.support
+  return model.publishable === true && (
+    support === 'available'
+    || (support === 'unavailable' && model.tokenLimitsSupported === false)
+  )
+}
+
+function publicationBlockReason(model: PublishableModel, gatewayId: string): string {
+  if (model.publishable === false && model.unpublishableReason) return model.unpublishableReason
+  const capability = tokenCapability(model, gatewayId)
+  return capability && capability.support !== 'available'
+    ? capability.message
+    : 'MOSAIC has not confirmed publication support for this deployment. Sync the gateway and model endpoint, then refresh models.'
 }
 
 const stepStatusLabels: Record<PublishStepStatus, string> = {
@@ -143,7 +168,7 @@ function buildEnforcement(form: FormState): TokenEnforcement {
   }
 }
 
-function initialForm(model: PublishableModel | null): FormState {
+function initialForm(model: PublishableModel | null, gatewayId: string): FormState {
   return {
     displayName: model ? `${model.endpointName} ${model.deploymentName}` : '',
     apiName: model?.suggestedApiName ?? '',
@@ -155,6 +180,7 @@ function initialForm(model: PublishableModel | null): FormState {
     tokenQuota: '',
     tokenQuotaPeriod: '',
     estimatePromptTokens: true,
+    tokenLimits: supportsTokenLimits(model, gatewayId),
   }
 }
 
@@ -332,7 +358,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
   const [step, setStep] = useState<Step>(initialReview ? 'review' : 'choose')
   const [gatewayId, setGatewayId] = useState(initialReview?.publication.gatewayId ?? '')
   const [modelKey, setModelKey] = useState('')
-  const [form, setForm] = useState<FormState>(() => initialForm(null))
+  const [form, setForm] = useState<FormState>(() => initialForm(null, ''))
   const [publication, setPublication] = useState<Publication | null>(initialReview?.publication ?? null)
   const [plan, setPlan] = useState<PublishPlan | null>(initialReview?.plan ?? null)
   const [reviewMessage, setReviewMessage] = useState(initialReview?.message ?? '')
@@ -381,15 +407,14 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
     (model) => `${model.modelEndpointId}:${model.deploymentName}` === modelKey,
   ) ?? null
 
-  useEffect(() => {
-    if (!selectedModel) return
-    setForm(initialForm(selectedModel))
-  }, [selectedModel])
-
   const createAndPlan = useMutation({
     mutationKey,
     mutationFn: async () => {
       if (!selectedModel) throw new Error('Choose a model before reviewing the plan.')
+      if (!isPublishable(selectedModel, gatewayId)
+        || form.tokenLimits !== supportsTokenLimits(selectedModel, gatewayId)) {
+        throw new Error('Publication support has changed or is not confirmed. Your draft is retained. Return to the model list, refresh models, and select the deployment again.')
+      }
       const created = await api.createPublication({
         gatewayId,
         modelEndpointId: selectedModel.modelEndpointId,
@@ -399,7 +424,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
         apiPath: form.apiPath.trim() || undefined,
         productName: form.productName.trim() || undefined,
         subscriptionRequired: form.subscriptionRequired,
-        enforcement: supportsTokenLimits(selectedModel) ? buildEnforcement(form) : null,
+        enforcement: form.tokenLimits ? buildEnforcement(form) : null,
       })
       const createdPlan = await api.createPublishPlan(created.id)
       return { created, createdPlan }
@@ -500,10 +525,13 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
     target?.focus()
   }, [open, step, outcome])
 
-  const canConfigure = Boolean(gatewayId && selectedModel && isPublishable(selectedModel))
-  const tokenLimits = supportsTokenLimits(selectedModel)
+  const canConfigure = Boolean(gatewayId && selectedModel && isPublishable(selectedModel, gatewayId))
+  const tokenLimits = form.tokenLimits
+  const capabilityChanged = !canConfigure || tokenLimits !== supportsTokenLimits(selectedModel, gatewayId)
+  const selectedCapability = tokenCapability(selectedModel, gatewayId)
   const canReview = Boolean(
-    form.apiName.trim() && form.apiPath.trim() && (!tokenLimits || form.counterKeyExpression.trim()),
+    !capabilityChanged && form.apiName.trim() && form.apiPath.trim()
+    && (!tokenLimits || form.counterKeyExpression.trim()),
   )
   const missingAccessReview = Boolean(publication?.governedAccess && !plan?.accessSnapshot)
   const createEnvironmentBlocked = environmentBlockedVerdict(createAndPlan.error)
@@ -544,7 +572,10 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                   <Select
                     aria-label="Gateway"
                     value={gatewayId}
-                    onChange={(event) => setGatewayId(event.target.value)}
+                    onChange={(event) => {
+                      setGatewayId(event.target.value)
+                      setModelKey('')
+                    }}
                   >
                     {gatewayOptions.length === 0 && <option value="">No gateways registered</option>}
                     {gatewayOptions.map((gateway) => (
@@ -571,6 +602,11 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                 {gateways.isError && <ErrorState error={gateways.error} />}
                 {publishable.isPending && gatewayId && <Loading label="Loading publishable models" />}
                 {publishable.isError && <ErrorState error={publishable.error} />}
+                {gatewayId && (
+                  <Button disabledFocusable={publishable.isFetching} onClick={() => {
+                    if (!publishable.isFetching) void publishable.refetch()
+                  }}>Refresh models</Button>
+                )}
                 {publishable.isSuccess && models.length === 0 && (
                   <Text>No publishable models were found for this gateway.</Text>
                 )}
@@ -597,13 +633,12 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                       <TableBody>
                         {visibleModels.map((model) => {
                           const key = `${model.modelEndpointId}:${model.deploymentName}`
-                          const publishableRow = isPublishable(model)
+                          const publishableRow = isPublishable(model, gatewayId)
                           const environmentBlocked = model.environmentVerdict.level === 'blocked'
                           const environmentWarning = model.environmentVerdict.level === 'warning'
                           const blockedReasons = [
                             !publishableRow
-                              ? (model.unpublishableReason ??
-                                "MOSAIC can't publish this deployment yet.")
+                              ? publicationBlockReason(model, gatewayId)
                               : null,
                             environmentBlocked ? model.environmentVerdict.reason : null,
                           ]
@@ -616,7 +651,10 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                                   aria-label={`Publish ${model.deploymentName}`}
                                   checked={modelKey === key}
                                   disabled={!publishableRow || environmentBlocked}
-                                  onChange={(_, data) => setModelKey(data.checked ? key : '')}
+                                  onChange={(_, data) => {
+                                    setModelKey(data.checked ? key : '')
+                                    if (data.checked) setForm(initialForm(model, gatewayId))
+                                  }}
                                 />
                               </TableCell>
                               <TableCell>
@@ -671,7 +709,19 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                   label="Subscription required"
                   onChange={(_, data) => setForm({ ...form, subscriptionRequired: Boolean(data.checked) })}
                 />
-                {!tokenLimits && (
+                {capabilityChanged && (
+                  <MessageBar intent="warning">
+                    <MessageBarBody>
+                      <MessageBarTitle>Publication support needs review</MessageBarTitle>
+                      {selectedCapability && selectedCapability.support !== 'available'
+                        ? `${selectedCapability.message} `
+                        : 'Publication support has changed or is not confirmed. '}
+                      Your draft is retained. Return to the model list, refresh models, and select
+                      the deployment again before reviewing a plan.
+                    </MessageBarBody>
+                  </MessageBar>
+                )}
+                {!tokenLimits && !capabilityChanged && (
                   <MessageBar intent="warning">
                     <MessageBarBody>
                       <MessageBarTitle>Token limits unavailable</MessageBarTitle>
@@ -720,7 +770,8 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                         </MessageBarBody>
                       </MessageBar>
                     ) : (
-                      <ErrorState context="action" title="Unable to create the publish plan" error={createAndPlan.error} announcementKey={createAndPlan.submittedAt} />
+                      <PolicyCapabilityError title="Unable to save or plan publication"
+                        error={createAndPlan.error} announcementKey={createAndPlan.submittedAt} />
                     )}
                   </div></AnnounceProvider>
                 )}
@@ -807,7 +858,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                 )}
                 {applyError && !applyEnvironmentBlocked && (
                   <AnnounceProvider value={announcement}><div ref={outcomeRef} tabIndex={-1}>
-                    <ErrorState context="action" title="Unable to apply the publish plan" error={applyError} announcementKey={apply.submittedAt} />
+                    <PolicyCapabilityError title="Unable to apply publication" error={applyError} announcementKey={apply.submittedAt} />
                   </div></AnnounceProvider>
                 )}
                 {refreshError && <ErrorState context="action" title="Unable to refresh the publish plan" error={refreshError} announcementKey={apply.submittedAt} />}

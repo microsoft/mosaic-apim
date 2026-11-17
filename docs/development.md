@@ -260,9 +260,7 @@ uv run --frozen --with "playwright>=1.58,<2" python -m pytest apps\web\tests\tes
 ```
 
 The tests verify keyboard focus and delivery to Fluent's native/fallback announcement mechanism,
-including repeated clipboard outcomes, late credential results, eligibility changes, and the
-identity editor's heading/draft return targets. They do not verify speech from NVDA or Narrator;
-report any unperformed screen-reader spot check explicitly.
+not speech from NVDA or Narrator. Report any unperformed screen-reader spot check explicitly.
 Keep failed/debug captures out of Git; documentation images still come only from the official
 [fictional redacted capture](screenshots.md).
 

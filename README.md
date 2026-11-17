@@ -118,6 +118,14 @@ identifiers and secrets blurred. Directory data and checks are simulated, not li
     <td colspan="2"><b>Portal catalog.</b> Find model offerings by cloud, environment, eligible cost center, and type, and
     inspect existing access. Open an exact offering's access options without leaving the catalog.</td>
   </tr>
+  <tr>
+    <td colspan="2"><img src="docs/images/screenshots/console-grant-call-quota.png" alt="The full-workspace grant editor with independent call-rate and calendar-quota controls beside a decision summary"></td>
+  </tr>
+  <tr>
+    <td colspan="2"><b>Grant call quotas.</b> Author an absolute call allowance and calendar period
+    separately from the short call-rate window, with saved or inherited limits beside the draft.
+    Saving intent does not change API Management; the affected gateway plan still needs review and apply.</td>
+  </tr>
 </table>
 
 The [full gallery](docs/gallery.md) includes publishing reviews, model pools, Entra directory
@@ -127,6 +135,10 @@ It also shows [cost-center requests and Automatic access](docs/gallery.md#cost-c
 including membership discovery and requests, administrator controls, and incomplete setup
 rather than treating approval as usable access.
 [Screenshot maintenance](docs/screenshots.md) explains capture, redaction, and the shot inventory.
+
+[Gateway policy feedback](docs/gallery.md#gateway-policy-capability-feedback) shows refused
+grant limits and shared safeguards with field-specific recovery and a retained draft. Historical
+embeddings are unverified read-only intent, not current enforcement evidence.
 
 The gallery also shows the [User-only portal handoff](docs/gallery.md#portal-handoff-for-end-users):
 an explanation and a deliberate portal action for someone who opened the administrator console
