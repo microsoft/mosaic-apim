@@ -3,7 +3,7 @@ import { useFocusFinders } from '@fluentui/react-components'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, Link, RouterProvider } from 'react-router-dom'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PortalApi } from '../api'
 import type { NotificationPreferencesInput } from '../notification-types'
 import { notificationCheck, notificationPreferences } from '../test/notification-fixtures'
@@ -13,6 +13,8 @@ import { MosaicThemeProvider } from '../theme'
 const mocks = vi.hoisted(() => ({ api: {} as PortalApi }))
 vi.mock('../api', () => ({ ApiError: class ApiError extends Error { status = 500 }, usePortalApi: () => mocks.api }))
 
+afterEach(() => vi.restoreAllMocks())
+
 function PreferencesFixture() {
   // The real shell keeps Tabster mounted while transient dialogs are removed.
   useFocusFinders()
@@ -20,6 +22,8 @@ function PreferencesFixture() {
 }
 
 function renderPage(api: Partial<PortalApi> = {}, client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })) {
+  // Tabster treats a zero-sized body as a hidden document; this DOM has no page layout.
+  vi.spyOn(document.body, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 1440, 900))
   mocks.api = {
     getNotificationPreferences: async () => notificationPreferences(),
     getNotificationHealth: async () => [notificationCheck()],
@@ -123,6 +127,7 @@ describe('NotificationPreferencesPage', () => {
     expect(beforeUnload.defaultPrevented).toBe(true)
     await user.click(screen.getByRole('link', { name: 'Usage page' }))
     expect(await screen.findByRole('dialog')).toHaveTextContent('Discard unsaved notification preferences?')
+    await waitFor(() => expect(timezone.closest('[aria-hidden="true"]')).not.toBeNull())
     await user.click(screen.getByRole('button', { name: 'Keep editing' }))
     await waitFor(() => expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument())
     expect(timezone).toHaveValue('Europe/London')
