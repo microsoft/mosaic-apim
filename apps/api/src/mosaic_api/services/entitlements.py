@@ -41,16 +41,19 @@ from mosaic_api.domain import (
     AdminAccessRequestListItem,
     AuditEvent,
     BindingSource,
+    CapabilitySupport,
     CatalogCostCenterAccess,
     CatalogVisibility,
     Entitlement,
     EntitlementBinding,
     EntitlementCreate,
+    EntitlementEnforcement,
     EntitlementResource,
     EntitlementSubject,
     EntitlementSubjectKind,
     EntitlementUpdate,
     Gateway,
+    GatewayPolicyCapabilities,
     GrantOverlapReport,
     GrantPath,
     GrantRevocation,
@@ -59,6 +62,7 @@ from mosaic_api.domain import (
     McpServer,
     ModelAccessSettings,
     ModelApi,
+    PolicyCapabilityIssue,
     Principal,
     PrincipalCreate,
     PrincipalKind,
@@ -75,6 +79,13 @@ from mosaic_api.domain import (
 )
 from mosaic_api.environments import EnvironmentCatalog
 from mosaic_api.errors import ConflictError, DirectoryError, NotFoundError, ValidationError
+from mosaic_api.integrations.apim.policy_capabilities import (
+    LimitPolicyRequirement,
+    PolicyBoundary,
+    changed_limit_policies,
+    require_supported_limits,
+    required_limit_policies,
+)
 from mosaic_api.integrations.graph import DirectoryLookup
 from mosaic_api.model_pools import ModelPool
 from mosaic_api.observed import (
@@ -110,6 +121,12 @@ from mosaic_api.services.model_access import (
     publication_lock,
 )
 from mosaic_api.services.notification_events import access_request_event
+from mosaic_api.services.policy_capabilities import (
+    person_limit_policies,
+    pooled_limit_policies,
+    resolve_resource_policy_capabilities,
+    safeguard_limit_policies,
+)
 from mosaic_api.services.pool_access import (
     decorate_pool_entitlement,
     entitlement_model_pool,
@@ -422,6 +439,10 @@ class EntitlementService:
             raise ValidationError("The cost center belongs to another tenant.")
         if proposed_center.is_general:
             return
+        previous = (
+            await self._cost_centers.get_cost_center(actor.tenant_id, proposed_center.id)
+            if self._cost_centers is not None else None
+        )
         records = self.governed_records(actor.tenant_id)
         for definition in proposed_center.resource_access:
             if definition.mode == CostCenterResourceAccessMode.NOT_AVAILABLE:
@@ -430,6 +451,20 @@ class EntitlementService:
                 actor.tenant_id, definition.resource, records=records
             )
             self._validate_access_methods(proposed_center, definition.mode, settings)
+            if (
+                definition.mode == CostCenterResourceAccessMode.AUTOMATIC
+                and (
+                    previous is None
+                    or previous.access_mode_for(definition.resource)
+                    != CostCenterResourceAccessMode.AUTOMATIC
+                )
+            ):
+                await self.require_resource_limit_policies(
+                    actor, definition.resource,
+                    await self._intent_limit_policies(
+                        actor.tenant_id, definition.resource, None, proposed_center
+                    ),
+                )
 
     async def _require_resource_access(
         self,
@@ -512,6 +547,11 @@ class EntitlementService:
 
         book = await self.cost_center_book(actor.tenant_id)
         center = self._require_cost_center(book, cost_center_id)
+        managed = {
+            item.id: item
+            for item in await self._repository.list_entitlements(actor.tenant_id)
+            if item.cost_center_id == center.id and item.managed_by == "costCenterAutomatic"
+        }
         desired: dict[str, Entitlement] = {}
         records = self.governed_records(actor.tenant_id)
         if (
@@ -533,6 +573,32 @@ class EntitlementService:
                     continue
                 automatic.append(definition)
             if automatic:
+                for definition in automatic:
+                    retained = False
+                    for grant in managed.values():
+                        if (
+                            not grant.enabled or grant.revocation is not None
+                            or exact_resource_key(grant.resource)
+                            != exact_resource_key(definition.resource)
+                        ):
+                            continue
+                        existing_principal = await self._directory.get_principal(
+                            actor.tenant_id, grant.subject.id
+                        )
+                        if (
+                            existing_principal is not None
+                            and existing_principal.object_id.casefold()
+                            == center.verified_group_object_id.casefold()
+                        ):
+                            retained = True
+                            break
+                    if not retained:
+                        await self.require_resource_limit_policies(
+                            actor, definition.resource,
+                            await self._intent_limit_policies(
+                                actor.tenant_id, definition.resource, None, center
+                            ),
+                        )
                 principal = await self._automatic_group_principal(actor, center)
                 subject = EntitlementSubject(
                     kind=EntitlementSubjectKind.SECURITY_GROUP, id=principal.id
@@ -554,11 +620,6 @@ class EntitlementService:
                         cost_center_id=center.id,
                         managed_by="costCenterAutomatic",
                     )
-        managed = {
-            item.id: item
-            for item in await self._repository.list_entitlements(actor.tenant_id)
-            if item.cost_center_id == center.id and item.managed_by == "costCenterAutomatic"
-        }
         results: list[Entitlement] = []
         for grant_id in sorted(managed.keys() | desired.keys()):
             target = desired.get(grant_id) or managed[grant_id].model_copy(
@@ -597,6 +658,7 @@ class EntitlementService:
                         wanted = False
                 target = target.model_copy(update={"enabled": wanted})
                 current = await self._repository.get_entitlement(actor.tenant_id, grant_id)
+                await self._require_grant_limit_change(actor, target, current)
                 if current is None:
                     saved = await self._repository.create_entitlement(
                         target, self._audit(actor, "entitlement.created", "entitlement", grant_id)
@@ -1543,7 +1605,7 @@ class EntitlementService:
         binding = request.binding
         if binding is None:
             binding = await self.infer_binding(actor, descriptor, request.subject)
-        return Entitlement(
+        record = Entitlement(
             id=entitlement_id(actor.tenant_id, request.subject, request.resource, cost_center.id),
             tenant_id=actor.tenant_id,
             subject=request.subject,
@@ -1554,11 +1616,125 @@ class EntitlementService:
             binding=binding,
             notes=request.notes,
         )
+        await self._require_grant_limit_change(actor, record, None, book=book)
+        return record
+
+    async def resource_policy_capabilities(
+        self, actor: Actor, resource: EntitlementResource, *, gateway: Gateway | None = None
+    ) -> GatewayPolicyCapabilities:
+        return await resolve_resource_policy_capabilities(
+            self._gateways, self._endpoints, actor.tenant_id, resource, gateway=gateway
+        )
+
+    async def require_resource_limit_policies(
+        self,
+        actor: Actor,
+        resource: EntitlementResource,
+        requirements: Sequence[LimitPolicyRequirement],
+        *,
+        boundary: PolicyBoundary = "save",
+        gateway: Gateway | None = None,
+    ) -> None:
+        if not requirements:
+            return
+        capabilities = await self.resource_policy_capabilities(actor, resource, gateway=gateway)
+        if resource.kind in {"product", "modelDeployment"}:
+            require_supported_limits(
+                capabilities, requirements, boundary=boundary, intrinsic_only=True
+            )
+            requests = tuple(
+                requirement for requirement in requirements
+                if requirement.policy in {"rate-limit-by-key", "quota-by-key"}
+                and capabilities.policies[requirement.policy].support != CapabilitySupport.UNKNOWN
+            )
+            require_supported_limits(capabilities, requests, boundary=boundary)
+            return
+        require_supported_limits(capabilities, requirements, boundary=boundary)
+
+    async def _shared_resource_limit_policies(
+        self, tenant_id: str, resource: EntitlementResource
+    ) -> tuple[LimitPolicyRequirement, ...]:
+        if resource.kind == "modelApi":
+            model = await self._gateways.get_model_api(tenant_id, resource.id)
+            if model is not None and model.publication_id is not None:
+                publication = await self._gateways.get_publication(tenant_id, model.publication_id)
+                if publication is not None:
+                    return required_limit_policies(
+                        publication.enforcement, field_prefix="publication.enforcement",
+                        counter_key_effective=publication.governed_access is None,
+                    )
+        elif resource.kind == "poolModel":
+            pool = await self._gateways.get_model_pool(tenant_id, resource.scope_id or "")
+            if pool is not None:
+                return safeguard_limit_policies(pool.safeguard, field_prefix="pool.safeguard")
+        return ()
+
+    @staticmethod
+    def _grant_enforcement_policies(
+        resource: EntitlementResource,
+        enforcement: EntitlementEnforcement | None,
+        center: CostCenter | None,
+    ) -> tuple[LimitPolicyRequirement, ...]:
+        if enforcement is not None:
+            return required_limit_policies(enforcement)
+        limit = center.limit_for(resource) if center is not None else None
+        return person_limit_policies(
+            limit.person if limit else None, field_prefix="costCenter.limits.person"
+        )
+
+    async def _intent_limit_policies(
+        self,
+        tenant_id: str,
+        resource: EntitlementResource,
+        enforcement: EntitlementEnforcement | None,
+        center: CostCenter | None,
+    ) -> tuple[LimitPolicyRequirement, ...]:
+        requirements = self._grant_enforcement_policies(resource, enforcement, center)
+        limit = center.limit_for(resource) if center is not None else None
+        if limit is not None and limit.pool is not None:
+            requirements += pooled_limit_policies(
+                limit.pool.monthly_tokens, limit.pool.monthly_calls,
+                field_prefix="costCenter.limits.pool",
+            )
+        return requirements + await self._shared_resource_limit_policies(tenant_id, resource)
+
+    async def _require_grant_limit_change(
+        self,
+        actor: Actor,
+        updated: Entitlement,
+        before: Entitlement | None,
+        *,
+        book: CostCenterBook | None = None,
+    ) -> None:
+        if book is None:
+            book = await self.cost_center_book(actor.tenant_id)
+        center = book.get(updated.cost_center_id)
+        after = (
+            await self._intent_limit_policies(
+                actor.tenant_id, updated.resource, updated.enforcement, center
+            )
+            if updated.enabled else required_limit_policies(updated.enforcement)
+        )
+        previous: tuple[LimitPolicyRequirement, ...] = ()
+        if before is not None:
+            previous = (
+                await self._intent_limit_policies(
+                    actor.tenant_id, before.resource, before.enforcement,
+                    book.get(before.cost_center_id),
+                )
+                if before.enabled else required_limit_policies(before.enforcement)
+            )
+        requirements = (
+            after if before is not None and updated.enabled and not before.enabled
+            else changed_limit_policies(previous, after)
+        )
+        await self.require_resource_limit_policies(actor, updated.resource, requirements)
 
     async def create_entitlement(self, actor: Actor, request: EntitlementCreate) -> Entitlement:
         record = await self._prepare_entitlement(actor, request)
         async with self._mutation(record):
             await self._validate_subject(actor, request.subject)
+            await self._require_grant_limit_change(actor, record, None)
             saved = await self._repository.create_entitlement(
                 record,
                 self._audit(
@@ -1658,6 +1834,7 @@ class EntitlementService:
                 "runtime": None,
             }
         )
+        await self._require_grant_limit_change(actor, updated, entitlement)
         return await self._repository.save_entitlement(
             updated,
             self._audit(actor, "entitlement.updated", "entitlement", updated.id),
@@ -2608,6 +2785,12 @@ class EntitlementService:
             )
             if existing is not None:
                 raise _existing_grant_conflict(existing)
+        await self.require_resource_limit_policies(
+            actor, access_request.resource,
+            await self._intent_limit_policies(
+                actor.tenant_id, access_request.resource, approval.enforcement, cost_center
+            ),
+        )
         principal_created = principal is None
         if principal is None:
             principal = await self._register_requester(
@@ -2926,6 +3109,24 @@ class EntitlementService:
                 source = "costCenter"
         if request.resource.kind == "mcpServer" and enforcement and enforcement.tokens:
             block("mcpTokenLimits", "MCP servers support call limits, not token limits.")
+        if summary.available and center is not None:
+            try:
+                await self.require_resource_limit_policies(
+                    actor, request.resource,
+                    await self._intent_limit_policies(
+                        actor.tenant_id, request.resource, approval.enforcement, center
+                    ),
+                )
+            except ValidationError as error:
+                if error.details.get("reason") != "gatewayPolicyLimitsRejected":
+                    raise
+                for detail in error.details["issues"]:
+                    issue = PolicyCapabilityIssue.model_validate(detail)
+                    blockers.append(ApprovalBlocker(
+                        code="gatewayPolicyLimitsRejected",
+                        message=f"{issue.field}: {issue.message}",
+                        next_action="Review this request's limits and gateway support.",
+                    ))
         return ApprovalPreview(
             request=request,
             resource_summary=summary,

@@ -8,10 +8,11 @@ import {
   MessageBarTitle,
   Spinner,
   Text,
+  useAnnounce,
 } from '@fluentui/react-components'
 import { ChevronDownRegular, ChevronUpRegular, CopyRegular } from '@fluentui/react-icons'
 import { useQuery } from '@tanstack/react-query'
-import { useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { usePortalApi } from '../api'
 import {
@@ -228,6 +229,7 @@ function DirectGrantConnection({ entitlement, allowPersonalKey }: { entitlement:
     String(model.appliedMethods?.keysEnabled),
     String(model.runtime?.appliedMethods?.keysEnabled),
     String(model.keysAvailable),
+    String(model.keysAllowedByCostCenter),
     String(model.keyExists),
     model.runtime?.keyState ?? '',
   ].join('|')
@@ -325,15 +327,25 @@ function McpConnectionPanel({
 function CopyButton({ value, label }: { value: string; label: string }) {
   const [notice, setNotice] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
+  const [attempt, setAttempt] = useState(0)
+  const { announce } = useAnnounce()
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
   async function copy() {
+    setAttempt((current) => current + 1)
     setNotice(null)
     setFailed(false)
     try {
       if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable')
       await navigator.clipboard.writeText(value)
+      if (!mounted.current) return
       setNotice(`${label} copied.`)
+      announce(`${label} copied.`, { polite: true })
     } catch {
-      setFailed(true)
+      if (mounted.current) setFailed(true)
     }
   }
   return (
@@ -341,11 +353,11 @@ function CopyButton({ value, label }: { value: string; label: string }) {
       <Button icon={<CopyRegular />} onClick={() => void copy()}>
         Copy {label}
       </Button>
-      <Text as="span" size={200} role="status" aria-live="polite" className="key-status">
+      <Text as="span" size={200} className="key-status">
         {notice}
       </Text>
       {failed && (
-        <MessageBar intent="warning">
+        <MessageBar key={attempt} intent="warning" politeness="polite">
           <MessageBarBody>
             Could not copy {label.toLowerCase()}. Your browser may require clipboard permission; copy it
             manually or try again.
@@ -361,7 +373,7 @@ function CopyableCode({ value, label }: { value: string; label: string }) {
     <div className="copyable-value">
       <code>{value}</code>
       <div className="key-actions">
-        <CopyButton value={value} label={label} />
+        <CopyButton key={`${label}:${value}`} value={value} label={label} />
       </div>
     </div>
   )

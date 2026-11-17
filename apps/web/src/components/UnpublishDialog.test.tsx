@@ -398,7 +398,7 @@ describe('UnpublishDialog', () => {
     expect(busy).toHaveFocus()
     expect(busy).toHaveAttribute('aria-disabled', 'true')
     expect(busy).not.toBeDisabled()
-    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled()
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveAttribute('aria-disabled', 'true')
     await user.click(busy)
     expect(api.unpublishPublication).toHaveBeenCalledTimes(1)
 

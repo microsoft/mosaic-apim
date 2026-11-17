@@ -392,9 +392,13 @@ def test_only_v2_tiers_token_meter_the_anthropic_messages_api() -> None:
     assert token_limits_supported(ApiShape.ANTHROPIC_MESSAGES, GatewayTier.V2)
     for tier in (GatewayTier.CLASSIC, GatewayTier.CONSUMPTION, GatewayTier.UNKNOWN):
         assert not token_limits_supported(ApiShape.ANTHROPIC_MESSAGES, tier)
-        # The OpenAI-style shapes keep their existing behaviour on every tier.
-        assert token_limits_supported(ApiShape.AZURE_OPENAI, tier)
-        assert token_limits_supported(ApiShape.FOUNDRY_MODELS, tier)
+        assert token_limits_supported(ApiShape.AZURE_OPENAI, tier) is (
+            tier == GatewayTier.CLASSIC
+        )
+        assert token_limits_supported(ApiShape.FOUNDRY_MODELS, tier) is (
+            tier == GatewayTier.CLASSIC
+        )
+    assert token_limits_supported(ApiShape.AZURE_OPENAI, GatewayTier.V2)
 
     assert token_limits_note(ApiShape.ANTHROPIC_MESSAGES, "StandardV2") is None
     assert token_limits_note(ApiShape.FOUNDRY_MODELS, "Developer") is None
@@ -404,9 +408,13 @@ def test_only_v2_tiers_token_meter_the_anthropic_messages_api() -> None:
     assert "Developer tier, a classic tier" in classic
     assert "call limits" in classic
     consumption = token_limits_note(ApiShape.ANTHROPIC_MESSAGES, "Consumption")
-    assert consumption is not None and "Consumption tier" in consumption
+    assert (
+        consumption is not None
+        and "Consumption does not support llm-token-limit" in consumption
+    )
+    assert "call limits are still available" not in consumption
     unknown = token_limits_note(ApiShape.ANTHROPIC_MESSAGES, None)
-    assert unknown is not None and "access check" in unknown
+    assert unknown is not None and "Check access" in unknown
 
 
 def _assess(

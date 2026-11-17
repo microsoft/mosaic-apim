@@ -124,7 +124,7 @@ describe('SettingsPage', () => {
     renderSettings()
 
     expect(screen.queryByRole('radio', { name: 'Dark' })).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Appearance' }))
+    await user.click(await screen.findByRole('button', { name: 'Appearance' }))
     await user.click(await screen.findByRole('radio', { name: 'Dark' }))
 
     expect(document.documentElement.dataset.theme).toBe('dark')
@@ -205,8 +205,10 @@ describe('SettingsPage', () => {
       ],
     })
     renderSettings('runtime')
-    expect(await screen.findByText(/Directory lookup requires Entra authentication/)).toBeVisible()
-    expect(screen.getByText(/Use manual entry to record identities without directory verification/)).toBeVisible()
+    const directory = (await screen.findByRole('heading', { name: 'Microsoft Entra directory' })).parentElement
+    if (!directory) throw new Error('Directory configuration section is missing')
+    expect(await within(directory).findByText(/Directory lookup requires Entra authentication/)).toBeVisible()
+    expect(within(directory).getByText(/Use manual entry to record identities without directory verification/)).toBeVisible()
     expect(screen.getByText('User.ReadBasic.All')).toBeVisible()
     expect(screen.queryByText(/MOSAIC_ENTRA_DIRECTORY_LOOKUP/)).not.toBeInTheDocument()
   })
@@ -309,8 +311,38 @@ describe('SettingsPage', () => {
     await user.type(screen.getByRole('textbox', { name: 'Key' }), '1bad')
     await user.type(screen.getByRole('textbox', { name: 'Display name' }), 'Bad')
     await user.click(screen.getByRole('button', { name: 'Save' }))
-    expect(await screen.findByText(/Use 2–32 lowercase/)).toBeVisible()
+    const dialog = screen.getByRole('dialog', { name: 'Add environment' })
+    expect(await within(dialog).findByText(/Use 2–32 lowercase/)).toBeVisible()
+    await waitFor(() => expect(document.querySelector('[aria-live][data-tabster-never-hide]')).toHaveTextContent('Use 2–32 lowercase'))
     expect(api.createEnvironment).not.toHaveBeenCalled()
+  })
+
+  it.each(['create', 'update', 'delete'] as const)('retains the %s environment action while pending', async (kind) => {
+    const user = userEvent.setup()
+    const mutation = kind === 'create' ? api.createEnvironment : kind === 'update' ? api.updateEnvironment : api.deleteEnvironment
+    let finish!: (result: EnvironmentCatalogView) => void
+    mutation.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    renderSettings()
+    await screen.findByRole('table', { name: 'Environments' })
+    if (kind === 'create') {
+      await user.click(screen.getByRole('button', { name: 'Add environment' }))
+      await user.type(screen.getByRole('textbox', { name: 'Key' }), 'demo')
+      await user.type(screen.getByRole('textbox', { name: 'Display name' }), 'Demo')
+    } else if (kind === 'update') {
+      await user.click(screen.getAllByRole('button', { name: 'Edit' })[2])
+    } else {
+      await user.click(screen.getByRole('button', { name: 'Delete' }))
+    }
+    const dialog = screen.getByRole('dialog')
+    const action = within(dialog).getByRole('button', { name: kind === 'delete' ? 'Delete' : 'Save' })
+    await user.click(action)
+    expect(action).toHaveFocus()
+    expect(action).toHaveAttribute('aria-disabled', 'true')
+    expect(action).not.toBeDisabled()
+    await user.click(action)
+    expect(mutation).toHaveBeenCalledOnce()
+    await act(async () => finish(catalog))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 
   it('disables non-production exceptions for production-class environments', async () => {
@@ -346,6 +378,31 @@ describe('SettingsPage', () => {
     await user.click(screen.getAllByRole('button', { name: 'Delete' }).at(-1)!)
     expect(await screen.findByText(/Environment is in use/)).toBeVisible()
     expect(screen.getByText(/1 gateway, 0 model endpoints, and 0 MCP servers/)).toBeVisible()
+  })
+
+  it('focuses the complete deletion failure rather than an empty outcome', async () => {
+    const originalNotify = Object.getOwnPropertyDescriptor(document, 'ariaNotify')
+    const notify = vi.fn<(message: string) => void>()
+    Object.defineProperty(document, 'ariaNotify', { configurable: true, value: notify })
+    try {
+      const user = userEvent.setup()
+      api.deleteEnvironment.mockRejectedValue(new Error('The environment was not deleted. Retry when the API is available.'))
+      renderSettings()
+      const table = await screen.findByRole('table', { name: 'Environments' })
+      await user.click(within(table).getByRole('button', { name: 'Delete' }))
+      const dialog = await screen.findByRole('dialog', { name: 'Delete environment' })
+      await user.click(within(dialog).getByRole('button', { name: 'Delete' }))
+      const explanation = await within(dialog).findByText('The environment was not deleted. Retry when the API is available.')
+      expect(explanation.closest('[tabindex="-1"]')).toHaveFocus()
+      await user.click(within(dialog).getByRole('button', { name: 'Delete' }))
+      await waitFor(() => expect(within(dialog).getByText('The environment was not deleted. Retry when the API is available.')
+        .closest('[tabindex="-1"]')).toHaveFocus())
+      expect(api.deleteEnvironment).toHaveBeenCalledTimes(2)
+      expect(notify.mock.calls.filter(([message]) => message.includes('The environment was not deleted.'))).toHaveLength(0)
+    } finally {
+      if (originalNotify) Object.defineProperty(document, 'ariaNotify', originalNotify)
+      else Reflect.deleteProperty(document, 'ariaNotify')
+    }
   })
 
   it('shows require-classification publication refusals', async () => {

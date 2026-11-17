@@ -7,6 +7,7 @@ import type { PortalApi } from '../api'
 import type { NotificationPreferencesInput } from '../notification-types'
 import { notificationCheck, notificationPreferences } from '../test/notification-fixtures'
 import { NotificationPreferencesPage } from './NotificationPreferencesPage'
+import { MosaicThemeProvider } from '../theme'
 
 const mocks = vi.hoisted(() => ({ api: {} as PortalApi }))
 vi.mock('../api', () => ({ ApiError: class ApiError extends Error { status = 500 }, usePortalApi: () => mocks.api }))
@@ -24,7 +25,7 @@ function renderPage(api: Partial<PortalApi> = {}, client = new QueryClient({ def
     { path: '/notification-preferences', element: <><NotificationPreferencesPage /><Link to="/usage">Usage page</Link></> },
     { path: '/usage', element: <h1>Usage destination</h1> },
   ], { initialEntries: ['/notification-preferences'] })
-  render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
+  render(<MosaicThemeProvider><QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider></MosaicThemeProvider>)
   return router
 }
 
@@ -116,11 +117,13 @@ describe('NotificationPreferencesPage', () => {
     await user.click(screen.getByRole('link', { name: 'Usage page' }))
     expect(await screen.findByRole('dialog')).toHaveTextContent('Discard unsaved notification preferences?')
     await user.click(screen.getByRole('button', { name: 'Keep editing' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument())
     expect(timezone).toHaveValue('Europe/London')
     expect(router.state.location.pathname).toBe('/notification-preferences')
     await user.click(screen.getByRole('button', { name: 'Reset changes' }))
     const resetDialog = await screen.findByRole('dialog', { name: 'Reset unsaved changes?' })
     await user.click(within(resetDialog).getByRole('button', { name: 'Keep editing' }))
+    await waitFor(() => expect(resetDialog).not.toBeInTheDocument())
     expect(timezone).toHaveValue('Europe/London')
     await user.click(screen.getByRole('button', { name: 'Reset changes' }))
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Reset changes' }))

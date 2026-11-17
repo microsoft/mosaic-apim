@@ -2,6 +2,7 @@ import { useMsal } from '@azure/msal-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Badge,
+  AnnounceProvider,
   Button,
   Card,
   Checkbox,
@@ -31,6 +32,7 @@ import {
   Textarea,
   Title3,
   useId,
+  useRestoreFocusTarget,
 } from '@fluentui/react-components'
 import {
   GlobeRegular,
@@ -39,7 +41,7 @@ import {
   WarningRegular,
   WeatherMoonRegular,
 } from '@fluentui/react-icons'
-import { useEffect, useMemo, useState } from 'react'
+import { type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, useSearchParams } from 'react-router-dom'
 import { ApiError, useMosaicApi } from '../api'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
@@ -53,6 +55,8 @@ import { NotificationSettings } from '../components/NotificationSettings'
 import { CostCenterSettings } from '../components/CostCenterSettings'
 import { DirectoryConfiguration } from '../components/DirectoryConfiguration'
 import { AzureConnectionsPanel } from '../components/AzureConnectionsPanel'
+import { useFocusAwareAnnounce } from '../components/useFocusAwareAnnounce'
+import { useDialogFocusReturn } from '../components/useDialogFocusReturn'
 import {
   environmentInUseDetails,
   invalidEnvironmentField,
@@ -161,16 +165,24 @@ function EnvironmentEditDialog({
   editKey,
   open,
   onClose,
+  fallbackFocusRef,
 }: {
   catalog: EnvironmentCatalogView
   editKey: string | null
   open: boolean
   onClose: () => void
+  fallbackFocusRef?: RefObject<HTMLElement | null>
 }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const [form, setForm] = useState<EnvironmentFormState>(emptyEnvironmentForm())
   const [error, setError] = useState<unknown>(null)
+  const [opened, setOpened] = useState(open)
+  if (opened !== open) { setOpened(open); if (open) setError(null) }
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const outcomeRef = useRef<HTMLDivElement>(null)
+  const surfaceMotion = useDialogFocusReturn({ open, surfaceRef, fallbackRef: fallbackFocusRef })
+  const announcement = useFocusAwareAnnounce(outcomeRef)
   const exceptionsLabelId = useId('environment-exceptions-')
   const exceptionsHintId = useId('environment-exceptions-hint-')
   useEffect(() => {
@@ -198,6 +210,7 @@ function EnvironmentEditDialog({
       const { key: _key, ...payload } = environmentPayload(form)
       return api.updateEnvironment(editKey, payload as EnvironmentUpdate)
     },
+    onMutate: () => setError(null),
     onSuccess: (updated) => {
       queryClient.setQueryData(['environment-catalog'], updated)
       invalidateEnvironmentQueries(queryClient)
@@ -206,6 +219,14 @@ function EnvironmentEditDialog({
     onError: (err) => setError(err),
   })
   const blocked = publicationsBlockedDetails(error)
+  useLayoutEffect(() => {
+    if (open && error && mutation.isError) outcomeRef.current?.focus()
+  }, [open, error, mutation.isError, mutation.submittedAt])
+  useEffect(() => {
+    if (open && error instanceof Error && mutation.isError && invalidEnvironmentField(error)) {
+      announcement.announce(error.message)
+    }
+  }, [open, error, mutation.isError, mutation.submittedAt, announcement])
   const nonProductionSelected =
     form.production &&
     form.acceptsEndpointsFrom.some(
@@ -214,11 +235,12 @@ function EnvironmentEditDialog({
   return (
     <Dialog
       open={open}
+      surfaceMotion={surfaceMotion}
       onOpenChange={(_, data) => {
         if (!data.open && !mutation.isPending) onClose()
       }}
     >
-      <DialogSurface>
+      <DialogSurface ref={surfaceRef}>
         <DialogBody>
           <DialogTitle>{editKey ? 'Edit environment' : 'Add environment'}</DialogTitle>
           <DialogContent className={styles.envDialogContent}>
@@ -342,23 +364,26 @@ function EnvironmentEditDialog({
                 onChange={(_, data) => setForm((current) => ({ ...current, order: data.value }))}
               />
             </Field>
-            {blocked && <PublicationsBlockedRefusal details={blocked} catalog={catalog} />}
-            {error && !blocked && !invalidEnvironmentField(error) && (
-              <MessageBar intent="error">
+            <AnnounceProvider value={announcement}>
+            {blocked && <div key={mutation.submittedAt} ref={outcomeRef} tabIndex={-1}><PublicationsBlockedRefusal details={blocked} catalog={catalog} /></div>}
+            {Boolean(error) && !blocked && !invalidEnvironmentField(error) && (
+              <div key={mutation.submittedAt} ref={outcomeRef} tabIndex={-1}><MessageBar intent="error">
                 <MessageBarBody>
                   {error instanceof Error ? error.message : 'The environment could not be saved.'}
                 </MessageBarBody>
-              </MessageBar>
+              </MessageBar></div>
             )}
+            </AnnounceProvider>
           </DialogContent>
           <DialogActions>
-            <Button disabled={mutation.isPending} onClick={onClose}>
+            <Button disabledFocusable={mutation.isPending} onClick={onClose}>
               Cancel
             </Button>
             <Button
               appearance="primary"
-              disabled={mutation.isPending || nonProductionSelected}
-              onClick={() => mutation.mutate()}
+              disabled={nonProductionSelected}
+              disabledFocusable={mutation.isPending}
+              onClick={() => { if (!mutation.isPending && !nonProductionSelected) mutation.mutate() }}
             >
               {mutation.isPending ? 'Saving…' : 'Save'}
             </Button>
@@ -373,17 +398,26 @@ function DeleteEnvironmentDialog({
   catalog,
   deleteKey,
   onClose,
+  fallbackFocusRef,
 }: {
   catalog: EnvironmentCatalogView
   deleteKey: string | null
   onClose: () => void
+  fallbackFocusRef?: RefObject<HTMLElement | null>
 }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const [error, setError] = useState<unknown>(null)
+  const [openedKey, setOpenedKey] = useState(deleteKey)
+  if (openedKey !== deleteKey) { setOpenedKey(deleteKey); if (deleteKey) setError(null) }
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const outcomeRef = useRef<HTMLDivElement>(null)
+  const announcement = useFocusAwareAnnounce(outcomeRef)
+  const surfaceMotion = useDialogFocusReturn({ open: deleteKey !== null, surfaceRef, fallbackRef: fallbackFocusRef })
   const environment = catalog.environments.find((item) => item.key === deleteKey)
   const mutation = useMutation({
     mutationFn: () => api.deleteEnvironment(deleteKey ?? ''),
+    onMutate: () => setError(null),
     onSuccess: (updated) => {
       queryClient.setQueryData(['environment-catalog'], updated)
       invalidateEnvironmentQueries(queryClient)
@@ -392,14 +426,18 @@ function DeleteEnvironmentDialog({
     onError: setError,
   })
   const inUse = environmentInUseDetails(error)
+  useLayoutEffect(() => {
+    if (deleteKey && error && mutation.isError) outcomeRef.current?.focus()
+  }, [deleteKey, error, mutation.isError, mutation.submittedAt])
   return (
     <Dialog
       open={deleteKey != null}
+      surfaceMotion={surfaceMotion}
       onOpenChange={(_, data) => {
         if (!data.open && !mutation.isPending) onClose()
       }}
     >
-      <DialogSurface>
+      <DialogSurface ref={surfaceRef}>
         <DialogBody>
           <DialogTitle>Delete environment</DialogTitle>
           <DialogContent className={styles.envDialogContent}>
@@ -407,6 +445,7 @@ function DeleteEnvironmentDialog({
               Delete {environment?.displayName ?? deleteKey}? Resources cannot reference deleted
               environments.
             </Text>
+            {Boolean(error) && <AnnounceProvider value={announcement}><div key={mutation.submittedAt} ref={outcomeRef} tabIndex={-1}>
             {inUse && (
               <MessageBar intent="error">
                 <MessageBarBody>
@@ -423,8 +462,7 @@ function DeleteEnvironmentDialog({
                 <MessageBarBody>Built-in environments cannot be deleted.</MessageBarBody>
               </MessageBar>
             )}
-            {error &&
-              !inUse &&
+            {!inUse &&
               !(
                 error instanceof ApiError && error.body?.details?.reason === 'builtInEnvironment'
               ) && (
@@ -434,15 +472,17 @@ function DeleteEnvironmentDialog({
                   </MessageBarBody>
                 </MessageBar>
               )}
+            </div></AnnounceProvider>}
           </DialogContent>
           <DialogActions>
-            <Button disabled={mutation.isPending} onClick={onClose}>
+            <Button disabledFocusable={mutation.isPending} onClick={onClose}>
               Cancel
             </Button>
             <Button
               appearance="primary"
-              disabled={mutation.isPending || environment?.builtIn}
-              onClick={() => mutation.mutate()}
+              disabled={environment?.builtIn}
+              disabledFocusable={mutation.isPending}
+              onClick={() => { if (!mutation.isPending && deleteKey && !environment?.builtIn) mutation.mutate() }}
             >
               {mutation.isPending ? 'Deleting…' : 'Delete'}
             </Button>
@@ -462,6 +502,8 @@ function EnvironmentsSettingsSection() {
   const [deleteKey, setDeleteKey] = useState<string | null>(null)
   const [reviewOpen, setReviewOpen] = useState(false)
   const [settingsError, setSettingsError] = useState<unknown>(null)
+  const restoreFocus = useRestoreFocusTarget()
+  const focusFallback = useRef<HTMLElement>(null)
   const settingsMutation = useMutation({
     mutationFn: (requireClassification: boolean) =>
       api.updateEnvironmentSettings({ requireClassification }),
@@ -483,16 +525,17 @@ function EnvironmentsSettingsSection() {
     [catalog.data],
   )
   return (
-    <Card className={`${styles.card} ${styles.wideCard}`}>
+    <Card className={`${styles.card} ${styles.wideCard}`}
+      ref={(node) => { focusFallback.current = node?.querySelector<HTMLElement>('h2') ?? null }}>
       <div className={styles.cardHeader}>
         <div>
-          <Title3 as="h2">Environments</Title3>
+          <Title3 as="h2" tabIndex={-1}>Environments</Title3>
           <Text className={styles.cardDescription}>
             Classify gateways, model endpoints, and MCP servers before environment rules are
             enforced.
           </Text>
         </div>
-        <Button appearance="primary" onClick={() => setCreateOpen(true)}>
+        <Button {...restoreFocus} appearance="primary" onClick={() => setCreateOpen(true)}>
           Add environment
         </Button>
       </div>
@@ -551,11 +594,11 @@ function EnvironmentsSettingsSection() {
                       )}
                     </TableCell>
                     <TableCell>
-                      <Button size="small" onClick={() => setEditKey(environment.key)}>
+                      <Button {...restoreFocus} size="small" onClick={() => setEditKey(environment.key)}>
                         Edit
                       </Button>
                       {!environment.builtIn && (
-                        <Button size="small" onClick={() => setDeleteKey(environment.key)}>
+                        <Button {...restoreFocus} size="small" onClick={() => setDeleteKey(environment.key)}>
                           Delete
                         </Button>
                       )}
@@ -581,7 +624,7 @@ function EnvironmentsSettingsSection() {
                 {plural(catalog.data.unclassified.modelEndpoints, 'model endpoint')},{' '}
                 {plural(catalog.data.unclassified.mcpEndpoints, 'MCP server')}.
               </Text>
-              <Button className={styles.reviewButton} onClick={() => setReviewOpen(true)}>
+              <Button {...restoreFocus} className={styles.reviewButton} onClick={() => setReviewOpen(true)}>
                 Review suggestions
               </Button>
             </Card>
@@ -597,6 +640,7 @@ function EnvironmentsSettingsSection() {
             </MessageBar>
           )}
           <EnvironmentEditDialog
+            fallbackFocusRef={focusFallback}
             catalog={catalog.data}
             open={createOpen || editKey != null}
             editKey={editKey}
@@ -606,11 +650,13 @@ function EnvironmentsSettingsSection() {
             }}
           />
           <DeleteEnvironmentDialog
+            fallbackFocusRef={focusFallback}
             catalog={catalog.data}
             deleteKey={deleteKey}
             onClose={() => setDeleteKey(null)}
           />
           <ReviewEnvironmentSuggestionsDialog
+            fallbackFocusRef={focusFallback}
             open={reviewOpen}
             onClose={() => setReviewOpen(false)}
           />

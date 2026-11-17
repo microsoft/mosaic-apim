@@ -74,6 +74,13 @@ from mosaic_api.environments import (
 )
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
 from mosaic_api.integrations.apim import ApimClient, JsonObject
+from mosaic_api.integrations.apim.policy_capabilities import (
+    PolicyBoundary,
+    assess_gateway_policy_capabilities,
+    require_supported_limits,
+    required_emitted_policies,
+    required_limit_policies,
+)
 from mosaic_api.integrations.apim.writer import ApimWriter
 from mosaic_api.integrations.mcp_access_policy import (
     McpPolicyDocuments,
@@ -111,6 +118,7 @@ from mosaic_api.services.model_access import (
     local_mutation_active,
     publication_lock,
 )
+from mosaic_api.services.policy_capabilities import pooled_limit_policies, refresh_policy_gateway
 from mosaic_api.services.publishing import _KIND_NOUNS as _KIND_NOUNS
 from mosaic_api.services.publishing import DENY_ALL_FRAGMENT, DENY_ALL_POLICY, STALE_RUN_MESSAGE
 from mosaic_api.services.publishing import _merge_resources as _merge_resources
@@ -702,6 +710,8 @@ class McpPublishingService:
             raise ConflictError("Recover this publication's interrupted apply before replanning")
         gateway = await self._load_gateway(actor, publication.gateway_id)
         self._require_writable(gateway)
+        client = self._client_factory(gateway.arm_resource())
+        gateway = await refresh_policy_gateway(client, gateway)
         endpoint = await self._load_endpoint(actor, publication.mcp_endpoint_id)
         self._validate_endpoint(endpoint)
         catalog = await load_environment_catalog(self._environments, actor.tenant_id)
@@ -712,12 +722,21 @@ class McpPublishingService:
         )
         await self._reject_live_collisions(actor.tenant_id, publication, gateway)
 
-        snapshot, access_warnings = await self._access_snapshot(publication, endpoint)
+        snapshot, access_warnings = await self._access_snapshot(
+            publication, endpoint, gateway=gateway
+        )
         policy = _policy_documents(
             publication,
             snapshot,
             backend_auth=endpoint.auth_mode,
             backend_audience=endpoint.resource_audience,
+        )
+        require_supported_limits(
+            assess_gateway_policy_capabilities(gateway.id, gateway.capabilities.sku_name),
+            required_emitted_policies(
+                policy.fragment_xml, policy.api_policy_xml, policy.metadata_policy_xml
+            ),
+            boundary="plan",
         )
         resource = gateway.arm_resource()
         client = self._client_factory(resource)
@@ -797,6 +816,8 @@ class McpPublishingService:
             raise ConflictError("Recover this publication's interrupted apply before applying")
         gateway = await self._load_gateway(actor, publication.gateway_id)
         self._require_writable(gateway)
+        client = self._client_factory(gateway.arm_resource())
+        gateway = await refresh_policy_gateway(client, gateway)
         endpoint = await self._load_endpoint(actor, publication.mcp_endpoint_id)
         resolved = plan_id or publication.last_plan_id
         if not resolved:
@@ -819,12 +840,21 @@ class McpPublishingService:
         environment_fingerprint = compatibility_fingerprint(
             catalog, gateway.environment, endpoint.environment
         )
-        snapshot, _ = await self._access_snapshot(publication, endpoint)
+        snapshot, _ = await self._access_snapshot(
+            publication, endpoint, gateway=gateway, boundary="apply"
+        )
         policy = _policy_documents(
             publication,
             snapshot,
             backend_auth=endpoint.auth_mode,
             backend_audience=endpoint.resource_audience,
+        )
+        require_supported_limits(
+            assess_gateway_policy_capabilities(gateway.id, gateway.capabilities.sku_name),
+            required_emitted_policies(
+                policy.fragment_xml, policy.api_policy_xml, policy.metadata_policy_xml
+            ),
+            boundary="apply",
         )
         if (
             mcp_publication_digest(
@@ -1440,9 +1470,13 @@ class McpPublishingService:
             )
 
     async def _access_snapshot(
-        self, publication: McpPublication, endpoint: McpEndpoint
+        self, publication: McpPublication, endpoint: McpEndpoint, *,
+        gateway: Gateway | None = None, boundary: PolicyBoundary = "plan",
     ) -> tuple[McpAccessSnapshot, list[str]]:
-        gateway = await self._repository.get_gateway(publication.tenant_id, publication.gateway_id)
+        if gateway is None:
+            gateway = await self._repository.get_gateway(
+                publication.tenant_id, publication.gateway_id
+            )
         if gateway is None or gateway.azure_cloud != endpoint.azure_cloud:
             raise ValidationError("A gateway and its MCP backend must be in the same Azure cloud.")
         government = gateway.azure_cloud == "government"
@@ -1539,6 +1573,21 @@ class McpPublishingService:
                     "security-group bearer access is not supported."
                 )
                 continue
+            enforcement = effective_enforcement(entitlement, intent)
+            if entitlement.enabled:
+                requirements = required_limit_policies(enforcement)
+                if intent.pool is not None:
+                    requirements += pooled_limit_policies(
+                        intent.pool.monthly_tokens, intent.pool.monthly_calls,
+                        field_prefix="costCenter.limits.pool",
+                    )
+                require_supported_limits(
+                    assess_gateway_policy_capabilities(
+                        gateway.id, gateway.capabilities.sku_name,
+                        resource=entitlement.resource,
+                    ),
+                    requirements, boundary=boundary,
+                )
             saw_security_group_grant = saw_security_group_grant or is_security_group
             grants.append(
                 McpAccessGrant(
@@ -1558,7 +1607,7 @@ class McpPublishingService:
                     keys_allowed=intent.keys_allowed,
                     revoked=entitlement.revocation is not None,
                     enabled=entitlement.enabled,
-                    enforcement=effective_enforcement(entitlement, intent),
+                    enforcement=enforcement,
                     limits_source="grant" if entitlement.enforcement else "costCenter",
                     intent_digest=entitlement_intent_digest(entitlement, principal, intent),
                     cost_center_id=intent.cost_center_id,

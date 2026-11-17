@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PublishModelDialog } from './PublishModelDialog'
 import type { Gateway, Publication, PublishableModel, PublishPlan, PublishRun } from '../types'
 import { accessPlan, accessSnapshot, modelPublication } from '../test/model-access'
+import { developerChatPolicyCapabilities } from '../test/policy-fixtures'
 
 function gateway(overrides: Partial<Gateway> = {}): Gateway {
   return {
@@ -40,6 +41,10 @@ const publishableModel: PublishableModel = {
   deploymentName: 'gpt-4o-prod',
   modelName: 'gpt-4o',
   modelVersion: '2024-11-20',
+  apiShape: 'azureOpenAi',
+  publishable: true,
+  tokenLimitsSupported: true,
+  policyCapabilities: developerChatPolicyCapabilities,
   publicationId: null,
   publicationStatus: null,
   suggestedApiName: 'gpt-4o-api',
@@ -87,11 +92,12 @@ vi.mock('../api', () => ({ useMosaicApi: () => api }))
 
 function renderDialog(initialReview?: { publication: Publication; plan: PublishPlan }, onPublished = vi.fn()) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
+  const result = render(
     <QueryClientProvider client={queryClient}>
       <PublishModelDialog open initialReview={initialReview} onClose={vi.fn()} onPublished={onPublished} />
     </QueryClientProvider>,
   )
+  return { ...result, queryClient }
 }
 
 async function advanceToReview(user: ReturnType<typeof userEvent.setup>) {
@@ -538,6 +544,121 @@ describe('PublishModelDialog', () => {
     expect(screen.getByRole('button', { name: 'Configure' })).toBeEnabled()
   })
 
+  it.each([
+    ['missing', undefined],
+    ['unknown', {
+      ...developerChatPolicyCapabilities,
+      policies: {
+        ...developerChatPolicyCapabilities.policies,
+        'llm-token-limit': {
+          ...developerChatPolicyCapabilities.policies['llm-token-limit'],
+          support: 'unknown' as const,
+          reason: 'unknownApiShape' as const,
+          message: 'Sync the model endpoint to verify its schema.',
+          nextAction: 'reviewResource' as const,
+        },
+      },
+    }],
+    ['for another gateway', { ...developerChatPolicyCapabilities, gatewayId: 'gateway_other' }],
+    ['for another schema', { ...developerChatPolicyCapabilities, apiShape: 'anthropicMessages' as const }],
+  ])('does not infer publication support from a favorable old flag when capability evidence is %s', async (_, policyCapabilities) => {
+    api.listPublishableModels.mockResolvedValue([{ ...publishableModel, policyCapabilities }])
+    renderDialog()
+
+    expect(await screen.findByRole('checkbox', { name: 'Publish gpt-4o-prod' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Configure' })).toBeDisabled()
+    expect(screen.getByText('Not publishable')).toBeVisible()
+    expect(api.createPublication).not.toHaveBeenCalled()
+  })
+
+  it('does not accept a favorable policy result without a verified candidate schema', async () => {
+    api.listPublishableModels.mockResolvedValue([{
+      ...publishableModel,
+      apiShape: null,
+      policyCapabilities: { ...developerChatPolicyCapabilities, apiShape: null },
+    }])
+    renderDialog()
+
+    expect(await screen.findByRole('checkbox', { name: 'Publish gpt-4o-prod' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Configure' })).toBeDisabled()
+    expect(api.createPublication).not.toHaveBeenCalled()
+  })
+
+  it('lets the administrator refresh missing evidence without starting a publication', async () => {
+    const user = userEvent.setup()
+    api.listPublishableModels
+      .mockResolvedValueOnce([{ ...publishableModel, policyCapabilities: undefined }])
+      .mockResolvedValueOnce([publishableModel])
+    renderDialog()
+
+    const choice = await screen.findByRole('checkbox', { name: 'Publish gpt-4o-prod' })
+    expect(choice).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Refresh models' }))
+    await waitFor(() => expect(choice).toBeEnabled())
+    await user.click(choice)
+    await user.click(screen.getByRole('button', { name: 'Configure' }))
+
+    expect(screen.getByRole('button', { name: 'Review plan' })).toBeEnabled()
+    expect(api.createPublication).not.toHaveBeenCalled()
+  })
+
+  it('preserves the administrator’s token values when supported candidate metadata is refreshed', async () => {
+    const user = userEvent.setup()
+    const { queryClient } = renderDialog()
+    await user.click(await screen.findByRole('checkbox', { name: 'Publish gpt-4o-prod' }))
+    await user.click(screen.getByRole('button', { name: 'Configure' }))
+    const tokens = screen.getByLabelText('Tokens per minute')
+    await user.clear(tokens)
+    await user.type(tokens, '7300')
+
+    await act(async () => {
+      queryClient.setQueryData(['publishable-models', 'gateway_1'], [{
+        ...publishableModel, endpointName: 'Refreshed endpoint metadata',
+      }])
+    })
+    await user.click(screen.getByRole('button', { name: 'Review plan' }))
+
+    await waitFor(() => expect(api.createPublication).toHaveBeenCalledWith(
+      expect.objectContaining({ enforcement: expect.objectContaining({ tokensPerMinute: 7300 }) }),
+    ))
+  })
+
+  it.each(['unknown', 'unavailable'] as const)('retains the configured draft instead of dropping limits when refreshed support becomes %s', async (support) => {
+    const user = userEvent.setup()
+    const { queryClient } = renderDialog()
+    await user.click(await screen.findByRole('checkbox', { name: 'Publish gpt-4o-prod' }))
+    await user.click(screen.getByRole('button', { name: 'Configure' }))
+    const tokens = screen.getByLabelText('Tokens per minute')
+    await user.clear(tokens)
+    await user.type(tokens, '7300')
+
+    act(() => {
+      queryClient.setQueryData(['publishable-models', 'gateway_1'], [{
+        ...publishableModel,
+        publishable: false,
+        tokenLimitsSupported: false,
+        policyCapabilities: {
+          ...developerChatPolicyCapabilities,
+          policies: {
+            ...developerChatPolicyCapabilities.policies,
+            'llm-token-limit': {
+              ...developerChatPolicyCapabilities.policies['llm-token-limit'],
+              support,
+              reason: support === 'unknown' ? 'unknownApiShape' : 'unsupportedApiShape',
+              message: 'The current model schema cannot be verified for this policy.',
+              nextAction: 'reviewResource',
+            },
+          },
+        },
+      }])
+    })
+
+    expect(await screen.findByText('Publication support needs review')).toBeVisible()
+    expect(screen.getByLabelText('Tokens per minute')).toHaveValue(7300)
+    expect(screen.getByRole('button', { name: 'Review plan' })).toBeDisabled()
+    expect(api.createPublication).not.toHaveBeenCalled()
+  })
+
   it('explains that a classic tier cannot token-limit Anthropic models and publishes without limits', async () => {
     const note = 'API Management applies token limits and token metrics to the Anthropic Messages API only on v2 tiers (Basic v2, Standard v2 and Premium v2). This gateway uses the Developer tier, a classic tier, so this publication applies no token limits or token metrics. Per-grant call limits are still available through governed access.'
     api.listPublishableModels.mockResolvedValue([
@@ -553,6 +674,27 @@ describe('PublishModelDialog', () => {
         publishable: true,
         tokenLimitsSupported: false,
         tokenLimitsNote: note,
+        policyCapabilities: {
+          ...developerChatPolicyCapabilities,
+          apiShape: 'anthropicMessages',
+          policies: {
+            ...developerChatPolicyCapabilities.policies,
+            'llm-token-limit': {
+              ...developerChatPolicyCapabilities.policies['llm-token-limit'],
+              support: 'unavailable',
+              reason: 'unsupportedTier',
+              message: note,
+              nextAction: 'chooseSupportedGateway',
+            },
+            'llm-emit-token-metric': {
+              ...developerChatPolicyCapabilities.policies['llm-emit-token-metric'],
+              support: 'unavailable',
+              reason: 'unsupportedTier',
+              message: note,
+              nextAction: 'chooseSupportedGateway',
+            },
+          },
+        },
       },
     ])
     const user = userEvent.setup()
@@ -587,6 +729,12 @@ describe('PublishModelDialog', () => {
         apiShape: 'anthropicMessages',
         tokenLimitsSupported: true,
         tokenLimitsNote: null,
+        policyCapabilities: {
+          ...developerChatPolicyCapabilities,
+          skuName: 'StandardV2',
+          tier: 'v2',
+          apiShape: 'anthropicMessages',
+        },
       },
     ])
     const user = userEvent.setup()

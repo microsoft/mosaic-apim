@@ -1,6 +1,7 @@
 import { useMsal } from '@azure/msal-react'
 import {
   Button,
+  AnnounceProvider,
   Dialog,
   DialogActions,
   DialogBody,
@@ -10,9 +11,10 @@ import {
   MessageBar,
   MessageBarBody,
   Text,
+  useAnnounce,
 } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useRef, useState } from 'react'
+import { type FocusEvent, type RefObject, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { useLocation } from 'react-router-dom'
 import { useMosaicApi } from '../api'
@@ -23,16 +25,22 @@ import type { Entitlement, KeySlot, McpConnection, ModelConnection } from '../ty
 import { ErrorState, Loading } from './AsyncState'
 import { ModelAccessRecovery } from './ModelAccessRecovery'
 import { CloudBadge } from './CloudBadge'
+import { useDialogFocusReturn } from './useDialogFocusReturn'
+import { useFocusAwareAnnounce } from './useFocusAwareAnnounce'
 import styles from '../pages/EntitlementsPage.module.css'
 
 export function EntitlementConnectionDialog({
   open,
   entitlement,
   onClose,
+  openerRef,
+  fallbackFocusRef,
 }: {
   open: boolean
   entitlement: Entitlement
   onClose: () => void
+  openerRef?: RefObject<HTMLElement | null>
+  fallbackFocusRef?: RefObject<HTMLElement | null>
 }) {
   const { accounts } = useMsal()
   const location = useLocation()
@@ -45,6 +53,8 @@ export function EntitlementConnectionDialog({
       identity={identity}
       entitlement={entitlement}
       onClose={onClose}
+      openerRef={openerRef}
+      fallbackFocusRef={fallbackFocusRef}
     />
   )
 }
@@ -173,10 +183,14 @@ function ConnectionSession({
   identity,
   entitlement,
   onClose,
+  openerRef,
+  fallbackFocusRef,
 }: {
   identity: string
   entitlement: Entitlement
   onClose: () => void
+  openerRef?: RefObject<HTMLElement | null>
+  fallbackFocusRef?: RefObject<HTMLElement | null>
 }) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
@@ -186,8 +200,20 @@ function ConnectionSession({
   const [error, setError] = useState<string | null>(null)
   const [keyMessage, setKeyMessage] = useState<string | null>(null)
   const [confirmation, setConfirmation] = useState<'delete' | 'rotate-primary' | 'rotate-secondary' | null>(null)
-  const [copyError, setCopyError] = useState<string | null>(null)
+  const [copyError, setCopyError] = useState<{ attempt: number; message: string } | null>(null)
   const [copyMessage, setCopyMessage] = useState<string | null>(null)
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const confirmationSurface = useRef<HTMLDivElement>(null)
+  const headingRef = useRef<HTMLHeadingElement>(null)
+  const keyActionsRef = useRef<HTMLDivElement>(null)
+  const keyDisplayRef = useRef<HTMLDivElement>(null)
+  const credentialFocused = useRef(false)
+  const copyAttempt = useRef(0)
+  const { announce } = useAnnounce()
+  const surfaceMotion = useDialogFocusReturn({ open: !closed, surfaceRef, openerRef, fallbackRef: fallbackFocusRef })
+  const confirmationMotion = useDialogFocusReturn({
+    open: confirmation !== null, surfaceRef: confirmationSurface, fallbackRef: headingRef,
+  })
   const generation = useRef(0)
   const controller = useRef<AbortController | null>(null)
   const mounted = useRef(true)
@@ -242,6 +268,7 @@ function ConnectionSession({
     mutationFn: () => api.createEntitlementKey(entitlement.id),
     onSuccess: async () => {
       setKeyMessage('Created the grant key.')
+      if (mounted.current) announce('Created the grant key.', { polite: true })
       await refreshKeys()
     },
     onError: (failure) => setError(keyErrorMessage(failure)),
@@ -251,6 +278,7 @@ function ConnectionSession({
     onSuccess: async (_, slot) => {
       setConfirmation(null)
       setKeyMessage(`Rotated the ${slot} key.`)
+      if (mounted.current) announce(`Rotated the ${slot} key.`, { polite: true })
       await refreshKeys()
     },
     onError: (failure) => setError(keyErrorMessage(failure)),
@@ -260,10 +288,12 @@ function ConnectionSession({
     onSuccess: async () => {
       setConfirmation(null)
       setKeyMessage('Deleted the grant key.')
+      if (mounted.current) announce('Deleted the grant key.', { polite: true })
       await refreshKeys()
     },
     onError: (failure) => setError(keyErrorMessage(failure)),
   })
+  const managing = createKey.isPending || rotateKey.isPending || deleteKey.isPending
 
   useEffect(() => {
     mounted.current = true
@@ -288,13 +318,16 @@ function ConnectionSession({
     return () => window.removeEventListener('pagehide', clearBeforePageHide)
   }, [onClose])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!eligible) {
       generation.current += 1
       controller.current?.abort()
       setSecret(null)
       setRevealing(false)
       setCopyMessage(null)
+      setCopyError(null)
+      if (credentialFocused.current && document.activeElement === document.body) headingRef.current?.focus()
+      credentialFocused.current = false
     }
   }, [eligible])
 
@@ -302,9 +335,15 @@ function ConnectionSession({
   // leaves focus on its button and says which key it revealed, but never the key: focusing the key would
   // have a screen reader read it aloud. Fluent places focus as the dialog opens.
   const errorRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
+  const errorAnnouncement = useFocusAwareAnnounce(errorRef)
+  useLayoutEffect(() => {
     if (error) errorRef.current?.focus()
   }, [error])
+
+  function leaveCredentialControl(event: FocusEvent<HTMLDivElement>) {
+    if (event.relatedTarget instanceof Node && !keyActionsRef.current?.contains(event.relatedTarget)
+      && !keyDisplayRef.current?.contains(event.relatedTarget)) credentialFocused.current = false
+  }
 
   function close() {
     generation.current += 1
@@ -348,26 +387,29 @@ function ConnectionSession({
   async function copy() {
     if (!secret || !eligible) return
     const request = generation.current
+    const attempt = ++copyAttempt.current
     setCopyError(null)
+    setCopyMessage(null)
     try {
       if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable')
       await navigator.clipboard.writeText(secret.key)
       if (mounted.current && generation.current === request) {
         setCopyMessage('Key copied. The clipboard is sensitive and is not cleared automatically.')
+        announce('Key copied. The clipboard is sensitive and is not cleared automatically.', { polite: true })
       }
     } catch {
       if (mounted.current && generation.current === request) {
-        setCopyError('Could not copy the key. Your browser may require clipboard permission; copy it manually or try again.')
+        setCopyError({ attempt, message: 'Could not copy the key. Your browser may require clipboard permission; copy it manually or try again.' })
       }
     }
   }
 
   if (closed) return null
   return (
-    <Dialog open onOpenChange={(_, data) => !data.open && close()}>
-      <DialogSurface>
+    <Dialog open surfaceMotion={surfaceMotion} onOpenChange={(_, data) => !data.open && close()}>
+      <DialogSurface ref={surfaceRef}>
         <DialogBody>
-          <DialogTitle>{isMcp ? 'MCP connection' : 'Model connection and keys'}</DialogTitle>
+          <DialogTitle ref={headingRef} tabIndex={-1}>{isMcp ? 'MCP connection' : 'Model connection and keys'}</DialogTitle>
           <DialogContent className={styles.dialogForm}>
             <Text>Connection metadata is not proof of a successful live invocation. Allow for APIM propagation.</Text>
             {runtimeConfig.authMode === 'local' && (
@@ -477,12 +519,18 @@ function ConnectionSession({
             {/* A browser takes focus off a button that becomes disabled, so a busy button stays focusable. */}
             {(!isMcp || keyInfo) && keyInfo?.keysAvailable !== false && keysAllowedByCostCenter && (
               <>
-                <div className={styles.rowActions}>
+                <div className={styles.rowActions} ref={keyActionsRef}
+                  onFocusCapture={() => { credentialFocused.current = true }} onBlurCapture={leaveCredentialControl}>
                   {!keyExists ? (
                     <Button
                       appearance="primary"
-                      disabled={!keyCapable || createKey.isPending}
-                      onClick={() => preparing || keyInfo?.runtime?.keyState === 'failed' ? void refreshKeys() : createKey.mutate()}
+                      disabled={!keyCapable}
+                      disabledFocusable={createKey.isPending}
+                      onClick={() => {
+                        if (!keyCapable || managing) return
+                        if (preparing || keyInfo?.runtime?.keyState === 'failed') void refreshKeys()
+                        else createKey.mutate()
+                      }}
                     >
                       {preparing || keyInfo?.runtime?.keyState === 'failed' ? 'Refresh key status' : 'Create key'}
                     </Button>
@@ -490,31 +538,32 @@ function ConnectionSession({
                     <>
                       <Button disabled={!eligible} disabledFocusable={revealing} onClick={() => void reveal('primary')}>Reveal primary key</Button>
                       <Button disabled={!eligible} disabledFocusable={revealing} onClick={() => void reveal('secondary')}>Reveal secondary key</Button>
-                      <Button disabled={!eligible || rotateKey.isPending} onClick={() => setConfirmation('rotate-primary')}>Rotate primary key</Button>
-                      <Button disabled={!eligible || rotateKey.isPending} onClick={() => setConfirmation('rotate-secondary')}>Rotate secondary key</Button>
-                      <Button disabled={!eligible || deleteKey.isPending} onClick={() => setConfirmation('delete')}>Delete key</Button>
+                      <Button disabled={!eligible} disabledFocusable={managing} onClick={() => { if (eligible && !managing) setConfirmation('rotate-primary') }}>Rotate primary key</Button>
+                      <Button disabled={!eligible} disabledFocusable={managing} onClick={() => { if (eligible && !managing) setConfirmation('rotate-secondary') }}>Rotate secondary key</Button>
+                      <Button disabled={!eligible} disabledFocusable={managing} onClick={() => { if (eligible && !managing) setConfirmation('delete') }}>Delete key</Button>
                     </>
                   )}
                 </div>
-                {keyMessage && <Text role="status">{keyMessage}</Text>}
+                {keyMessage && <Text>{keyMessage}</Text>}
               </>
             )}
             {revealing && <Loading label="Retrieving the current key from APIM" />}
             {secret && eligible && (
-              <div className={styles.cellStack}>
+              <div className={styles.cellStack} ref={keyDisplayRef}
+                onFocusCapture={() => { credentialFocused.current = true }} onBlurCapture={leaveCredentialControl}>
                 <Text weight="semibold">Revealed {secret.slot} key</Text>
                 <pre data-secret="true" aria-label={`Revealed ${secret.slot} key`} className={styles.secretValue}>{secret.key}</pre>
                 <Button onClick={() => void copy()}>Copy revealed key</Button>
               </div>
             )}
             {error && (
-              <div ref={errorRef} tabIndex={-1}>
+              <AnnounceProvider value={errorAnnouncement}><div ref={errorRef} tabIndex={-1}>
                 <MessageBar intent="error"><MessageBarBody>{error}</MessageBarBody></MessageBar>
-              </div>
+              </div></AnnounceProvider>
             )}
             {/* A copy that fails leaves focus on Copy, to try again, so its reason is an alert that a screen reader reads. */}
-            {copyError && <MessageBar intent="error" role="alert"><MessageBarBody>{copyError}</MessageBarBody></MessageBar>}
-            {copyMessage && <Text role="status">{copyMessage}</Text>}
+            {copyError && <MessageBar key={copyError.attempt} intent="error"><MessageBarBody>{copyError.message}</MessageBarBody></MessageBar>}
+            {copyMessage && <Text>{copyMessage}</Text>}
             {/* Always present, so a screen reader announces each reveal. It says which key, never the key itself. */}
             <span className={styles.srOnly} role="status">
               {secret && eligible && `${secret.slot === 'primary' ? 'Primary' : 'Secondary'} key revealed.`}
@@ -523,8 +572,8 @@ function ConnectionSession({
           <DialogActions><Button onClick={close}>Close</Button></DialogActions>
         </DialogBody>
       </DialogSurface>
-      <Dialog open={confirmation !== null} onOpenChange={(_, data) => !data.open && setConfirmation(null)}>
-        <DialogSurface>
+      <Dialog open={confirmation !== null} surfaceMotion={confirmationMotion} onOpenChange={(_, data) => !data.open && setConfirmation(null)}>
+        <DialogSurface ref={confirmationSurface}>
           <DialogBody>
             <DialogTitle>
               {confirmation === 'delete' ? 'Delete key' : confirmation === 'rotate-primary' ? 'Rotate primary key' : 'Rotate secondary key'}
@@ -541,7 +590,9 @@ function ConnectionSession({
               <Button appearance="secondary" onClick={() => setConfirmation(null)}>Cancel</Button>
               <Button
                 appearance="primary"
+                disabledFocusable={managing}
                 onClick={() => {
+                  if (managing || !keyCapable) return
                   if (confirmation === 'delete') deleteKey.mutate()
                   if (confirmation === 'rotate-primary') rotateKey.mutate('primary')
                   if (confirmation === 'rotate-secondary') rotateKey.mutate('secondary')

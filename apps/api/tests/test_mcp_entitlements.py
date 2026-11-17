@@ -132,7 +132,7 @@ class Harness:
             resource_group=RESOURCE_GROUP,
             service_name=SERVICE_NAME,
             capabilities=GatewayCapabilities.model_validate(
-                {"gatewayUrl": "https://gateway.example"}
+                {"gatewayUrl": "https://gateway.example", "skuName": "Developer"}
             ),
         )
         self.server = McpServer(
@@ -393,13 +393,22 @@ async def test_mcp_token_limits_are_rejected_on_create_update_and_approval(
         requester,
         AccessRequestCreate(resource=EntitlementResource(kind="mcpServer", id=harness.server.id)),
     )
-    with pytest.raises(ValidationError, match="limited by calls"):
+    with pytest.raises(ValidationError) as rejected_approval:
         await harness.entitlements.approve_access_request(
             actor, request.id, AccessRequestApproval(enforcement=_token_limits())
         )
+    assert rejected_approval.value.details["reason"] == "gatewayPolicyLimitsRejected"
+    assert rejected_approval.value.details["boundary"] == "save"
+    assert [
+        (issue["policy"], issue["support"])
+        for issue in rejected_approval.value.details["issues"]
+    ] == [("llm-token-limit", "unavailable")]
+    assert {
+        grant.id for grant in await harness.entitlement_repository.list_entitlements(TENANT)
+    } == {created.id}
 
 
-async def test_model_token_limits_are_still_allowed(harness: Harness) -> None:
+async def test_imported_model_token_limits_require_verified_shape(harness: Harness) -> None:
     model = ModelApi(
         id="model",
         tenant_id=TENANT,
@@ -411,16 +420,28 @@ async def test_model_token_limits_are_still_allowed(harness: Harness) -> None:
     )
     await harness.gateways.save_model_api(model, _audit())
     principal = await harness.principal(USER_OID)
+    actor = Actor(object_id=USER_OID, tenant_id=TENANT)
+    payload = EntitlementCreate(
+        subject=EntitlementSubject(kind="user", id=principal.id),
+        resource=EntitlementResource(kind="modelApi", id=model.id),
+        enforcement=_token_limits(),
+    )
+    with pytest.raises(ValidationError) as rejected:
+        await harness.entitlements.create_entitlement(actor, payload)
+    assert rejected.value.details["reason"] == "gatewayPolicyLimitsRejected"
+    assert rejected.value.details["boundary"] == "save"
+    assert [
+        (issue["policy"], issue["support"], issue["reason"])
+        for issue in rejected.value.details["issues"]
+    ] == [("llm-token-limit", "unknown", "unknownApiShape")]
+    assert await harness.entitlement_repository.list_entitlements(TENANT) == []
+
     created = await harness.entitlements.create_entitlement(
-        Actor(object_id=USER_OID, tenant_id=TENANT),
-        EntitlementCreate(
-            subject=EntitlementSubject(kind="user", id=principal.id),
-            resource=EntitlementResource(kind="modelApi", id=model.id),
-            enforcement=_token_limits(),
-        ),
+        actor, payload.model_copy(update={"enforcement": _call_limits()})
     )
     assert created.enforcement is not None
-    assert created.enforcement.tokens is not None
+    assert created.enforcement.requests is not None
+    assert created.enforcement.tokens is None
 
 
 async def test_delete_is_blocked_while_mcp_grant_is_retained_then_allowed(

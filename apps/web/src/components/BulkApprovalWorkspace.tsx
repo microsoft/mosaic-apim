@@ -7,8 +7,9 @@ import type { AiApprovalRecommendation, ApprovalPreview, BulkApprovalInput, Bulk
 import type { CostCenter, Principal } from '../types'
 import { requesterDisplay } from '../requester-display'
 import { AccessRequestRequester } from './AccessRequestRequester'
-import { buildEnforcement, describeLimits, emptyLimitForm, type LimitForm } from '../entitlement-limits'
+import { buildEnforcement, callOnlyLimitForm, copyLimitForm, describeLimits, emptyLimitForm, hasLimitValues, type LimitForm } from '../entitlement-limits'
 import { ErrorState, Loading } from './AsyncState'
+import { PolicyCapabilityFeedback } from './PolicyCapabilityFeedback'
 import { LimitFields } from './GovernanceFields'
 import { limitInputError, unresolvedRequestIds } from '../admin-governance'
 import { WorkspaceEditorFrame } from './WorkspaceEditorFrame'
@@ -68,10 +69,12 @@ export function BulkApprovalWorkspace({ requestIds, principals, principalsPendin
     setDrafts(previous => ({ ...previous, [item.request.id]: { ...(previous[item.request.id] ?? initialDraft(item)), ...change } }))
   }
   const selected = items.filter(item => draftFor(item).included)
+  const sharedMcp = selected.every(item => item.request.resource.kind === 'mcpServer')
+  const sharedLimits = sharedMcp ? callOnlyLimitForm(shared) : shared
   const compatible = selected.length > 0 && new Set(selected.map(item => item.request.resource.kind === 'mcpServer' ? 'mcp' : 'model')).size === 1
   const invalid = selected.some(item => {
     const draft = draftFor(item)
-    return item.blockers.length > 0 || item.mutationLocked || (moved(item) && !draft.confirmedMove) || (draft.explicitLimits && (limitInputError(draft.limits) || !buildEnforcement(draft.limits, true)))
+    return item.blockers.length > 0 || item.mutationLocked || (moved(item) && !draft.confirmedMove) || (draft.explicitLimits && (limitInputError(draft.limits) || !hasLimitValues(draft.limits)))
   })
   const outcomes = useMemo(() => results ? {
     approved: results.filter(i => i.status === 'approved').length, existing: results.filter(i => i.status === 'alreadyApproved').length, unresolved: unresolvedRequestIds(results),
@@ -85,7 +88,7 @@ export function BulkApprovalWorkspace({ requestIds, principals, principalsPendin
         return { requestId: item.request.id, expectedContext: item.revision, approval: {
           note: draft.note.trim() || null,
           ...(draft.costCenterId ? { costCenterId: draft.costCenterId } : {}),
-          ...(draft.explicitLimits ? { enforcement: buildEnforcement(item.request.resource.kind === 'mcpServer' ? { ...draft.limits, tokensPerMinute: '', tokenQuota: '' } : draft.limits, true) } : {}),
+          ...(draft.explicitLimits ? { enforcement: buildEnforcement(item.request.resource.kind === 'mcpServer' ? callOnlyLimitForm(draft.limits) : draft.limits, true) } : {}),
           ...(moved(item) && draft.confirmedMove ? { confirmedEnvironment: item.currentEnvironment ?? 'unclassified' } : {}),
         } }
       }),
@@ -101,9 +104,10 @@ export function BulkApprovalWorkspace({ requestIds, principals, principalsPendin
   }
   return <WorkspaceEditorFrame title={results ? 'Bulk approval results' : 'Review bulk approvals'} onBack={onBack}
     description="Each request is independent. Approvals create grant intent; model, pool, and MCP gateway plans still need review and apply."
-    dirty={!results && Object.keys(drafts).length > 0} pending={execute.isPending}
+    dirty={!results && (Object.keys(drafts).length > 0 || hasLimitValues(shared))} pending={execute.isPending}
     pendingLabel="Approving independently — successful items will not be rolled back"
-    error={execute.error ? <ErrorState error={execute.error} /> : undefined}
+    errorKey={execute.submittedAt}
+    error={execute.error ? <PolicyCapabilityFeedback title="Unable to approve selected requests" error={execute.error} /> : undefined}
     primaryAction={!results ? { label: `Approve ${selected.length} selected`, onClick: approve, disabled: !preview.isSuccess || !selected.length || Boolean(invalid) } : undefined}>
     <div className={styles.stack}>
       {preview.isPending && <Loading label="Checking current request context and inherited limits" />}
@@ -126,8 +130,10 @@ export function BulkApprovalWorkspace({ requestIds, principals, principalsPendin
         <section className={styles.section}>
           <Title3 as="h3">Compatible shared limits</Title3>
           <Text>Shared limits are explicit overrides for included requests only. Heterogeneous model and MCP selections cannot share token settings.</Text>
-          <LimitFields value={shared} onChange={setShared} mcp={selected.every(i => i.request.resource.kind === 'mcpServer')} />
-          <Button disabled={!compatible || Boolean(limitInputError(shared)) || !buildEnforcement(shared, true)} onClick={() => selected.forEach(item => update(item, { explicitLimits: true, limits: item.request.resource.kind === 'mcpServer' ? { ...shared, tokensPerMinute: '', tokenQuota: '' } : { ...shared } }))}>Apply limits to compatible selection</Button>
+          <LimitFields value={sharedLimits} onChange={setShared} mcp={sharedMcp}
+            showSourceChoice={false} requireLimit reviewLabel="Per-request effective limits"
+            reviewDescription="Each included request keeps its own defaults until you apply this override to the compatible selection." />
+          <Button disabled={!compatible || Boolean(limitInputError(sharedLimits)) || !hasLimitValues(sharedLimits)} onClick={() => selected.forEach(item => update(item, { explicitLimits: true, limits: item.request.resource.kind === 'mcpServer' ? callOnlyLimitForm(sharedLimits) : copyLimitForm(sharedLimits) }))}>Apply limits to compatible selection</Button>
         </section>
         {preview.data?.unavailable.map(item => <MessageBar intent="error" key={item.requestId}><MessageBarBody>Request {item.requestId}: {item.blocker.message} {item.blocker.nextAction}</MessageBarBody></MessageBar>)}
         {items.map(item => {
@@ -156,9 +162,10 @@ export function BulkApprovalWorkspace({ requestIds, principals, principalsPendin
             </div>
             {moved(item) && <Checkbox label={`I confirm the move to ${item.currentEnvironment ?? 'Unclassified'} for this request`} checked={draft.confirmedMove} onChange={(_, d) => update(item, { confirmedMove: Boolean(d.checked) })} />}
             <Checkbox label="Override inherited grant limits for this request" checked={draft.explicitLimits} onChange={(_, d) => update(item, { explicitLimits: Boolean(d.checked) })} />
-            {draft.explicitLimits && <LimitFields value={draft.limits} onChange={limits => update(item, { limits })} mcp={item.request.resource.kind === 'mcpServer'} />}
-            {draft.explicitLimits && limitInputError(draft.limits) && <Text role="status">{limitInputError(draft.limits)}</Text>}
-            {draft.explicitLimits && !buildEnforcement(draft.limits, true) && <Text role="status">Enter a positive limit, or turn off the override to retain inherited defaults.</Text>}
+            {draft.explicitLimits && <LimitFields value={draft.limits} onChange={limits => update(item, { limits })} mcp={item.request.resource.kind === 'mcpServer'}
+              showSourceChoice={false} requireLimit reviewLimits={item.effectiveEnforcement}
+              reviewLabel={item.limitsSource === 'costCenter' ? 'Inherited cost-center per-person limits' : item.limitsSource === 'unrestricted' ? 'No grant-specific restriction' : 'Current explicit limits'} />}
+            {draft.explicitLimits && !hasLimitValues(draft.limits) && <Text>Enter a positive limit, or turn off the override to retain inherited defaults.</Text>}
             <Button disabled={ai.isPending} onClick={() => ai.mutate(item.request.id)}>Generate advisory recommendation</Button>
             {ai.data?.filter(r => r.requestId === item.request.id && r.blocker).map(r => <Text key={r.requestId}>{r.blocker!.message} {r.blocker!.nextAction}</Text>)}
             <RequestRecommendation requestId={item.request.id} contextRevision={item.revision.contextRevision} generated={recommendations[item.request.id]} />

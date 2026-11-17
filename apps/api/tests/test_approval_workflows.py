@@ -11,6 +11,7 @@ import httpx
 import jwt
 import pytest
 from azure.cosmos import exceptions
+from conftest import seed_known_policy_target
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from mosaic_api.approvals import (
@@ -101,11 +102,12 @@ class Harness:
             approval_policies=self.approvals.policies, directory_repository=self.directory
         )
         self.gateways = InMemoryGatewayRepository()
+        self.endpoints = InMemoryModelEndpointRepository()
         self.entitlements = EntitlementService(
             self.repository,
             directory_repository=self.directory,
             gateway_repository=self.gateways,
-            endpoint_repository=InMemoryModelEndpointRepository(),
+            endpoint_repository=self.endpoints,
         )
         self.now = NOW
         self.service = ApprovalService(
@@ -132,7 +134,7 @@ class Harness:
             ),
             audit(),
         )
-        await self.gateways.save_model_api(
+        model = await self.gateways.save_model_api(
             ModelApi(
                 id=RESOURCE.id,
                 tenant_id=TENANT,
@@ -144,6 +146,7 @@ class Harness:
             ),
             audit(),
         )
+        await seed_known_policy_target(self.gateways, self.endpoints, model)
 
     async def request(self, object_id: str = USER) -> AccessRequest:
         request = await self.entitlements.create_access_request(
@@ -358,6 +361,7 @@ async def test_policy_production_age_and_window_gates(
 async def test_explicit_production_policy_can_approve_without_applying_gateway() -> None:
     h = Harness()
     await h.seed("production")
+    before_publications = dict(h.gateways.publications)
     request = await h.request()
     await h.policy(
         scope={"environments": ["production"], "resourceKinds": ["modelApi"]},
@@ -366,7 +370,7 @@ async def test_explicit_production_policy_can_approve_without_applying_gateway()
     await h.service.pause(ADMIN, False)
     await h.service.run_once(TENANT)
     assert h.repository.access_requests[request.id].state == "approved"
-    assert h.gateways.publications == {}
+    assert h.gateways.publications == before_publications
 
 
 async def test_policy_moved_environment_and_conflicting_rules_stay_pending() -> None:
@@ -786,7 +790,10 @@ async def test_ai_configured_concurrency_and_context_expiration() -> None:
 
 
 async def test_unsupported_governed_offering_is_visible_with_explanation() -> None:
-    _, ai, _ = await ai_harness()
+    h, ai, _ = await ai_harness()
+    model = await h.gateways.get_model_api(TENANT, RESOURCE.id)
+    assert model is not None
+    await h.gateways.save_model_api(model.model_copy(update={"publication_id": None}), audit())
     [offering] = await ai.offerings(ADMIN)
     assert offering.resource == RESOURCE and not offering.compatible
     assert offering.blockers[0].code == "unsupportedGovernedOffering"

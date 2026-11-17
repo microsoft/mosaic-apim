@@ -32,7 +32,15 @@ from mosaic_api.domain import (
     PublishStepStatus,
     TokenEnforcement,
 )
-from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
+from mosaic_api.errors import (
+    ConflictError,
+    DomainError,
+    NotFoundError,
+    UpstreamAuthorizationError,
+    UpstreamError,
+    UpstreamNotFoundError,
+    ValidationError,
+)
 from mosaic_api.repositories import InMemoryGatewayRepository, InMemoryModelEndpointRepository
 from mosaic_api.services import PublishingService, publishing
 from mosaic_api.services.directory import Actor
@@ -586,7 +594,10 @@ async def test_apply_requires_a_plan(harness: Harness) -> None:
 async def test_a_plan_from_another_publication_is_rejected(harness: Harness) -> None:
     first = await harness.publish()
     plan = await harness.service.plan(ACTOR, first)
-    second = await harness.publish(deployment_name="text-embedding-3-large")
+    other_deployment = {**harness.aoai.deployments[0], "name": "gpt-4o-secondary"}
+    harness.aoai.deployments.append(other_deployment)
+    await harness.endpoints.sync_now(ACTOR, harness.endpoint_id)
+    second = await harness.publish(deployment_name="gpt-4o-secondary")
 
     with pytest.raises(NotFoundError):
         await harness.service.apply(ACTOR, second, plan.id)
@@ -851,10 +862,15 @@ async def test_azure_openai_capabilities_keep_their_curated_shape(harness: Harne
     assert embeddings.capability == DeploymentCapability.EMBEDDINGS
     for item in (chat, embeddings):
         assert item.api_shape == ApiShape.AZURE_OPENAI
-        assert item.publishable is True
-        assert item.unpublishable_reason is None
-        assert item.token_limits_supported is True
-        assert item.token_limits_note is None
+    assert chat.publishable is True
+    assert embeddings.publishable is False
+    assert embeddings.policy_capabilities is not None
+    assert (
+        embeddings.policy_capabilities.policies["llm-token-limit"].reason == "unsupportedApiShape"
+    )
+    assert chat.unpublishable_reason is None
+    assert chat.token_limits_supported is True
+    assert chat.token_limits_note is None
 
 
 CLAUDE = "claude-sonnet-4-5"
@@ -1013,5 +1029,103 @@ async def test_claude_is_not_publishable_until_the_gateway_tier_is_known() -> No
     assert candidates[CLAUDE].publishable is False
     assert "pricing tier" in (candidates[CLAUDE].unpublishable_reason or "")
     assert "pricing tier" in error.value.message
-    # Only the Anthropic decision depends on the tier.
-    assert candidates["grok-4.3"].publishable is True
+    assert candidates["grok-4.3"].publishable is False
+    capabilities = candidates["grok-4.3"].policy_capabilities
+    assert capabilities is not None
+    assert capabilities.policies["llm-token-limit"].support == "unknown"
+
+
+@pytest.mark.parametrize("sku", ["Consumption", None, "UnverifiedTier"])
+async def test_gateway_policy_refuses_new_publication_without_writes(sku: str | None) -> None:
+    built = Harness(apim_sku=sku)
+    await built.setup()
+    built.apim.http_calls.clear()
+    with pytest.raises(ValidationError) as refused:
+        await built.publish()
+    assert refused.value.details["reason"] == "gatewayPolicyLimitsRejected"
+    assert refused.value.details["boundary"] == "save"
+    assert not await built.gateway_repository.list_publications(ACTOR.tenant_id)
+    assert not any(call["method"] in {"PUT", "PATCH", "DELETE"} for call in built.apim.http_calls)
+
+
+@pytest.mark.parametrize("sku", ["Consumption", None])
+async def test_gateway_policy_plan_uses_current_service_tier_before_saving(sku: str | None) -> None:
+    built = Harness()
+    await built.setup()
+    publication_id = await built.publish()
+    built.apim.sku_name = sku
+    built.apim.http_calls.clear()
+    with pytest.raises(ValidationError) as refused:
+        await built.service.plan(ACTOR, publication_id)
+    assert refused.value.details["boundary"] == "plan"
+    assert (await built.service.get_publication(ACTOR, publication_id)).last_plan_id is None
+    assert not any(call["method"] in {"PUT", "PATCH", "DELETE"} for call in built.apim.http_calls)
+
+
+@pytest.mark.parametrize("sku", ["Consumption", None])
+async def test_gateway_policy_apply_refuses_tier_drift_before_claim_or_mutation(
+    sku: str | None,
+) -> None:
+    built = Harness()
+    await built.setup()
+    publication_id = await built.publish()
+    plan = await built.service.plan(ACTOR, publication_id)
+    built.apim.sku_name = sku
+    built.apim.http_calls.clear()
+    with pytest.raises(ValidationError) as refused:
+        await built.service.apply(ACTOR, publication_id, plan.id)
+    assert refused.value.details["boundary"] == "apply"
+    assert not await built.service.list_runs(ACTOR, publication_id)
+    assert (await built.service.get_publication(ACTOR, publication_id)).status == "planned"
+    assert any(call["method"] == "GET" and call["path"] == "" for call in built.apim.http_calls)
+    assert not any(call["method"] in {"PUT", "PATCH", "DELETE"} for call in built.apim.http_calls)
+
+
+@pytest.mark.parametrize(
+    "status,error",
+    [(403, UpstreamAuthorizationError), (404, UpstreamNotFoundError), (500, UpstreamError)],
+)
+async def test_gateway_policy_apply_source_failure_cannot_fall_back_to_saved_sku(
+    status: int, error: type[DomainError],
+) -> None:
+    built = Harness()
+    await built.setup()
+    publication_id = await built.publish()
+    plan = await built.service.plan(ACTOR, publication_id)
+    built.apim.service_status = status
+    built.apim.http_calls.clear()
+    with pytest.raises(error):
+        await built.service.apply(ACTOR, publication_id, plan.id)
+    assert not await built.service.list_runs(ACTOR, publication_id)
+    assert (await built.service.get_publication(ACTOR, publication_id)).status == "planned"
+    assert any(call["method"] == "GET" and call["path"] == "" for call in built.apim.http_calls)
+    assert not any(call["method"] in {"PUT", "PATCH", "DELETE"} for call in built.apim.http_calls)
+
+
+async def test_gateway_policy_update_keeps_unchanged_legacy_quota_and_allows_removal() -> None:
+    built = Harness()
+    await built.setup()
+    original = enforcement(token_quota=5000, token_quota_period="Weekly")
+    publication_id = await built.publish(enforcement=original)
+    built.apim.sku_name = "Consumption"
+    await built.gateways.preflight(ACTOR, built.gateway_id)
+    saved = await built.service.update(
+        ACTOR, publication_id,
+        PublicationUpdate(enforcement=original, display_name="Renamed legacy publication"),
+    )
+    assert saved.enforcement == original
+    with pytest.raises(ValidationError) as refused:
+        await built.service.update(
+            ACTOR, publication_id,
+            PublicationUpdate(enforcement=enforcement(
+                tokens_per_minute=20000, token_quota=5000, token_quota_period="Weekly"
+            )),
+        )
+    assert [issue["field"] for issue in refused.value.details["issues"]] == [
+        "enforcement.tokensPerMinute"
+    ]
+    quota_only = original.model_copy(update={"tokens_per_minute": None})
+    removed = await built.service.update(
+        ACTOR, publication_id, PublicationUpdate(enforcement=quota_only)
+    )
+    assert removed.enforcement == quota_only

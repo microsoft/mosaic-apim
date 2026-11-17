@@ -26,7 +26,9 @@ The fictional estate uses one shared fake Graph directory for lookup, group crea
 and direct membership operations. Custom cost centers get dedicated verified Entra groups through
 the normal services, not MOSAIC-local shadow rosters. The fixture explicitly simulates group-create
 and member-write consent; no real permissions are granted. Customer Insights has Automatic
-embeddings and Docs Search MCP access, while its other offerings are Request-only. Its managed
+GPT-4o mini chat and Docs Search MCP access, while its other active offerings are Request-only. Historical
+embeddings are disabled, unverified read-only intent: the fixture does not claim a current
+token-policy save, managed apply, or enforced grant succeeded for that schema. Its managed
 group grants remain resource-scaled rather than member-scaled. A pending creation request and an
 approved, setup-required center illustrate that approval, membership, and gateway apply are
 separate outcomes.
@@ -292,7 +294,8 @@ survives to be read back.
 
 - `SENSITIVE_LITERALS` in `demo_api.py`: the demo tenant, client, and object IDs.
 - `RESOURCE_NAMES` in `capture.py`: the demo's gateway, resource group, account, vault, MCP, and
-  Entra and MOSAIC group names, including their hyphenated aliases wherever they appear in an API path.
+  Entra and MOSAIC group names, including generated cost-center membership labels and their
+  hyphenated aliases wherever they appear in an API path.
 - The shared MCP metadata API, readable MOSAIC-owned APIM resource names and account-derived
   API paths, product names, and fictional person/workload/gateway names and directory aliases are
   redacted too.
@@ -400,14 +403,16 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-security-group-members` | Console | `/identity?tab=security-groups`, **AI Model Users** selected, scrolled to read-only **Security group members** | Dark | Security group members |
 | `console-directory-verification` | Console | `/identity?tab=security-groups`, **AI Model Users** selected, explicit complete-read check against the fictional directory, scrolled to its scoped diagnostic status | Light | Complete group-read verification |
 | `console-entitlements` | Console | `/entitlements`, selected grant with detailed state and limits | Light | Entitlements |
+| `console-grant-call-quota` | Console | `/entitlements`, full-workspace **Edit grant** with a draft Weekly call quota beside the separate call rate and saved-versus-proposed decision summary; never saved | Dark | Grant call-quota authoring |
+| `console-gateway-limit-refusal` | Console | `/entitlements`, retained new-grant draft with separate grant-limit and shared-publication-safeguard refusals for historical unverified embeddings; never saved | Light | Gateway policy capability refusal |
 | `console-access-requests` | Console | `/entitlements?tab=requests`, pending queue with an unknown requester's captured identity in **Selected access request** detail | Light | Access requests |
-| `console-access-request-approval` | Console | `/entitlements?tab=requests`, unknown requester in full-workspace **Approve access request**, with initial label, token snapshot, and grant limits; never submitted | Light | Unknown requester approval |
+| `console-access-request-approval` | Console | `/entitlements?tab=requests`, unknown requester in full-workspace **Approve access request**, with initial label, sign-in snapshot, separate rate/quota controls and decision summary; never submitted | Light | Unknown requester approval |
 | `console-model-access-settings` | Console | `/entitlements?tab=settings`, GPT-4o selected | Dark | Model access settings |
 | `console-overlapping-grants` | Console | `/entitlements?tab=effective`, **Overlapping grants** | Dark | Overlapping grants |
 | `console-cost-centers` | Console | `/cost-centers`, selected detail beside the compact list | Light | Cost centers |
 | `console-new-cost-center` | Console | `/cost-centers?mode=new`, **Create with MOSAIC** preview and optional directory permissions, never saved | Dark | New cost center |
 | `console-cost-center-detail` | Console | Customer Insights detail, **Members** section with actual paginated Entra members and durable directory operations | Dark | Cost center members |
-| `console-cost-center-access` | Console | Customer Insights detail, **Resource access**, exact Automatic embeddings offering selected | Light | Cost-center resource access |
+| `console-cost-center-access` | Console | Customer Insights detail, **Resource access**, exact Automatic GPT-4o mini chat offering selected | Light | Cost-center resource access |
 | `console-cost-center-setup` | Console | Knowledge Engineering, **Finish group setup** editor, approved but still Setup required, never saved | Dark | Finish group setup |
 | `console-cost-center-request-review` | Console | `/entitlements?tab=requests`, pending Responsible AI evaluation request in full-workspace review, never approved | Light | Review a cost-center request |
 | `console-cost-center-membership-review` | Console | `/entitlements?tab=requests`, pending Customer Support join in full-workspace review, never approved | Light | Review membership |
@@ -419,8 +424,8 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-analytics` | Console | `/analytics`, **Overview** section | Dark | Analytics |
 | `console-analytics-filters` | Console | `/analytics`, grouped draft **Filters** open, never applied | Light | Analytics filters |
 | `console-request-notifications` | Console | `/dashboard`, pending-approvals popover open, separate from unread inbox bell | Light | Pending approvals |
-| `console-bulk-approval` | Console | `/entitlements?tab=requests`, two explicit pending requests with label and token-snapshot provenance in **Review bulk approvals**, never submitted | Dark | Bulk approval review |
-| `console-approval-policy` | Console | `/entitlements?tab=approvalPolicies`, disabled **Development office hours** policy in the full-workspace editor, never saved or enabled | Light | Scheduled approval policy |
+| `console-bulk-approval` | Console | `/entitlements?tab=requests`, two explicit pending requests with requester provenance and a draft shared Weekly call quota in **Review bulk approvals**; shared override never applied and approvals never submitted | Dark | Bulk approval review |
+| `console-approval-policy` | Console | `/entitlements?tab=approvalPolicies`, disabled **Development office hours** policy with a draft Weekly call quota and decision summary in the full-workspace editor; never saved or enabled | Light | Scheduled approval policy |
 | `console-notification-inbox` | Console | `/notifications`, category/unread filters and selected exact notification | Dark | Administrator inbox |
 | `console-notification-preferences` | Console | `/profile`, **Edit preferences** workspace with independent administrator channel/cadence and digest controls, never saved | Light | Administrator preferences |
 | `console-notification-readiness` | Console | `/settings?tab=notifications&notificationView=health`, evidence and remediation for storage, hosting, email, public links, and disabled workers | Dark | Notification readiness |

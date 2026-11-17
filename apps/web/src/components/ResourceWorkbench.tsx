@@ -1,6 +1,6 @@
 import { Button } from '@fluentui/react-components'
 import { ArrowLeftRegular } from '@fluentui/react-icons'
-import { type ReactNode, useContext, useEffect, useId, useLayoutEffect, useRef } from 'react'
+import { type ReactNode, type RefObject, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef } from 'react'
 import { UNSAFE_LocationContext } from 'react-router-dom'
 import styles from './ResourceWorkbench.module.css'
 
@@ -30,12 +30,13 @@ export interface ResourceWorkbenchProps<T> {
   /** Override the default pathname/tab/list-label scroll scope when needed. */
   scrollKey?: string
   className?: string
+  focusReturnRef?: RefObject<HTMLElement | null>
 }
 
 export function ResourceWorkbench<T>({
   title, description, actions, toolbar, items, getId, selectedId, onSelect,
   renderListItem, renderDetail, emptyList, emptySelection, missingSelection,
-  pager, listLabel = 'Resources', detailLabel = 'Selected resource', boundedList = false, scrollKey, className,
+  pager, listLabel = 'Resources', detailLabel = 'Selected resource', boundedList = false, scrollKey, className, focusReturnRef,
 }: ResourceWorkbenchProps<T>) {
   const locationContext = useContext(UNSAFE_LocationContext)
   const location = locationContext?.location
@@ -47,6 +48,9 @@ export function ResourceWorkbench<T>({
   const rowRefs = useRef(new Map<string, HTMLButtonElement>())
   const previousSelection = useRef(selectedId)
   const selected = items.find((item) => getId(item) === selectedId)
+  const headingRef = useCallback((node: HTMLHeadingElement | null) => {
+    if (focusReturnRef) focusReturnRef.current = node
+  }, [focusReturnRef])
 
   useLayoutEffect(() => {
     if (!scrollScope) return
@@ -79,7 +83,7 @@ export function ResourceWorkbench<T>({
     <section className={[styles.workbench, className].filter(Boolean).join(' ')} aria-labelledby={titleId} data-resource-workbench>
       <header className={styles.header}>
         <div className={styles.titleBlock}>
-          <h2 id={titleId}>{title}</h2>
+          <h2 id={titleId} ref={headingRef} tabIndex={focusReturnRef ? -1 : undefined}>{title}</h2>
           {description && <div className={styles.description}>{description}</div>}
         </div>
         {actions && <div className={styles.actions}>{actions}</div>}

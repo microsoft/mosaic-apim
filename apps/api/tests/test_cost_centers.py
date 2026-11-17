@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from conftest import seed_known_policy_target
 from cost_center_management_double import (
     BASELINE,
     GROUP,
@@ -586,7 +587,7 @@ async def test_limits_keep_resource_validation_and_exact_pool_scope(client: Test
     }
     assert client.put(url, json={"limits": [model_limit]}).status_code == 422
     gateways = client.app.state.gateway_repository
-    await gateways.save_model_api(
+    model = await gateways.save_model_api(
         ModelApi(
             id=RESOURCE.id,
             tenant_id=TENANT,
@@ -597,6 +598,9 @@ async def test_limits_keep_resource_validation_and_exact_pool_scope(client: Test
             imported_from_snapshot_id="snapshot",
         ),
         audit(),
+    )
+    await seed_known_policy_target(
+        gateways, client.app.state.model_endpoint_repository, model
     )
     assert ok(client.put(url, json={"limits": [model_limit]}))["limits"][0]["pool"] == {
         "monthlyTokens": 1000000,
@@ -623,7 +627,7 @@ async def test_limits_keep_resource_validation_and_exact_pool_scope(client: Test
     await gateways.save_model_pool(pool, audit())
     pool_limit = {
         "resource": {"kind": "poolModel", "id": "model", "scopeId": "pool"},
-        "pool": {"monthlyTokens": 1000},
+        "pool": {"monthlyCalls": 1000},
     }
     assert (
         ok(client.put(url, json={"limits": [pool_limit]}))["limits"][0]["resource"]

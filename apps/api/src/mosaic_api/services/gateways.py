@@ -26,9 +26,11 @@ from mosaic_api.domain import (
     CapabilitySupport,
     CatalogEntryUpdate,
     CatalogVisibility,
+    EntitlementResource,
     Gateway,
     GatewayCreate,
     GatewayInventorySummary,
+    GatewayPolicyCapabilities,
     GatewayStatus,
     GatewaySuggestion,
     GatewaySyncRun,
@@ -54,6 +56,7 @@ from mosaic_api.domain import (
 from mosaic_api.environments import azure_environment_tag
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
 from mosaic_api.integrations.apim import ApimClient, InventoryCollector, run_preflight
+from mosaic_api.integrations.apim.policy_capabilities import assess_gateway_policy_capabilities
 from mosaic_api.integrations.apim.policy_semantics import analyze_policy, summarize_facets
 from mosaic_api.observed import (
     AiBackendKind,
@@ -72,7 +75,11 @@ from mosaic_api.observed import (
     PolicyScope,
     ScopedPolicyView,
 )
-from mosaic_api.repositories import EnvironmentRepository, GatewayRepository
+from mosaic_api.repositories import (
+    EnvironmentRepository,
+    GatewayRepository,
+    ModelEndpointRepository,
+)
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.environments import load_environment_catalog
 from mosaic_api.services.model_access import (
@@ -81,6 +88,7 @@ from mosaic_api.services.model_access import (
     publication_lock,
     scope_lease,
 )
+from mosaic_api.services.policy_capabilities import resolve_resource_policy_capabilities
 
 logger = structlog.get_logger()
 
@@ -376,6 +384,23 @@ class GatewayService:
         if recorded is None:
             raise NotFoundError("Gateway was not found", details={"id": gateway_id})
         return recorded
+
+    async def policy_capabilities(
+        self,
+        actor: Actor,
+        gateway_id: str,
+        resource: EntitlementResource | None = None,
+        *,
+        endpoints: ModelEndpointRepository | None = None,
+    ) -> GatewayPolicyCapabilities:
+        gateway = await self.get_gateway(actor, gateway_id)
+        if resource is not None:
+            return await resolve_resource_policy_capabilities(
+                self._repository, endpoints, actor.tenant_id, resource, gateway=gateway
+            )
+        return assess_gateway_policy_capabilities(
+            gateway.id, gateway.capabilities.sku_name, observed_at=gateway.access.checked_at
+        )
 
     async def _apply_preflight(self, gateway: Gateway) -> Gateway:
         resource = gateway.arm_resource()

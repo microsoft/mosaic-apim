@@ -88,6 +88,14 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
 
 ## Administrator console
 
+### Gateway policy capability feedback
+
+<img src="images/screenshots/console-gateway-limit-refusal.png" width="720" alt="A retained new-grant draft with separate grant-limit and shared-publication-safeguard refusals for historical unverified embeddings">
+
+**Gateway policy capability refusal.** The summary identifies the limit and shared safeguard
+that cannot be enforced, with field, gateway, and policy recovery and a retained draft. Historical
+embeddings remain disabled read-only intent, not current save or enforcement proof.
+
 ### Portal handoff for end users
 
 <table>
@@ -281,6 +289,15 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
     </td>
   </tr>
   <tr>
+    <td colspan="2" valign="top">
+      <a id="grant-call-quota"></a>
+      <img src="images/screenshots/console-grant-call-quota.png" alt="Full-workspace grant editing with separate call-rate and Weekly call-quota fields beside a saved-versus-proposed decision summary">
+      <p><b>Call-quota authoring.</b> Set or remove an absolute call allowance and calendar period
+      beside the independent call rate in the grant editor. The decision summary compares saved
+      or inherited limits with the draft; saving intent still needs a separate reviewed gateway apply.</p>
+    </td>
+  </tr>
+  <tr>
     <td width="50%" valign="top">
       <img src="images/screenshots/console-cost-centers.png" alt="A selectable cost-center list and selected center detail, with a separate New cost center action">
       <p><b>Cost centers.</b> A compact list selects a charge scope and shows its setup state,
@@ -296,7 +313,7 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="images/screenshots/console-cost-center-access.png" alt="A cost center's exact-resource access definitions with Automatic embeddings access, allowance, and saved caller settings">
+      <img src="images/screenshots/console-cost-center-access.png" alt="A cost center's exact-resource access definitions with Automatic GPT-4o mini chat access, allowance, and saved caller settings">
       <p><b>Cost-center resource access.</b> Inspect Automatic, Request-only, or Not available
       access for each exact model, pool model, or MCP offering. Automatic uses one stable group
       grant per offering; saving configuration still requires a reviewed gateway apply.</p>
@@ -451,8 +468,8 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   <tr>
     <td colspan="2" valign="top">
       <img src="images/screenshots/console-access-request-approval.png" alt="Full-workspace approval of an unknown requester with the initial registration label separated from captured sign-in identity and grant limits">
-      <p><b>Unknown requester approval.</b> Inspect the proposed initial label, captured name,
-      username and object ID before registering an unknown requester. Approval saves a grant
+      <p><b>Unknown requester approval.</b> Review the proposed initial label, captured sign-in
+      identity and distinct rate/calendar quota limits before registering an unknown requester. Approval saves a grant
       without activating gateway access or changing an existing principal's label.</p>
     </td>
   </tr>
@@ -496,14 +513,14 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   <tr>
     <td width="50%" valign="top">
       <img src="images/screenshots/console-approval-policy.png" alt="A disabled development approval policy editor with environment scope, office-hour windows, minimum request age, bounded limits, and dry-run controls">
-      <p><b>Scheduled approval policy.</b> Define environment and resource scope, a minimum
-      waiting period, local-time approval windows, and bounded grant limits.
-      Preview pending requests without approving them, and enable automation explicitly.</p>
+      <p><b>Scheduled approval policy.</b> Define scope, waiting periods, local-time approval
+      windows and a bounded grant template with separate rate/calendar quota controls.
+      Preview requests without approving them and enable automation explicitly; gateway plans still require review and apply.</p>
     </td>
     <td width="50%" valign="top">
       <img src="images/screenshots/console-bulk-approval.png" alt="Full-workspace bulk review separating requester labels from captured sign-in identities beside current environment, cost-center, limit, and independent approval controls">
       <p><b>Bulk approval review.</b> Compare requester labels and captured sign-in identity
-      with current environment, cost-center, and limit facts, retaining independent inclusion and advisory AI controls.
+      with current environment, cost-center and limit facts, including a draft shared calendar call quota and independent inclusion/advisory AI controls.
       Approvals save grant intent; gateway plans still require separate review and apply.</p>
     </td>
   </tr>

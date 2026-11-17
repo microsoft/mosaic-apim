@@ -34,6 +34,12 @@ from mosaic_api.approvals import (
 )
 from mosaic_api.domain import AccessRequestApproval, AuditEvent, new_id, utc_now
 from mosaic_api.errors import ConflictError, DomainError, NotFoundError, ValidationError
+from mosaic_api.integrations.apim.policy_capabilities import (
+    assess_gateway_policy_capabilities,
+    changed_limit_policies,
+    require_supported_limits,
+    required_limit_policies,
+)
 from mosaic_api.repositories.approvals import ApprovalRepository
 from mosaic_api.scheduling import WeeklySchedule
 from mosaic_api.services.directory import Actor
@@ -246,6 +252,19 @@ class ApprovalService:
                 "Confirm the scope, grant limits, production gate, minimum age and schedule "
                 "explicitly before enabling this approval policy."
             )
+        require_supported_limits(
+            assess_gateway_policy_capabilities(None, None),
+            changed_limit_policies(
+                required_limit_policies(
+                    current.grant_template.enforcement if current else None,
+                    field_prefix="grantTemplate.enforcement",
+                ),
+                required_limit_policies(
+                    payload.grant_template.enforcement, field_prefix="grantTemplate.enforcement"
+                ),
+            ),
+            intrinsic_only=True,
+        )
         policy = ApprovalPolicy(
             **payload.model_dump(exclude={"expected_revision", "enable_confirmed"}),
             id=policy_id or new_id("approvalPolicy"),
