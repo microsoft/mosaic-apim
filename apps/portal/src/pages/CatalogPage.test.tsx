@@ -1,18 +1,22 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { useFocusFinders } from '@fluentui/react-components'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PortalApi } from '../api'
 import type { AccessRequest, CatalogEntry, PortalCostCenter, PortalProfile, ResolvedEntitlement } from '../types'
 import { CatalogPage } from './CatalogPage'
 import { resourceFromCatalog } from '../entitlement-format'
 import { resourceKey } from '../model-presentation'
 import { directResolved, securityGroupResolved } from '../test/connection'
+import { MosaicThemeProvider } from '../theme'
 
 const mocks = vi.hoisted(() => ({
   api: {} as PortalApi,
 }))
+
+afterEach(() => vi.restoreAllMocks())
 
 vi.mock('../api', () => ({
   ApiError: class ApiError extends Error {
@@ -92,8 +96,17 @@ const servedModelEntry: CatalogEntry = {
   costCenterAccess: requestOnlyChoices,
 }
 
+function CatalogFixture() {
+  // The real shell keeps Tabster mounted while transient drawers are removed.
+  useFocusFinders()
+  return <CatalogPage />
+}
+
 function renderPage(entries: CatalogEntry[], requests: AccessRequest[], centers: PortalCostCenter[] | Error = costCenters,
-  profileOverride: Partial<PortalProfile> = {}, entitlements: ResolvedEntitlement[] = []) {
+  profileOverride: Partial<PortalProfile> = {}, entitlements: ResolvedEntitlement[] = [],
+  overrides: Partial<PortalApi> = {}) {
+  // Tabster treats a zero-sized body as a hidden document; this DOM has no page layout.
+  vi.spyOn(document.body, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 1440, 900))
   let currentRequests = [...requests]
   const createAccessRequest = vi.fn(async (payload) => {
     const created = {
@@ -158,14 +171,21 @@ function renderPage(entries: CatalogEntry[], requests: AccessRequest[], centers:
     listAccessRequests: async () => currentRequests,
     createAccessRequest,
     withdrawAccessRequest,
+    ...overrides,
   } as unknown as PortalApi
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter><CatalogPage /></MemoryRouter>
-    </QueryClientProvider>,
+    <MosaicThemeProvider><QueryClientProvider client={queryClient}>
+      <MemoryRouter><CatalogFixture /></MemoryRouter>
+    </QueryClientProvider></MosaicThemeProvider>,
   )
   return { createAccessRequest, withdrawAccessRequest }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
 }
 
 async function openAccessOptions(name = 'Weather tools') {
@@ -182,6 +202,8 @@ describe('CatalogPage', () => {
     renderPage([first, second], [])
     await openAccessOptions('demo-chat')
     const drawer = screen.getByRole('dialog', { name: 'Access to demo-chat' })
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Search catalog' })).not.toBeInTheDocument())
+    expect(drawer).not.toHaveAttribute('aria-hidden', 'true')
     const selector = within(drawer).getByRole('combobox', { name: 'Access option' })
     expect(within(drawer).queryByText(/First offering/)).not.toBeInTheDocument()
     await user.selectOptions(selector, resourceKey(resourceFromCatalog(first)))
@@ -304,6 +326,51 @@ describe('CatalogPage', () => {
 
     await waitFor(() => expect(withdrawAccessRequest).toHaveBeenCalledWith('request-created'))
     await waitFor(() => expect(screen.queryByText(/Request submitted\./)).not.toBeInTheDocument())
+  })
+
+  it.each([
+    { first: 'catalog', focused: 'submit' },
+    { first: 'requests', focused: 'justification' },
+    { first: 'catalog', focused: 'cost center' },
+  ])('retains a local focus target when $first refreshes before other request queries ($focused)', async ({ first, focused }) => {
+    const user = userEvent.setup()
+    const catalog = deferred<CatalogEntry[]>()
+    const requests = deferred<AccessRequest[]>()
+    const entitlements = deferred<ResolvedEntitlement[]>()
+    const refreshedEntry = { ...catalogEntry, requestedCostCenterIds: ['cc-general'] }
+    const createdRequest = { ...pendingRequest, id: 'request-created' }
+    const { createAccessRequest } = renderPage([catalogEntry], [], costCenters, {}, [], {
+      listCatalog: vi.fn<PortalApi['listCatalog']>().mockResolvedValueOnce([catalogEntry])
+        .mockImplementation(() => catalog.promise),
+      listAccessRequests: vi.fn<PortalApi['listAccessRequests']>().mockResolvedValueOnce([])
+        .mockImplementation(() => requests.promise),
+      listEntitlements: vi.fn<PortalApi['listEntitlements']>().mockResolvedValueOnce([])
+        .mockImplementation(() => entitlements.promise),
+    })
+    await openAccessOptions()
+    const drawer = screen.getByRole('dialog', { name: 'Access to Weather tools' })
+    const selector = within(drawer).getByRole('combobox', { name: 'Cost center for Weather tools' })
+    const justification = within(drawer).getByRole('textbox', { name: 'Justification for Weather tools' })
+    await user.click(within(drawer).getByRole('button', { name: 'Request access' }))
+    act(() => {
+      if (focused === 'justification') justification.focus()
+      if (focused === 'cost center') selector.focus()
+    })
+    await act(async () => {
+      if (first === 'catalog') catalog.resolve([refreshedEntry])
+      else requests.resolve([createdRequest])
+    })
+    await waitFor(() => expect(justification).not.toBeInTheDocument())
+    expect(selector).toHaveFocus()
+    expect(within(drawer).queryByText(/Request submitted\./)).not.toBeInTheDocument()
+    await act(async () => {
+      catalog.resolve([refreshedEntry])
+      requests.resolve([createdRequest])
+      entitlements.resolve([])
+    })
+    expect(await within(drawer).findByText(/Request submitted\./)).toBeVisible()
+    expect(selector).toHaveFocus()
+    expect(createAccessRequest).toHaveBeenCalledOnce()
   })
 
   it('marks cost centers that already have access or a request', async () => {

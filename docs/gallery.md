@@ -90,11 +90,13 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
 
 ### Gateway policy capability feedback
 
-**Official capture pending:** `console-gateway-limit-refusal`. The matching verified API
-runtime is unavailable; this image has not been generated, and no local proposal is substituted.
+**Capture warning (PR #182):** this previously pending shot is inherited from merged `main`,
+not independently regenerated on this branch.
 
-**Gateway policy capability refusal (implemented source, capture pending).** The summary identifies the limit that cannot be enforced
-and links to its field, gateway, and policy reference without clearing the draft. Historical
+<img src="images/screenshots/console-gateway-limit-refusal.png" width="720" alt="A retained new-grant draft with separate grant-limit and shared-publication-safeguard refusals for historical unverified embeddings">
+
+**Gateway policy capability refusal.** The summary identifies the limit and shared safeguard
+that cannot be enforced, with field, gateway, and policy recovery and a retained draft. Historical
 embeddings remain disabled read-only intent, not current save or enforcement proof.
 
 ### Portal handoff for end users

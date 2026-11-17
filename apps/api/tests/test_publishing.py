@@ -32,7 +32,15 @@ from mosaic_api.domain import (
     PublishStepStatus,
     TokenEnforcement,
 )
-from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
+from mosaic_api.errors import (
+    ConflictError,
+    DomainError,
+    NotFoundError,
+    UpstreamAuthorizationError,
+    UpstreamError,
+    UpstreamNotFoundError,
+    ValidationError,
+)
 from mosaic_api.repositories import InMemoryGatewayRepository, InMemoryModelEndpointRepository
 from mosaic_api.services import PublishingService, publishing
 from mosaic_api.services.directory import Actor
@@ -857,7 +865,9 @@ async def test_azure_openai_capabilities_keep_their_curated_shape(harness: Harne
     assert chat.publishable is True
     assert embeddings.publishable is False
     assert embeddings.policy_capabilities is not None
-    assert embeddings.policy_capabilities.policies["llm-token-limit"].reason == "unsupportedApiShape"
+    assert (
+        embeddings.policy_capabilities.policies["llm-token-limit"].reason == "unsupportedApiShape"
+    )
     assert chat.unpublishable_reason is None
     assert chat.token_limits_supported is True
     assert chat.token_limits_note is None
@@ -1065,6 +1075,27 @@ async def test_gateway_policy_apply_refuses_tier_drift_before_claim_or_mutation(
     with pytest.raises(ValidationError) as refused:
         await built.service.apply(ACTOR, publication_id, plan.id)
     assert refused.value.details["boundary"] == "apply"
+    assert not await built.service.list_runs(ACTOR, publication_id)
+    assert (await built.service.get_publication(ACTOR, publication_id)).status == "planned"
+    assert any(call["method"] == "GET" and call["path"] == "" for call in built.apim.http_calls)
+    assert not any(call["method"] in {"PUT", "PATCH", "DELETE"} for call in built.apim.http_calls)
+
+
+@pytest.mark.parametrize(
+    "status,error",
+    [(403, UpstreamAuthorizationError), (404, UpstreamNotFoundError), (500, UpstreamError)],
+)
+async def test_gateway_policy_apply_source_failure_cannot_fall_back_to_saved_sku(
+    status: int, error: type[DomainError],
+) -> None:
+    built = Harness()
+    await built.setup()
+    publication_id = await built.publish()
+    plan = await built.service.plan(ACTOR, publication_id)
+    built.apim.service_status = status
+    built.apim.http_calls.clear()
+    with pytest.raises(error):
+        await built.service.apply(ACTOR, publication_id, plan.id)
     assert not await built.service.list_runs(ACTOR, publication_id)
     assert (await built.service.get_publication(ACTOR, publication_id)).status == "planned"
     assert any(call["method"] == "GET" and call["path"] == "" for call in built.apim.http_calls)

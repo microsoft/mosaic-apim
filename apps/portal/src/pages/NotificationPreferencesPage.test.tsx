@@ -1,17 +1,29 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { useFocusFinders } from '@fluentui/react-components'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, Link, RouterProvider } from 'react-router-dom'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PortalApi } from '../api'
 import type { NotificationPreferencesInput } from '../notification-types'
 import { notificationCheck, notificationPreferences } from '../test/notification-fixtures'
 import { NotificationPreferencesPage } from './NotificationPreferencesPage'
+import { MosaicThemeProvider } from '../theme'
 
 const mocks = vi.hoisted(() => ({ api: {} as PortalApi }))
 vi.mock('../api', () => ({ ApiError: class ApiError extends Error { status = 500 }, usePortalApi: () => mocks.api }))
 
+afterEach(() => vi.restoreAllMocks())
+
+function PreferencesFixture() {
+  // The real shell keeps Tabster mounted while transient dialogs are removed.
+  useFocusFinders()
+  return <><NotificationPreferencesPage /><Link to="/usage">Usage page</Link></>
+}
+
 function renderPage(api: Partial<PortalApi> = {}, client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })) {
+  // Tabster treats a zero-sized body as a hidden document; this DOM has no page layout.
+  vi.spyOn(document.body, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 1440, 900))
   mocks.api = {
     getNotificationPreferences: async () => notificationPreferences(),
     getNotificationHealth: async () => [notificationCheck()],
@@ -21,10 +33,10 @@ function renderPage(api: Partial<PortalApi> = {}, client = new QueryClient({ def
     ...api,
   } as PortalApi
   const router = createMemoryRouter([
-    { path: '/notification-preferences', element: <><NotificationPreferencesPage /><Link to="/usage">Usage page</Link></> },
+    { path: '/notification-preferences', element: <PreferencesFixture /> },
     { path: '/usage', element: <h1>Usage destination</h1> },
   ], { initialEntries: ['/notification-preferences'] })
-  render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
+  render(<MosaicThemeProvider><QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider></MosaicThemeProvider>)
   return router
 }
 
@@ -115,17 +127,19 @@ describe('NotificationPreferencesPage', () => {
     expect(beforeUnload.defaultPrevented).toBe(true)
     await user.click(screen.getByRole('link', { name: 'Usage page' }))
     expect(await screen.findByRole('dialog')).toHaveTextContent('Discard unsaved notification preferences?')
+    await waitFor(() => expect(timezone.closest('[aria-hidden="true"]')).not.toBeNull())
     await user.click(screen.getByRole('button', { name: 'Keep editing' }))
     await waitFor(() => expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument())
     expect(timezone).toHaveValue('Europe/London')
     expect(router.state.location.pathname).toBe('/notification-preferences')
     await user.click(screen.getByRole('button', { name: 'Reset changes' }))
     const resetDialog = await screen.findByRole('dialog', { name: 'Reset unsaved changes?' })
-    await user.click(within(resetDialog).getByRole('button', { name: 'Keep editing' }))
+    await user.click(await within(resetDialog).findByRole('button', { name: 'Keep editing' }))
     await waitFor(() => expect(resetDialog).not.toBeInTheDocument())
     expect(timezone).toHaveValue('Europe/London')
     await user.click(screen.getByRole('button', { name: 'Reset changes' }))
-    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Reset changes' }))
+    const confirmedReset = await screen.findByRole('dialog', { name: 'Reset unsaved changes?' })
+    await user.click(await within(confirmedReset).findByRole('button', { name: 'Reset changes' }))
     expect(timezone).toHaveValue('UTC')
     await user.click(screen.getByRole('link', { name: 'Usage page' }))
     expect(await screen.findByRole('heading', { name: 'Usage destination' })).toBeVisible()

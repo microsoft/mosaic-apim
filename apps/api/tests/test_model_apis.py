@@ -408,9 +408,13 @@ def test_only_v2_tiers_token_meter_the_anthropic_messages_api() -> None:
     assert "Developer tier, a classic tier" in classic
     assert "call limits" in classic
     consumption = token_limits_note(ApiShape.ANTHROPIC_MESSAGES, "Consumption")
-    assert consumption is not None and "Consumption tier" in consumption
+    assert (
+        consumption is not None
+        and "Consumption does not support llm-token-limit" in consumption
+    )
+    assert "call limits are still available" not in consumption
     unknown = token_limits_note(ApiShape.ANTHROPIC_MESSAGES, None)
-    assert unknown is not None and "access check" in unknown
+    assert unknown is not None and "Check access" in unknown
 
 
 def _assess(

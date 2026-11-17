@@ -88,24 +88,24 @@ from mosaic_api.domain import (
     McpModelCallerUpdate,
     McpPublicationCreate,
     ModelAccessSettings,
-    ModelApiCatalogUpdate,
     ModelApi,
+    ModelApiCatalogUpdate,
     ModelCatalogSummaryUpdate,
     ModelEndpointCreate,
     PrincipalCreate,
     PrincipalKind,
-    PublicationCreate,
     Publication,
+    PublicationCreate,
     PublicationStatus,
     PublishRunStatus,
     RequestEnforcement,
     TokenEnforcement,
     deterministic_id,
+    entitlement_id,
     general_cost_center_id,
     mcp_server_id,
     model_api_id,
     publication_id,
-    entitlement_id,
     subject_kind_for,
     utc_now,
 )
@@ -116,8 +116,8 @@ from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.aoai.key_check import KeyCheckOutcome, KeyCheckResult
 from mosaic_api.integrations.aoai.writer import ModelDeploymentWriter
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
-from mosaic_api.integrations.apim.model_apis import CURATED_SHAPE_VERSION, default_names
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient, ApimKeyManager
+from mosaic_api.integrations.apim.model_apis import CURATED_SHAPE_VERSION, default_names
 from mosaic_api.integrations.email import EmailAccessResult, EmailMessage, EmailSendResult
 from mosaic_api.integrations.graph import DirectoryPhoto, FakeGroupManagement
 from mosaic_api.integrations.graph.fake import FakeDirectoryLookup
@@ -1491,9 +1491,9 @@ def _date_history(
         )
         if request.granted_entitlement_id:
             granted[request.granted_entitlement_id] = decided_at
-    for entitlement_id, entitlement in list(repository.entitlements.items()):
-        repository.entitlements[entitlement_id] = entitlement.model_copy(
-            update={"created_at": granted.get(entitlement_id, now - GRANT_AGE)}
+    for grant_id, entitlement in list(repository.entitlements.items()):
+        repository.entitlements[grant_id] = entitlement.model_copy(
+            update={"created_at": granted.get(grant_id, now - GRANT_AGE)}
         )
 
 
@@ -2015,7 +2015,10 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
                 {"kind": resource_kind, "id": resource_id, "scopeId": scope_id}
             )
             reference = EntitlementSubject.model_validate({"kind": kind, "id": subject_id})
-            center_id = estate.cost_centers[cost_center] if cost_center else general_cost_center_id(tenant_id)
+            center_id = (
+                estate.cost_centers[cost_center] if cost_center
+                else general_cost_center_id(tenant_id)
+            )
             record = Entitlement(
                 id=entitlement_id(
                     tenant_id, reference, resource, center_id

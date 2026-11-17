@@ -58,6 +58,7 @@ RESOURCE_NAMES = [
     *(person.display_name for person in EXTRA_DIRECTORY_OBJECTS),
     *(name for name, _description, _members in GROUPS),
     *(f"Contoso {code} access" for code, *_rest in COST_CENTERS),
+    *(f"{name} members" for _code, name, *_rest in COST_CENTERS),
     "Contoso RAI-620 access",
     "Contoso AI Gateway",
     "Contoso Government Gateway",
@@ -629,8 +630,8 @@ def configure_model_deployment(page: Page) -> None:
 def preview_gateway_limit_refusal(page: Page) -> None:
     page.get_by_role("button", name="New grant", exact=True).click()
     page.get_by_role("heading", name="New grant", exact=True).wait_for()
-    page.get_by_label("Subject", exact=True).select_option(index=1)
-    resources = page.get_by_label("Resource", exact=True)
+    page.get_by_role("combobox", name=re.compile(r"^Subject(?:\s|$)")).select_option(index=1)
+    resources = page.get_by_role("combobox", name=re.compile(r"^Resource(?:\s|$)"))
     target = resources.locator("option").filter(
         has_text="Historical text embeddings (unverified)"
     )
@@ -1020,7 +1021,7 @@ SHOTS: list[Shot] = [
         "console",
         "/entitlements",
         "light",
-        "Unable to save grant",
+        "Grants",
         actions=(preview_gateway_limit_refusal,),
         height=1900,
     ),

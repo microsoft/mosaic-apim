@@ -294,7 +294,8 @@ survives to be read back.
 
 - `SENSITIVE_LITERALS` in `demo_api.py`: the demo tenant, client, and object IDs.
 - `RESOURCE_NAMES` in `capture.py`: the demo's gateway, resource group, account, vault, MCP, and
-  Entra and MOSAIC group names, including their hyphenated aliases wherever they appear in an API path.
+  Entra and MOSAIC group names, including generated cost-center membership labels and their
+  hyphenated aliases wherever they appear in an API path.
 - The shared MCP metadata API, readable MOSAIC-owned APIM resource names and account-derived
   API paths, product names, and fictional person/workload/gateway names and directory aliases are
   redacted too.
@@ -369,6 +370,11 @@ shows both themes. Keep new shots in that pattern.
 Every shot below appears in [the gallery](gallery.md). The README selection is the console overview
 and portal catalog, each in light and dark; keep those shared images and descriptions in step.
 
+**Capture warning (PR #182):** `console-grant-call-quota`, `console-access-request-approval`,
+`console-bulk-approval`, and `console-approval-policy` were independently captured on this branch.
+Other refreshed images, including the formerly pending `console-gateway-limit-refusal`, are
+inherited from merged `main`, not independent PR #182 capture evidence.
+
 The portal shots use the console's cool light/dark palette and glass navigation, with opaque
 resource lists, forms, and connection drawers. The Usage & cost overview uses a taller viewport
 to include both the daily trend and the complete last-24-hours chart.
@@ -403,7 +409,7 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-directory-verification` | Console | `/identity?tab=security-groups`, **AI Model Users** selected, explicit complete-read check against the fictional directory, scrolled to its scoped diagnostic status | Light | Complete group-read verification |
 | `console-entitlements` | Console | `/entitlements`, selected grant with detailed state and limits | Light | Entitlements |
 | `console-grant-call-quota` | Console | `/entitlements`, full-workspace **Edit grant** with a draft Weekly call quota beside the separate call rate and saved-versus-proposed decision summary; never saved | Dark | Grant call-quota authoring |
-| `console-gateway-limit-refusal` (capture pending; not yet pictured) | Console | `/entitlements`, retained new-grant draft with a token-policy refusal for historical unverified embeddings; never saved | Light | Gateway policy capability refusal |
+| `console-gateway-limit-refusal` | Console | `/entitlements`, retained new-grant draft with separate grant-limit and shared-publication-safeguard refusals for historical unverified embeddings; never saved | Light | Gateway policy capability refusal |
 | `console-access-requests` | Console | `/entitlements?tab=requests`, pending queue with an unknown requester's captured identity in **Selected access request** detail | Light | Access requests |
 | `console-access-request-approval` | Console | `/entitlements?tab=requests`, unknown requester in full-workspace **Approve access request**, with initial label, sign-in snapshot, separate rate/quota controls and decision summary; never submitted | Light | Unknown requester approval |
 | `console-model-access-settings` | Console | `/entitlements?tab=settings`, GPT-4o selected | Dark | Model access settings |

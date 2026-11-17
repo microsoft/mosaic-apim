@@ -25,14 +25,21 @@ export function PolicyCapabilityFeedback({ error, title, reviewFields, onViewGat
         {failure.issues.map((issue, index) => {
           const field = reviewFields?.[issue.field]
           const gatewayId = issue.gatewayId
+          const scope = issue.field.startsWith('publication.') ? 'Publication safeguard'
+            : issue.field.startsWith('pool.safeguard.') ? 'Pool safeguard'
+              : issue.field.startsWith('costCenter.limits.pool.') ? 'Cost-center pooled quota'
+                : issue.field.startsWith('costCenter.limits.person.') ? 'Cost-center per-person default'
+                  : null
           return <li key={`${issue.gatewayId}:${issue.field}:${issue.policy}:${index}`}>
-            <Text weight="semibold">{policyFieldLabel(issue)}</Text>
+            <Text weight="semibold">{scope && `${scope}: `}{policyFieldLabel(issue)}</Text>
             <Text className={styles.state}>
               {issue.reason === 'invalidPolicyValue' ? 'Invalid value'
                 : issue.support === 'unknown' ? 'Support not verified' : 'Not supported'}
               {issue.skuName && ` · ${issue.skuName}`}
             </Text>
             <Text block>{issue.message}</Text>
+            {(scope === 'Publication safeguard' || scope === 'Pool safeguard')
+              && <Text size={200}>This shared safeguard remains even when a grant-specific limit is removed.</Text>}
             {issue.field.startsWith('costCenter.') && <Text size={200}>This is an inherited cost-center restriction. Clearing an explicit grant limit does not remove it.</Text>}
             <div className={styles.actions}>
               {field && <Button appearance="transparent" size="small" onClick={() => {

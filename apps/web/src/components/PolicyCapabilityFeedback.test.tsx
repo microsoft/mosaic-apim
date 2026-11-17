@@ -7,17 +7,20 @@ import type { PolicyCapabilityIssue } from '../types'
 import { PolicyCapabilityError, PolicyCapabilityFeedback } from './PolicyCapabilityFeedback'
 import { WorkspaceEditorFrame } from './WorkspaceEditorFrame'
 
-function refusal(support: 'unknown' | 'unavailable' = 'unknown') {
+function refusal(
+  support: 'unknown' | 'unavailable' = 'unknown', field = 'enforcement.requests.calls',
+) {
+  const policy = field.includes('tokensPerMinute') ? 'llm-token-limit' : 'rate-limit-by-key'
   const issue: PolicyCapabilityIssue = {
-    field: 'enforcement.requests.calls', policy: 'rate-limit-by-key',
+    field, policy,
     resource: { kind: 'poolModel', id: 'chat', scopeId: 'pool' },
     gatewayId: 'gateway/one', skuName: support === 'unavailable' ? 'Consumption' : null,
     tier: support === 'unavailable' ? 'consumption' : 'unknown', apiShape: null,
     support, reason: support === 'unavailable' ? 'unsupportedTier' : 'unknownTier',
     message: support === 'unavailable'
-      ? 'Consumption cannot enforce this call rate.' : 'Check access on the gateway before saving this rate.',
+      ? 'Consumption cannot enforce this limit.' : 'Check access on the gateway before saving this limit.',
     nextAction: support === 'unavailable' ? 'chooseSupportedGateway' : 'checkGatewayAccess',
-    documentationUrl: 'https://learn.microsoft.com/en-us/azure/api-management/rate-limit-by-key-policy',
+    documentationUrl: `https://learn.microsoft.com/en-us/azure/api-management/${policy}-policy`,
   }
   return new ApiError('Nothing was saved.', 422, {
     code: 'validation_error', message: 'Nothing was saved.',
@@ -74,5 +77,12 @@ describe('scoped capability feedback', () => {
     expect(await screen.findByText('The gateway read was forbidden.')).toBeInTheDocument()
     expect(screen.queryByText('Not supported')).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Policy reference' })).not.toBeInTheDocument()
+  })
+
+  it('distinguishes a shared safeguard from an editable grant limit with the same field name', async () => {
+    render(<MosaicThemeProvider><PolicyCapabilityError title="Unable to save grant"
+      error={refusal('unavailable', 'publication.enforcement.tokensPerMinute')} /></MosaicThemeProvider>)
+    expect(await screen.findByText('Publication safeguard: Tokens per minute')).toBeVisible()
+    expect(screen.getByText('This shared safeguard remains even when a grant-specific limit is removed.')).toBeVisible()
   })
 })

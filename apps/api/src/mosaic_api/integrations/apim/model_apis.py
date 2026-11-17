@@ -377,12 +377,14 @@ def token_limits_note(shape: str | None, sku_name: str | None) -> str | None:
     """Why this shape can't be token-metered through this gateway, or None when it can."""
 
     api_shape = ApiShape(shape) if shape in {value.value for value in ApiShape} else None
-    capability = assess_gateway_policy_capabilities(
-        None, sku_name, api_shape=api_shape
-    ).policies["llm-token-limit"]
-    return (
-        None if capability.support == CapabilitySupport.AVAILABLE else capability.message
-    )
+    capabilities = assess_gateway_policy_capabilities(None, sku_name, api_shape=api_shape)
+    capability = capabilities.policies["llm-token-limit"]
+    if capability.support == CapabilitySupport.AVAILABLE:
+        return None
+    note = capability.message
+    if capabilities.policies["rate-limit-by-key"].support == CapabilitySupport.AVAILABLE:
+        note += " Per-grant call limits are still available through governed access."
+    return note
 
 
 @dataclass(frozen=True)

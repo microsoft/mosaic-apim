@@ -113,7 +113,9 @@ def proof_page(
                     return original.call(this, message, options);
                   }};
                 }} else {{
-                  Object.defineProperty(document, 'ariaNotify', {{ configurable: true, value: undefined }});
+                  Object.defineProperty(document, 'ariaNotify', {{
+                    configurable: true, value: undefined
+                  }});
                 }}
                 let lastSpan;
                 new MutationObserver(() => {{
@@ -203,7 +205,8 @@ def test_environment_submission_keeps_focus_and_escape(
         ).to_be_visible()
         page.wait_for_function("""() => {
           const element = document.activeElement;
-          return element?.textContent.includes('Demo gateway: applied') || element?.textContent === 'Close';
+          return element?.textContent.includes('Demo gateway: applied')
+            || element?.textContent === 'Close';
         }""")
         page.keyboard.press("Escape")
         expect(dialog).to_be_hidden()
@@ -233,8 +236,119 @@ def test_connection_returns_to_its_primary_opener(
     expect(opener).to_be_focused()
 
 
+def test_identity_workspace_capture_focus_contract(
+    proof_page: Page,
+    fictional_apps: tuple[dict[str, str], int],
+) -> None:
+    page = proof_page
+    urls, _ = fictional_apps
+    page.set_viewport_size({"width": 390, "height": 900})
+    page.goto(urls["console"] + "/identity?tab=users")
+    capture._check_identity_workspace(page)
+
+
+def test_reset_dialog_restores_the_opener_then_its_disabled_fallback(
+    proof_page: Page,
+    fictional_apps: tuple[dict[str, str], int],
+) -> None:
+    page = proof_page
+    urls, _ = fictional_apps
+    page.goto(urls["portal"] + "/notification-preferences")
+    timezone = page.get_by_role("textbox", name="Time zone", exact=True)
+    saved_zone = timezone.input_value()
+    edited_zone = "Pacific/Honolulu" if saved_zone != "Pacific/Honolulu" else "UTC"
+    timezone.fill(edited_zone)
+    opener = page.get_by_role("button", name="Reset changes", exact=True)
+    opener.press("Enter")
+    dialog = page.get_by_role("dialog", name="Reset unsaved changes?", exact=True)
+    dialog.get_by_role("button", name="Keep editing", exact=True).press("Enter")
+    expect(dialog).to_have_count(0)
+    expect(opener).to_be_focused()
+    expect(timezone).to_have_value(edited_zone)
+    opener.press("Enter")
+    dialog.get_by_role("button", name="Reset changes", exact=True).press("Enter")
+    expect(dialog).to_have_count(0)
+    expect(timezone).to_have_value(saved_zone)
+    expect(opener).to_be_disabled()
+    expect(page.get_by_role("heading", name="Categories & channels", exact=True)).to_be_focused()
+
+
+@pytest.mark.parametrize("first", ["catalog", "requests"])
+def test_catalog_request_focus_does_not_wait_for_unrelated_refetches(
+    proof_page: Page,
+    fictional_apps: tuple[dict[str, str], int],
+    first: str,
+) -> None:
+    page = proof_page
+    urls, _ = fictional_apps
+    created: dict[str, Any] | None = None
+    held: dict[str, tuple[Route, Any]] = {}
+    writes: list[dict[str, Any]] = []
+
+    def query(name: str, route: Route) -> None:
+        nonlocal created
+        if route.request.method == "POST":
+            payload = route.request.post_data_json
+            writes.append(payload)
+            created = {**payload, "id": "request-focus-proof", "state": "pending"}
+            route.fulfill(json=created)
+            return
+        response = route.fetch()
+        assert response.ok, f"The fictional {name} query did not load."
+        data = response.json()
+        if created is None:
+            route.fulfill(response=response, json=data)
+            return
+        if name == "catalog":
+            for entry in data:
+                if entry["id"] == created["resource"]["id"]:
+                    entry["requestedCostCenterIds"] = [created["costCenterId"]]
+        elif name == "requests":
+            data.append(created)
+        held[name] = (route, data)
+        page.evaluate("window.__heldRequestQueries = (window.__heldRequestQueries ?? 0) + 1")
+
+    page.route("**/api/v1/portal/catalog", lambda route: query("catalog", route))
+    page.route("**/api/v1/portal/access-requests", lambda route: query("requests", route))
+    page.route("**/api/v1/portal/entitlements", lambda route: query("entitlements", route))
+    page.goto(urls["portal"] + "/catalog")
+    page.get_by_role("button", name="View access options for gpt-4o-mini", exact=True).press(
+        "Enter"
+    )
+    capture.select_access_offering("Azure Commercial")(page)
+    drawer = page.get_by_role("dialog")
+    selector = drawer.get_by_role("combobox", name=re.compile("^Cost center for "))
+    general = selector.locator("option").filter(has_text=re.compile(r"^General \("))
+    value = general.get_attribute("value")
+    assert value is not None
+    selector.select_option(value)
+    justification = drawer.get_by_role("textbox", name=re.compile("^Justification for "))
+    submit = drawer.get_by_role("button", name="Request access", exact=True)
+    submit.press("Enter")
+    try:
+        page.wait_for_function("window.__heldRequestQueries === 3")
+        expect(submit).to_have_attribute("aria-disabled", "true")
+        if first == "requests":
+            justification.focus()
+        route, data = held.pop(first)
+        route.fulfill(json=data)
+        expect(justification).to_have_count(0)
+        expect(selector).to_be_focused()
+        expect(drawer.get_by_text(re.compile("^Request submitted\\."))).to_have_count(0)
+        assert len(writes) == 1
+        for name in list(held):
+            route, data = held.pop(name)
+            route.fulfill(json=data)
+        expect(drawer.get_by_text(re.compile("^Request submitted\\."))).to_be_visible()
+        expect(selector).to_be_focused()
+    finally:
+        for route, _ in held.values():
+            route.abort()
+
+
 def test_environment_failure_focus_and_removed_opener_fallback(
-    proof_page: Page, fictional_apps: tuple[dict[str, str], int],
+    proof_page: Page,
+    fictional_apps: tuple[dict[str, str], int],
 ) -> None:
     page = proof_page
     urls, _ = fictional_apps
@@ -248,12 +362,20 @@ def test_environment_failure_focus_and_removed_opener_fallback(
         assert response.ok, "The fictional environment catalog did not load."
         catalog = response.json()
         if not deleted:
-            catalog["environments"].append({
-                "key": "focus-proof", "displayName": "Focus proof", "description": None,
-                "color": "brand", "production": False, "aliases": [],
-                "acceptsEndpointsFrom": [], "order": 90, "builtIn": False,
-                "usage": {"gateways": 0, "modelEndpoints": 0, "mcpEndpoints": 0},
-            })
+            catalog["environments"].append(
+                {
+                    "key": "focus-proof",
+                    "displayName": "Focus proof",
+                    "description": None,
+                    "color": "brand",
+                    "production": False,
+                    "aliases": [],
+                    "acceptsEndpointsFrom": [],
+                    "order": 90,
+                    "builtIn": False,
+                    "usage": {"gateways": 0, "modelEndpoints": 0, "mcpEndpoints": 0},
+                }
+            )
         route.fulfill(response=response, json=catalog)
 
     page.route("**/api/v1/environment-catalog", fictional_catalog)
@@ -263,8 +385,12 @@ def test_environment_failure_focus_and_removed_opener_fallback(
     )
     page.emulate_media(reduced_motion="no-preference")
     page.goto(urls["console"] + "/settings?tab=environments")
-    row = page.get_by_role("table", name="Environments", exact=True).get_by_role("row").filter(
-        has=page.get_by_text("Focus proof", exact=True),
+    row = (
+        page.get_by_role("table", name="Environments", exact=True)
+        .get_by_role("row")
+        .filter(
+            has=page.get_by_text("Focus proof", exact=True),
+        )
     )
     opener = row.get_by_role("button", name="Delete", exact=True)
     fallback = page.get_by_role("heading", name="Environments", exact=True)
@@ -303,7 +429,9 @@ def test_environment_failure_focus_and_removed_opener_fallback(
 
 @pytest.mark.parametrize("kind", ["rotate", "delete"])
 def test_key_confirmation_keeps_pending_focus_and_returns_to_opener(
-    proof_page: Page, fictional_apps: tuple[dict[str, str], int], kind: str,
+    proof_page: Page,
+    fictional_apps: tuple[dict[str, str], int],
+    kind: str,
 ) -> None:
     page = proof_page
     urls, _ = fictional_apps
@@ -336,13 +464,15 @@ def test_key_confirmation_keeps_pending_focus_and_returns_to_opener(
         expect(submit).to_be_focused()
         submit.press("Enter")
         assert len(held) == 1, "The pending key action was submitted twice."
-        held.pop().fulfill(json={
-            "entitlementId": "fictional-grant",
-            "subscriptionName": "fictional-subscription",
-            "exists": kind == "rotate",
-            "costCenter": None,
-            "rotated": "primary" if kind == "rotate" else None,
-        })
+        held.pop().fulfill(
+            json={
+                "entitlementId": "fictional-grant",
+                "subscriptionName": "fictional-subscription",
+                "exists": kind == "rotate",
+                "costCenter": None,
+                "rotated": "primary" if kind == "rotate" else None,
+            }
+        )
         expect(confirmation).to_have_count(0)
         expect(opener).to_be_focused()
     finally:
@@ -352,7 +482,8 @@ def test_key_confirmation_keeps_pending_focus_and_returns_to_opener(
 
 @pytest.mark.parametrize("proof_page", ["native", "fallback"], indirect=True)
 def test_repeated_clipboard_failure_delivery_and_drawer_teardown(
-    proof_page: Page, fictional_apps: tuple[dict[str, str], int],
+    proof_page: Page,
+    fictional_apps: tuple[dict[str, str], int],
 ) -> None:
     page = proof_page
     urls, _ = fictional_apps
@@ -368,12 +499,28 @@ def test_repeated_clipboard_failure_delivery_and_drawer_teardown(
     copy = drawer.get_by_role("button", name="Copy key", exact=True)
     copy.press("Enter")
     page.wait_for_function(
-        "window.__mosaic_announcements.filter(message => message.includes('Could not copy the key')).length >= 1"
+        "window.__mosaic_announcements"
+        ".filter(message => message.includes('Could not copy the key')).length >= 1"
+    )
+    assert (
+        page.evaluate(
+            "window.__mosaic_announcements"
+            ".filter(message => message.includes('Could not copy the key')).length"
+        )
+        == 1
     )
     expect(copy).to_be_focused()
     copy.press("Enter")
     page.wait_for_function(
-        "window.__mosaic_announcements.filter(message => message.includes('Could not copy the key')).length >= 2"
+        "window.__mosaic_announcements"
+        ".filter(message => message.includes('Could not copy the key')).length >= 2"
+    )
+    assert (
+        page.evaluate(
+            "window.__mosaic_announcements"
+            ".filter(message => message.includes('Could not copy the key')).length"
+        )
+        == 2
     )
     expect(copy).to_be_focused()
     assert secret not in page.evaluate("window.__mosaic_announcements.join(' ')")
@@ -384,3 +531,136 @@ def test_repeated_clipboard_failure_delivery_and_drawer_teardown(
     expect(drawer.get_by_role("button", name="Show primary key", exact=True)).to_be_enabled()
     expect(drawer.locator("[data-secret]")).to_have_count(0)
     expect(drawer.get_by_text(re.compile("Could not copy the key"))).to_have_count(0)
+
+
+def test_credential_eligibility_tears_down_failures_and_late_results(
+    proof_page: Page,
+    fictional_apps: tuple[dict[str, str], int],
+) -> None:
+    page = proof_page
+    urls, _ = fictional_apps
+    keys_allowed = True
+    connection_pattern = "**/api/v1/me/entitlements/*/connection"
+
+    def connection_eligibility(route: Route) -> None:
+        response = route.fetch()
+        assert response.ok, "The fictional direct-grant connection did not load."
+        info = response.json()
+        info["keysAllowedByCostCenter"] = keys_allowed
+        route.fulfill(response=response, json=info)
+
+    page.route(connection_pattern, connection_eligibility)
+    page.add_init_script("""
+        Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+        const originalFetch = window.fetch;
+        window.fetch = async function(...args) {
+          const response = await originalFetch.apply(this, args);
+          const url = typeof args[0] === 'string' ? args[0] : args[0].url;
+          if (window.__holdFixtureReveal && url.endsWith('/keys/reveal')) {
+            return new Promise(resolve => {
+              window.__releaseFixtureReveal = () => resolve(response);
+            });
+          }
+          return response;
+        };
+    """)
+    page.clock.install()
+    page.goto(urls["portal"] + "/access")
+    capture.open_grant_connection("gpt-4o", "Customer Insights")(page)
+    drawer = page.get_by_role("dialog")
+    show = drawer.get_by_role("button", name="Show primary key", exact=True)
+    copy = drawer.get_by_role("button", name="Copy key", exact=True)
+    reason = drawer.get_by_text(
+        "Subscription keys are turned off for this cost center. "
+        "Use a Microsoft Entra ID token instead.",
+        exact=True,
+    )
+    heading = drawer.get_by_role("heading", name="Subscription key", exact=True)
+
+    def refetch(allowed: bool) -> None:
+        nonlocal keys_allowed
+        keys_allowed = allowed
+        page.clock.fast_forward(16_000)
+        with page.expect_response(re.compile(r"/api/v1/me/entitlements/[^/]+/connection$")):
+            page.evaluate("window.dispatchEvent(new Event('visibilitychange'))")
+        if allowed:
+            expect(show).to_be_enabled()
+        else:
+            expect(reason).to_be_visible()
+        expect(drawer.locator("[data-secret]")).to_have_count(0)
+        expect(drawer.get_by_text(re.compile("Could not copy the key"))).to_have_count(0)
+
+    def settle_delivery() -> None:
+        page.evaluate("""async () => {
+          await Promise.resolve();
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        }""")
+
+    show.press("Enter")
+    secret = drawer.locator("[data-secret]").inner_text()
+    copy.press("Enter")
+    expect(drawer.get_by_text(re.compile("Could not copy the key"))).to_be_visible()
+    expect(copy).to_be_focused()
+    page.wait_for_function(
+        "window.__mosaic_announcements"
+        ".filter(message => message.includes('Could not copy the key')).length >= 1"
+    )
+    page.clock.fast_forward(16_000)
+    with page.expect_response(re.compile(r"/api/v1/me/entitlements/[^/]+/connection$")):
+        page.evaluate("window.dispatchEvent(new Event('visibilitychange'))")
+    settle_delivery()
+    expect(copy).to_be_focused()
+    expect(drawer.locator("[data-secret]")).to_have_text(secret)
+    assert (
+        page.evaluate(
+            "window.__mosaic_announcements"
+            ".filter(message => message.includes('Could not copy the key')).length"
+        )
+        == 1
+    )
+    refetch(False)
+    expect(reason).to_be_focused()
+    refetch(True)
+    expect(heading).to_be_focused()
+
+    show.press("Enter")
+    expect(drawer.locator("[data-secret]")).to_be_visible()
+    page.evaluate("""
+        Object.defineProperty(navigator, 'clipboard', {
+          configurable: true,
+          value: {
+            writeText: () => new Promise(resolve => { window.__resolveFixtureCopy = resolve; }),
+          },
+        });
+    """)
+    copy.press("Enter")
+    page.wait_for_function("typeof window.__resolveFixtureCopy === 'function'")
+    refetch(False)
+    expect(reason).to_be_focused()
+    refetch(True)
+    page.evaluate("window.__resolveFixtureCopy()")
+    settle_delivery()
+    expect(drawer.locator("[data-secret]")).to_have_count(0)
+    expect(drawer.get_by_text(re.compile("^Key copied\\."))).to_have_count(0)
+
+    shown_before = page.evaluate(
+        "window.__mosaic_announcements"
+        ".filter(message => message.includes('Primary key shown')).length"
+    )
+    page.evaluate("window.__holdFixtureReveal = true")
+    show.press("Enter")
+    page.wait_for_function("typeof window.__releaseFixtureReveal === 'function'")
+    expect(show).to_be_focused()
+    refetch(False)
+    refetch(True)
+    page.evaluate("window.__releaseFixtureReveal()")
+    settle_delivery()
+    expect(drawer.locator("[data-secret]")).to_have_count(0)
+    assert (
+        page.evaluate(
+            "window.__mosaic_announcements"
+            ".filter(message => message.includes('Primary key shown')).length"
+        )
+        == shown_before
+    )
+    assert secret not in page.evaluate("window.__mosaic_announcements.join(' ')")
