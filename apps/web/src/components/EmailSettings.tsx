@@ -1,12 +1,14 @@
-import { Badge, Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, Input, MessageBar, MessageBarBody, Text, Title3, useRestoreFocusTarget } from '@fluentui/react-components'
+import { AnnounceProvider, Badge, Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, Input, MessageBar, MessageBarBody, Text, Title3, useRestoreFocusTarget } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { Link as RouterLink } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import type { EmailSettingsUpdate } from '../types'
 import { ErrorState, Loading } from './AsyncState'
 import { CapabilityEvidence } from './NotificationChecks'
 import { WorkspaceEditorFrame } from './WorkspaceEditorFrame'
+import { useDialogFocusReturn } from './useDialogFocusReturn'
+import { useFocusAwareAnnounce } from './useFocusAwareAnnounce'
 import styles from './AdminGovernance.module.css'
 
 const mailboxPattern = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i
@@ -19,6 +21,11 @@ export function EmailSettings() {
   const [draft, setDraft] = useState<EmailSettingsUpdate | null>(null)
   const [testTo, setTestTo] = useState('')
   const [confirmTest, setConfirmTest] = useState(false)
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const outcomeRef = useRef<HTMLDivElement>(null)
+  const fallbackRef = useRef<HTMLElement>(null)
+  const motion = useDialogFocusReturn({ open: confirmTest, surfaceRef, fallbackRef })
+  const announcement = useFocusAwareAnnounce(outcomeRef)
   const checks = useMutation({ mutationFn: (_revision: number) => api.checkEmailAccess() })
   const save = useMutation({
     mutationFn: (body: EmailSettingsUpdate) => api.saveEmailSettings(body),
@@ -39,6 +46,9 @@ export function EmailSettings() {
     },
   })
   const data = settings.data
+  useLayoutEffect(() => {
+    if (confirmTest && (test.isError || test.isSuccess)) outcomeRef.current?.focus()
+  }, [confirmTest, test.isError, test.isSuccess, test.submittedAt])
   const configurationCheck = checks.data?.find(check => check.feature === 'emailConfiguration')
   const checkedRevisionMatches = configurationCheck?.configurationRevision === String(data?.revision)
     || (configurationCheck?.configurationRevision == null && configurationCheck?.state === 'notConfigured'
@@ -60,7 +70,8 @@ export function EmailSettings() {
       onBack={() => setDraft(null)} onCancel={() => setDraft(null)}
       dirty={JSON.stringify(draft) !== JSON.stringify(original)} pending={save.isPending}
       primaryAction={{ label: 'Save email settings', disabled: Boolean(invalid), onClick: () => save.mutate(draft) }}
-      error={save.isError ? <ErrorState error={save.error} /> : undefined}>
+      errorKey={save.submittedAt}
+      error={save.isError ? <ErrorState context="action" title="Unable to save email settings" error={save.error} /> : undefined}>
       <div className={styles.section}>
         <Field label="Sender mailbox object ID" required={draft.enabled}
           validationMessage={draft.senderMailboxId && !mailboxPattern.test(draft.senderMailboxId) ? 'Enter the mailbox user object ID as a GUID, not an address or application ID.' : undefined}
@@ -77,9 +88,9 @@ export function EmailSettings() {
     </WorkspaceEditorFrame>
   }
   const stale = Boolean(data?.lastTestAt && data.lastTestRevision !== data.revision)
-  return <div className={styles.stack}>
+  return <div className={styles.stack} ref={(node) => { fallbackRef.current = node?.querySelector<HTMLElement>('h2') ?? null }}>
     <section className={styles.section} aria-label="Microsoft Graph email setup">
-      <div className={styles.toolbar}><Title3 as="h2">Microsoft Graph email</Title3>
+      <div className={styles.toolbar}><Title3 as="h2" tabIndex={-1}>Microsoft Graph email</Title3>
         {data && <Badge appearance="tint" color={data.migrationRequired || !data.configured ? 'warning' : 'informative'}>
           {data.migrationRequired ? 'Migration required' : data.configured ? 'Sender saved' : 'Not configured'}
         </Badge>}
@@ -122,7 +133,7 @@ export function EmailSettings() {
       </div>
       <Text>Read-only: no message is sent and no permissions are changed. Send-only Graph access has no harmless sendMail dry run.</Text>
       {checks.isPending && <Loading label="Checking saved email access" />}
-      {checks.isError && <ErrorState error={checks.error} />}
+      {checks.isError && <ErrorState context="action" title="Unable to check email access" error={checks.error} announcementKey={checks.submittedAt} />}
       {mismatchedChecks && <MessageBar intent="warning"><MessageBarBody>
         <Text>The sender configuration changed. Refresh the sender settings, then run Check email access again.</Text>
         <Button disabled={settings.isFetching || checks.isPending} onClick={() => { checks.reset(); void settings.refetch() }}>Refresh sender settings</Button>
@@ -150,12 +161,13 @@ export function EmailSettings() {
       </div>}
     </section>
     </div>
-    <Dialog open={confirmTest} onOpenChange={(_, d) => { if (!test.isPending) setConfirmTest(d.open) }}>
-      <DialogSurface><DialogBody><DialogTitle>Send a test email?</DialogTitle><DialogContent>
+    <Dialog open={confirmTest} surfaceMotion={motion} onOpenChange={(_, d) => { if (!test.isPending) setConfirmTest(d.open) }}>
+      <DialogSurface ref={surfaceRef}><DialogBody><DialogTitle>Send a test email?</DialogTitle><DialogContent>
         <Text>Send one synthetic MOSAIC test from the saved mailbox to {testTo.trim()}. This does not enable normal notifications.</Text>
         {test.isPending && <Loading label="Sending test email" />}
-        {test.isError && <ErrorState error={test.error} />}
-        {test.data && <div role="status" className={styles.stack}>
+        {(test.isError || test.data) && <AnnounceProvider value={announcement}><div ref={outcomeRef} tabIndex={-1}>
+        {test.isError && <ErrorState context="action" title="Unable to send the test email" error={test.error} announcementKey={test.submittedAt} />}
+        {test.data && <div className={styles.stack}>
           <Text>{test.data.sent ? 'Graph accepted the test request. Check the recipient mailbox for receipt.' : test.data.error ?? 'Graph did not accept the test.'}</Text>
           <Text>Outcome: {test.data.outcome} · {new Date(test.data.testedAt).toLocaleString()}</Text>
           {test.data.errorCode && <Text>Diagnostic: {test.data.errorCode}</Text>}
@@ -165,9 +177,11 @@ export function EmailSettings() {
           </MessageBarBody></MessageBar>}
           <Text>This is a single explicit test; normal queued notifications retry automatically within their attempt limits.</Text>
         </div>}
+        </div></AnnounceProvider>}
       </DialogContent><DialogActions>
-        <Button disabled={test.isPending} onClick={() => setConfirmTest(false)}>Close</Button>
-        <Button appearance="primary" disabled={test.isPending || test.isSuccess} onClick={() => test.mutate(testTo.trim())}>Send synthetic email</Button>
+        <Button disabledFocusable={test.isPending} onClick={() => setConfirmTest(false)}>Close</Button>
+        <Button appearance="primary" disabled={test.isSuccess} disabledFocusable={test.isPending}
+          onClick={() => { if (!test.isPending && !test.isSuccess) test.mutate(testTo.trim()) }}>Send synthetic email</Button>
       </DialogActions></DialogBody></DialogSurface>
     </Dialog>
   </div>

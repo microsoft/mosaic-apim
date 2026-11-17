@@ -873,6 +873,42 @@ export type GatewayStatus =
 
 export type ManagementMode = 'observe' | 'manage'
 export type CapabilitySupport = 'available' | 'unavailable' | 'unknown'
+export type GatewayPolicyName = 'rate-limit-by-key' | 'quota-by-key' | 'llm-token-limit' | 'llm-emit-token-metric'
+export type PolicyCapabilityReason = 'documentedSupport' | 'unsupportedTier' | 'unknownTier' | 'unverifiedSku' | 'unsupportedApiShape' | 'unknownApiShape'
+export type PolicyCapabilityNextAction = 'none' | 'checkGatewayAccess' | 'reviewResource' | 'chooseSupportedGateway' | 'reviewLimit'
+
+export interface PolicyCapability {
+  policy: GatewayPolicyName
+  support: CapabilitySupport
+  reason: PolicyCapabilityReason
+  message: string
+  nextAction: PolicyCapabilityNextAction
+  documentationUrl: string
+  maximumRenewalPeriodSeconds?: number | null
+}
+
+export interface GatewayPolicyCapabilities {
+  gatewayId: string | null
+  skuName: string | null
+  tier: 'classic' | 'v2' | 'consumption' | 'unknown'
+  apiShape: ApiShape | null
+  observedAt?: string | null
+  resource?: EntitlementResource | null
+  policies: Record<GatewayPolicyName, PolicyCapability>
+}
+
+export interface PolicyCapabilityIssue extends Omit<PolicyCapability, 'reason' | 'maximumRenewalPeriodSeconds'> {
+  field: string
+  resource: EntitlementResource | null
+  gatewayId: string | null
+  skuName: string | null
+  tier: GatewayPolicyCapabilities['tier']
+  apiShape: ApiShape | null
+  reason: PolicyCapabilityReason | 'invalidPolicyValue'
+  minimum?: number | null
+  maximum?: number | null
+}
+
 export type AccessEvaluation = 'effectivePermissions' | 'probe' | 'notEvaluated'
 
 export type AiBackendKind =
@@ -1627,6 +1663,7 @@ export interface PublishableModel {
   /** False when the gateway's tier can't meter this shape; the note says why. */
   tokenLimitsSupported?: boolean
   tokenLimitsNote?: string | null
+  policyCapabilities?: GatewayPolicyCapabilities | null
   publicationId: string | null
   publicationStatus: PublicationStatus | null
   suggestedApiName: string
@@ -2228,12 +2265,14 @@ export interface PoolCandidateDeployment {
   apiKey: boolean
   /** Who serves the deployment, such as AWS Bedrock outside Azure. */
   provider?: ModelProvider | null
+  policyCapabilities?: GatewayPolicyCapabilities | null
 }
 
 export interface PoolCandidateModel {
   modelName: string
   modelFormat?: string | null
   apiShape?: ApiShape | null
+  policyCapabilities?: GatewayPolicyCapabilities | null
   deployments: PoolCandidateDeployment[]
 }
 

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, render, screen } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { KEY_VISIBLE_MS } from '../connection-format'
@@ -13,7 +13,7 @@ import {
   revealedSecondary,
   securityGroupConnection,
 } from '../test/connection'
-import type { KeyRevealResult, ModelConnection } from '../types'
+import type { GrantKey, KeyRevealResult, ModelConnection } from '../types'
 import { KeyReveal } from './KeyReveal'
 
 const api = vi.hoisted(() => ({
@@ -133,6 +133,61 @@ describe('KeyReveal', () => {
     expect(onConflict).toHaveBeenCalled()
   })
 
+  it('keeps a pending create focused and guards repeated activation', async () => {
+    const user = userEvent.setup()
+    const pending = deferred<GrantKey>()
+    api.createMyEntitlementKey.mockReturnValue(pending.promise)
+    renderKeyReveal({ ...connection, keyExists: false })
+    const create = screen.getByRole('button', { name: 'Create key' })
+
+    await user.click(create)
+    expect(create).toHaveAttribute('aria-disabled', 'true')
+    expect(create).toHaveFocus()
+    await user.click(create)
+    await user.keyboard('{Enter}')
+    expect(api.createMyEntitlementKey).toHaveBeenCalledOnce()
+
+    await act(async () => {
+      pending.resolve({ entitlementId: directGrant.id, subscriptionName: 'grant-subscription',
+        exists: true, costCenter: connection.costCenter ?? null, rotated: null })
+    })
+    expect(await screen.findByText('Key created. You can show either slot now.')).toBeVisible()
+  })
+
+  it.each(['rotate', 'delete'] as const)('keeps pending %s focused and returns from its removed confirmation', async (kind) => {
+    const user = userEvent.setup()
+    const pending = deferred<GrantKey>()
+    const mutation = kind === 'rotate' ? api.rotateMyEntitlementKey : api.deleteMyEntitlementKey
+    mutation.mockReturnValue(pending.promise)
+    renderKeyReveal()
+    const label = kind === 'rotate' ? 'Rotate primary key' : 'Delete key'
+    const opener = screen.getByRole('button', { name: label })
+    await user.click(opener)
+    const confirmation = screen.getByRole('group', { name: kind === 'rotate' ? 'Confirm rotate primary key' : 'Confirm delete key' })
+    const submit = within(confirmation).getByRole('button', { name: label })
+
+    await user.click(submit)
+    expect(submit).toHaveAttribute('aria-disabled', 'true')
+    expect(submit).toHaveFocus()
+    await user.click(submit)
+    await user.keyboard('{Enter}')
+    await user.click(within(confirmation).getByRole('button', { name: 'Cancel' }))
+    expect(confirmation).toBeVisible()
+    expect(mutation).toHaveBeenCalledOnce()
+    await user.click(submit)
+
+    await act(async () => {
+      pending.resolve({ entitlementId: directGrant.id, subscriptionName: 'grant-subscription',
+        exists: kind === 'rotate', costCenter: connection.costCenter ?? null,
+        rotated: kind === 'rotate' ? 'primary' : null })
+    })
+    expect(await screen.findByText(kind === 'rotate'
+      ? 'Primary key rotated. Apps using that old value must be updated.'
+      : 'Key deleted. You can create a new one if you need key access again.')).toBeVisible()
+    expect(confirmation).not.toBeInTheDocument()
+    expect(opener).toHaveFocus()
+  })
+
   it('confirms rotation and hides any shown key', async () => {
     const user = userEvent.setup()
     renderKeyReveal()
@@ -242,6 +297,37 @@ describe('KeyReveal', () => {
     expect(await screen.findByText(/Could not copy the key/)).toBeVisible()
     expect(screen.queryByText(/Key copied/)).not.toBeInTheDocument()
     expect(screen.getByText(revealedPrimary.key)).toBeVisible()
+  })
+
+  it('repeats missing-clipboard feedback and tears down a key across eligibility off/on', async () => {
+    const user = userEvent.setup()
+    const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined })
+    const client = new QueryClient()
+    const tree = (info: ModelConnection) => <QueryClientProvider client={client}>
+      <KeyReveal entitlementId={directGrant.id} connection={info} onConflict={vi.fn()} />
+    </QueryClientProvider>
+    try {
+      const { rerender } = render(tree(connection))
+      await user.click(showPrimary())
+      const copy = await screen.findByRole('button', { name: 'Copy key' })
+      await user.click(copy)
+      const first = (await screen.findByText(/Could not copy the key/)).closest('.fui-MessageBar')
+      await user.click(copy)
+      expect(screen.getByText(/Could not copy the key/).closest('.fui-MessageBar')).not.toBe(first)
+      expect(copy).toHaveFocus()
+      rerender(tree({ ...connection, keysAllowedByCostCenter: false }))
+      expect(screen.queryByText(revealedPrimary.key)).not.toBeInTheDocument()
+      expect(screen.queryByText(/Could not copy the key/)).not.toBeInTheDocument()
+      expect(screen.getByText(/Subscription keys are turned off for this cost center/)).toHaveFocus()
+      rerender(tree(connection))
+      expect(screen.queryByText(revealedPrimary.key)).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Copy key' })).not.toBeInTheDocument()
+      expect(api.revealMyEntitlementKey).toHaveBeenCalledOnce()
+    } finally {
+      if (original) Object.defineProperty(navigator, 'clipboard', original)
+      else Reflect.deleteProperty(navigator, 'clipboard')
+    }
   })
 
   it('hides the key automatically after 60 seconds', async () => {

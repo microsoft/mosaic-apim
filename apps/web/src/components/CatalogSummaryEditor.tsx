@@ -67,6 +67,7 @@ export function CatalogSummaryEditor({
       title={<span ref={title} tabIndex={-1}>{step === 'review' ? 'Review catalog summary' : 'Edit catalog summary'}</span>}
       description="Update portal copy for this exact offering. Access and publishing stay unchanged."
       onBack={onClose} onCancel={onClose} dirty={dirty} pending={save.isPending}
+      errorKey={save.submittedAt}
       pendingLabel="Saving catalog summary…"
       actions={step === 'review'
         ? <Button disabled={save.isPending} onClick={() => setStep('write')}>Back to edit</Button>

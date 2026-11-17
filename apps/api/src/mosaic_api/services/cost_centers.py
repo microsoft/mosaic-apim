@@ -26,6 +26,7 @@ from mosaic_api.cost_centers import (
     PendingRecheck,
     PortalCostCenter,
     default_settings,
+    exact_resource_key,
     general_cost_center,
     tenant_default_id,
     with_recheck,
@@ -47,6 +48,7 @@ from mosaic_api.errors import (
     NotFoundError,
     ValidationError,
 )
+from mosaic_api.integrations.apim.policy_capabilities import changed_limit_policies
 from mosaic_api.integrations.graph import DirectoryLookup, GroupManagement
 from mosaic_api.repositories import (
     CostCenterRepository,
@@ -57,6 +59,7 @@ from mosaic_api.repositories import (
 from mosaic_api.services.cost_center_directory import CostCenterDirectoryService
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.model_access import scope_lease
+from mosaic_api.services.policy_capabilities import person_limit_policies, pooled_limit_policies
 
 logger = structlog.get_logger()
 
@@ -510,9 +513,34 @@ class CostCenterService:
     async def set_limits(
         self, actor: Actor, cost_center_id: str, request: CostCenterLimitsUpdate
     ) -> CostCenterManagementView:
-        for limit in request.limits:
+        book = await self.book(actor.tenant_id)
+        before = book.get(cost_center_id)
+        if before is None:
+            raise NotFoundError("Cost center was not found", details={"id": cost_center_id})
+        previous = {exact_resource_key(limit.resource): limit for limit in before.limits}
+        for index, limit in enumerate(request.limits):
             await self._require_resource(
                 actor, limit.resource.kind, limit.resource.id, limit.resource.scope_id
+            )
+            prefix = f"limits[{index}]"
+            after_requirements = person_limit_policies(
+                limit.person, field_prefix=f"{prefix}.person"
+            ) + pooled_limit_policies(
+                limit.pool.monthly_tokens if limit.pool else None,
+                limit.pool.monthly_calls if limit.pool else None,
+                field_prefix=f"{prefix}.pool",
+            )
+            old = previous.get(exact_resource_key(limit.resource))
+            before_requirements = person_limit_policies(
+                old.person if old else None, field_prefix=f"{prefix}.person"
+            ) + pooled_limit_policies(
+                old.pool.monthly_tokens if old and old.pool else None,
+                old.pool.monthly_calls if old and old.pool else None,
+                field_prefix=f"{prefix}.pool",
+            )
+            await self._entitlements.require_resource_limit_policies(
+                actor, limit.resource,
+                changed_limit_policies(before_requirements, after_requirements),
             )
         current = await self._stored(actor, cost_center_id)
         updated = current.model_copy(

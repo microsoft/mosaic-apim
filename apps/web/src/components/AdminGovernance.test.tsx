@@ -129,6 +129,28 @@ describe('bulk approval workspace', () => {
     await screen.findByText(/0 approved · 1 already approved · 0 unresolved/)
     expect(api.approveBulkRequests.mock.calls[1][0]).toEqual(api.approveBulkRequests.mock.calls[0][0])
   })
+  it('applies a paired shared call quota only to included requests and sends no orphan rate window', async () => {
+    api.previewBulkApprovals.mockResolvedValue({ items: [first], unavailable: [] })
+    api.approveBulkRequests.mockResolvedValue({ items: [{ requestId: first.request.id, status: 'approved', entitlementId: 'grant', requiresPlanApply: true }] })
+    mount(<BulkApprovalWorkspace requestIds={[first.request.id]} principals={[]} costCenters={[]} onBack={vi.fn()} onComplete={vi.fn()} />)
+    const heading = await screen.findByRole('heading', { name: 'Compatible shared limits' })
+    const shared = within(heading.closest('section')!)
+    fireEvent.change(shared.getByRole('spinbutton', { name: 'Call quota' }), { target: { value: '1000' } })
+    fireEvent.change(shared.getByRole('combobox', { name: 'Call quota period' }), { target: { value: 'Weekly' } })
+    expect(api.approveBulkRequests).not.toHaveBeenCalled()
+    fireEvent.click(shared.getByRole('button', { name: 'Apply limits to compatible selection' }))
+    expect(api.approveBulkRequests).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Approve 1 selected' }))
+    await waitFor(() => expect(api.approveBulkRequests).toHaveBeenCalledOnce())
+    expect(api.approveBulkRequests.mock.calls[0][0].items).toEqual([{
+      requestId: first.request.id, expectedContext: first.revision, approval: {
+        note: null, enforcement: { requests: {
+          counterKeyExpression: '@(context.Subscription.Id)', callQuota: 1000, callQuotaPeriod: 'Weekly',
+        } },
+      },
+    }])
+    expect(api.recommendApprovals).not.toHaveBeenCalled()
+  })
   it('shows missing API failure explicitly and never fabricates a preview', async () => {
     api.previewBulkApprovals.mockRejectedValue(new Error('Bulk preview endpoint unavailable (404)'))
     mount(<BulkApprovalWorkspace requestIds={['r1']} principals={[]} costCenters={[]} onBack={vi.fn()} onComplete={vi.fn()} />)

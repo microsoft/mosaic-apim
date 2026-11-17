@@ -1,11 +1,13 @@
-import { Badge, Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, Input, Select, Text, Title3 } from '@fluentui/react-components'
+import { AnnounceProvider, Badge, Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, Input, Select, Text, Title3, useAnnounce, useRestoreFocusTarget } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { Link as RouterLink } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import type { AiApprovalReadiness, AiApprovalSettingsInput } from '../admin-types'
 import { ErrorState, Loading } from './AsyncState'
 import { WorkspaceEditorFrame } from './WorkspaceEditorFrame'
+import { useDialogFocusReturn } from './useDialogFocusReturn'
+import { useFocusAwareAnnounce } from './useFocusAwareAnnounce'
 import styles from './AdminGovernance.module.css'
 
 export function AiReadiness({ value }: { value: AiApprovalReadiness }) {
@@ -31,11 +33,18 @@ export function ApprovalAiSettings() {
   const [draft, setDraft] = useState<AiApprovalSettingsInput | null>(null)
   const [draftRevision, setDraftRevision] = useState<number | undefined>()
   const [confirmTest, setConfirmTest] = useState(false)
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const outcomeRef = useRef<HTMLDivElement>(null)
+  const restoreFocus = useRestoreFocusTarget()
+  const { announce } = useAnnounce()
+  const surfaceMotion = useDialogFocusReturn({ open: confirmTest, surfaceRef })
+  const announcement = useFocusAwareAnnounce(outcomeRef)
   const save = useMutation({
     mutationFn: (body: AiApprovalSettingsInput) => api.saveApprovalAiSettings({ ...body, expectedRevision: draftRevision }),
     onSuccess: value => { client.setQueryData(['approval-ai-settings'], value); void client.invalidateQueries({ queryKey: ['approval-ai-readiness'] }); setDraft(null) },
   })
-  const test = useMutation({ mutationFn: () => api.testApprovalAi(), onSuccess: value => { client.setQueryData(['approval-ai-readiness'], value); setConfirmTest(false); void settings.refetch() } })
+  const test = useMutation({ mutationFn: () => api.testApprovalAi(), onSuccess: value => { client.setQueryData(['approval-ai-readiness'], value); setConfirmTest(false); void settings.refetch(); announce('AI readiness check completed. Inspect the reported readiness and blockers.', { polite: true }) } })
+  useLayoutEffect(() => { if (confirmTest && test.isError) outcomeRef.current?.focus() }, [confirmTest, test.isError, test.submittedAt])
   function edit() {
     const v = settings.data
     if (!v) return
@@ -56,17 +65,17 @@ export function ApprovalAiSettings() {
         <div><dt>Last verification</dt><dd>{settings.data.verifiedAt ?? 'No verification recorded'}</dd></div></dl>}
       <div className={styles.toolbar}>
         <Button appearance="primary" disabled={!settings.data} onClick={edit}>Edit AI settings</Button>
-        <Button disabled={!settings.data || test.isPending} onClick={() => setConfirmTest(true)}>Test saved configuration</Button>
+        <Button {...restoreFocus} disabled={!settings.data || test.isPending} onClick={() => { test.reset(); setConfirmTest(true) }}>Test saved configuration</Button>
         <Button disabled={readiness.isFetching} onClick={() => void readiness.refetch()}>Refresh readiness</Button>
       </div>
     </section>
     {readiness.isPending && <Loading label="Checking AI readiness" />}
     {readiness.isError && <ErrorState error={readiness.error} />}
     {readiness.data && <AiReadiness value={readiness.data} />}
-    <Dialog open={confirmTest} onOpenChange={(_, d) => { if (!test.isPending) setConfirmTest(d.open) }}><DialogSurface><DialogBody><DialogTitle>Test the governed model?</DialogTitle><DialogContent>
+    <Dialog open={confirmTest} surfaceMotion={surfaceMotion} onOpenChange={(_, d) => { if (!test.isPending) setConfirmTest(d.open) }}><DialogSurface ref={surfaceRef}><DialogBody><DialogTitle>Test the governed model?</DialogTitle><DialogContent>
       This sends a bounded synthetic request through the saved APIM model connection. It can consume tokens and cost against the dedicated grant and cost center. It does not approve any request.
-      {test.isError && <ErrorState error={test.error} />}
-    </DialogContent><DialogActions><Button disabled={test.isPending} onClick={() => setConfirmTest(false)}>Cancel</Button><Button appearance="primary" disabled={test.isPending} onClick={() => test.mutate()}>Send synthetic model test</Button></DialogActions></DialogBody></DialogSurface></Dialog>
+      {test.isError && <AnnounceProvider value={announcement}><div ref={outcomeRef} tabIndex={-1}><ErrorState context="action" title="Unable to check AI readiness" error={test.error} announcementKey={test.submittedAt} /></div></AnnounceProvider>}
+    </DialogContent><DialogActions><Button disabledFocusable={test.isPending} onClick={() => setConfirmTest(false)}>Cancel</Button><Button appearance="primary" disabledFocusable={test.isPending} onClick={() => { if (!test.isPending) test.mutate() }}>Send synthetic model test</Button></DialogActions></DialogBody></DialogSurface></Dialog>
   </div>
 }
 function AiSettingsEditor({ value, onBack, onSave, pending, error }: { value: AiApprovalSettingsInput; onBack: () => void; onSave: (value: AiApprovalSettingsInput) => void; pending: boolean; error: unknown }) {
@@ -93,7 +102,7 @@ function AiSettingsEditor({ value, onBack, onSave, pending, error }: { value: Ai
   const configChanged = JSON.stringify({ ...value, enabled: false }) !== JSON.stringify({ ...draft, enabled: false })
   return <WorkspaceEditorFrame title="Edit AI approval assistance" onBack={onBack} onCancel={onBack} dirty={JSON.stringify(value) !== JSON.stringify(draft)} pending={pending}
     description="No model keys or backend endpoint are accepted. Select an existing governed offering and dedicated application or managed identity."
-    error={error ? <ErrorState error={error} /> : undefined}
+    error={error ? <ErrorState context="action" title="Unable to save AI settings" error={error} /> : undefined}
     primaryAction={{ label: 'Save AI settings', onClick: () => onSave(draft), disabled: numericInvalid || (draft.enabled && (incomplete || configChanged)) }}>
     <div className={styles.stack}>
       {[modelOfferings, principals, grants, centers].filter(q => q.isError).map((q, i) => <ErrorState key={i} error={q.error} />)}

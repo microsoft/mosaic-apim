@@ -1,6 +1,7 @@
 import { renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useMosaicApi } from './api'
+import { GATEWAY_POLICY_NAMES } from './policy-capabilities'
 
 vi.mock('@azure/msal-react', () => ({
   useMsal: () => ({
@@ -14,6 +15,73 @@ vi.mock('@azure/msal-react', () => ({
 describe('useMosaicApi', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it('reads policy support for the exact encoded pool scope without a caller shape hint', async () => {
+    const body = {
+      gatewayId: 'gateway/one', skuName: null, tier: 'unknown', apiShape: null,
+      resource: { kind: 'poolModel', id: 'same model', scopeId: 'pool/one' },
+      policies: Object.fromEntries(GATEWAY_POLICY_NAMES.map(policy => [policy, {
+        policy, support: 'unknown', reason: 'unknownTier', message: 'Check gateway access.',
+        nextAction: 'checkGatewayAccess',
+        documentationUrl: `https://learn.microsoft.com/en-us/azure/api-management/${policy}-policy`,
+      }])),
+    }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useMosaicApi())
+    expect(await result.current.getGatewayPolicyCapabilities('gateway/one', {
+      kind: 'poolModel', id: 'same model', scopeId: 'pool/one',
+    })).toEqual(body)
+    const url = String(fetchMock.mock.calls[0][0])
+    expect(url).toContain('/api/v1/gateways/gateway%2Fone/policy-capabilities')
+    expect(url).toContain('resourceKind=poolModel')
+    expect(url).toContain('resourceId=same+model')
+    expect(url).toContain('scopeId=pool%2Fone')
+    expect(url).not.toContain('apiShape')
+    expect(fetchMock.mock.calls[0][1].method).toBe('GET')
+  })
+
+  it.each([
+    { gatewayId: 'other-gateway' },
+    { resource: { kind: 'poolModel', id: 'same model', scopeId: 'other-pool' } },
+    { resource: null },
+  ])('rejects available capability facts for a different exact target: %j', async mismatch => {
+    const target = { kind: 'poolModel' as const, id: 'same model', scopeId: 'pool' }
+    const body = {
+      gatewayId: 'gateway', skuName: 'Developer', tier: 'classic', apiShape: 'azureOpenAi',
+      resource: target,
+      policies: Object.fromEntries(GATEWAY_POLICY_NAMES.map(policy => [policy, {
+        policy, support: 'available', reason: 'documentedSupport', message: 'Recorded support.',
+        nextAction: 'none',
+        documentationUrl: `https://learn.microsoft.com/en-us/azure/api-management/${policy}-policy`,
+      }])),
+      ...mismatch,
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 200 })))
+    const { result } = renderHook(() => useMosaicApi())
+    await expect(result.current.getGatewayPolicyCapabilities('gateway', target)).rejects.toThrow()
+  })
+
+  it('does not accept resource-specific schema evidence for an unscoped gateway read', async () => {
+    const body = {
+      gatewayId: 'gateway', skuName: 'Developer', tier: 'classic', apiShape: 'azureOpenAi',
+      policies: Object.fromEntries(GATEWAY_POLICY_NAMES.map(policy => [policy, {
+        policy, support: 'available', reason: 'documentedSupport', message: 'Recorded support.',
+        nextAction: 'none',
+        documentationUrl: `https://learn.microsoft.com/en-us/azure/api-management/${policy}-policy`,
+      }])),
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 200 })))
+    const { result } = renderHook(() => useMosaicApi())
+    await expect(result.current.getGatewayPolicyCapabilities('gateway')).rejects.toThrow()
+  })
+
+  it('surfaces an incomplete capability response instead of inventing support', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 200 })))
+    const { result } = renderHook(() => useMosaicApi())
+    await expect(result.current.getGatewayPolicyCapabilities('gateway'))
+      .rejects.toThrow('capability response is incomplete')
   })
 
   it('patches only summary metadata with both encoded pool and model identity', async () => {

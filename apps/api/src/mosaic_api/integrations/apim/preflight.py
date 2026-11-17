@@ -158,7 +158,7 @@ def _egress_addresses(sku_name: object, properties: JsonObject) -> list[str]:
     return list(dict.fromkeys(egress))
 
 
-def _capabilities(service: JsonObject | None) -> GatewayCapabilities:
+def capabilities_from_service(service: JsonObject | None) -> GatewayCapabilities:
     if not service:
         return GatewayCapabilities(
             notes=["MOSAIC could not read the service description."],
@@ -281,7 +281,7 @@ async def run_preflight(
             status=GatewayStatus.UNREACHABLE,
         )
 
-    capabilities = _capabilities(service)
+    capabilities = capabilities_from_service(service)
     permissions = await client.effective_permissions()
 
     if permissions is None:

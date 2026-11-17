@@ -1,16 +1,28 @@
-import { FluentProvider, webLightTheme } from '@fluentui/react-components'
+import { AnnounceProvider, FluentProvider, webLightTheme } from '@fluentui/react-components'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { type ReactNode } from 'react'
+import { type ReactNode, useLayoutEffect, useRef } from 'react'
 import { createMemoryRouter, Link, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import { WorkspaceEditorFrame } from './WorkspaceEditorFrame'
 import { WorkspaceDialog } from './WorkspaceDialog'
 import { SectionLayout } from './SectionLayout'
 import { completeWorkspaceNavigation } from './WorkspaceLeaveGuard'
+import { ErrorState } from './AsyncState'
+import { useFocusAwareAnnounce } from './useFocusAwareAnnounce'
 
 function Fluent({ children }: { children: ReactNode }) {
   return <FluentProvider theme={webLightTheme}>{children}</FluentProvider>
+}
+
+function Outcome({ focus, attempt }: { focus: boolean; attempt: number }) {
+  const target = useRef<HTMLDivElement>(null)
+  const announcement = useFocusAwareAnnounce(target)
+  useLayoutEffect(() => { if (focus) target.current?.focus() }, [focus, attempt])
+  return <AnnounceProvider value={announcement}><div ref={target} tabIndex={-1}>
+    <ErrorState context="action" title="Unable to save" announcementKey={attempt}
+      error={new Error('Your draft is retained. Retry Save.')} />
+  </div></AnnounceProvider>
 }
 
 describe('WorkspaceEditorFrame and leave guard', () => {
@@ -184,7 +196,7 @@ describe('WorkspaceEditorFrame and leave guard', () => {
     const onBack = vi.fn()
     render(<Fluent><WorkspaceEditorFrame title="Publishing" pending onBack={onBack}
       primaryAction={{ label: 'Apply plan', onClick: vi.fn() }}>Plan</WorkspaceEditorFrame></Fluent>)
-    expect(screen.getByRole('button', { name: 'Apply plan' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Apply plan' })).toHaveAttribute('aria-disabled', 'true')
     await user.click(screen.getByRole('button', { name: 'Back' }))
     expect(screen.getByRole('dialog', { name: 'Operation in progress' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Discard changes' })).not.toBeInTheDocument()
@@ -216,6 +228,85 @@ describe('WorkspaceEditorFrame and leave guard', () => {
     render(<Fluent><WorkspaceEditorFrame title="Edit" onBack={() => undefined}
       validationSummary="Choose a gateway.">Form</WorkspaceEditorFrame></Fluent>)
     expect(screen.getByText('Choose a gateway.').closest('[tabindex]')).toHaveFocus()
+  })
+
+  it('retains a focused busy primary action and blocks duplicate activation', async () => {
+    const user = userEvent.setup()
+    const save = vi.fn()
+    const view = (pending: boolean, disabled = false) => <Fluent>
+      <WorkspaceEditorFrame title="Edit model" pending={pending} onBack={vi.fn()}
+        primaryAction={{ label: 'Save model', onClick: save, disabled }}>Draft</WorkspaceEditorFrame>
+    </Fluent>
+    const { rerender } = render(view(false))
+    const button = screen.getByRole('button', { name: 'Save model' })
+    await user.click(button)
+    rerender(view(true))
+    expect(button).toHaveFocus()
+    expect(button).toHaveAttribute('aria-disabled', 'true')
+    expect(button).not.toBeDisabled()
+    await user.click(button)
+    await user.keyboard('{Enter}{Space}')
+    expect(save).toHaveBeenCalledOnce()
+    rerender(view(false, true))
+    expect(button).toBeDisabled()
+    await user.click(button)
+    expect(save).toHaveBeenCalledOnce()
+  })
+
+  it('does not refocus a retained JSX error until another submitted outcome arrives', async () => {
+    const user = userEvent.setup()
+    const failure = new Error('The model was not saved. Your draft is retained.')
+    const view = (errorKey: number) => <Fluent>
+      <WorkspaceEditorFrame title="Edit model" onBack={vi.fn()} errorKey={errorKey}
+        error={<ErrorState error={failure} />}>
+        <input aria-label="Draft field" />
+      </WorkspaceEditorFrame>
+    </Fluent>
+    const { rerender } = render(view(1))
+    const summary = screen.getByText(failure.message).closest('[tabindex]')
+    expect(summary).toHaveFocus()
+    const field = screen.getByRole('textbox', { name: 'Draft field' })
+    await user.click(field)
+    rerender(view(1))
+    expect(field).toHaveFocus()
+    rerender(view(2))
+    expect(summary).toHaveFocus()
+  })
+
+  it('reports pending once per explicit operation rather than on a rerender', () => {
+    const announce = vi.fn()
+    const view = (pending: boolean) => <Fluent><AnnounceProvider value={{ announce }}>
+      <WorkspaceEditorFrame title="Edit model" pending={pending} pendingLabel="Saving model..."
+        onBack={vi.fn()}>Draft</WorkspaceEditorFrame>
+    </AnnounceProvider></Fluent>
+    const { rerender } = render(view(false))
+    rerender(view(true))
+    expect(announce).toHaveBeenCalledExactlyOnceWith('Saving model...', { polite: true })
+    rerender(view(true))
+    expect(announce).toHaveBeenCalledOnce()
+    rerender(view(false))
+    rerender(view(true))
+    expect(announce).toHaveBeenCalledTimes(2)
+  })
+
+  it('announces an outcome only when the full summary has not already taken focus', async () => {
+    const user = userEvent.setup()
+    const announce = vi.fn()
+    const view = (focus: boolean, attempt: number) => <Fluent><AnnounceProvider value={{ announce }}>
+      <input aria-label="Edited field" />
+      <Outcome focus={focus} attempt={attempt} />
+    </AnnounceProvider></Fluent>
+    const { rerender } = render(view(true, 1))
+    expect(screen.getByText('Your draft is retained. Retry Save.').closest('[tabindex]')).toHaveFocus()
+    expect(announce).not.toHaveBeenCalled()
+    const field = screen.getByRole('textbox', { name: 'Edited field' })
+    await user.click(field)
+    rerender(view(false, 2))
+    expect(field).toHaveFocus()
+    expect(announce).toHaveBeenCalledOnce()
+    expect(announce.mock.calls[0][0]).toContain('Your draft is retained. Retry Save.')
+    rerender(view(true, 3))
+    expect(announce).toHaveBeenCalledOnce()
   })
 })
 

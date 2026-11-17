@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 from mosaic_api.domain import (
     MOSAIC_RESOURCE_PREFIX,
     ApiShape,
+    CapabilitySupport,
     DeploymentCapability,
     GatewayTier,
     ModelProvider,
@@ -34,6 +35,10 @@ from mosaic_api.domain import (
     shape_fits_provider,
 )
 from mosaic_api.errors import ValidationError
+from mosaic_api.integrations.apim.policy_capabilities import (
+    assess_gateway_policy_capabilities,
+    policy_support_on_tier,
+)
 
 # Bumped whenever a curated set changes. A Publication records the version that produced it, so an
 # API published by an older MOSAIC is identifiable rather than silently assumed to be current.
@@ -353,42 +358,33 @@ def endpoint_slug(endpoint_name: str) -> str:
 
 
 def token_limits_supported(shape: str | None, tier: GatewayTier) -> bool:
-    """Whether API Management can meter tokens for this shape on this tier family.
+    """Family-level policy support; concrete validation also requires observed SKU/schema."""
 
-    ``llm-token-limit`` and ``llm-emit-token-metric`` understand the Anthropic Messages API only
-    on the v2 tiers. The OpenAI-style shapes keep their existing behaviour on every tier.
-    """
+    api_shape = ApiShape(shape) if shape in {value.value for value in ApiShape} else None
+    return (
+        policy_support_on_tier("llm-token-limit", api_shape, tier)
+        == CapabilitySupport.AVAILABLE
+    )
 
-    if shape == ApiShape.ANTHROPIC_MESSAGES:
-        return tier == GatewayTier.V2
-    return True
+
+def token_metrics_emitted(shape: str | None, tier: GatewayTier) -> bool:
+    """Preserve emission intent; concrete capability checks guard the resulting policy."""
+
+    return shape != ApiShape.ANTHROPIC_MESSAGES or tier == GatewayTier.V2
 
 
 def token_limits_note(shape: str | None, sku_name: str | None) -> str | None:
     """Why this shape can't be token-metered through this gateway, or None when it can."""
 
-    tier = gateway_tier(sku_name)
-    if token_limits_supported(shape, tier):
+    api_shape = ApiShape(shape) if shape in {value.value for value in ApiShape} else None
+    capabilities = assess_gateway_policy_capabilities(None, sku_name, api_shape=api_shape)
+    capability = capabilities.policies["llm-token-limit"]
+    if capability.support == CapabilitySupport.AVAILABLE:
         return None
-    lead = (
-        "API Management applies token limits and token metrics to the Anthropic Messages API "
-        "only on v2 tiers (Basic v2, Standard v2 and Premium v2)."
-    )
-    if tier == GatewayTier.UNKNOWN:
-        return (
-            f"{lead} MOSAIC hasn't read this gateway's tier, so it can't apply them. Re-run the "
-            "gateway's access check."
-        )
-    if tier == GatewayTier.CONSUMPTION:
-        return (
-            f"{lead} This gateway uses the Consumption tier, so this publication applies no token "
-            "limits or token metrics."
-        )
-    return (
-        f"{lead} This gateway uses the {sku_name} tier, a classic tier, so this publication "
-        "applies no token limits or token metrics. Per-grant call limits are still available "
-        "through governed access."
-    )
+    note = capability.message
+    if capabilities.policies["rate-limit-by-key"].support == CapabilitySupport.AVAILABLE:
+        note += " Per-grant call limits are still available through governed access."
+    return note
 
 
 @dataclass(frozen=True)

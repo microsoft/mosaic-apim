@@ -1,9 +1,10 @@
 import {
   Button, Checkbox, Field, Input, Select,
   Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle,
+  useRestoreFocusTarget,
 } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { usePortalApi } from '../api'
 import { ErrorState, Loading } from '../components/AsyncState'
@@ -58,6 +59,22 @@ function PreferencesEditor({ initial }: { initial: NotificationPreferences }) {
   const [validation, setValidation] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
   const [resetOpen, setResetOpen] = useState(false)
+  const restoreFocus = useRestoreFocusTarget()
+  const resetOpener = useRef<HTMLButtonElement>(null)
+  const resetFallback = useRef<HTMLHeadingElement>(null)
+  const wasResetOpen = useRef(false)
+  useLayoutEffect(() => {
+    const returning = wasResetOpen.current && !resetOpen
+    wasResetOpen.current = resetOpen
+    if (!returning) return
+    queueMicrotask(() => {
+      const target = resetOpener.current?.disabled ? resetFallback.current : resetOpener.current
+      if (!target?.isConnected) return
+      const active = document.activeElement
+      const modal = active instanceof HTMLElement ? active.closest('[role="dialog"]') : null
+      if (!modal || modal.contains(target)) target.focus()
+    })
+  }, [resetOpen])
   const dirty = JSON.stringify(draft) !== JSON.stringify(baseline) || thresholdText !== baseline.thresholds.join(', ')
   const save = useMutation({
     mutationFn: (input: NotificationPreferencesInput) => api.saveNotificationPreferences(input, revision),
@@ -107,7 +124,7 @@ function PreferencesEditor({ initial }: { initial: NotificationPreferences }) {
       if (!error) save.mutate(input)
     }}>
       <section className="notification-section" aria-labelledby="notification-categories-heading">
-        <h2 id="notification-categories-heading">Categories & channels</h2>
+        <h2 id="notification-categories-heading" ref={resetFallback} tabIndex={-1}>Categories & channels</h2>
         <p>These choices apply only to your portal account. In-app is on by default; email, private Teams, and digests require your opt-in.
           Saving a choice does not enable an unready channel.</p>
         <div className="notification-category-list">
@@ -205,7 +222,7 @@ function PreferencesEditor({ initial }: { initial: NotificationPreferences }) {
         {saved && <p role="status">Preferences saved. Check delivery readiness below; saved settings do not prove delivery.</p>}
         <div className="notification-actions">
           <Button type="submit" appearance="primary" disabled={!dirty || save.isPending}>{save.isPending ? 'Saving…' : 'Save preferences'}</Button>
-          <Button type="button" disabled={!dirty || save.isPending} onClick={() => setResetOpen(true)}>Reset changes</Button>
+          <Button {...restoreFocus} ref={resetOpener} type="button" disabled={!dirty || save.isPending} onClick={() => setResetOpen(true)}>Reset changes</Button>
           {dirty && <span className="notification-meta">Unsaved changes</span>}
         </div>
       </div>

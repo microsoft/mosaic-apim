@@ -492,7 +492,7 @@ describe('EntitlementConnectionDialog', () => {
     expect(screen.queryByRole('dialog', { hidden: true })).not.toBeInTheDocument()
   })
 
-  it('leaves focus on Copy when copying fails, and alerts a screen reader to each failure', async () => {
+  it('leaves focus on Copy and creates a new announcement for each copy failure', async () => {
     const user = userEvent.setup()
     vi.spyOn(navigator.clipboard, 'writeText').mockRejectedValue(new Error('Denied'))
     renderDialog()
@@ -502,14 +502,41 @@ describe('EntitlementConnectionDialog', () => {
 
     await user.click(copyButton)
 
-    const alert = await screen.findByRole('alert')
-    expect(alert).toHaveTextContent(/Could not copy the key/)
+    const feedback = (await screen.findByText(/Could not copy the key/)).closest('.fui-MessageBar')
+    expect(feedback).toHaveTextContent(/Could not copy the key/)
     expect(copyButton).toHaveFocus()
-    // Trying again puts a new alert in place of the old one, so a screen reader announces it again.
     await user.click(copyButton)
-    await waitFor(() => expect(screen.getByRole('alert')).not.toBe(alert))
-    expect(screen.getByRole('alert')).toHaveTextContent(/Could not copy the key/)
+    await waitFor(() => expect(screen.getByText(/Could not copy the key/).closest('.fui-MessageBar')).not.toBe(feedback))
+    expect(screen.getByText(/Could not copy the key/)).toBeVisible()
     expect(copyButton).toHaveFocus()
+  })
+
+  it('repeats missing-clipboard failures and clears them when cost-center eligibility changes', async () => {
+    const user = userEvent.setup()
+    const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined })
+    try {
+      const { queryClient } = renderDialog()
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Reveal primary key' })).toBeEnabled())
+      await user.click(screen.getByRole('button', { name: 'Reveal primary key' }))
+      const copy = await screen.findByRole('button', { name: 'Copy revealed key' })
+      await user.click(copy)
+      const first = (await screen.findByText(/Could not copy the key/)).closest('.fui-MessageBar')
+      await user.click(copy)
+      expect(screen.getByText(/Could not copy the key/).closest('.fui-MessageBar')).not.toBe(first)
+      expect(copy).toHaveFocus()
+      const query = queryClient.getQueryCache().find({ queryKey: ['entitlement-connection'], exact: false })
+      if (!query) throw new Error('Connection query is missing')
+      act(() => queryClient.setQueryData(query.queryKey, { ...connectionInfo, keysAllowedByCostCenter: false }))
+      await waitFor(() => expect(screen.queryByText(revealed.key)).not.toBeInTheDocument())
+      expect(screen.queryByText(/Could not copy the key/)).not.toBeInTheDocument()
+      act(() => queryClient.setQueryData(query.queryKey, connectionInfo))
+      expect(screen.queryByText(revealed.key)).not.toBeInTheDocument()
+      expect(api.revealEntitlementKey).toHaveBeenCalledOnce()
+    } finally {
+      if (original) Object.defineProperty(navigator, 'clipboard', original)
+      else Reflect.deleteProperty(navigator, 'clipboard')
+    }
   })
 
   it('creates a missing key on request', async () => {

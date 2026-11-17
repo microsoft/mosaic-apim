@@ -10,12 +10,27 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from mcp_double import FakeMcpServer, build_http_client
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
-from mosaic_api.domain import ApimResourceId, PublishRun
+from mosaic_api.domain import (
+    ApimResourceId,
+    AuditEvent,
+    Gateway,
+    ModelApi,
+    ModelEndpoint,
+    ModelProvider,
+    Publication,
+    PublicationStatus,
+    PublishedResource,
+    PublishedResourceKind,
+    PublishRun,
+    TokenEnforcement,
+    new_id,
+)
 from mosaic_api.integrations.aoai import CognitiveServicesClient
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
 from mosaic_api.integrations.graph import DirectoryLookup
 from mosaic_api.main import create_app
+from mosaic_api.observed import ObservedModelDeployment
 from mosaic_api.repositories import (
     InMemoryCostCenterRepository,
     InMemoryDirectoryRepository,
@@ -41,6 +56,100 @@ from mosaic_api.services.model_pools import ModelPoolService
 
 async def _no_sleep(_seconds: float) -> None:
     return None
+
+
+async def seed_known_policy_target(
+    gateways: InMemoryGatewayRepository,
+    endpoints: InMemoryModelEndpointRepository,
+    model: ModelApi,
+    *,
+    publication: Publication | None = None,
+) -> ModelApi:
+    """Seed fictional observed tier/chat evidence, not a checker override or live observation."""
+
+    tenant = model.tenant_id
+    audit = AuditEvent(
+        id=new_id("audit"),
+        tenant_id=tenant,
+        action="test.policyEvidence",
+        resource_type="test",
+        resource_id=model.id,
+        actor_object_id="local-admin",
+    )
+    gateway = await gateways.get_gateway(tenant, model.gateway_id)
+    if gateway is None:
+        arm = ApimResourceId.parse(RESOURCE_ID)
+        gateway = Gateway(
+            id=model.gateway_id,
+            tenant_id=tenant,
+            name="Fictional Developer gateway",
+            azure_resource_id=arm.canonical,
+            subscription_id=arm.subscription_id,
+            resource_group=arm.resource_group,
+            service_name=arm.service_name,
+        )
+    await gateways.save_gateway(
+        gateway.model_copy(
+            update={
+                "capabilities": gateway.capabilities.model_copy(update={"sku_name": "Developer"})
+            }
+        ),
+        audit,
+    )
+    publication = publication or Publication(
+        id=f"policy-publication-{model.id}",
+        tenant_id=tenant,
+        gateway_id=model.gateway_id,
+        model_endpoint_id=f"policy-endpoint-{model.id}",
+        deployment_name="policy-chat",
+        provider=ModelProvider.AZURE_OPENAI,
+        display_name=model.display_name,
+        api_name=model.api_name,
+        api_path=model.path,
+        backend_name="mosaic-policy-chat",
+        fragment_name="mosaic-policy-chat",
+        product_name="mosaic-policy-chat",
+        subscription_name="mosaic-policy-chat",
+        enforcement=TokenEnforcement(
+            counter_key_expression="@(context.Subscription.Id)",
+            tokens_per_minute=1000,
+        ),
+        shape_version="1.0",
+        status=PublicationStatus.PUBLISHED,
+        model_api_id=model.id,
+        resources=[
+            PublishedResource(
+                kind=PublishedResourceKind.API,
+                name=model.api_name,
+                resource_id=f"{gateway.azure_resource_id}/apis/{model.api_name}",
+                created_by_mosaic=True,
+            )
+        ],
+    )
+    endpoint = ModelEndpoint(
+        id=publication.model_endpoint_id,
+        tenant_id=tenant,
+        name="Fictional chat endpoint",
+        provider=ModelProvider.AZURE_OPENAI,
+        endpoint="https://fixture.openai.azure.com",
+    )
+    await endpoints.save_endpoint(endpoint, audit)
+    snapshot = new_id("snapshot")
+    deployment = ObservedModelDeployment(
+        id=f"policy-deployment-{model.id}",
+        tenant_id=tenant,
+        endpoint_id=endpoint.id,
+        snapshot_id=snapshot,
+        deployment_name=publication.deployment_name,
+        model_name="gpt-4o",
+        model_format="OpenAI",
+        capabilities={"chatCompletion": "true"},
+    )
+    await endpoints.replace_observed_for_endpoint(tenant, endpoint.id, [deployment], snapshot)
+    await gateways.save_publication(publication, audit)
+    return await gateways.save_model_api(
+        model.model_copy(update={"publication_id": publication.id}), audit
+    )
 
 
 @pytest.fixture

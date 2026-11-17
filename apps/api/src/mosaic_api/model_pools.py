@@ -24,6 +24,7 @@ from mosaic_api.domain import (
     ApiShape,
     Entity,
     EnvironmentVerdict,
+    GatewayPolicyCapabilities,
     KeyState,
     ModelAccessSettings,
     ModelProvider,
@@ -707,6 +708,7 @@ class PoolCandidateDeployment(MosaicModel):
     declared: bool = False
     api_key: bool = False
     provider: ModelProvider | None = None
+    policy_capabilities: GatewayPolicyCapabilities | None = None
 
 
 class PoolCandidateModel(MosaicModel):
@@ -715,6 +717,7 @@ class PoolCandidateModel(MosaicModel):
     model_name: str
     model_format: str | None = None
     api_shape: ApiShape | None = None
+    policy_capabilities: GatewayPolicyCapabilities | None = None
     deployments: list[PoolCandidateDeployment] = Field(default_factory=list)
 
 

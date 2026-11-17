@@ -1,12 +1,15 @@
 from collections.abc import Sequence
 
 import pytest
+from apim_double import RESOURCE_GROUP, RESOURCE_ID, SERVICE_NAME, SUBSCRIPTION_ID
 from mosaic_api.domain import (
     AuditEvent,
     EntitlementCreate,
     EntitlementEnforcement,
     EntitlementResource,
     EntitlementSubject,
+    Gateway,
+    GatewayCapabilities,
     ModelApi,
     Principal,
     PrincipalKind,
@@ -79,6 +82,19 @@ class Harness:
         )
         await self.directory.create_principal(user, audit())
         await self.directory.create_principal(group, audit())
+        await self.gateways.create_gateway(
+            Gateway(
+                id="gateway",
+                tenant_id=TENANT,
+                name="Gateway",
+                azure_resource_id=RESOURCE_ID,
+                subscription_id=SUBSCRIPTION_ID,
+                resource_group=RESOURCE_GROUP,
+                service_name=SERVICE_NAME,
+                capabilities=GatewayCapabilities(sku_name="Developer"),
+            ),
+            audit(),
+        )
         await self.gateways.save_model_api(
             ModelApi(
                 id="model-api",

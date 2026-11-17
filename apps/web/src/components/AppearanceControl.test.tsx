@@ -10,7 +10,7 @@ describe('AppearanceControl', () => {
   it('switches and persists light, dark and system from the sidebar', async () => {
     const user = userEvent.setup()
     render(<MosaicThemeProvider><AppearanceControl /></MosaicThemeProvider>)
-    const group = within(screen.getByRole('group', { name: 'Appearance' }))
+    const group = within(await screen.findByRole('group', { name: 'Appearance' }))
     await user.click(group.getByRole('button', { name: 'Dark' }))
     expect(group.getByRole('button', { name: 'Dark' })).toHaveAttribute('aria-pressed', 'true')
     expect(document.documentElement.dataset.theme).toBe('dark')
@@ -25,7 +25,7 @@ describe('AppearanceControl', () => {
   it('offers the same preferences in collapsed navigation', async () => {
     const user = userEvent.setup()
     render(<MosaicThemeProvider><AppearanceControl /></MosaicThemeProvider>)
-    await user.click(screen.getByRole('button', { name: 'Appearance: system' }))
+    await user.click(await screen.findByRole('button', { name: 'Appearance: system' }))
     await user.click(screen.getByRole('menuitem', { name: 'Dark' }))
     expect(localStorage.getItem('mosaic-theme')).toBe('dark')
     expect(screen.getByRole('button', { name: 'Appearance: dark' })).toBeVisible()
