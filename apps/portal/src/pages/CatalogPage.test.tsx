@@ -3,7 +3,7 @@ import { useFocusFinders } from '@fluentui/react-components'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PortalApi } from '../api'
 import type { AccessRequest, CatalogEntry, PortalCostCenter, PortalProfile, ResolvedEntitlement } from '../types'
 import { CatalogPage } from './CatalogPage'
@@ -15,6 +15,8 @@ import { MosaicThemeProvider } from '../theme'
 const mocks = vi.hoisted(() => ({
   api: {} as PortalApi,
 }))
+
+afterEach(() => vi.restoreAllMocks())
 
 vi.mock('../api', () => ({
   ApiError: class ApiError extends Error {
@@ -103,6 +105,8 @@ function CatalogFixture() {
 function renderPage(entries: CatalogEntry[], requests: AccessRequest[], centers: PortalCostCenter[] | Error = costCenters,
   profileOverride: Partial<PortalProfile> = {}, entitlements: ResolvedEntitlement[] = [],
   overrides: Partial<PortalApi> = {}) {
+  // Tabster treats a zero-sized body as a hidden document; this DOM has no page layout.
+  vi.spyOn(document.body, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 1440, 900))
   let currentRequests = [...requests]
   const createAccessRequest = vi.fn(async (payload) => {
     const created = {
@@ -198,6 +202,8 @@ describe('CatalogPage', () => {
     renderPage([first, second], [])
     await openAccessOptions('demo-chat')
     const drawer = screen.getByRole('dialog', { name: 'Access to demo-chat' })
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Search catalog' })).not.toBeInTheDocument())
+    expect(drawer).not.toHaveAttribute('aria-hidden', 'true')
     const selector = within(drawer).getByRole('combobox', { name: 'Access option' })
     expect(within(drawer).queryByText(/First offering/)).not.toBeInTheDocument()
     await user.selectOptions(selector, resourceKey(resourceFromCatalog(first)))
