@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { useFocusFinders } from '@fluentui/react-components'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, Link, RouterProvider } from 'react-router-dom'
@@ -12,6 +13,12 @@ import { MosaicThemeProvider } from '../theme'
 const mocks = vi.hoisted(() => ({ api: {} as PortalApi }))
 vi.mock('../api', () => ({ ApiError: class ApiError extends Error { status = 500 }, usePortalApi: () => mocks.api }))
 
+function PreferencesFixture() {
+  // The real shell keeps Tabster mounted while transient dialogs are removed.
+  useFocusFinders()
+  return <><NotificationPreferencesPage /><Link to="/usage">Usage page</Link></>
+}
+
 function renderPage(api: Partial<PortalApi> = {}, client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })) {
   mocks.api = {
     getNotificationPreferences: async () => notificationPreferences(),
@@ -22,7 +29,7 @@ function renderPage(api: Partial<PortalApi> = {}, client = new QueryClient({ def
     ...api,
   } as PortalApi
   const router = createMemoryRouter([
-    { path: '/notification-preferences', element: <><NotificationPreferencesPage /><Link to="/usage">Usage page</Link></> },
+    { path: '/notification-preferences', element: <PreferencesFixture /> },
     { path: '/usage', element: <h1>Usage destination</h1> },
   ], { initialEntries: ['/notification-preferences'] })
   render(<MosaicThemeProvider><QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider></MosaicThemeProvider>)
@@ -122,11 +129,12 @@ describe('NotificationPreferencesPage', () => {
     expect(router.state.location.pathname).toBe('/notification-preferences')
     await user.click(screen.getByRole('button', { name: 'Reset changes' }))
     const resetDialog = await screen.findByRole('dialog', { name: 'Reset unsaved changes?' })
-    await user.click(within(resetDialog).getByRole('button', { name: 'Keep editing' }))
+    await user.click(await within(resetDialog).findByRole('button', { name: 'Keep editing' }))
     await waitFor(() => expect(resetDialog).not.toBeInTheDocument())
     expect(timezone).toHaveValue('Europe/London')
     await user.click(screen.getByRole('button', { name: 'Reset changes' }))
-    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Reset changes' }))
+    const confirmedReset = await screen.findByRole('dialog', { name: 'Reset unsaved changes?' })
+    await user.click(await within(confirmedReset).findByRole('button', { name: 'Reset changes' }))
     expect(timezone).toHaveValue('UTC')
     await user.click(screen.getByRole('link', { name: 'Usage page' }))
     expect(await screen.findByRole('heading', { name: 'Usage destination' })).toBeVisible()

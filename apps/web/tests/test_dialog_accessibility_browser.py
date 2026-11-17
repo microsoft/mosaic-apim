@@ -273,6 +273,79 @@ def test_reset_dialog_restores_the_opener_then_its_disabled_fallback(
     expect(page.get_by_role("heading", name="Categories & channels", exact=True)).to_be_focused()
 
 
+@pytest.mark.parametrize("first", ["catalog", "requests"])
+def test_catalog_request_focus_does_not_wait_for_unrelated_refetches(
+    proof_page: Page,
+    fictional_apps: tuple[dict[str, str], int],
+    first: str,
+) -> None:
+    page = proof_page
+    urls, _ = fictional_apps
+    created: dict[str, Any] | None = None
+    held: dict[str, tuple[Route, Any]] = {}
+    writes: list[dict[str, Any]] = []
+
+    def query(name: str, route: Route) -> None:
+        nonlocal created
+        if route.request.method == "POST":
+            payload = route.request.post_data_json
+            writes.append(payload)
+            created = {**payload, "id": "request-focus-proof", "state": "pending"}
+            route.fulfill(json=created)
+            return
+        response = route.fetch()
+        assert response.ok, f"The fictional {name} query did not load."
+        data = response.json()
+        if created is None:
+            route.fulfill(response=response, json=data)
+            return
+        if name == "catalog":
+            for entry in data:
+                if entry["id"] == created["resource"]["id"]:
+                    entry["requestedCostCenterIds"] = [created["costCenterId"]]
+        elif name == "requests":
+            data.append(created)
+        held[name] = (route, data)
+        page.evaluate("window.__heldRequestQueries = (window.__heldRequestQueries ?? 0) + 1")
+
+    page.route("**/api/v1/portal/catalog", lambda route: query("catalog", route))
+    page.route("**/api/v1/portal/access-requests", lambda route: query("requests", route))
+    page.route("**/api/v1/portal/entitlements", lambda route: query("entitlements", route))
+    page.goto(urls["portal"] + "/catalog")
+    page.get_by_role("button", name="View access options for gpt-4o-mini", exact=True).press(
+        "Enter"
+    )
+    capture.select_access_offering("Azure Commercial")(page)
+    drawer = page.get_by_role("dialog")
+    selector = drawer.get_by_role("combobox", name=re.compile("^Cost center for "))
+    general = selector.locator("option").filter(has_text=re.compile(r"^General \("))
+    value = general.get_attribute("value")
+    assert value is not None
+    selector.select_option(value)
+    justification = drawer.get_by_role("textbox", name=re.compile("^Justification for "))
+    submit = drawer.get_by_role("button", name="Request access", exact=True)
+    submit.press("Enter")
+    try:
+        page.wait_for_function("window.__heldRequestQueries === 3")
+        expect(submit).to_have_attribute("aria-disabled", "true")
+        if first == "requests":
+            justification.focus()
+        route, data = held.pop(first)
+        route.fulfill(json=data)
+        expect(justification).to_have_count(0)
+        expect(selector).to_be_focused()
+        expect(drawer.get_by_text(re.compile("^Request submitted\\."))).to_have_count(0)
+        assert len(writes) == 1
+        for name in list(held):
+            route, data = held.pop(name)
+            route.fulfill(json=data)
+        expect(drawer.get_by_text(re.compile("^Request submitted\\."))).to_be_visible()
+        expect(selector).to_be_focused()
+    finally:
+        for route, _ in held.values():
+            route.abort()
+
+
 def test_environment_failure_focus_and_removed_opener_fallback(
     proof_page: Page,
     fictional_apps: tuple[dict[str, str], int],
