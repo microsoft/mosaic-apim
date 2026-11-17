@@ -30,3 +30,15 @@ Thumbs.db
 # Infrastructure
 infra/*.json
 !infra/main.parameters.json
+
+# Terraform (provider locks are deliberately tracked)
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+infra/terraform/*.auto.tfvars.json
+infra/terraform/terraform.tfvars
+infra/terraform/*.tfvars
+!infra/terraform/example.tfvars
+infra/terraform/backend.hcl
+.mosaic-terraform/

@@ -10,8 +10,64 @@ For an existing environment, use [Upgrades and recovery](upgrades.md) instead of
 initial provisioning.
 
 - [Deploy with `azd`](#deploy-with-azd)
+- [Before you deploy](#before-you-deploy)
+- [What gets deployed](#what-gets-deployed)
+- [Deploy with Terraform](#deploy-with-terraform)
 - [Optional cost-center group management](#optional-cost-center-group-management)
 - [Billing-derived pricing](#billing-derived-pricing)
+
+## Before you deploy
+
+Both supported deployment paths create a **public reference deployment**. Private endpoints,
+VNets and private DNS are an [administrator-owned extension](private-networking.md), not an
+`azd up` or Terraform option. Azure Policy that requires private-only access can block this
+reference deployment; do not bypass organizational policy to deploy it.
+
+| Prerequisite | What the administrator must arrange |
+| --- | --- |
+| Subscription and region | An active Azure subscription, approved resource group/location and sufficient regional App Service, APIM, Cosmos and ACR capacity/quota; review costs before provisioning |
+| Azure permissions | Resource creation and role-assignment permissions at the deployment scope, including Cosmos SQL role assignments; Contributor alone does not grant Azure RBAC role-assignment writes |
+| Entra permissions | A deploying user who can manage registrations/service principals and assign the initial Admin role; separately arrange privileged consent for the API managed identity's baseline Graph application permissions and the model client's delegated consent |
+| Resource providers | Ensure `Microsoft.Web`, `Microsoft.ContainerRegistry`, `Microsoft.DocumentDB`, `Microsoft.KeyVault`, `Microsoft.ApiManagement`, `Microsoft.OperationalInsights`, and `Microsoft.Insights` are registered; if the deployer cannot register them, have the subscription administrator do it first |
+| Operator tools | Azure CLI and Python 3.12 for either path; Azure Developer CLI for Bicep/azd, or Terraform 1.7+ for standalone Terraform |
+| Build access | ACR Tasks access to source/build context, base images, npm/Python package sources and the selected Python index; default remote builds do not require local Docker |
+| Connectivity | Operator access to Azure management, Microsoft Graph and Entra; browser access to the public console, portal and API; required runtime service/identity/telemetry egress |
+| Inputs | Subscription, environment name, region, APIM publisher name/email and a Python package index; identity IDs are produced by bootstrap |
+| State for Terraform | Secure local state or administrator-provisioned remote backend storage/container and its RBAC; use a fresh environment, not an existing azd deployment |
+
+For example, an authorized administrator can register a missing provider with
+`az provider register --namespace Microsoft.Web`, then inspect its registration state.
+Registration does not prove regional SKU availability or grant deployment permissions.
+See [development prerequisites](development.md#prerequisites) for permission details and
+optional capabilities. No existing model or gateway is needed to stand up the normal hosting
+deployment; actual model use needs an independently provisioned backend and permissions.
+
+## What gets deployed
+
+| Service/capability | Bicep / `azd up` | Standalone Terraform | Must exist beforehand? |
+| --- | --- | --- | --- |
+| Deployment resource group, Linux App Service plan and three Web Apps | Created | Created | No |
+| ACR and API/console/portal images | Created; remote build/deploy | Created; explicit build and plan/apply | No |
+| Cosmos DB, database and five containers | Created | Created | No |
+| Backend vault and isolated management vault | Created | Created | No |
+| Log Analytics, Application Insights, diagnostics | Created | Created | No |
+| Normal APIM gateway, loggers and scoped permissions | Created | Created | No; referencing an external bootstrap gateway is a separate operator choice |
+| Entra registrations, initial Admin assignment, redirect setup | azd hooks | Explicit Python bootstrap/configure | Tenant and required administrator permissions must exist; inspect consent warnings |
+| AI account/model deployment, other model providers or MCP servers | Not created | Not created | Only before using those optional backends; separately configure quota and inference access |
+| Email mailbox, Teams channels/bot, billing exports/connections | Not created | Not created | Only when enabling each capability; follow its setup guide |
+| Terraform remote-state storage | Not used | Administrator-owned, optional backend | Before initializing that backend |
+| VNets, VPN/ExpressRoute, DNS resolvers/zones, private endpoints, private build runners | Not created | Not created | Administrator-owned design and implementation; see [private networking](private-networking.md) |
+
+`azd up` **will deploy the public hosting services and application images**, not the private
+reference diagram. Infrastructure provisioning alone does not publish an AI model, assign
+every portal user, or prove runtime authorization.
+
+## Deploy with Terraform
+
+Use the [standalone Terraform guide](../infra/terraform/README.md) for native infrastructure,
+Entra bootstrap, reviewed plan/apply, container builds, readiness, updates and removal.
+It needs no azd installation. Bicep and Terraform are alternative owners of a fresh deployment;
+do not apply both to the same resources.
 
 ## Deploy with `azd`
 
