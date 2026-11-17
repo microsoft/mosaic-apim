@@ -69,6 +69,7 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
   const { announce } = useAnnounce()
   const mounted = useRef(false)
   const requestFocus = useRef<HTMLElement | null>(null)
+  const costCenterRef = useRef<HTMLSelectElement>(null)
   const successRef = useRef<HTMLElement>(null)
   useEffect(() => {
     mounted.current = true
@@ -104,6 +105,7 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
   )
   const selectedAlreadyRequested = Boolean(effectiveCostCenterId && (requestedCostCenters.has(effectiveCostCenterId) || pendingRequest))
   const selectedUnavailable = selectedAlreadyGranted || selectedAlreadyRequested
+  const showRequestControls = !selectedUnavailable && selectedDefinition?.mode === 'requestOnly'
   const government = entry.azureCloud === 'government'
   const keysDisallowed = government && selectedDefinition?.keysAllowed === false
   const defaultUnavailable = profile.data?.defaultCostCenter && (profile.data.defaultCostCenterEligible === false ||
@@ -131,9 +133,13 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
   })
   const submittedId = create.isSuccess && pendingRequest?.id === create.data.id ? create.data.id : null
   useLayoutEffect(() => {
-    if (submittedId && requestFocus.current && !requestFocus.current.isConnected
-      && document.activeElement === document.body) successRef.current?.focus()
-  }, [submittedId])
+    if (!showRequestControls && requestFocus.current && !requestFocus.current.isConnected
+      && document.activeElement === document.body) {
+      const target = submittedId ? successRef.current : costCenterRef.current
+      target?.focus()
+      requestFocus.current = null
+    }
+  }, [showRequestControls, submittedId])
 
   return (
     <div className="action-stack">
@@ -156,6 +162,7 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
         <label className="cost-center-select">
           <span>Cost center</span>
           <select
+            ref={costCenterRef}
             aria-label={`Cost center for ${entry.displayName}`}
             value={effectiveCostCenterId ?? ''}
             onChange={(event) => setSelectedCostCenterId(event.currentTarget.value)}
@@ -215,7 +222,7 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
           : 'Choose an eligible cost center for this exact offering. If none are available, ask an administrator to review group setup, membership, resource mode, and caller-side token support.'}</Text>
         <Link to="/cost-centers">Find or request a cost center</Link>
       </div>}
-      {!selectedUnavailable && selectedDefinition?.mode === 'requestOnly' && (
+      {showRequestControls && (
         <>
           <Badge appearance="outline">Request-only</Badge>
           <Text>Approval is for you under this cost center. Gateway apply is a separate step.

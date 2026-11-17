@@ -245,19 +245,14 @@ export function IdentityPage() {
   const confirmationMotion = useDialogFocusReturn({ open: confirmation !== null, surfaceRef, fallbackRef: focusFallback })
   const [saveCommitted, setSaveCommitted] = useState(false)
   const editButtonRef = useRef<HTMLButtonElement>(null)
-  const editFormRef = useRef<HTMLFormElement>(null)
   const previousEditing = useRef(false)
   const draftedPrincipalId = useRef<string | undefined>(undefined)
   const draftedGroupId = useRef<string | undefined>(undefined)
   const principalWorkspaceTab = useRef<IdentityTab | null>(null)
 
   useEffect(() => {
-    if (workbench.selectedId) {
-      if (detailEditing) {
-        editFormRef.current?.querySelector<HTMLInputElement | HTMLTextAreaElement>('input, textarea')?.focus()
-      } else if (previousEditing.current) {
-        editButtonRef.current?.focus()
-      }
+    if (workbench.selectedId && !detailEditing && previousEditing.current) {
+      editButtonRef.current?.focus()
     }
     previousEditing.current = detailEditing
   }, [detailEditing, workbench.selectedId])
@@ -865,7 +860,7 @@ export function IdentityPage() {
                     </MessageBar>
                   )}
 
-                  <form ref={editFormRef} className={styles.detailSection} onSubmit={submitGroupDetails}>
+                  <form className={styles.detailSection} onSubmit={submitGroupDetails}>
                     <div className={styles.readOnlyPanel}>
                       <Text className={styles.readOnlyLabel}>Authoritative source</Text>
                       <Text block className={styles.muted}>
@@ -1108,7 +1103,7 @@ export function IdentityPage() {
                   </MessageBar>
                 )}
 
-                <form ref={editFormRef} className={styles.detailSection} onSubmit={submitPrincipalDetails}>
+                <form className={styles.detailSection} onSubmit={submitPrincipalDetails}>
                   <div className={styles.readOnlyPanel}>
                     <Text className={styles.readOnlyLabel}>Authoritative source</Text>
                     <Text>Microsoft Entra. MOSAIC stores only the reference, local label, kind mapping, and charge default.</Text>
