@@ -1,5 +1,6 @@
 import asyncio
 import time
+import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -10,6 +11,9 @@ from fastapi import HTTPException, Request, status
 from jwt.algorithms import RSAAlgorithm
 
 from mosaic_api.config import Settings
+from mosaic_api.domain import REQUESTER_DISPLAY_MAX_LENGTH
+
+_BIDI_CONTROLS = "\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
 
 
 @dataclass(frozen=True)
@@ -31,6 +35,9 @@ class AuthContext:
     # Entra leaves ``groups`` out and points to Graph instead when the caller is in too many
     # groups for a token. Then ``group_ids`` is empty or incomplete and must not be trusted.
     groups_overage: bool = False
+    # Optional display metadata from the validated token, never used for authorization.
+    name: str | None = None
+    username: str | None = None
 
     def has_any_role(self, *roles: str) -> bool:
         return any(role in self.roles for role in roles)
@@ -56,6 +63,32 @@ def token_groups(claims: dict[str, Any]) -> tuple[frozenset[str], bool]:
         or str(claims.get("hasgroups", "")).casefold() == "true"
     )
     return groups, overage
+
+
+def _display_claim(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = unicodedata.normalize("NFC", value)
+    printable = "".join(
+        " " if character.isspace() else character
+        for character in normalized
+        if character.isspace()
+        or (unicodedata.category(character) not in {"Cc", "Cs"} and character not in _BIDI_CONTROLS)
+    )
+    bounded = " ".join(printable.split())[:REQUESTER_DISPLAY_MAX_LENGTH].rstrip()
+    return bounded or None
+
+
+def token_display_claims(claims: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Bounded display metadata from an already validated token, not a caller identity."""
+
+    name = _display_claim(claims.get("name"))
+    username = None
+    for claim in ("preferred_username", "upn", "unique_name"):
+        username = _display_claim(claims.get(claim))
+        if username is not None:
+            break
+    return name, username
 
 
 class Authenticator(Protocol):
@@ -214,12 +247,15 @@ class EntraAuthenticator:
             # ``require_*`` dependencies.
             raise _no_mosaic_role(self._accepted_roles)
         group_ids, groups_overage = token_groups(claims)
+        name, username = token_display_claims(claims)
         return AuthContext(
             object_id=str(claims["oid"]),
             tenant_id=str(claims["tid"]),
             roles=roles,
             group_ids=group_ids,
             groups_overage=groups_overage,
+            name=name,
+            username=username,
         )
 
     async def close(self) -> None:

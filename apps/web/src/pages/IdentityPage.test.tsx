@@ -257,9 +257,9 @@ describe('IdentityPage', () => {
       async function selectAgents() {
         await act(async () => {
           if (control === 'buttons') {
-            fireEvent.click(sectionButton('Agents'))
+            await user.click(sectionButton('Agents'))
           } else {
-            fireEvent.change(screen.getByLabelText('Identity section'), { target: { value: 'agents' } })
+            await user.selectOptions(screen.getByLabelText('Identity section'), 'agents')
           }
         })
       }
@@ -321,7 +321,7 @@ describe('IdentityPage', () => {
       await user.click(await screen.findByRole('button', { name: row }))
       await user.click(screen.getByRole('button', { name: edit }))
       await user.type(screen.getByRole('textbox', { name: field }), ' changed')
-      await act(async () => { fireEvent.click(sectionButton('Agents')) })
+      await act(async () => { await user.click(sectionButton('Agents')) })
       const confirmation = await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })
       await waitFor(() => expect(within(confirmation).getByRole('button', { name: 'Stay' })).toHaveFocus())
       if (dismissal === 'Escape') {

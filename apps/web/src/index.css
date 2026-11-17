@@ -599,7 +599,8 @@ code,
 .detail-card,
 .planned-card,
 .empty-state,
-.access-denied-card {
+.access-denied-card,
+.portal-handoff-card {
   border: 1px solid var(--mosaic-border-soft);
   border-radius: 12px;
   background: var(--mosaic-surface);
@@ -826,6 +827,173 @@ tbody tr:focus-within {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.portal-handoff-card {
+  width: min(1080px, 100%);
+  padding: 32px;
+  overflow-wrap: anywhere;
+}
+
+.portal-handoff-brand {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--mosaic-border-soft);
+}
+
+.portal-handoff-wordmark {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.portal-handoff-app {
+  color: var(--mosaic-text-muted);
+  font-size: 14px;
+}
+
+.portal-handoff-grid {
+  display: grid;
+  grid-template: "explanation destination" auto "account destination" 1fr / minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 24px 40px;
+  padding-top: 28px;
+}
+
+.portal-handoff-explanation {
+  grid-area: explanation;
+}
+
+.portal-handoff-role {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--mosaic-primary-soft);
+  color: var(--mosaic-primary);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.portal-handoff-explanation h1 {
+  margin: 20px 0 16px;
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.portal-handoff-card p {
+  margin: 0;
+  color: var(--mosaic-text-muted);
+  line-height: 1.5;
+}
+
+.portal-handoff-explanation > p,
+.portal-handoff-panel > p {
+  font-size: 16px;
+}
+
+.portal-handoff-destination {
+  grid-area: destination;
+  padding: 28px;
+  border-radius: 10px;
+  background: var(--mosaic-primary-soft);
+}
+
+.portal-handoff-icon {
+  color: var(--mosaic-primary);
+  font-size: 32px;
+}
+
+.portal-handoff-panel h2 {
+  margin: 20px 0 12px;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.portal-handoff-panel .fui-Button {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 24px;
+  justify-content: space-between;
+  gap: 12px;
+  white-space: nowrap;
+}
+
+.portal-handoff-action-label {
+  flex: 1;
+  text-align: center;
+}
+
+.portal-handoff-panel .fui-MessageBar {
+  margin-top: 24px;
+}
+
+.portal-handoff-card .portal-handoff-note {
+  margin-top: 20px;
+  font-size: 14px;
+}
+
+.portal-handoff-account {
+  grid-area: account;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 20px;
+  font-size: 14px;
+}
+
+.portal-handoff-account-label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.portal-handoff-account-label > svg {
+  flex: none;
+  color: var(--mosaic-text-muted);
+  font-size: 28px;
+}
+
+.portal-handoff-account > .fui-Button {
+  min-height: 44px;
+}
+
+@media (max-width: 720px) {
+  .portal-handoff-page {
+    padding: 16px;
+  }
+
+  .portal-handoff-card {
+    padding: 20px;
+  }
+
+  .portal-handoff-grid {
+    grid-template: "explanation" auto "destination" auto "account" auto / minmax(0, 1fr);
+    gap: 24px;
+  }
+
+  .portal-handoff-explanation h1 {
+    font-size: 24px;
+  }
+
+  .portal-handoff-destination {
+    padding: 0;
+    background: transparent;
+  }
+
+  .portal-handoff-panel {
+    padding: 20px;
+    border-radius: 10px;
+    background: var(--mosaic-primary-soft);
+  }
+
+  .portal-handoff-panel h2 {
+    font-size: 22px;
+  }
 }
 
 .sr-only {

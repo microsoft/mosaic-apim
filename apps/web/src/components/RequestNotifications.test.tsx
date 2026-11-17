@@ -85,7 +85,7 @@ describe('RequestNotifications', () => {
   it('uses a cached principal name with case-insensitive object matching instead of calling the directory', async () => {
     const principal = { id: 'principal-test', objectId: 'person-test', label: 'Registered analyst' }
     mocks.listPrincipals.mockResolvedValue([principal])
-    mocks.listAccessRequests.mockResolvedValue([request])
+    mocks.listAccessRequests.mockResolvedValue([{ ...request, requesterName: 'Different token name', requesterUsername: 'token@example.invalid' }])
     renderPage([principal])
     fireEvent.click(await screen.findByRole('button', { name: 'Pending approvals, 1 pending request' }))
 
@@ -103,6 +103,28 @@ describe('RequestNotifications', () => {
     resolve([{ id: 'principal-test', objectId: 'person-test', label: 'Registered analyst' }])
     expect(await screen.findByText('Registered analyst')).toBeVisible()
     expect(mocks.getDirectoryObject).not.toHaveBeenCalled()
+  })
+  it.each([
+    { requesterName: 'Jordan Rowan', requesterUsername: 'jordan@example.invalid', shown: 'Jordan Rowan' },
+    { requesterName: null, requesterUsername: 'jordan@example.invalid', shown: 'jordan@example.invalid' },
+  ])('uses a captured name or username without directory lookup: $shown', async ({ shown, ...snapshot }) => {
+    mocks.listAccessRequests.mockResolvedValue([{ ...request, ...snapshot }])
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Pending approvals, 1 pending request' }))
+    expect(await screen.findByText(shown)).toBeVisible()
+    expect(mocks.getDirectoryObject).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(`${shown} Requests access to Chat API`) }))
+    expect(document.querySelector('output')).toHaveTextContent('selected=request-test')
+  })
+  it('shows a snapshot during a registered-name failure while keeping the failure explicit', async () => {
+    mocks.listPrincipals.mockRejectedValue(new Error('Registered names failed'))
+    mocks.listAccessRequests.mockResolvedValue([{ ...request, requesterName: 'Jordan Rowan' }])
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Pending approvals, 1 pending request' }))
+    expect(await screen.findByText('Jordan Rowan')).toBeVisible()
+    expect(await screen.findByText(/Registered names unavailable/)).toBeVisible()
+    expect(mocks.getDirectoryObject).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Retry name lookup' })).not.toBeInTheDocument()
   })
   it('shows a recoverable name lookup failure without replacing it with an object ID', async () => {
     mocks.listAccessRequests.mockResolvedValue([request])

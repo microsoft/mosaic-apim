@@ -16,6 +16,17 @@ describe('useMosaicApi', () => {
     vi.unstubAllGlobals()
   })
 
+  it('patches only summary metadata with both encoded pool and model identity', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'pool/one' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useMosaicApi())
+    await result.current.updatePoolModelCatalog('pool/one', 'model/two', { summary: null })
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toContain('/api/v1/model-pools/pool%2Fone/models/model%2Ftwo/catalog')
+    expect(options.method).toBe('PATCH')
+    expect(JSON.parse(options.body as string)).toEqual({ summary: null })
+  })
+
   it.each([
     ['getModelEndpointSyncRun', '/api/v1/model-endpoints/endpoint%2Fone/sync-runs/run%2Fone'],
     ['getMcpEndpointSyncRun', '/api/v1/mcp-endpoints/endpoint%2Fone/sync-runs/run%2Fone'],

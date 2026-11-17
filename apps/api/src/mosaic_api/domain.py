@@ -1469,6 +1469,21 @@ class CatalogEntryUpdate(MosaicModel):
     summary: str | None = None
 
 
+class ModelCatalogSummaryUpdate(MosaicModel):
+    """Public model copy, validated only when intentionally written."""
+
+    summary: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def normalize_summary(cls, value: Any) -> Any:
+        return value.strip() or None if isinstance(value, str) else value
+
+
+class ModelApiCatalogUpdate(ModelCatalogSummaryUpdate):
+    visibility: CatalogVisibility | None = None
+
+
 def model_api_id(tenant_id: str, gateway_id: str, api_name: str) -> str:
     """Deterministic so re-importing an API updates the record instead of duplicating it."""
 
@@ -1806,6 +1821,27 @@ class EntitlementEnforcement(MosaicModel):
         return self
 
 
+class PortalTokenLimits(MosaicModel):
+    tokens_per_minute: int | None = Field(default=None, ge=1)
+    token_quota: int | None = Field(default=None, ge=1)
+    token_quota_period: QuotaPeriod | None = None
+    estimate_prompt_tokens: bool = True
+
+
+class PortalRequestLimits(MosaicModel):
+    calls: int | None = Field(default=None, ge=1)
+    renewal_period_seconds: int | None = Field(default=None, ge=1)
+    call_quota: int | None = Field(default=None, ge=1)
+    call_quota_period: QuotaPeriod | None = None
+
+
+class PortalEnforcement(MosaicModel):
+    """Caller limits without the policy expressions that implement their counters."""
+
+    tokens: PortalTokenLimits | None = None
+    requests: PortalRequestLimits | None = None
+
+
 class EntitlementSubjectKind(StrEnum):
     USER = "user"
     GROUP = "group"
@@ -1993,6 +2029,48 @@ class Entitlement(Entity):
         return self
 
 
+class PortalEntitlementBinding(MosaicModel):
+    attribution_key: str | None = None
+    attribution_per_member: bool = False
+    apim_product_name: str | None = None
+    apim_subscription_name: str | None = None
+
+
+class PortalEntitlementRuntime(MosaicModel):
+    publication_id: str
+    key_state: KeyState | None = None
+    key_error: str | None = None
+    status: Literal[
+        "pending", "applying", "applied", "revocationPending", "revoked", "failed", "unknown"
+    ]
+    applied_methods: ModelAccessSettings | None = None
+    subscription_name: str | None = None
+    key_exists: bool = False
+    eligibility_recheck_pending: bool = False
+    key_revocation_pending: bool = False
+    applied_at: datetime | None = None
+    error: None = None
+
+
+class PortalEntitlementView(MosaicModel):
+    """The serialized grant; internal attribution still uses the full Entitlement."""
+
+    id: str
+    tenant_id: str
+    entity_type: Literal["entitlement"] = "entitlement"
+    created_at: datetime
+    updated_at: datetime
+    subject: EntitlementSubject
+    resource: EntitlementResource
+    cost_center_id: str
+    enabled: bool = True
+    managed_by: Literal["costCenterAutomatic"] | None = None
+    enforcement: PortalEnforcement | None = None
+    binding: PortalEntitlementBinding | None = None
+    runtime: PortalEntitlementRuntime | None = None
+    revocation: GrantRevocation | None = None
+
+
 def _writable_binding(binding: EntitlementBinding | None) -> EntitlementBinding | None:
     if binding is not None and binding.source == BindingSource.ORCHESTRATED:
         raise ValueError("Orchestrated bindings are produced only by an applied publication")
@@ -2149,10 +2227,20 @@ class AccessRequestState(StrEnum):
     WITHDRAWN = "withdrawn"
 
 
+REQUESTER_DISPLAY_MAX_LENGTH = 200
+
+
 class AccessRequest(Entity):
     entity_type: Literal["accessRequest"] = "accessRequest"
     requester_object_id: str
     requester_principal_id: str | None = None
+    # Display-only claims captured when the requester authenticated, never identity or authority.
+    requester_name: str | None = Field(
+        default=None, max_length=REQUESTER_DISPLAY_MAX_LENGTH, exclude_if=_unset
+    )
+    requester_username: str | None = Field(
+        default=None, max_length=REQUESTER_DISPLAY_MAX_LENGTH, exclude_if=_unset
+    )
     resource: EntitlementResource
     # The cost center the requester chose. Approval grants under it unless the administrator
     # chooses another the requester may charge. None only for requests made before cost centers,
@@ -2299,6 +2387,9 @@ class PortalResolvedEntitlement(ResolvedEntitlement):
     catalog does not list, because hiding a resource from the catalog does not revoke access to it.
     ``resource_display_name`` is null only when MOSAIC can no longer resolve the resource — for
     example because it was deleted after the grant was made.
+
+    Internal usage and budgets consume this enriched view. HTTP responses narrow its grant
+    through PortalResolvedEntitlementView without changing the underlying attribution binding.
     """
 
     resource_display_name: str | None = None
@@ -2308,7 +2399,23 @@ class PortalResolvedEntitlement(ResolvedEntitlement):
     )
 
 
-class PortalAccessRequest(AccessRequest):
+class PortalResolvedEntitlementView(MosaicModel):
+    entitlement: PortalEntitlementView
+    via: GrantPath
+    via_group_id: str | None = None
+    via_group_name: str | None = None
+    effective: bool = True
+    shadowed_by: str | None = None
+    resource_summary: ResourceSummary | None = None
+    cost_center: CostCenterRef | None = None
+    resource_display_name: str | None = None
+    model: PortalModel | None = None
+    access_origin: Literal["automaticCostCenter", "approvedIndividual", "group"] = (
+        "approvedIndividual"
+    )
+
+
+class PortalAccessRequest(MosaicModel):
     """One of the caller's access requests, named the way the catalog names the resource.
 
     The name is derived when the request is read and never persisted, which is why it lives on this
@@ -2318,6 +2425,23 @@ class PortalAccessRequest(AccessRequest):
     request recorded when it was made.
     """
 
+    id: str
+    tenant_id: str
+    entity_type: Literal["accessRequest"] = "accessRequest"
+    created_at: datetime
+    updated_at: datetime
+    requester_object_id: str
+    requester_principal_id: str | None = None
+    resource: EntitlementResource
+    cost_center_id: str | None = None
+    justification: str | None = None
+    requested_environment: str | None = None
+    resource_snapshot: AccessRequestResourceSnapshot | None = None
+    state: AccessRequestState = AccessRequestState.PENDING
+    decided_by_object_id: str | None = None
+    decided_at: datetime | None = None
+    decision_note: str | None = None
+    granted_entitlement_id: str | None = None
     resource_display_name: str | None = None
     model: PortalModel | None = None
     resource_summary: ResourceSummary | None = None
@@ -4012,6 +4136,72 @@ class McpConnection(MosaicModel):
     # ``https://{gateway}/.well-known/oauth-protected-resource/{api_path}/mcp``.
     resource_metadata_url: str | None = None
     limits: EntitlementEnforcement | None = None
+    cost_center: CostCenterRef | None = None
+    cost_center_header: str = COST_CENTER_HEADER
+
+
+class PortalModelConnection(MosaicModel):
+    entitlement_id: str
+    azure_cloud: Literal["commercial", "government"] = "commercial"
+    publication_id: str
+    gateway_id: str
+    endpoint: str
+    deployment_name: str
+    tenant_id: str
+    runtime: PortalEntitlementRuntime | None = None
+    applied_methods: ModelAccessSettings | None = None
+    entra_audience: str | None = None
+    entra_scope: str | None = None
+    entra_client_id: str | None = None
+    subscription_header: str = "Ocp-Apim-Subscription-Key"
+    api_shape: ApiShape | None = None
+    operations: list[ConnectionOperation] = Field(default_factory=list)
+    publication_limits: PortalTokenLimits | None = None
+    grant_limits: PortalEnforcement | None = None
+    principal_kind: PrincipalKind | None = None
+    required_app_role: str | None = None
+    entra_application_scope: str | None = None
+    keys_available: bool = True
+    via_group_id: str | None = None
+    via_group_name: str | None = None
+    cost_center: CostCenterRef | None = None
+    cost_center_header: str = COST_CENTER_HEADER
+    key_exists: bool = False
+    keys_allowed_by_cost_center: bool = True
+    pool_id: str | None = None
+    pool_model_id: str | None = None
+    key_shared_with: list[KeySharedModel] = Field(default_factory=list)
+    token_metering: bool = True
+
+
+class PortalMcpConnection(MosaicModel):
+    entitlement_id: str
+    azure_cloud: Literal["commercial", "government"] = "commercial"
+    applied_methods: ModelAccessSettings | None = None
+    subscription_header: str = "Ocp-Apim-Subscription-Key"
+    keys_available: bool = False
+    key_exists: bool = False
+    keys_allowed_by_cost_center: bool = True
+    mcp_server_id: str
+    publication_id: str | None = None
+    gateway_id: str
+    display_name: str
+    tenant_id: str
+    server_url: str | None = None
+    transport: McpTransportType = McpTransportType.STREAMABLE
+    enforced: bool = False
+    status_message: str
+    runtime: PortalEntitlementRuntime | None = None
+    entra_audience: str | None = None
+    delegated_scope: str | None = None
+    application_scope: str | None = None
+    required_app_role: str | None = None
+    client_id: str | None = None
+    principal_kind: PrincipalKind | None = None
+    via_group_id: str | None = None
+    via_group_name: str | None = None
+    resource_metadata_url: str | None = None
+    limits: PortalEnforcement | None = None
     cost_center: CostCenterRef | None = None
     cost_center_header: str = COST_CENTER_HEADER
 

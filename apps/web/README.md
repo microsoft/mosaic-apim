@@ -32,9 +32,16 @@ enforcement. Deterministic policy previews remain read-only.
 
 In Entra mode the console asks the API which MOSAIC role the caller holds, through
 `GET /api/v1/console/me`, before it renders anything. It shows the console only for the `Admin`
-role. A caller with only `User`, or with no MOSAIC role, sees a single page that explains why and
-offers Sign out; if the check fails, the page offers Try again instead of the console. Local mode
-skips the check. Each page keeps its own handling of a 403 response.
+role. A caller with only `User` sees an explanation beside an end-user portal destination panel,
+with **Open end-user portal** and **Sign out**. Narrow screens stack those regions. The portal
+link is an explicit same-tab navigation, not a grant or a promise of single sign-on; the portal
+checks access separately.
+
+If the portal address is missing or invalid, the destination panel shows **Portal link unavailable**
+and asks the caller to contact their MOSAIC administrator. Sign out remains available. A caller
+with no MOSAIC role gets the existing no-access page without a portal action; failed checks offer
+Try again instead of the console. Local mode skips the check. Each page keeps its own handling
+of a 403 response.
 
 ## Local commands
 
@@ -50,3 +57,15 @@ npm run build
 Runtime values are loaded from `public/config.js` in local development and generated from
 environment variables by `40-runtime-config.sh` in the deployed container. The container's
 `nginx.conf` serves `config.js` with `Cache-Control: no-store`, so browsers never reuse an old copy.
+
+`portalUrl` comes from `MOSAIC_PORTAL_URL`, the same public portal origin already configured on
+the API. Azure infrastructure supplies it to the console too; there is no second portal setting.
+Use an absolute HTTPS origin without credentials, a non-root path, query, or fragment. The console
+refuses its own origin. HTTP is accepted only for an explicitly configured `localhost`,
+`127.0.0.1`, or IPv6 loopback destination while the console itself runs on loopback.
+
+The local `public/config.js` explicitly names `http://localhost:5174`; local authentication still
+bypasses the role gate and never redirects. Deployed configuration has no guessed fallback.
+Apply the infrastructure/app-setting change and restart the console container along with deploying
+the updated web image. An image-only deployment cannot supply a missing portal address. Runtime
+configuration is public: never put credentials or tokens in this setting.

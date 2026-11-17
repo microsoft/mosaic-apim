@@ -149,6 +149,12 @@ The console's runtime browser configuration is described in the [web application
 as configuration: the web container regenerates it from App Service environment variables on
 startup.
 
+That local configuration explicitly sets `portalUrl` to `http://localhost:5174`. Local auth still
+skips the console role gate; this value does not redirect anyone or change their roles. Entra-mode
+development must also supply an explicit portal origin. HTTP loopback is accepted only when the
+console itself runs on loopback; a deployed console requires HTTPS. Missing or invalid configuration
+leaves Sign out available and shows guidance instead of a portal link.
+
 ## Cost-center development and old MVP data
 
 Custom centers use real Entra membership in connected deployments, through a separately consented

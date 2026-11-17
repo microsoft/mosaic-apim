@@ -43,6 +43,7 @@ from mosaic_api.domain import (
     ModelApi,
     ModelApiCandidate,
     ModelApiCandidateList,
+    ModelApiCatalogUpdate,
     PublicationStatus,
     deterministic_id,
     mcp_server_id,
@@ -99,7 +100,7 @@ def _validate_environment_key(catalog_keys: set[str], value: str) -> None:
         )
 
 
-def _catalog_changes(request: CatalogEntryUpdate) -> dict[str, Any]:
+def _catalog_changes(request: CatalogEntryUpdate | ModelApiCatalogUpdate) -> dict[str, Any]:
     """Administrator-authored catalog fields to merge over a stored record.
 
     ``visibility`` is not nullable on the record, so an explicit null means "leave it alone"
@@ -1089,7 +1090,7 @@ class GatewayService:
         )
 
     async def update_model_api_catalog(
-        self, actor: Actor, model_api_record_id: str, request: CatalogEntryUpdate
+        self, actor: Actor, model_api_record_id: str, request: ModelApiCatalogUpdate
     ) -> ModelApi:
         record = await self._repository.get_model_api(actor.tenant_id, model_api_record_id)
         async with AsyncExitStack() as stack:
@@ -1100,7 +1101,7 @@ class GatewayService:
             return await self._update_model_api_catalog(actor, model_api_record_id, request)
 
     async def _update_model_api_catalog(
-        self, actor: Actor, model_api_record_id: str, request: CatalogEntryUpdate
+        self, actor: Actor, model_api_record_id: str, request: ModelApiCatalogUpdate
     ) -> ModelApi:
         record = await self._repository.get_model_api(actor.tenant_id, model_api_record_id)
         if not record:

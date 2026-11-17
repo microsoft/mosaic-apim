@@ -4,11 +4,12 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AccessRequest, AdminCostCenterRequest, Entitlement, EnvironmentCatalogView } from '../types'
+import type { AccessRequest, AdminCostCenterRequest, Entitlement, EnvironmentCatalogView, Principal } from '../types'
 import { GOVERNED_COUNTER_KEY, callRateError, describeLimits } from '../entitlement-limits'
 import { EntitlementsPage } from './EntitlementsPage'
 import { accessPlan, connectionInfo, directGrant, modelPublication, publishedModelApi } from '../test/model-access'
 import { ApiError } from '../api'
+import type { ApprovalPreview } from '../admin-types'
 import { anthropicPool, governedAnthropicPool } from '../test/pool-fixtures'
 import { costCenterCreationRequest, costCenterMembershipRequest, readyCostCenter } from '../test/cost-center-fixtures'
 
@@ -59,6 +60,7 @@ const api = {
   listCostCenterMembershipRequests: vi.fn(), getCostCenterMembershipRequest: vi.fn(),
   approveCostCenterMembershipRequest: vi.fn(), denyCostCenterMembershipRequest: vi.fn(), resumeCostCenterMembershipRequest: vi.fn(),
   getCostCenter: vi.fn(), getDirectoryObject: vi.fn(),
+  previewBulkApprovals: vi.fn(), getApprovalRecommendations: vi.fn(),
 }
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
@@ -123,6 +125,7 @@ describe('Entitlements workbench', () => {
     api.createEntitlement.mockResolvedValue({ ...entitlement, id: 'saved_grant' })
     api.updateEntitlement.mockResolvedValue(entitlement)
     api.approveAccessRequest.mockResolvedValue({ ...request, state: 'approved' })
+    api.getApprovalRecommendations.mockResolvedValue([])
   })
 
   it('deep-links to membership review independently from resource and creation requests', async () => {
@@ -623,6 +626,134 @@ describe('Entitlements workbench', () => {
     expect(within(detail).getByText('USER-OBJECT-1')).toBeVisible()
   })
 
+  it('uses token identity in the queue, selected C detail, approval and outcome without posting display fields', async () => {
+    const user = userEvent.setup()
+    api.listPrincipals.mockResolvedValue([])
+    api.listAccessRequests.mockResolvedValue([{ ...request, requesterPrincipalId: 'removed-principal', requesterName: 'Jordan Rowan', requesterUsername: 'jordan@example.invalid' }])
+    renderPage('/entitlements?tab=requests&selected=request_1')
+    const list = await screen.findByRole('list', { name: 'Requests' })
+    expect(await within(list).findByText('Jordan Rowan')).toBeVisible()
+    expect(within(list).getByText('jordan@example.invalid')).toBeVisible()
+    const detail = screen.getByRole('region', { name: 'Selected access request' })
+    expect(within(detail).getByText('Label for new registration')).toBeVisible()
+    const snapshot = within(detail).getByRole('region', { name: 'Sign-in identity at request time' })
+    expect(within(snapshot).getByText('Jordan Rowan')).toBeVisible()
+    expect(within(snapshot).getByText('USER-OBJECT-1')).toBeVisible()
+    expect(api.getDirectoryObject).not.toHaveBeenCalled()
+    const editor = await openApproval(user)
+    expect(within(editor).getByText('Label for new registration')).toBeVisible()
+    await user.click(within(editor).getByRole('button', { name: 'Approve and create grant' }))
+    await waitFor(() => expect(api.approveAccessRequest).toHaveBeenCalledOnce())
+    const [id, body] = api.approveAccessRequest.mock.calls[0]
+    expect(id).toBe(request.id)
+    expect(body).not.toHaveProperty('requesterName')
+    expect(body).not.toHaveProperty('requesterUsername')
+    expect(body).not.toHaveProperty('requesterObjectId')
+    expect(await screen.findByText(/registered Jordan Rowan as a user principal/)).toBeVisible()
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+  })
+
+  it('keeps the current registered label distinct from a different request-time name', async () => {
+    api.listAccessRequests.mockResolvedValue([{ ...request, requesterName: 'Jordan Rowan', requesterUsername: 'jordan@example.invalid' }])
+    renderPage('/entitlements?tab=requests&selected=request_1')
+    const detail = await screen.findByRole('region', { name: 'Selected access request' })
+    expect(await within(detail).findByText('Ada Lovelace')).toBeVisible()
+    expect(within(detail).getByText('MOSAIC label')).toBeVisible()
+    const snapshot = within(detail).getByRole('region', { name: 'Sign-in identity at request time' })
+    expect(within(snapshot).getByText('Jordan Rowan')).toBeVisible()
+    expect(within(snapshot).getByText('jordan@example.invalid')).toBeVisible()
+    expect(within(detail).queryByText('Label for new registration')).not.toBeInTheDocument()
+    expect(api.getDirectoryObject).not.toHaveBeenCalled()
+  })
+
+  it('keeps registration unknown while the registry loads, then shows the confirmed current label', async () => {
+    let resolvePrincipals!: (principals: Principal[]) => void
+    api.listPrincipals.mockReturnValue(new Promise<Principal[]>((resolve) => { resolvePrincipals = resolve }))
+    api.listAccessRequests.mockResolvedValue([{ ...request, requesterPrincipalId: 'known-principal', requesterName: 'Jordan Rowan', requesterUsername: 'jordan@example.invalid' }])
+    renderPage('/entitlements?tab=requests&selected=request_1')
+    const detail = await screen.findByRole('region', { name: 'Selected access request' })
+    expect(await within(detail).findByText('Checking MOSAIC registration...')).toBeVisible()
+    expect(within(detail).queryByText('Label for new registration')).not.toBeInTheDocument()
+    expect(within(detail).queryByText(/Not registered in MOSAIC/)).not.toBeInTheDocument()
+    const snapshot = within(detail).getByRole('region', { name: 'Sign-in identity at request time' })
+    expect(within(snapshot).getByText('Jordan Rowan')).toBeVisible()
+    expect(within(snapshot).getByText('jordan@example.invalid')).toBeVisible()
+    expect(within(snapshot).getByText(request.requesterObjectId)).toBeVisible()
+    expect(within(detail).getByRole('button', { name: 'Approve' })).toBeDisabled()
+    expect(api.getDirectoryObject).not.toHaveBeenCalled()
+    await act(async () => resolvePrincipals([{
+      id: 'known-principal', tenantId: request.tenantId, objectId: request.requesterObjectId.toLowerCase(),
+      label: 'Current administrator label', kind: 'user', createdAt: request.createdAt, updatedAt: request.updatedAt,
+    }]))
+    expect(await within(detail).findByText('Current administrator label')).toBeVisible()
+    expect(within(detail).getByText('MOSAIC label')).toBeVisible()
+    expect(within(detail).queryByText('Checking MOSAIC registration...')).not.toBeInTheDocument()
+    expect(within(detail).queryByText('Label for new registration')).not.toBeInTheDocument()
+    await waitFor(() => expect(within(detail).getByRole('button', { name: 'Approve' })).toBeEnabled())
+  })
+
+  it.each([null, 'known-principal'])('does not infer registration from a stored principal reference when the registry fails: %s', async (requesterPrincipalId) => {
+    api.listPrincipals.mockRejectedValue(new Error('Registry unavailable'))
+    api.listAccessRequests.mockResolvedValue([{ ...request, requesterPrincipalId, requesterName: 'Jordan Rowan', requesterUsername: 'jordan@example.invalid' }])
+    renderPage('/entitlements?tab=requests&selected=request_1')
+    expect(await screen.findByText('Registry unavailable')).toBeVisible()
+    const detail = screen.getByRole('region', { name: 'Selected access request' })
+    expect(within(detail).getByText('MOSAIC registration status unavailable.')).toBeVisible()
+    expect(within(detail).queryByText('Label for new registration')).not.toBeInTheDocument()
+    expect(within(detail).queryByText(/Not registered in MOSAIC/)).not.toBeInTheDocument()
+    const snapshot = within(detail).getByRole('region', { name: 'Sign-in identity at request time' })
+    expect(within(snapshot).getByText('Jordan Rowan')).toBeVisible()
+    expect(within(snapshot).getByText('jordan@example.invalid')).toBeVisible()
+    expect(within(detail).getByRole('button', { name: 'Approve' })).toBeDisabled()
+    expect(api.getDirectoryObject).not.toHaveBeenCalled()
+  })
+
+  it.each(['detail', 'single review', 'bulk review'])('discards cached registry evidence after a failed refetch in %s', async (view) => {
+    const user = userEvent.setup()
+    api.listPrincipals.mockResolvedValueOnce([]).mockRejectedValue(new Error('Registry refetch failed'))
+    const requested: AccessRequest = {
+      ...request, requesterName: 'Jordan Rowan', requesterUsername: 'jordan@example.invalid',
+      resourceSnapshot: { displayName: 'Fictional model', gatewayId: null, gatewayName: null },
+    }
+    api.listAccessRequests.mockResolvedValue([requested])
+    const preview: ApprovalPreview = {
+      request: requested, blockers: [], revision: { contextRevision: 'request-context' },
+      production: false, mutationLocked: false, limitsSource: 'unrestricted',
+      requiresPlanApply: true, effectiveEnforcement: null, currentEnvironment: null,
+    }
+    api.previewBulkApprovals.mockResolvedValue({ items: [preview], unavailable: [] })
+    const { queryClient } = renderPage('/entitlements?tab=requests&selected=request_1')
+    let detail = await screen.findByRole('region', { name: 'Selected access request' })
+    expect(await within(detail).findByText('Label for new registration')).toBeVisible()
+    if (view === 'single review') {
+      detail = await openApproval(user)
+      expect(within(detail).getByText('Label for new registration')).toBeVisible()
+    } else if (view === 'bulk review') {
+      await user.click(screen.getByRole('button', { name: 'Bulk resource approval review' }))
+      await user.click(await screen.findByRole('checkbox', { name: 'Jordan Rowan · Fictional model' }))
+      await user.click(screen.getByRole('button', { name: 'Review 1 requests' }))
+      detail = await screen.findByRole('region', { name: 'Review bulk approvals' })
+      expect(await within(detail).findByText('Label for new registration')).toBeVisible()
+    }
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['principals'], exact: true })
+    })
+    expect(queryClient.getQueryState(['principals'])?.status).toBe('error')
+    expect(queryClient.getQueryData(['principals'])).toEqual([])
+    expect(await within(detail).findByText('MOSAIC registration status unavailable.')).toBeVisible()
+    expect(within(detail).queryByText('Label for new registration')).not.toBeInTheDocument()
+    expect(within(detail).queryByText(/Not registered in MOSAIC/)).not.toBeInTheDocument()
+    const snapshot = within(detail).getByRole('region', { name: 'Sign-in identity at request time' })
+    expect(within(snapshot).getByText('Jordan Rowan')).toBeVisible()
+    expect(within(snapshot).getByText('jordan@example.invalid')).toBeVisible()
+    if (view === 'detail') {
+      expect(screen.getByText('Registry refetch failed')).toBeVisible()
+      expect(within(detail).getByRole('button', { name: 'Approve' })).toBeDisabled()
+    }
+    expect(api.getDirectoryObject).not.toHaveBeenCalled()
+    expect(api.approveAccessRequest).not.toHaveBeenCalled()
+  })
+
   it('does not fabricate requester names when principals fail', async () => {
     api.listPrincipals.mockRejectedValue(new Error('Directory unavailable'))
     api.getDirectoryObject.mockRejectedValue(new Error('Directory unavailable'))
@@ -632,7 +763,7 @@ describe('Entitlements workbench', () => {
     const detail = screen.getByRole('region', { name: 'Selected access request' })
     expect(await within(detail).findByText('USER-OBJECT-1')).toBeVisible()
     expect(within(detail).getByRole('button', { name: 'Approve' })).toBeDisabled()
-    expect(screen.getByText('Requester name unavailable')).toBeVisible()
+    expect(within(screen.getByRole('list', { name: 'Requests' })).getByText('Requester name unavailable')).toBeVisible()
   })
 
   it('denies without creating a grant and invalidates the shell pending key', async () => {

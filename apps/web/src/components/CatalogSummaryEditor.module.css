@@ -1,0 +1,121 @@
+.savedSummary,
+.write,
+.review,
+.preview {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.savedSummary {
+  padding-block: 16px;
+  border-top: 1px solid var(--mosaic-border-soft);
+}
+
+.summaryHeading,
+.context,
+.previewContext {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  min-width: 0;
+}
+
+.summaryHeading {
+  justify-content: space-between;
+}
+
+.context {
+  padding: 16px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 8px;
+  background: var(--mosaic-surface-subtle);
+}
+
+.context > :first-child {
+  margin-right: 12px;
+}
+
+.copy,
+.note,
+.unchanged dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.copy {
+  max-inline-size: 75ch;
+  white-space: pre-wrap;
+  line-height: 1.55;
+}
+
+.note,
+.count {
+  color: var(--mosaic-text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.count {
+  justify-self: end;
+}
+
+.comparison {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 24px;
+}
+
+.comparison > div {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.comparison .copy {
+  padding: 16px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 6px;
+  background: var(--mosaic-surface-subtle);
+}
+
+.review h3,
+.preview h3,
+.comparison h4 {
+  margin: 0;
+}
+
+.unchanged {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.unchanged dt {
+  color: var(--mosaic-text-muted);
+}
+
+.preview {
+  padding: 20px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 8px;
+  background: var(--mosaic-surface);
+}
+
+.previewBody {
+  display: grid;
+  gap: 16px;
+  padding-top: 20px;
+  border-top: 1px solid var(--mosaic-border-soft);
+  min-width: 0;
+}
+
+.previewBody h3 {
+  font-size: 22px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}

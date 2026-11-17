@@ -87,6 +87,8 @@ from mosaic_api.domain import (
     McpModelCallerUpdate,
     McpPublicationCreate,
     ModelAccessSettings,
+    ModelApiCatalogUpdate,
+    ModelCatalogSummaryUpdate,
     ModelEndpointCreate,
     PrincipalCreate,
     PrincipalKind,
@@ -251,6 +253,7 @@ NESTOR = Person("Nestor Wilke", "77a6d9c8-a1c3-4e45-9a7b-8c9d0e1f2a3b")
 PATTI = Person("Patti Fernandez", "88b7e0d9-b2d4-4f56-8b8c-9d0e1f2a3b4c")
 PRADEEP = Person("Pradeep Gupta", "99c8f1ea-c3e5-4a67-9c9d-0e1f2a3b4c5d")
 JOHANNA = Person("Johanna Lorenz", "a0d9a2fb-d4f6-4b78-8d0e-1f2a3b4c5d6e")
+JORDAN = Person("Jordan Rowan", "00000000-0000-4000-8000-000000000045")
 SUPPORT_COPILOT = Person(
     "Contoso Support Copilot", "b1eab30c-e5a7-4c89-9e1f-2a3b4c5d6e7f", "servicePrincipal"
 )
@@ -320,6 +323,12 @@ PEOPLE = [
 ]
 
 EXTRA_DIRECTORY_OBJECTS = [
+    DirectoryObject(
+        object_id=JORDAN.object_id,
+        kind=PrincipalKind.USER,
+        display_name=JORDAN.label,
+        detail="jordan.rowan@contoso.com",
+    ),
     DirectoryObject(
         object_id="b4c5d6e7-f809-4123-8456-0a1b2c3d4e5f",
         kind=PrincipalKind.USER,
@@ -577,11 +586,15 @@ class DemoAuthenticator:
             object_id=ADMIN.object_id,
             tenant_id=tenant_id,
             roles=frozenset({"Admin", "User"}),
+            name=ADMIN.label,
+            username=_directory_detail(ADMIN),
         )
         self._user = AuthContext(
             object_id=PORTAL_USER.object_id,
             tenant_id=tenant_id,
             roles=frozenset({"User"}),
+            name=PORTAL_USER.label,
+            username=_directory_detail(PORTAL_USER),
             group_ids=frozenset(
                 item.casefold()
                 for item in (AI_MODEL_USERS.object_id, cost_center_group_id)
@@ -1595,7 +1608,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         await services.gateways.update_model_api_catalog(
             admin,
             model_api_id(tenant_id, gateway.id, api_name),
-            CatalogEntryUpdate(summary=summary),
+            ModelApiCatalogUpdate(summary=summary),
         )
     mcp_summaries = {
         "orders-mcp": ("catalog", "Look up orders, start returns, and track shipments."),
@@ -1633,7 +1646,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         await services.gateways.update_model_api_catalog(
             admin,
             model_api_id(tenant_id, dev_gateway.id, api_name),
-            CatalogEntryUpdate(summary=summary),
+            ModelApiCatalogUpdate(summary=summary),
         )
 
     aoai = await services.endpoints.register(
@@ -1851,7 +1864,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         estate.publications[display_name] = publication.id
         estate.model_apis[display_name] = published.model_api_id
         await services.gateways.update_model_api_catalog(
-            admin, published.model_api_id, CatalogEntryUpdate(summary=summary)
+            admin, published.model_api_id, ModelApiCatalogUpdate(summary=summary)
         )
 
     # Claude runs in three regions, and callers see one API with one name per model (ADR 0024).
@@ -1898,6 +1911,19 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         ModelPoolUpdate(governed_access=ModelAccessSettings(keys_enabled=True, entra_enabled=True)),
     )
     claude_models = {model.display_name: model.id for model in claude_pool.models}
+    for model_name, summary in (
+        ("Claude Opus 4.5", "Contoso's shared model offering for research and long-form drafts."),
+        (
+            "Claude Sonnet 4.5",
+            "Contoso's shared model offering for day-to-day drafting and coding.",
+        ),
+    ):
+        await services.pools.update_model_catalog(
+            admin,
+            claude_pool.id,
+            claude_models[model_name],
+            ModelCatalogSummaryUpdate(summary=summary),
+        )
     # A second pool, saved but not yet published. Evaluation runs start in North Central US and
     # move to East US 2 only when it fails.
     evaluation_pool = await services.pools.create(
@@ -2196,6 +2222,8 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         *,
         scope_id: str | None = None,
         cost_center: str | None = None,
+        capture_identity: bool = True,
+        captured_name: str | None = None,
     ) -> str:
         group_ids = {
             group_id
@@ -2209,7 +2237,13 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
             if center.verified_group_object_id is not None:
                 group_ids.add(center.verified_group_object_id)
         created = await services.entitlements.create_access_request(
-            Actor(person.object_id, tenant_id, group_ids=frozenset(group_ids)),
+            Actor(
+                person.object_id,
+                tenant_id,
+                group_ids=frozenset(group_ids),
+                name=(captured_name or person.label) if capture_identity else None,
+                username=_directory_detail(person) if capture_identity else None,
+            ),
             AccessRequestCreate(
                 resource=EntitlementResource.model_validate(
                     {"kind": kind, "id": resource_id, "scopeId": scope_id}
@@ -2274,10 +2308,18 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     )
     await request_access(ISAIAH, "modelApi", gpt4o_mini, "Prototype for customer email triage.")
     await request_access(
-        LIDIA, "modelApi", gpt4o, "Quarterly forecast narratives for the finance review."
+        LIDIA,
+        "modelApi",
+        gpt4o,
+        "Quarterly forecast narratives for the finance review.",
+        capture_identity=False,
     )
     await request_access(
-        PRADEEP, "mcpServer", orders_mcp, "Agent that answers order-status questions in Teams."
+        PRADEEP,
+        "mcpServer",
+        orders_mcp,
+        "Agent that answers order-status questions in Teams.",
+        captured_name="Pradeep G.",
     )
     _date_history(
         services.entitlement_repository,
@@ -2321,11 +2363,12 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
                 update={"created_at": claude_granted_at}
             )
     await request_access(
-        ISAIAH,
+        JORDAN,
         "poolModel",
         opus,
         "Comparing Claude and GPT-4o on long contract summaries.",
         scope_id=claude_pool.id,
+        cost_center="general",
     )
 
     # Apply the governed publications so their grants reach the gateway, then add one grant
@@ -2411,7 +2454,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     await services.gateways.update_model_api_catalog(
         admin,
         applied_government.model_api_id,
-        CatalogEntryUpdate(
+        ModelApiCatalogUpdate(
             summary="Government-hosted chat; an applied direct grant prepares a key."
         ),
     )

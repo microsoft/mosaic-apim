@@ -307,6 +307,10 @@ var webAppSettings = [
     value: apiUrl
   }
   {
+    name: 'MOSAIC_PORTAL_URL'
+    value: portalUrl
+  }
+  {
     name: 'MOSAIC_ENTRA_TENANT_ID'
     value: tenantId
   }

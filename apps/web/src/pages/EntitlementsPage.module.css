@@ -225,6 +225,30 @@
   min-width: 0;
 }
 
+.requesterIdentity {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.requesterSnapshot {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 12px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 8px;
+  background: var(--mosaic-surface-subtle);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.requesterCaption {
+  color: var(--mosaic-text-muted);
+  font-size: 12px;
+}
+
 .identityCell {
   display: flex;
   align-items: flex-start;

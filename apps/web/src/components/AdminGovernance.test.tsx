@@ -1,6 +1,6 @@
 import { FluentProvider, webLightTheme } from '@fluentui/react-components'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -57,6 +57,45 @@ beforeEach(() => {
   api.listPrincipals.mockResolvedValue([])
 })
 describe('bulk approval workspace', () => {
+  it.each([true, false])('preserves unknown registration evidence in bulk provenance while checking is %s', async (principalsPending) => {
+    api.previewBulkApprovals.mockResolvedValue({ items: [{
+      ...first, request: { ...first.request, requesterPrincipalId: 'known-principal', requesterName: 'Jordan Rowan' },
+    }], unavailable: [] })
+    mount(<BulkApprovalWorkspace requestIds={[first.request.id]} principals={undefined} principalsPending={principalsPending} costCenters={[]} onBack={vi.fn()} onComplete={vi.fn()} />)
+    expect(await screen.findByText(principalsPending ? 'Checking MOSAIC registration...' : 'MOSAIC registration status unavailable.')).toBeVisible()
+    expect(screen.getByText('Jordan Rowan')).toBeVisible()
+    expect(screen.queryByText('Label for new registration')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Not registered in MOSAIC/)).not.toBeInTheDocument()
+  })
+  it('uses the saved label and captured identity consistently in bulk review without changing the approval body', async () => {
+    const request = { ...first.request, requesterName: 'Jordan Rowan', requesterUsername: 'jordan@example.invalid' }
+    api.previewBulkApprovals.mockResolvedValue({ items: [{ ...first, request }], unavailable: [] })
+    api.approveBulkRequests.mockResolvedValue({ items: [{ requestId: request.id, status: 'approved', requiresPlanApply: true }] })
+    mount(<BulkApprovalWorkspace requestIds={[request.id]} principals={[{
+      id: 'principal-test', tenantId: request.tenantId, objectId: request.requesterObjectId.toUpperCase(),
+      label: 'Administrator label', kind: 'user', createdAt: request.createdAt, updatedAt: request.updatedAt,
+    }]} costCenters={[]} onBack={vi.fn()} onComplete={vi.fn()} />)
+    expect(await screen.findByText('Administrator label')).toBeVisible()
+    const snapshot = screen.getByRole('region', { name: 'Sign-in identity at request time' })
+    expect(within(snapshot).getByText('Jordan Rowan')).toBeVisible()
+    expect(within(snapshot).getByText('jordan@example.invalid')).toBeVisible()
+    expect(within(snapshot).getByText(request.requesterObjectId)).toBeVisible()
+    expect(screen.queryByText('Label for new registration')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Approve 1 selected' }))
+    await waitFor(() => expect(api.approveBulkRequests).toHaveBeenCalledOnce())
+    expect(api.approveBulkRequests.mock.calls[0][0].items).toEqual([
+      { requestId: request.id, expectedContext: first.revision, approval: { note: null } },
+    ])
+    expect(api.recommendApprovals).not.toHaveBeenCalled()
+  })
+  it('names an unknown requester from their snapshot in explicit selection', () => {
+    mount(<BulkRequestSelection requests={[{
+      ...first.request, requesterName: 'Jordan Rowan', requesterUsername: 'jordan@example.invalid',
+      resourceSnapshot: { displayName: 'Fictional model', gatewayId: null, gatewayName: null },
+    }]} principals={[]} onBack={vi.fn()} onReview={vi.fn()} />)
+    expect(screen.getByRole('checkbox', { name: 'Jordan Rowan · Fictional model' })).toBeEnabled()
+    expect(screen.getByText('Jordan Rowan · Fictional model')).toBeVisible()
+  })
   it('retains partial successes and reviews only unresolved requests with fresh context', async () => {
     api.approveBulkRequests.mockResolvedValue({ batchId: 'batch', idempotencyKey: 'key', items: [
       { requestId: 'r1', status: 'approved', entitlementId: 'grant', requiresPlanApply: true },

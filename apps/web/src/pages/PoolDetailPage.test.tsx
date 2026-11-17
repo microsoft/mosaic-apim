@@ -29,6 +29,7 @@ const api = {
   listModelPoolRuns: vi.fn(),
   listGateways: vi.fn(),
   updateModelPool: vi.fn(),
+  updatePoolModelCatalog: vi.fn(),
   deleteModelPool: vi.fn(),
   planModelPool: vi.fn(),
   planUnpublishModelPool: vi.fn(),
@@ -99,6 +100,58 @@ describe('PoolDetailPage', () => {
     api.planModelPool.mockResolvedValue(poolPlan)
     api.planUnpublishModelPool.mockResolvedValue({ ...poolPlan, operation: 'unpublish' })
     api.getModelPoolRun.mockResolvedValue(poolRun)
+  })
+
+  it('saves catalog copy for the exact pool model without changing routing or reviewing a gateway plan', async () => {
+    const user = userEvent.setup()
+    const target = anthropicPool.models[0]
+    api.updatePoolModelCatalog.mockImplementation(async (_poolId: string, modelId: string, payload: { summary: string | null }) => ({
+      ...anthropicPool, models: anthropicPool.models.map((model) => model.id === modelId ? { ...model, ...payload } : model),
+    }))
+    renderPage(`/pools/${anthropicPool.id}?tab=models&filter=keep`)
+    await user.click(await screen.findByRole('button', { name: `Edit catalog summary for ${target.displayName}` }))
+    await user.type(screen.getByRole('textbox', { name: 'Catalog summary (optional)' }), 'Pool model public copy')
+    await user.click(screen.getByRole('button', { name: 'Review summary' }))
+    expect(api.updatePoolModelCatalog).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Save summary' }))
+    await waitFor(() => expect(api.updatePoolModelCatalog).toHaveBeenCalledExactlyOnceWith(
+      anthropicPool.id, target.id, { summary: 'Pool model public copy' },
+    ))
+    expect(await screen.findByText('Catalog summary saved.')).toBeVisible()
+    expect(api.updateModelPool).not.toHaveBeenCalled()
+    expect(api.planModelPool).not.toHaveBeenCalled()
+    expect(api.applyModelPool).not.toHaveBeenCalled()
+  })
+  it.each(['unapplied model', 'different API', 'missing applied IDs'] as const)(
+    'warns that a listed model is not published when it has %s',
+    async (reason) => {
+      const user = userEvent.setup()
+      const model = governedAnthropicPool.models[0]
+      const pool = {
+        ...governedAnthropicPool,
+        appliedModelIds: reason === 'unapplied model' ? ['previous-model'] :
+          reason === 'missing applied IDs' ? undefined : [model.id],
+        apiName: reason === 'different API' ? 'different-pool-api' : governedAnthropicPool.apiName,
+      }
+      api.getModelPoolDetail.mockResolvedValue({ ...governedAnthropicPoolDetail, pool })
+      renderPage(`/pools/${pool.id}?tab=models`)
+      await user.click(await screen.findByRole('button', { name: `Edit catalog summary for ${model.displayName}` }))
+      expect(screen.getByText(/This offering is hidden/)).toBeVisible()
+      await user.type(screen.getByRole('textbox', { name: 'Catalog summary (optional)' }), 'Public catalog draft')
+      await user.click(screen.getByRole('button', { name: 'Review summary' }))
+      expect(screen.getByText(/This offering is hidden/)).toBeVisible()
+      expect(api.updatePoolModelCatalog).not.toHaveBeenCalled()
+      expect(api.planModelPool).not.toHaveBeenCalled()
+      expect(api.applyModelPool).not.toHaveBeenCalled()
+    },
+  )
+  it('does not show an unpublished warning for an applied model on its matching pool API', async () => {
+    const user = userEvent.setup()
+    const model = governedAnthropicPool.models[0]
+    api.getModelPoolDetail.mockResolvedValue(governedAnthropicPoolDetail)
+    renderPage(`/pools/${governedAnthropicPool.id}?tab=models`)
+    await user.click(await screen.findByRole('button', { name: `Edit catalog summary for ${model.displayName}` }))
+    expect(screen.queryByText(/This offering is hidden/)).not.toBeInTheDocument()
   })
 
   it('refuses a direct edit workspace while a pool apply is in progress', async () => {

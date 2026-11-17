@@ -27,6 +27,20 @@ and permits only one registration per object ID within a tenant, regardless of p
 A GUID's syntax does not verify its existence or kind in Entra; manual enrollment does not
 silently require additional Microsoft Graph permissions.
 
+Resource access requests capture optional name and username claims from the requester's validated
+sign-in token when submitted. Administrator review keeps the current MOSAIC label separate from
+that request-time snapshot and leaves the object ID visible. The name is preferred; username
+falls back through `preferred_username`, `upn`, and `unique_name`. Values are normalized and
+bounded to 200 characters, are display metadata only, and do not change tenant/object identity,
+roles, group eligibility, resource scope, or limits. The request body cannot supply those fields.
+
+Approval uses the snapshot's name, or username if no name is available, as the initial label only
+when registering a requester MOSAIC does not yet know. It never overwrites or fills an existing
+principal's label. Older requests and tokens without display claims remain valid and can produce
+an unlabeled registration; no migration, backfill, or extra Graph consent is required. Existing
+directory lookup remains a display fallback where available, not evidence added to the snapshot.
+Approval still saves grant intent only; gateway plan review and apply remain separate.
+
 Existing registrations remain readable, including older non-GUID IDs. Self-service direct
 access requires one unambiguous registration for the caller and a grant naming that same
 principal with its matching user/application subject kind. Duplicate registrations block
@@ -89,6 +103,7 @@ Administrators can explicitly reveal/copy an applied grant's key. Portal clients
 | --- | --- | --- |
 | GET | `/me/entitlements` | The caller's own direct grants and deployment state; no keys |
 | GET | `/me/entitlements/{id}/connection` | Endpoint, operations, runtime audience/scope, model client ID, limits, cost center, and the `x-mosaic-cost-center` header |
+| GET | `/me/entitlements/{id}/mcp-connection` | MCP server URL, transport, authentication, call limits, cost center, and runtime state |
 | POST | `/me/entitlements/{id}/keys` | Create the grant's key; 201 |
 | POST | `/me/entitlements/{id}/keys/rotate` | Regenerate one slot; body `{"slot":"primary"}` or `{"slot":"secondary"}` |
 | DELETE | `/me/entitlements/{id}/keys` | Delete the grant's key |
@@ -117,6 +132,37 @@ When an apply fails, the `/me` and `/portal` routes report it through `runtime.s
 return `runtime.error` as null, even to an administrator. That field holds API Management's raw
 error, which names MOSAIC's internal resources and is shared by every grant on the model, so only
 the administrator routes return it.
+
+Caller grant and connection responses use explicit field allowlists, not the administrator's
+record shapes. Limits retain their quantities, periods and prompt-estimation settings but omit
+`counterKeyExpression`. Bindings omit `gatewayId`, `counterKeyExpression`, `source` and `boundAt`;
+grant `notes` and the administrator's `poolName` are not returned. The opaque `attributionKey`
+and per-member flag remain. APIM product/subscription display names in a binding are returned
+only when the legacy **Usage attribution** fallback displays them; otherwise both are null.
+The internal binding is unchanged, so usage attribution, quotas and cost-center accounting do
+not lose their gateway/subscription links.
+
+Connection publication/gateway/pool/MCP IDs remain scoped references for connection verification
+and existing Advanced details. `runtime.subscriptionName` and key-result `subscriptionName`
+remain key-association metadata: the portal checks that a reveal describes the requested grant,
+slot and subscription, and discards a key when its connection changes. Runtime endpoints,
+operation paths, MCP resource-metadata URLs, Entra tenant/client/scope values, and cost-center
+headers remain usable connection inputs, not ARM management locators. Generated clients should
+use the caller response schemas rather than administrator enforcement models.
+
+Caller grant, connection and key failures keep their HTTP status and MOSAIC `code`, `message`,
+`details` envelope. Details contain only approved, locally authored recovery reasons and valid
+numeric upstream status/retry information when available, not Azure's raw text, upstream codes,
+ARM URLs/resource paths, permission scopes, or policy expressions. Caller authorization,
+missing grants, conflicts, validation and upstream failures remain distinct; `gateway_forbidden`
+means MOSAIC's gateway permissions need administrator review, not that the caller simply needs
+another role. Existing retry/correlation and no-store behavior is preserved. Administrator routes
+keep their management diagnostics, but sensitive credential responses never appear in errors or
+logs for either role.
+
+Portal access-request responses also project explicit caller fields. They retain readable
+justification, decision notes, states and resource/cost-center routing, but do not inherit stored
+eligibility-group snapshots, approval provenance, or administrator-only requester snapshots.
 
 In the portal, each model grant on **My access** has a **Connection details** button. The
 connection loads only when it is expanded, and it shows the endpoint, full operation URLs,

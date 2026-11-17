@@ -5,6 +5,8 @@ import { Link as RouterLink } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import type { AiApprovalRecommendation, ApprovalPreview, BulkApprovalInput, BulkApprovalItemResult } from '../admin-types'
 import type { CostCenter, Principal } from '../types'
+import { requesterDisplay } from '../requester-display'
+import { AccessRequestRequester } from './AccessRequestRequester'
 import { buildEnforcement, describeLimits, emptyLimitForm, type LimitForm } from '../entitlement-limits'
 import { ErrorState, Loading } from './AsyncState'
 import { LimitFields } from './GovernanceFields'
@@ -43,8 +45,8 @@ function RequestRecommendation({ requestId, contextRevision, generated }: { requ
   if (existing.isError) return <div className={styles.stack}><ErrorState error={existing.error} /><Button onClick={() => void existing.refetch()}>Retry saved recommendations</Button></div>
   return null
 }
-export function BulkApprovalWorkspace({ requestIds, principals, costCenters, onBack, onComplete }: {
-  requestIds: string[]; principals: Principal[]; costCenters: CostCenter[]; onBack: () => void; onComplete: () => void
+export function BulkApprovalWorkspace({ requestIds, principals, principalsPending = false, costCenters, onBack, onComplete }: {
+  requestIds: string[]; principals: Principal[] | undefined; principalsPending?: boolean; costCenters: CostCenter[]; onBack: () => void; onComplete: () => void
 }) {
   const api = useMosaicApi()
   const [ids, setIds] = useState(requestIds)
@@ -130,14 +132,14 @@ export function BulkApprovalWorkspace({ requestIds, principals, costCenters, onB
         {preview.data?.unavailable.map(item => <MessageBar intent="error" key={item.requestId}><MessageBarBody>Request {item.requestId}: {item.blocker.message} {item.blocker.nextAction}</MessageBarBody></MessageBar>)}
         {items.map(item => {
           const draft = draftFor(item)
-          const requester = principals.find(p => p.id === item.request.requesterPrincipalId || p.objectId === item.request.requesterObjectId)
+          const requester = requesterDisplay(item.request, principals)
           return <section key={item.request.id} className={styles.section} aria-label={`Review ${item.resourceSummary?.displayName ?? 'request'}`}>
             <div className={styles.toolbar}>
               <Checkbox label={`Include ${item.resourceSummary?.displayName ?? 'request'}`} checked={draft.included} disabled={item.blockers.length > 0 || item.mutationLocked} onChange={(_, d) => update(item, { included: Boolean(d.checked) })} />
               <Badge appearance="outline">{item.production ? 'Production' : item.currentEnvironment ?? 'Unclassified'}</Badge>
             </div>
             <dl className={styles.facts}>
-              <div><dt>Requester</dt><dd>{requester?.label ?? 'Requester name unavailable'}</dd></div>
+              <div><dt>Requester</dt><dd><AccessRequestRequester requester={requester} showRegistrationEffect registrationPending={principalsPending} /></dd></div>
               <div><dt>Resource</dt><dd>{item.resourceSummary?.displayName ?? item.request.resourceSnapshot?.displayName ?? 'Resource unavailable'}</dd></div>
               <div><dt>Environment</dt><dd>Requested: {item.request.requestedEnvironment ?? 'Unclassified'} · current: {item.currentEnvironment ?? 'Unclassified'}</dd></div>
               <div><dt>Justification</dt><dd>{item.request.justification ?? 'None supplied'}</dd></div>

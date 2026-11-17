@@ -3,6 +3,7 @@
 [Documentation](README.md) | [MOSAIC](../README.md)
 
 - [Publishing models](#publishing-models)
+- [Catalog summaries](#catalog-summaries)
 - [Unpublishing](#unpublishing)
 
 ## Publishing models
@@ -134,6 +135,35 @@ Unpublishing runs the same machinery over the tracked resources in reverse, so a
 before the backend it routes to. A publication that still owns API Management resources cannot be
 deleted, and a gateway with published models cannot be removed, so intent is never dropped while
 the resources it created keep running.
+
+## Catalog summaries
+
+In **Models > Published models** or **Imported model APIs**, select the exact offering and choose
+**Edit catalog summary**. Write optional plain text, choose **Review summary** to compare the
+saved and draft copy with a portal preview, then explicitly **Save summary**. **Back to edit**
+retains the draft; leaving or canceling asks before discarding unsaved changes. A failed save keeps
+the draft and reports the error.
+
+Summaries may contain at most 2,000 Unicode code points after trimming surrounding whitespace.
+An empty or whitespace-only summary removes the copy; missing legacy summaries stay empty rather
+than receiving a generated description. Existing longer summaries remain readable, but an
+intentional rewrite must fit the limit. Line breaks are preserved and markup is shown as plain text.
+
+Saving changes MOSAIC catalog metadata only: it does not change visibility, publish or apply an
+APIM plan, or grant access. A model that is not published remains unavailable in the portal.
+Older published records without a linked model API expose an explicit **Link catalog entry**
+recovery action rather than linking or publishing automatically. Reload the portal's **Catalog**
+to fetch the saved copy; open portal tabs do not receive a cross-app push update.
+
+The portal shows the summary after choosing an exact offering, not as shared copy for a visual
+model group. Models served by a pool use the same flow from
+**Pools > Models and deployments**; see [public pool-model summaries](model-pools.md#portal-and-console).
+MCP summary editing is not part of this workflow.
+
+| Method | Route under `/api/v1` | Result |
+| --- | --- | --- |
+| PATCH | `/model-apis/{id}/catalog` | Updates explicitly supplied model catalog fields; omitting summary preserves it, while null/empty/whitespace clears it. Visibility-only updates do not revalidate existing summary text. |
+| PATCH | `/model-pools/{poolId}/models/{modelId}/catalog` | Updates only the exact pool model's public summary. Both IDs are required; routing, reviewed plans, access state, and private pool descriptions are unchanged. |
 
 ## Unpublishing
 

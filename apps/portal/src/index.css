@@ -1164,6 +1164,7 @@ textarea { font: inherit; }
   .resource-drawer.fui-OverlayDrawer { background: var(--mosaic-surface); color: var(--mosaic-text); }
   .drawer-content { display: grid; gap: 16px; min-width: 0; }
   .drawer-content p { margin: 0; overflow-wrap: anywhere; line-height: 1.55; }
+  .catalog-summary { white-space: pre-wrap; max-inline-size: 75ch; }
   .resource-context { color: var(--mosaic-text-muted); font-size: 13px; }
   .resource-drawer .access-card-grid { grid-template-columns: 1fr; padding-block: 16px; border-block: 1px solid var(--mosaic-border-soft); }
   .detail-select { display: grid; gap: 8px; margin-bottom: 24px; font-size: 14px; font-weight: 600; }

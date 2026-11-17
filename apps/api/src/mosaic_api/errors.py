@@ -136,12 +136,231 @@ class ErrorBody(BaseModel):
     details: dict[str, Any]
 
 
-async def domain_error_handler(_request: Request, exc: Exception) -> JSONResponse:
+_CALLER_ACCESS_ROUTES = frozenset(
+    {
+        ("GET", "/api/v1/me/entitlements"),
+        ("GET", "/api/v1/portal/entitlements"),
+        ("GET", "/api/v1/me/entitlements/{entitlement_id}/connection"),
+        ("GET", "/api/v1/me/entitlements/{entitlement_id}/mcp-connection"),
+        ("POST", "/api/v1/me/entitlements/{entitlement_id}/keys/reveal"),
+        ("POST", "/api/v1/me/entitlements/{entitlement_id}/keys"),
+        ("POST", "/api/v1/me/entitlements/{entitlement_id}/keys/rotate"),
+        ("DELETE", "/api/v1/me/entitlements/{entitlement_id}/keys"),
+    }
+)
+_CALLER_ACCESS_REASON_MESSAGES = {
+    "notPublished": (
+        "This model isn't published in API Management right now, so there's nothing to connect to"
+    ),
+    "noKey": "This grant has no key yet. Create one first.",
+    "keyMissing": (
+        "This grant's key is missing from API Management. Delete it and create a new one."
+    ),
+    "keyExists": "This grant already has a key. Rotate it, or delete it first.",
+    "keyNotOwned": (
+        "A subscription with this grant's key name already exists in API Management, "
+        "and MOSAIC didn't create it."
+    ),
+    "keyScopeChanged": (
+        "This grant's key is no longer scoped to its model in API Management. "
+        "Ask an administrator to re-plan its access."
+    ),
+    "costCenterKeysOff": (
+        "Keys are turned off for this grant's cost center. Use a Microsoft Entra token."
+    ),
+    "notACostCenterMember": "Current Entra membership does not permit this individual key.",
+    "costCenterSetupRequired": (
+        "This cost center needs a verified Entra group before it can be used."
+    ),
+    "resourceNotAvailable": "This resource is Not available under the selected cost center.",
+    "resourceUnavailable": "Custom cost-center access requires an available, governed publication.",
+    "governmentCostCenterUnsupported": (
+        "Government resources are not available in Entra-backed cost-center workflows."
+    ),
+    "automaticEntraRequired": (
+        "Automatic access requires caller-side Entra tokens and configured group claims. "
+        "Enable them explicitly on the publication and deployment first."
+    ),
+    "costCenterAuthenticationUnavailable": (
+        "No supported credential is enabled for this resource and cost center."
+    ),
+    "requestOnlyRequired": (
+        "Access requests require a Request-only resource under this cost center. "
+        "Automatic access is inherited through its Entra group."
+    ),
+    "managedAutomaticGrantRequired": (
+        "Custom-center group grants are managed by its Automatic resource definitions."
+    ),
+}
+# Exact existing literals preserve portal copy; a local type or a supplied summary is not trust.
+_CALLER_ACCESS_LOCAL_MESSAGES = frozenset(
+    (
+        *_CALLER_ACCESS_REASON_MESSAGES.values(),
+        "Multiple principals map to this identity; resolve the duplicates",
+        "The grant no longer matches its principal's identity kind",
+        "Connection details are available for published model grants only",
+        "This model API is not linked to a MOSAIC publication",
+        "The publication binding changed; re-plan model access",
+        "The publication's gateway is no longer registered",
+        "Synchronize the gateway to discover its model API endpoint",
+        "This model is no longer registered",
+        "This model's gateway is no longer registered",
+        "This model's API style has no operations governed access supports",
+        "Key access requires an enabled grant successfully applied to API Management",
+        "This grant has not been applied to API Management",
+        "Apply the pending changes to this grant before using its key",
+        (
+            "A change to this model's access is in progress or needs recovery; "
+            "key retrieval is blocked"
+        ),
+        "Connection details are available for MCP server grants only",
+        "This MCP server is no longer registered",
+        "The publication binding changed; re-plan MCP access",
+        (
+            "This MCP server isn't published in API Management right now, "
+            "so there's nothing to connect to"
+        ),
+        "The MCP server's gateway is no longer registered",
+        "A publication operation is in progress or needs recovery; key retrieval is blocked",
+        "This grant's cost-center access needs review before using its key.",
+        "The individual grant's principal no longer exists.",
+        "No cost center has that ID",
+        "Apply the pending changes to all models sharing this key before using it.",
+        "Imported MCP grants do not have MOSAIC-managed keys.",
+        "An MCP publication operation is in progress; try again later.",
+        "Model access changed during key retrieval; reload and retry",
+        "This deployment can't manage keys",
+        "The publication disappeared while managing this key",
+        "The model disappeared while managing this key",
+        "This grant has no key to delete.",
+        "APIM has not confirmed this key is active.",
+        "This MCP publication supports Entra tokens only, not subscription keys.",
+        "MCP keys require an enabled, successfully applied direct grant.",
+        "This MCP grant has not been applied to API Management.",
+        "Apply pending changes to this MCP grant before using its key.",
+        "Keys are turned off for this cost center; Government access is unavailable.",
+        "Keys are turned off for this cost center; Government key access is unavailable.",
+        "This MCP grant has no key.",
+        "The MCP publication disappeared.",
+        "MOSAIC did not create this MCP subscription.",
+        "The MCP key is missing. Delete and reprovision it.",
+        "This MCP grant already has a key.",
+        "APIM has not confirmed this MCP key is active.",
+        "The managed subscription is no longer available in API Management",
+        "The subscription is not active at the expected model API scope. Re-plan access.",
+        "APIM returned an invalid Government runtime policy.",
+        "APIM did not confirm Government subscription-key enforcement.",
+        "The reviewed Government access policy is missing from APIM.",
+        "APIM did not identify a Government API operation.",
+        "Government API operations must inherit the reviewed policy without overrides.",
+        "The Government MCP metadata policy is missing from APIM.",
+        "Apply the reviewed Government policy before provisioning a key.",
+        "The Government runtime policy changed. Review and apply it again.",
+        "Government keys require an eligible direct grant; group grants cannot authorize calls.",
+        (
+            "Access granted to a security group uses Entra tokens only; "
+            "there's no key to reveal."
+        ),
+    )
+)
+
+
+def _caller_access_message(error: DomainError) -> str:
+    if isinstance(error, NotFoundError):
+        return "Entitlement was not found"
+    if isinstance(error, (ConflictError, ValidationError)):
+        for message in (error.summary, error.message):
+            if message in _CALLER_ACCESS_LOCAL_MESSAGES:
+                return message
+        reason = error.details.get("reason")
+        if isinstance(reason, str) and reason in _CALLER_ACCESS_REASON_MESSAGES:
+            return _CALLER_ACCESS_REASON_MESSAGES[reason]
+        if isinstance(error, ValidationError):
+            return (
+                "This action is not valid for the grant. Ask an administrator to review "
+                "its configuration and eligibility."
+            )
+        return (
+            "This grant is not ready for the action. Refresh connection details and ask an "
+            "administrator to review its access."
+        )
+    if isinstance(error, UpstreamAuthorizationError):
+        return (
+            "MOSAIC cannot access this grant's gateway service. Ask an administrator to check "
+            "MOSAIC's gateway permissions."
+        )
+    if isinstance(error, UpstreamNotFoundError):
+        return "The Azure resource was not found"
+    if isinstance(error, UpstreamConflictError):
+        return "The Azure resource changed since MOSAIC last read it"
+    if isinstance(error, ChangeNotRecordedError):
+        return (
+            "The gateway change could not be recorded in MOSAIC. Refresh its status and ask an "
+            "administrator to review it before repeating the action."
+        )
+    if isinstance(error, UpstreamUnsupportedError):
+        return (
+            "This gateway does not support the requested action. "
+            "Ask an administrator to review it."
+        )
+    if isinstance(error, DirectoryForbiddenError):
+        return (
+            "MOSAIC cannot verify this grant's current membership. Ask an administrator to check "
+            "MOSAIC's directory permissions."
+        )
+    if isinstance(error, DirectoryDisabledError):
+        return (
+            "Directory verification is unavailable. Ask an administrator to review this grant's "
+            "cost-center access."
+        )
+    if isinstance(error, DirectoryError):
+        return "Current membership could not be verified. Try again in a moment."
+    if isinstance(error, UpstreamError):
+        return "The gateway service did not complete this action. Try again in a moment."
+    return "This action could not be completed. Ask an administrator to review the grant."
+
+
+def _caller_access_details(error: DomainError) -> dict[str, Any]:
+    details = error.details
+    result: dict[str, Any] = {}
+    reason = details.get("reason")
+    if (
+        isinstance(error, (NotFoundError, ConflictError, ValidationError))
+        and isinstance(reason, str)
+        and reason in _CALLER_ACCESS_REASON_MESSAGES
+    ):
+        result["reason"] = reason
+    status_code = details.get("statusCode")
+    if (
+        isinstance(status_code, int)
+        and not isinstance(status_code, bool)
+        and 100 <= status_code <= 599
+    ):
+        result["statusCode"] = status_code
+    retry_after = details.get("retryAfter")
+    if (
+        isinstance(retry_after, int)
+        and not isinstance(retry_after, bool)
+        and 1 <= retry_after <= 300
+    ):
+        result["retryAfter"] = retry_after
+    return result
+
+
+async def domain_error_handler(request: Request, exc: Exception) -> JSONResponse:
     if not isinstance(exc, DomainError):
         raise exc
+    caller_access = (
+        request.method,
+        getattr(request.scope.get("route"), "path", None),
+    ) in _CALLER_ACCESS_ROUTES
     return JSONResponse(
         status_code=exc.status_code,
-        content=ErrorBody(code=exc.code, message=exc.message, details=exc.details).model_dump(),
+        content=ErrorBody(
+            code=exc.code,
+            message=_caller_access_message(exc) if caller_access else exc.message,
+            details=_caller_access_details(exc) if caller_access else exc.details,
+        ).model_dump(),
         headers=(
             {"Retry-After": str(exc.retry_after)}
             if isinstance(exc, DirectoryThrottledError)

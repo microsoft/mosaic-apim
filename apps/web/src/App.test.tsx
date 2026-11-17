@@ -22,7 +22,10 @@ const mocks = vi.hoisted(() => ({
   logoutRedirect: vi.fn(),
 }))
 
-vi.mock('./runtime-config', () => ({ runtimeConfig: mocks.config }))
+vi.mock('./runtime-config', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./runtime-config')>(),
+  runtimeConfig: mocks.config,
+}))
 
 vi.mock('@azure/msal-react', () => ({
   useIsAuthenticated: () => true,
@@ -90,6 +93,7 @@ function expectNoAdminShell() {
 
 beforeEach(() => {
   mocks.config.authMode = 'entra'
+  mocks.config.portalUrl = 'https://portal.example.test/'
   mocks.getConsoleAccess.mockReset()
   mocks.loginRedirect.mockReset()
   mocks.logoutRedirect.mockReset()
@@ -127,6 +131,7 @@ describe('App shell', () => {
     expect(screen.getByText('Local mode')).toBeVisible()
     expect(screen.queryByText('MOSAIC Admin')).not.toBeInTheDocument()
     expect(mocks.getConsoleAccess).not.toHaveBeenCalled()
+    expect(screen.queryByRole('link', { name: 'Open end-user portal' })).not.toBeInTheDocument()
   })
 })
 
@@ -138,6 +143,7 @@ describe('Console access in Entra mode', () => {
 
     expect(await screen.findByText('Checking your access to the MOSAIC console')).toBeVisible()
     expectNoAdminShell()
+    expect(screen.queryByRole('link', { name: 'Open end-user portal' })).not.toBeInTheDocument()
   })
 
   it('renders the admin shell with the MOSAIC role for an administrator', async () => {
@@ -156,23 +162,50 @@ describe('Console access in Entra mode', () => {
     expect(screen.getAllByText('NT')).toHaveLength(1)
     expect(screen.queryByText('N(')).not.toBeInTheDocument()
     expect(mocks.getConsoleAccess).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('link', { name: 'Open end-user portal' })).not.toBeInTheDocument()
   })
 
-  it('tells a User-only caller the console is for administrators', async () => {
+  it('offers a User-only caller the configured portal without navigating automatically', async () => {
     mocks.getConsoleAccess.mockResolvedValue({ roles: ['User'], isAdmin: false })
+    const initialUrl = window.location.href
 
     renderApp()
 
-    expect(await screen.findByText('This console is for MOSAIC administrators')).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'This console is for MOSAIC administrators' })).toBeVisible()
+    expect(screen.getByText('User role')).toBeVisible()
     expect(
       screen.getByText(
-        'Your account has the User role, which opens the MOSAIC end-user portal. To use this console, an administrator must grant you the Admin role.',
+        'To use this console, an administrator must grant you the Admin role.',
       ),
     ).toBeVisible()
+    const portal = screen.getByRole('link', { name: 'Open end-user portal' })
+    expect(portal).toHaveAttribute('href', 'https://portal.example.test')
+    expect(portal).not.toHaveAttribute('target')
+    expect(screen.getByText('Portal access is checked separately. You may need to sign in.')).toBeVisible()
+    expect(window.location.href).toBe(initialUrl)
     expect(screen.getByText('Signed in as name@example.com')).toBeVisible()
     expect(screen.getByText(roleChangeHint)).toBeVisible()
     expectNoAdminShell()
 
+    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
+    expect(mocks.logoutRedirect).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    { value: undefined, message: 'The portal address is not configured.' },
+    { value: '', message: 'The portal address is not configured.' },
+    { value: 'javascript:alert(1)', message: "This deployment's portal address is invalid." },
+  ])('keeps recovery available when the portal setting is unavailable: $value', async ({ value, message }) => {
+    mocks.config.portalUrl = value
+    mocks.getConsoleAccess.mockResolvedValue({ roles: ['User'], isAdmin: false })
+
+    renderApp()
+
+    expect(await screen.findByText('Portal link unavailable')).toBeVisible()
+    expect(screen.getByText(`${message} Ask your MOSAIC administrator for the portal address.`)).toBeVisible()
+    expect(screen.queryByRole('link', { name: 'Open end-user portal' })).not.toBeInTheDocument()
+    expect(screen.getByText(roleChangeHint)).toBeVisible()
+    expectNoAdminShell()
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
     expect(mocks.logoutRedirect).toHaveBeenCalledTimes(1)
   })
@@ -195,6 +228,7 @@ describe('Console access in Entra mode', () => {
     expectNoAdminShell()
     expect(screen.queryByText('This console is for MOSAIC administrators')).not.toBeInTheDocument()
     expect(mocks.getConsoleAccess).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('link', { name: 'Open end-user portal' })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
     expect(mocks.logoutRedirect).toHaveBeenCalledTimes(1)
@@ -215,6 +249,7 @@ describe('Console access in Entra mode', () => {
     ).toBeVisible()
     expectNoAdminShell()
     expect(screen.queryByText(roleChangeHint)).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Open end-user portal' })).not.toBeInTheDocument()
     // A server error is retried once before the page gives up.
     expect(mocks.getConsoleAccess).toHaveBeenCalledTimes(2)
 
@@ -243,6 +278,7 @@ describe('Console access in Entra mode', () => {
     ).toBeVisible()
     expect(screen.getByRole('button', { name: 'Try again' })).toBeVisible()
     expect(screen.queryByText('You do not have access to MOSAIC yet')).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Open end-user portal' })).not.toBeInTheDocument()
     expectNoAdminShell()
   })
 })

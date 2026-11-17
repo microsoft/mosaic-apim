@@ -420,6 +420,7 @@ export interface MosaicApi extends AdminApi {
   getModelPool(poolId: string): Promise<ModelPool>
   getModelPoolDetail(poolId: string): Promise<ModelPoolDetail>
   updateModelPool(poolId: string, payload: ModelPoolUpdate): Promise<ModelPool>
+  updatePoolModelCatalog(poolId: string, modelId: string, payload: { summary?: string | null }): Promise<ModelPool>
   deleteModelPool(poolId: string): Promise<void>
   planModelPool(poolId: string): Promise<PublishPlan>
   applyModelPool(poolId: string, planId: string): Promise<PublishRun>
@@ -1139,6 +1140,11 @@ export function useMosaicApi(): MosaicApi {
         request<ModelPoolDetail>(`/api/v1/model-pools/${encodeURIComponent(id)}/detail`),
       updateModelPool: (id, payload) =>
         request<ModelPool>(`/api/v1/model-pools/${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          body: payload,
+        }),
+      updatePoolModelCatalog: (poolId, modelId, payload) =>
+        request<ModelPool>(`/api/v1/model-pools/${encodeURIComponent(poolId)}/models/${encodeURIComponent(modelId)}/catalog`, {
           method: 'PATCH',
           body: payload,
         }),

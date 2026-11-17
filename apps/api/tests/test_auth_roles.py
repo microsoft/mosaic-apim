@@ -28,6 +28,7 @@ from mosaic_api.auth import (
     require_portal_user,
 )
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
+from mosaic_api.domain import AuditEvent, Gateway, ModelApi, new_id
 from mosaic_api.main import create_app
 
 KEY_ID = "test-key"
@@ -79,7 +80,13 @@ def _authenticator(
     return EntraAuthenticator(settings, client=client), client
 
 
-def _token(signing_key: rsa.RSAPrivateKey, settings: Settings, roles: list[str]) -> str:
+def _token(
+    signing_key: rsa.RSAPrivateKey,
+    settings: Settings,
+    roles: list[str],
+    *,
+    claims: dict[str, Any] | None = None,
+) -> str:
     now = int(time.time())
     return jwt.encode(
         {
@@ -90,6 +97,7 @@ def _token(signing_key: rsa.RSAPrivateKey, settings: Settings, roles: list[str])
             "iat": now,
             "exp": now + 600,
             "roles": roles,
+            **(claims or {}),
         },
         signing_key,
         algorithm="RS256",
@@ -120,13 +128,70 @@ async def test_authentication_admits_any_mosaic_role(
     settings = _settings()
     authenticator, client = _authenticator(settings, signing_key)
     try:
-        context = await authenticator.authenticate(
-            _request(_token(signing_key, settings, roles))
-        )
+        context = await authenticator.authenticate(_request(_token(signing_key, settings, roles)))
     finally:
         await client.aclose()
     assert context.roles == expected
     assert context.object_id == "caller-object-id"
+
+
+async def test_validated_display_claims_do_not_change_identity_or_group_evidence(
+    signing_key: rsa.RSAPrivateKey,
+) -> None:
+    settings = _settings()
+    authenticator, client = _authenticator(settings, signing_key)
+    try:
+        context = await authenticator.authenticate(
+            _request(
+                _token(
+                    signing_key,
+                    settings,
+                    ["User"],
+                    claims={
+                        "name": " Jordan\nRowan ",
+                        "preferred_username": "Jordan.Rowan@example.invalid",
+                        "groups": ["GROUP-TEST"],
+                    },
+                )
+            )
+        )
+    finally:
+        await client.aclose()
+    assert context.name == "Jordan Rowan"
+    assert context.username == "Jordan.Rowan@example.invalid"
+    assert context.object_id == "caller-object-id"
+    assert context.tenant_id == settings.tenant_id
+    assert context.roles == frozenset({"User"})
+    assert context.group_ids == frozenset({"group-test"})
+    assert context.groups_overage is False
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {"tid": "other-tenant"},
+        {"aud": "other-audience"},
+        {"iss": "https://identity.example/wrong"},
+        {"exp": 1},
+    ],
+)
+async def test_display_claims_never_admit_an_invalid_token(
+    signing_key: rsa.RSAPrivateKey, invalid: dict[str, Any]
+) -> None:
+    settings = _settings()
+    authenticator, client = _authenticator(settings, signing_key)
+    try:
+        with pytest.raises(HTTPException) as raised:
+            await authenticator.authenticate(
+                _request(
+                    _token(
+                        signing_key, settings, ["User"], claims={"name": "Jordan Rowan", **invalid}
+                    )
+                )
+            )
+    finally:
+        await client.aclose()
+    assert raised.value.status_code == 401
 
 
 @pytest.mark.parametrize("roles", [[], ["SomeOtherApp.Reader"]])
@@ -137,11 +202,132 @@ async def test_authentication_still_fails_closed_without_a_mosaic_role(
     authenticator, client = _authenticator(settings, signing_key)
     try:
         with pytest.raises(HTTPException) as raised:
-            await authenticator.authenticate(_request(_token(signing_key, settings, roles)))
+            await authenticator.authenticate(
+                _request(_token(signing_key, settings, roles, claims={"name": "Jordan Rowan"}))
+            )
     finally:
         await client.aclose()
     assert raised.value.status_code == 403
     assert raised.value.detail == NO_MOSAIC_ROLE
+
+
+@pytest.mark.parametrize("roles", [["User"], ["Admin"]])
+async def test_http_requests_capture_validated_names_but_keep_snapshots_admin_only(
+    signing_key: rsa.RSAPrivateKey, roles: list[str]
+) -> None:
+    settings = _settings().model_copy(update={"auth_mode": AuthMode.LOCAL})
+    authenticator, identity_client = _authenticator(settings, signing_key)
+    caller_id = "00000000-0000-4000-8000-000000000045"
+    claims = {
+        "oid": caller_id,
+        "name": " Jordan\nRowan ",
+        "preferred_username": "Jordan.Rowan@example.invalid",
+    }
+    headers = {"Authorization": f"Bearer {_token(signing_key, settings, roles, claims=claims)}"}
+    audit = AuditEvent(
+        id=new_id("audit"),
+        tenant_id=settings.tenant_id,
+        action="test.seed",
+        resource_type="test",
+        resource_id="model",
+        actor_object_id="local-admin",
+    )
+    try:
+        with TestClient(create_app(settings)) as client:
+            state = client.app.state
+            state.authenticator = authenticator
+            await state.gateway_repository.create_gateway(
+                Gateway(
+                    id="gateway-test",
+                    tenant_id=settings.tenant_id,
+                    name="Fictional gateway",
+                    azure_resource_id="/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/example/providers/Microsoft.ApiManagement/service/example",
+                    subscription_id="00000000-0000-0000-0000-000000000000",
+                    resource_group="example",
+                    service_name="example",
+                ),
+                audit,
+            )
+            await state.gateway_repository.save_model_api(
+                ModelApi(
+                    id="model-test",
+                    tenant_id=settings.tenant_id,
+                    gateway_id="gateway-test",
+                    api_name="model-test",
+                    display_name="Chat model",
+                    path="model-test",
+                    imported_from_snapshot_id="snapshot-test",
+                ),
+                audit,
+            )
+            payload = {"resource": {"kind": "modelApi", "id": "model-test"}}
+            for field in (
+                "requesterName",
+                "requesterUsername",
+                "requesterObjectId",
+                "requesterPrincipalId",
+                "tenantId",
+            ):
+                forged = client.post(
+                    "/api/v1/portal/access-requests",
+                    headers=headers,
+                    json={**payload, field: "forged"},
+                )
+                assert forged.status_code == 422, forged.text
+                assert state.entitlement_repository.access_requests == {}
+                assert state.repository.principals == {}
+
+            created = client.post("/api/v1/portal/access-requests", headers=headers, json=payload)
+            assert created.status_code == 201, created.text
+            request_id = created.json()["id"]
+            admin_headers = {
+                "Authorization": "Bearer "
+                + _token(
+                    signing_key,
+                    settings,
+                    ["Admin"],
+                    claims={"oid": "reviewer-id", "name": "Different reviewer"},
+                )
+            }
+            [admin_request] = client.get("/api/v1/access-requests", headers=admin_headers).json()
+            assert admin_request["requesterObjectId"] == caller_id
+            assert admin_request["requesterName"] == "Jordan Rowan"
+            assert admin_request["requesterUsername"] == "Jordan.Rowan@example.invalid"
+
+            for field in ("requesterName", "requesterUsername"):
+                rejected = client.post(
+                    f"/api/v1/access-requests/{request_id}/approve",
+                    headers=admin_headers,
+                    json={field: "forged"},
+                )
+                assert rejected.status_code == 422, rejected.text
+                assert state.repository.principals == {}
+                assert state.entitlement_repository.entitlements == {}
+
+            [listed] = client.get("/api/v1/portal/access-requests", headers=headers).json()
+            renamed_headers = {
+                "Authorization": "Bearer "
+                + _token(
+                    signing_key,
+                    settings,
+                    roles,
+                    claims={**claims, "name": "Changed name", "preferred_username": "changed"},
+                )
+            }
+            withdrawn = client.post(
+                f"/api/v1/portal/access-requests/{request_id}/withdraw",
+                headers=renamed_headers,
+            )
+            assert withdrawn.status_code == 200, withdrawn.text
+            for response in (created.json(), listed, withdrawn.json()):
+                assert "requesterName" not in response
+                assert "requesterUsername" not in response
+            [stored] = state.entitlement_repository.access_requests.values()
+            assert stored.state == "withdrawn"
+            assert stored.requester_name == "Jordan Rowan"
+            assert stored.requester_username == "Jordan.Rowan@example.invalid"
+    finally:
+        await identity_client.aclose()
 
 
 def _dependency_app(roles: list[str]) -> TestClient:
@@ -169,9 +355,7 @@ class _StubAuthenticator:
         self._roles = frozenset(roles)
 
     async def authenticate(self, _request: Request) -> AuthContext:
-        return AuthContext(
-            object_id="caller-object-id", tenant_id="tenant-test", roles=self._roles
-        )
+        return AuthContext(object_id="caller-object-id", tenant_id="tenant-test", roles=self._roles)
 
     async def close(self) -> None:
         return None

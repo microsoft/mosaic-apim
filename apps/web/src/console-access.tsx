@@ -6,10 +6,14 @@ import {
   MessageBarTitle,
   Spinner,
 } from '@fluentui/react-components'
+import { AppGenericRegular, ArrowRightRegular, PersonCircleRegular } from '@fluentui/react-icons'
 import { useQuery } from '@tanstack/react-query'
 import type { PropsWithChildren, ReactNode } from 'react'
 import { useMosaicApi } from './api'
-import { runtimeConfig } from './runtime-config'
+import { MosaicMark } from './components/MosaicMark'
+import { resolvePortalDestination, runtimeConfig } from './runtime-config'
+
+const roleChangeHint = 'If an administrator has just granted you a role, sign out and sign in again.'
 
 function statusOf(error: unknown): number | undefined {
   if (typeof error === 'object' && error !== null && 'status' in error) {
@@ -54,13 +58,69 @@ function AccessDenied({
       </MessageBar>
       {account && <p className="access-denied-hint">Signed in as {account}</p>}
       {/* MSAL keeps the access token it already holds, so a new role reaches the API only after a new sign-in. */}
-      <p className="access-denied-hint">
-        If an administrator has just granted you a role, sign out and sign in again.
-      </p>
+      <p className="access-denied-hint">{roleChangeHint}</p>
       <div className="access-denied-actions">
         <Button onClick={onSignOut}>Sign out</Button>
       </div>
     </AccessPage>
+  )
+}
+
+function UserOnlyAccess({ account, onSignOut }: { account?: string; onSignOut: () => void }) {
+  const portal = resolvePortalDestination(runtimeConfig.portalUrl, window.location.origin)
+  return (
+    <main className="centered-page portal-handoff-page">
+      <section className="portal-handoff-card" aria-labelledby="console-user-only-title">
+        <header className="portal-handoff-brand">
+          <span className="brand-mark" aria-hidden="true"><MosaicMark /></span>
+          <span className="portal-handoff-wordmark">MOSAIC</span>
+          <span className="portal-handoff-app">Administrator console</span>
+        </header>
+        <div className="portal-handoff-grid">
+          <div className="portal-handoff-explanation">
+            <span className="portal-handoff-role">User role</span>
+            <h1 id="console-user-only-title">This console is for MOSAIC administrators</h1>
+            <p>To use this console, an administrator must grant you the Admin role.</p>
+          </div>
+          <div className="portal-handoff-destination">
+            <section className="portal-handoff-panel" aria-labelledby="portal-handoff-title">
+              <AppGenericRegular className="portal-handoff-icon" aria-hidden="true" />
+              <h2 id="portal-handoff-title">MOSAIC end-user portal</h2>
+              <p>Browse the catalog, request access, and see your own usage.</p>
+              {portal.status === 'ready' ? (
+                <Button as="a" appearance="primary" href={portal.href}
+                  icon={<ArrowRightRegular />} iconPosition="after">
+                  <span className="portal-handoff-action-label">Open end-user portal</span>
+                </Button>
+              ) : (
+                <MessageBar intent="warning" layout="multiline">
+                  <MessageBarBody>
+                    <MessageBarTitle>Portal link unavailable</MessageBarTitle>
+                    {portal.status === 'missing'
+                      ? 'The portal address is not configured. '
+                      : "This deployment's portal address is invalid. "}
+                    Ask your MOSAIC administrator for the portal address.
+                  </MessageBarBody>
+                </MessageBar>
+              )}
+            </section>
+            <p className="portal-handoff-note">
+              Portal access is checked separately. You may need to sign in.
+            </p>
+          </div>
+          <div className="portal-handoff-account">
+            {account && (
+              <div className="portal-handoff-account-label">
+                <PersonCircleRegular aria-hidden="true" />
+                <p>Signed in as {account}</p>
+              </div>
+            )}
+            <p>{roleChangeHint}</p>
+            <Button onClick={onSignOut}>Sign out</Button>
+          </div>
+        </div>
+      </section>
+    </main>
   )
 }
 
@@ -113,14 +173,7 @@ function EntraConsoleAccessGate({ children }: PropsWithChildren) {
   if (access.data) {
     // The API answers only callers holding Admin or User, so a non-admin answer means User alone.
     return (
-      <AccessDenied
-        title="This console is for MOSAIC administrators"
-        account={accountLabel}
-        onSignOut={signOut}
-      >
-        Your account has the User role, which opens the MOSAIC end-user portal. To use this
-        console, an administrator must grant you the Admin role.
-      </AccessDenied>
+      <UserOnlyAccess account={accountLabel} onSignOut={signOut} />
     )
   }
   if (access.isError && statusOf(access.error) === 403) {

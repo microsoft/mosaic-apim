@@ -79,7 +79,10 @@ globalThis.MutationObserver = FlushableMutationObserver
 // Added before any tabster exists, so it runs ahead of tabster's own focus handling.
 document.addEventListener('focusin', () => tabsterObservers.forEach((observer) => observer.flush()), true)
 
-// Vitest globals are not enabled, so React Testing Library cannot register its own auto-cleanup.
+// Without Vitest globals, Testing Library cannot enable act warnings or register cleanup.
+// A plain property survives tests' vi.unstubAllGlobals().
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+
 // Without this, rendered trees accumulate and queries match elements from earlier tests.
 afterEach(() => {
   cleanup()

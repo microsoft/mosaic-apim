@@ -11,7 +11,9 @@ The [README](../README.md#screenshots) keeps a short selection; this is the comp
 
 These show the administrator console (`apps/web`) and the end-user portal (`apps/portal`) running
 against a fictional Contoso estate that [`scripts/screenshots`](../scripts/screenshots) seeds
-locally, not a real tenant; that is why the console reports **Local mode**. Directory data,
+locally, not a real tenant; most console views therefore report **Local mode**. The User-only
+handoff uses the real access component with an isolated fictional sign-in/role fixture, not a live
+Entra session. Directory data,
 Graph permission claims, and verification results are simulated to illustrate Entra-backed
 workflows; they are not live connectivity evidence. Normal local-authentication deployments
 cannot perform Graph lookups. Endpoint URLs, host
@@ -86,6 +88,26 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
 
 ## Administrator console
 
+### Portal handoff for end users
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/console-portal-handoff-light.png" alt="A User-only console access explanation beside a primary link to the end-user portal in the light theme">
+      <p><b>User-only handoff, light.</b> An account without the Admin role sees one explanation
+      and a separate portal destination instead of administrator navigation. Open the portal
+      deliberately, or sign out; the link does not grant access.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/console-portal-handoff-dark.png" alt="The same User-only portal destination and sign-out controls in the dark theme">
+      <p><b>User-only handoff, dark.</b> The same role boundary, portal action, and sign-out recovery
+      follow the dark theme. The portal checks access separately and may ask the person to sign in.</p>
+    </td>
+  </tr>
+</table>
+
+### Estate administration
+
 <table>
   <tr>
     <td width="50%" valign="top">
@@ -108,10 +130,18 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
       backend it points at, what it exposes, the policies that govern it, and its operations.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="images/screenshots/console-models.png" alt="A compact published-model list beside selected publication details, gateway state, and actions">
+      <img src="images/screenshots/console-models.png" alt="A compact published-model list beside selected publication details, saved catalog summary, and edit action">
       <p><b>Models.</b> A compact publication list opens the selected model's gateway state,
-      API path, access settings, and actions in a detail workspace. Publishing changes APIM only when a reviewed plan is
+      API path, access settings, and catalog summary with an explicit summary editor. Publishing changes APIM only when a reviewed plan is
       applied, and only on a gateway in manage mode.</p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <img src="images/screenshots/console-catalog-summary-review.png" alt="The catalog summary Review step with saved and draft text, unchanged access settings, and an exact-offering portal preview">
+      <p><b>Review catalog copy.</b> Compare saved and draft summary text and read its portal
+      preview before explicitly saving. This changes only the exact offering's catalog copy,
+      not its visibility, grants, or gateway publishing.</p>
     </td>
   </tr>
   <tr>
@@ -151,10 +181,10 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
       on multiple reachable endpoints without a pool.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="images/screenshots/console-pool-detail.png" alt="A breaker pool serving Claude Opus 4.5 and Claude Sonnet 4.5 from five deployments in three regions, with weights, readiness, and drain switches">
-      <p><b>A model pool.</b> Compact navigation rails give the Models and deployments section room
-      to show each model's deployments, regions, capacity, readiness, weights, and drain controls. Overview, access, health, and
-      policy/run history are separate destinations.</p>
+      <img src="images/screenshots/console-pool-detail.png" alt="A breaker pool's public model summaries and private deployments, regions, weights, readiness, and drain switches">
+      <p><b>A model pool.</b> Each model's public catalog summary and edit action stay separate
+      from its private deployments, regions, capacity, readiness, weights, and drain controls.
+      Compact navigation rails leave room for both models in the selected section.</p>
     </td>
   </tr>
   <tr>
@@ -406,9 +436,9 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="images/screenshots/console-access-requests.png" alt="A compact access-request list beside the selected request's resource, cost center, justification, and approval or denial actions">
-      <p><b>Access requests.</b> The focused list-and-detail approval queue is reachable from the header's
-      pending count or the Entitlements section menu. Approval saves grant intent; administrators
+      <img src="images/screenshots/console-access-requests.png" alt="A compact request queue beside an unknown requester's captured name, username, object ID, resource, cost center, and decision actions">
+      <p><b>Access requests.</b> Review requester labels and their request-time sign-in identity
+      alongside the selected resource, cost center, and justification. Approval saves grant intent; administrators
       still review and apply the gateway changes separately.</p>
     </td>
     <td width="50%" valign="top">
@@ -416,6 +446,14 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
       <p><b>Model access settings.</b> A dedicated section configures authentication for a
       selected published model, distinct from filtering individual grants. Review includes all
       saved grants and settings for that model and does not apply them automatically.</p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <img src="images/screenshots/console-access-request-approval.png" alt="Full-workspace approval of an unknown requester with the initial registration label separated from captured sign-in identity and grant limits">
+      <p><b>Unknown requester approval.</b> Inspect the proposed initial label, captured name,
+      username and object ID before registering an unknown requester. Approval saves a grant
+      without activating gateway access or changing an existing principal's label.</p>
     </td>
   </tr>
   <tr>
@@ -434,8 +472,8 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
   <tr>
     <td colspan="2" valign="top">
       <img src="images/screenshots/console-request-notifications.png" alt="The pending-approvals popover with requester names, requested resources, and exact review links, separate from the unread notification inbox">
-      <p><b>Pending approvals.</b> Each pending request separates the requester, requested
-      resource, and time, and opens that exact request for review. This queue is separate from
+      <p><b>Pending approvals.</b> Each pending request uses the registered label or captured
+      sign-in name, separates resource and time, and opens that exact request for review. This queue is separate from
       the persistent notification inbox and its unread count.</p>
     </td>
   </tr>
@@ -463,9 +501,9 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
       Preview pending requests without approving them, and enable automation explicitly.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="images/screenshots/console-bulk-approval.png" alt="Full-workspace bulk approval review with two explicit requests, current environment facts, inherited limits, per-request controls, and advisory AI actions">
-      <p><b>Bulk approval review.</b> Review an explicit selection against current environment,
-      cost-center, and limit facts, with independent inclusion and advisory AI controls.
+      <img src="images/screenshots/console-bulk-approval.png" alt="Full-workspace bulk review separating requester labels from captured sign-in identities beside current environment, cost-center, limit, and independent approval controls">
+      <p><b>Bulk approval review.</b> Compare requester labels and captured sign-in identity
+      with current environment, cost-center, and limit facts, retaining independent inclusion and advisory AI controls.
       Approvals save grant intent; gateway plans still require separate review and apply.</p>
     </td>
   </tr>
@@ -579,8 +617,8 @@ resource lists, forms, and connection drawers remain solid for readability.
     <td width="50%" valign="top">
       <img src="images/screenshots/portal-request-access.png" alt="The catalog with a contextual access request panel for a selected model">
       <p><b>Request access.</b> Open a model's options without shifting the catalog, then choose
-      the exact offering and cost center for a request. The drawer shows existing access or
-      pending requests and lets the person add a justification.</p>
+      the exact offering and cost center for a request. The drawer shows that offering's
+      administrator-authored summary, existing access or pending requests, and a justification field.</p>
     </td>
     <td width="50%" valign="top">
       <img src="images/screenshots/portal-usage-breakdowns.png" alt="Usage breakdowns with aggregate cost-center totals and pooled quotas">

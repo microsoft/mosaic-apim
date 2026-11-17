@@ -5,6 +5,7 @@ import { useId, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { adminRequestKey, adminRequestLink, combineAdminRequests } from '../request-queue'
+import { requesterDisplay } from '../requester-display'
 import type { AdminRequest, Principal } from '../types'
 import styles from './RequestNotifications.module.css'
 
@@ -16,18 +17,16 @@ function RequestItem({ item, principals, principalsReady, onSelect }: {
 }) {
   const api = useMosaicApi()
   const request = item.request
-  const requesterPrincipalId = item.requestKind === 'resource' ? item.request.requesterPrincipalId : undefined
-  const principal = principals?.find((item) =>
-    item.id === requesterPrincipalId || item.objectId?.toLowerCase() === request.requesterObjectId.toLowerCase())
+  const requester = requesterDisplay(request, principals)
   const directory = useQuery({
     queryKey: ['directory-object', request.requesterObjectId],
     queryFn: () => api.getDirectoryObject(request.requesterObjectId),
-    enabled: principalsReady && !principal?.label?.trim(),
+    enabled: principalsReady && !requester.displayName,
     retry: false,
     throwOnError: false,
     staleTime: 300_000,
   })
-  const name = principal?.label?.trim() || directory.data?.displayName?.trim()
+  const name = requester.displayName || directory.data?.displayName?.trim()
   const resource = item.requestKind === 'costCenter' ? item.request.name : item.requestKind === 'costCenterMembership' ? item.request.costCenter.name
     : item.request.resourceSummary?.displayName ?? item.request.resourceSnapshot?.displayName ?? 'Resource details unavailable'
   return (
@@ -41,7 +40,7 @@ function RequestItem({ item, principals, principalsReady, onSelect }: {
           <time dateTime={request.createdAt}>{new Date(request.createdAt).toLocaleString()}</time>
         </span>
       </Button>
-      {directory.isError && !principal?.label && (
+      {directory.isError && !requester.displayName && (
         <div className={styles.lookupError}>
           <Text size={200}>Requester lookup unavailable.</Text>
           <Button size="small" appearance="subtle" onClick={() => void directory.refetch()}>Retry name lookup</Button>
@@ -114,7 +113,7 @@ export function RequestNotifications() {
         {(requests.isPending || centers.isPending || memberships.isPending) && <Spinner size="tiny" label="Checking pending requests" />}
         {(requests.isError || centers.isError || memberships.isError) && <Button onClick={() => { void requests.refetch(); void centers.refetch(); void memberships.refetch() }}>Requests unavailable — retry</Button>}
         {requests.isSuccess && centers.isSuccess && memberships.isSuccess && queue.length === 0 && <Text>No pending requests</Text>}
-        {principals.isError && <Text className={styles.lookupError}>Registered names unavailable; checking the directory for visible requests.</Text>}
+        {principals.isError && <Text className={styles.lookupError}>Registered names unavailable; using captured names or directory lookup where available.</Text>}
         {queue.length > 0 && <ul className={styles.list}>
           {queue.slice(0, 5).map((item) => (
             <RequestItem key={adminRequestKey(item.requestKind, item.request.id)} item={item} principals={principals.data} principalsReady={!principals.isPending}

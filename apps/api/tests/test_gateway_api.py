@@ -65,6 +65,46 @@ def test_unknown_gateway_returns_not_found(gateway_client: TestClient) -> None:
     assert response.json()["code"] == "not_found"
 
 
+def test_model_summary_writes_are_bounded_and_do_not_replay_visibility(
+    gateway_client: TestClient,
+    fake_apim: FakeApim,
+    gateway_repository: InMemoryGatewayRepository,
+) -> None:
+    gateway = _register(gateway_client)
+    _sync(gateway_client, str(gateway["id"]))
+    imported = gateway_client.post(
+        f"/api/v1/gateways/{gateway['id']}/import-apis", json={"apiNames": ["chat-api"]}
+    )
+    assert imported.status_code == 201, imported.text
+    model_id = imported.json()[0]["id"]
+    path = f"/api/v1/model-apis/{model_id}/catalog"
+    assert gateway_client.patch(path, json={"visibility": "private"}).status_code == 200
+    fake_apim.writes.clear()
+
+    text = "\U0001f600" * 2000
+    saved = gateway_client.patch(path, json={"summary": f" \n{text}\n "})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["summary"] == text
+    assert saved.json()["visibility"] == "private"
+    assert gateway_client.patch(path, json={"summary": text + "x"}).status_code == 422
+    assert gateway_client.get("/api/v1/model-apis").json()[0]["summary"] == text
+
+    legacy = "Previously stored text " * 200
+    record = gateway_repository.model_apis[model_id]
+    gateway_repository.model_apis[model_id] = record.model_copy(update={"summary": legacy})
+    visibility = gateway_client.patch(path, json={"visibility": "catalog"})
+    assert visibility.status_code == 200, visibility.text
+    assert visibility.json()["summary"] == legacy
+    assert gateway_client.patch(path, json={}).json()["summary"] == legacy
+    assert gateway_client.patch(path, json={"summary": " \n\t "}).json()["summary"] is None
+    assert (
+        gateway_client.patch(path, json={"summary": " First line\nSecond line "}).json()["summary"]
+        == "First line\nSecond line"
+    )
+    assert gateway_client.patch(path, json={"summary": None}).json()["summary"] is None
+    assert not fake_apim.writes
+
+
 def test_sync_run_cannot_be_read_under_a_different_gateway(gateway_client: TestClient) -> None:
     gateway = _register(gateway_client)
     run = _sync(gateway_client, str(gateway["id"]))

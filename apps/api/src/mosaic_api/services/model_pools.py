@@ -42,6 +42,7 @@ from mosaic_api.domain import (
     ManagementMode,
     McpPublication,
     ModelAccessSettings,
+    ModelCatalogSummaryUpdate,
     ModelEndpoint,
     ModelProvider,
     Publication,
@@ -1772,6 +1773,48 @@ class ModelPoolService:
             )
             return pool
 
+    async def update_model_catalog(
+        self,
+        actor: Actor,
+        pool_id: str,
+        model_id: str,
+        request: ModelCatalogSummaryUpdate,
+    ) -> ModelPool:
+        async with publication_lock(self._repository, actor.tenant_id, pool_id):
+            pool = await self.get_pool(actor, pool_id)
+            if pool.status == PublicationStatus.APPLYING:
+                raise ConflictError(_APPLYING, details={"id": pool_id})
+            if pool.access_state == "unknown":
+                raise ConflictError(_UNKNOWN_ACCESS, details={"id": pool_id})
+            if not any(model.id == model_id for model in pool.models):
+                raise NotFoundError(
+                    "Model was not found in this pool",
+                    details={"poolId": pool_id, "modelId": model_id},
+                )
+            if "summary" not in request.model_fields_set:
+                return pool
+            updated = pool.model_copy(
+                update={
+                    "models": [
+                        model.model_copy(update={"summary": request.summary})
+                        if model.id == model_id
+                        else model
+                        for model in pool.models
+                    ],
+                    "updated_at": utc_now(),
+                }
+            )
+            await self._repository.save_model_pool(
+                updated,
+                self._audit(
+                    actor,
+                    "modelPool.modelCatalogUpdated",
+                    pool.id,
+                    {"poolId": pool.id, "modelId": model_id},
+                ),
+            )
+            return updated
+
     async def delete(self, actor: Actor, pool_id: str) -> None:
         async with publication_lock(self._repository, actor.tenant_id, pool_id):
             pool = await self.get_pool(actor, pool_id)
@@ -1935,6 +1978,7 @@ class ModelPoolService:
                     public_name=public_name,
                     display_name=spec.display_name
                     or (earlier.display_name if earlier else public_name),
+                    summary=earlier.summary if earlier else None,
                     model_name=next(iter(names.values())),
                     model_format=vendor or None,
                     expected_version=next(iter(versions)) if len(versions) == 1 else None,
@@ -2501,6 +2545,7 @@ class ModelPoolService:
                     id=model.id,
                     public_name=model.public_name,
                     display_name=model.display_name,
+                    summary=model.summary,
                     model_name=model.model_name,
                     model_format=model.model_format,
                     expected_version=model.expected_version,

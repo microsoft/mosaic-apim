@@ -226,11 +226,18 @@ name the pool, its members, or their regions.
 
 The catalog lists each model a governed pool serves as a **Model**, under its
 display name and the gateway's environment, with a capacity badge unless the pool hides capacity.
-It has no summary, because a pool's description may name its regions. Users see inherited Automatic
+Its optional public summary belongs to that exact model in that pool, never to the pool's private
+description, which may name its regions. Users see inherited Automatic
 access or request an eligible Request-only offering as they would any model. Once applied,
 **My access** shows the pool's base URL, the model name to send, and
 the safeguard as the model's shared limit. Revealing a key names the other models it works for.
 The portal never names the pool, its deployments, or their regions.
+
+In **Models and deployments**, **Edit catalog summary** opens the full-workspace Write and Review
+flow for one model. Only **Save summary** persists the optional plain text (up to 2,000 Unicode code
+points); leaving it empty clears it. Saving copy does not publish an unlisted/draft offering, alter
+grants, or invalidate a reviewed gateway plan. The summary survives unrelated pool edits and
+deployment drains. Reload the portal catalog to see saved copy in that offering's access options.
 
 In the console, **Pools** lists every pool with its gateway, what it serves, its routing, its active
 members, readiness, whether callers need a grant, and status. **Create pool** chooses the gateway
@@ -292,6 +299,7 @@ another problem, and the pools whose last apply failed.
 | GET | `/model-endpoints/{id}/pools` | The pools with members on that endpoint, the deployments each one uses there, and a warning on any deployment portal users would also see published on its own |
 | POST | `/model-pools` | Creates a pool, `201` |
 | GET, PATCH, DELETE | `/model-pools/{id}` | Reads, changes, or removes a pool. `governedAccess` turns on governed access, and can't be cleared once set. Removal is refused while the pool owns API Management resources |
+| PATCH | `/model-pools/{poolId}/models/{modelId}/catalog` | Writes or clears only that model's public summary. Omission preserves it; reviewed plans, routing, visibility, and grants are unchanged |
 | GET | `/model-pools/{id}/detail` | The pool with each member judged against today's inventory, environments, and gateway |
 | GET | `/model-pools/{id}/health?hours=` | How each model's calls ended and how each member answered over the last 1 to 168 hours, 24 by default, from the gateway's logs |
 | POST | `/model-pools/{id}/plan` | A plan to review |

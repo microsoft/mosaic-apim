@@ -13,6 +13,15 @@ and complete-group-read results are simulated, not evidence of live Graph connec
 This is a screenshot-only fixture arrangement: normal local-authentication deployments disable
 Graph lookup and complete group checks.
 
+The User-only console handoff shots render the real access gate and theme in the isolated
+`scripts/screenshots/console-access` fixture. Only that tooling aliases MSAL to the fictional demo
+user and intercepts the role check; neither product build gains a preview route or authentication
+bypass. These shots demonstrate the handoff layout, not live Entra sign-in or portal authorization.
+The fixture starts only when its shots are selected, on `--console-access-port` (default 15175),
+and uses source components even with `--preview`. A handoff-only capture does not need the normal
+console/portal dev servers or require their ports to be free, but still starts the fictional demo
+API and checks its port and the isolated fixture port.
+
 The fictional estate uses one shared fake Graph directory for lookup, group creation, verification,
 and direct membership operations. Custom cost centers get dedicated verified Entra groups through
 the normal services, not MOSAIC-local shadow rosters. The fixture explicitly simulates group-create
@@ -94,6 +103,17 @@ python -m scripts.screenshots.capture
 | `--check-navigation` | Also verify all four administrator rail combinations in both themes, full width recovery, single-line controls and document reflow, every Pool section and Pricing at exactly 1440px document width with local table scrolling and `scrollIntoView`, mobile focus/inert behavior, workspace drafts and section-change discard decisions, forced colors, usage-first portal landing, portal primary/section rail width recovery, expanded/compact appearance controls, unchanged portal list geometry, and drawer/credential teardown against the fictional estate. For each captured portal theme, check resource, request, and cost-center pages at desktop/mobile widths, glass chrome, opaque panels/drawers, panel spacing, and reduced-transparency/forced-colors/unsupported-blur fallbacks |
 | `--reuse-servers` | Use a demo API and apps that are already running instead of starting them |
 | `--api-port`, `--console-port`, `--portal-port` | Change the ports, which default to 18000, 15173, and 15174 |
+| `--console-access-port` | Change the isolated User-only handoff fixture's port (default 15175). It starts when handoff shots are selected, including with `--reuse-servers`; choose an unused port |
+
+With `--check-navigation`, handoff shots also verify the configured same-tab link, absence of
+administrator content, keyboard order, 320px reflow and action fit, and missing/invalid-address
+recovery with Sign out. These checks use the isolated fictional fixture, not a live Entra session.
+
+The focused port-validation regression checks do not start browsers or servers:
+
+```powershell
+uv run --with "playwright>=1.58,<2" python -m pytest apps\web\tests\test_console_handoff_capture.py
+```
 
 If `uv` isn't on your `PATH`, run it as `python -m uv`. On a network that can't reach PyPI's file
 host, point uv at a mirror for the run and leave the lock file alone:
@@ -150,6 +170,18 @@ uv run --with "playwright>=1.58,<2" python -m pytest apps\web\tests\test_cost_ce
 These checks start and stop their own fictional API and console. They write redacted verification
 captures into an ignored test cache, not the gallery; they do not prove live Entra connectivity.
 
+### Focused requester identity regressions
+
+Verify request-time identity and full-workspace review with 200-character display values at
+1440px and 320px, in both themes and forced colors. These fictional checks exercise keyboard
+navigation and reflow without submitting an approval or calling a model:
+
+```powershell
+uv run --with "playwright>=1.58,<2" python -m pytest apps\web\tests\test_requester_identity_browser.py
+```
+
+Verification captures stay in the same ignored test cache, not the documentation gallery.
+
 ### Browse the demo estate
 
 To find a view worth capturing, run the demo API on its default ports and start each app with
@@ -192,8 +224,11 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
   regions but served by no pool, so the **Pools** page suggests one for it. Anthropic Claude is
   then governed: Megan Bowen holds both its models under Customer Insights, the Market Research
   Agent holds Opus, and the Agent Builders group holds Sonnet. Customer Insights sets a per-person
-  Sonnet limit and a pooled quota that counts every region, and Isaiah Langer's request for Opus is
-  pending. Commercial grants' subscription keys exist only where someone asked for one: the support copilot's,
+  Sonnet limit and a pooled quota that counts every region. Jordan Rowan's request for Opus under
+  General is pending, with captured sign-in metadata but no MOSAIC principal registration.
+  The resource queue also includes a changed sign-in name and a legacy request without a snapshot;
+  captured names are display metadata, not fresh directory verification.
+  Commercial grants' subscription keys exist only where someone asked for one: the support copilot's,
   the one Megan Bowen's notebook uses, and the one she calls both Claude models with. Eligible
   Government model and MCP grants receive their initial keys automatically after reviewed apply.
   One MCP
@@ -339,18 +374,20 @@ to include both the daily trend and the complete last-24-hours chart.
 | Shot | App | Route and state | Theme | Gallery entry |
 | --- | --- | --- | --- | --- |
 | `console-dashboard-light`, `console-dashboard-dark` | Console | `/dashboard` | Both | Light and dark: console overview |
+| `console-portal-handoff-light`, `console-portal-handoff-dark` | Console | `/` in the isolated fictional User-only access fixture; separate administrator explanation, configured portal link, and Sign out | Both | Portal handoff for end users |
 | `portal-catalog-light`, `portal-catalog-dark` | Portal | `/catalog`, full-width model-grouped rows with filters, blue-tinted glass navigation, and appearance controls | Both | Light and dark: portal catalog |
 | `console-gateways` | Console | `/gateways`, compact list with selected gateway overview | Light | Gateways |
 | `console-government-gateway` | Console | `/gateways`, fictional Government gateway selected with AzGov and Production context | Light | Government gateway |
 | `console-gateway-overview` | Console | Contoso AI Gateway, **Overview** section | Dark | Gateway overview |
 | `console-gateway-apis` | Console | Contoso AI Gateway, **APIs and endpoints** section | Light | APIs and endpoints |
-| `console-models` | Console | `/models`, compact list with selected publication detail | Dark | Models |
+| `console-models` | Console | `/models`, compact list with selected publication detail, saved catalog summary, and explicit summary edit action | Dark | Models |
+| `console-catalog-summary-review` | Console | `/models`, GPT-4o mini **Edit catalog summary > Review summary**, before/after copy and exact-offering preview; never saved | Light | Review catalog copy |
 | `console-register-key-endpoint` | Console | `/models?register=1`, **Azure AI with an API key** tab with a pasted, masked key, filled in and never submitted | Light | Register with an API key |
 | `console-key-endpoint` | Console | `/models?tab=endpoints`, Fabrikam partner Foundry selected, scrolled to its **Access** card with **Replace API key** | Dark | Endpoint reached with an API key |
 | `console-deploy-model` | Console | `/models?tab=endpoints`, **Deploy model** on the fictional Azure OpenAI account; explicit deployment-management opt-in, fresh version/SKU/quota configuration, no Azure create | Light | Deploy an Azure model |
 | `console-deploy-model-review` | Console | The same workflow's **Review deployment** step with exact target, native capacity, quota, billing/residency warnings, and unsubmitted **Deploy to Azure** action | Dark | Review before Azure creation |
 | `console-pools` | Console | `/pools`, compact list with Anthropic Claude selected, **Overview** detail and separate Suggestions navigation | Light | Model pools |
-| `console-pool-detail` | Console | Anthropic Claude detail, **Models and deployments** section with both navigation rails compact | Dark | A model pool |
+| `console-pool-detail` | Console | Anthropic Claude detail, **Models and deployments** with public per-model summaries and private deployments, both navigation rails compact | Dark | A model pool |
 | `console-pool-access` | Console | Anthropic Claude detail, **Access and connection** section with both navigation rails compact | Light | Who can call a pool |
 | `console-pool-health` | Console | Anthropic Claude detail, **Health** section for the last 24 hours with both navigation rails compact | Dark | Pool health |
 | `console-pool-editor` | Console | `/pools?tab=suggestions`, **Create pool** on the Claude Haiku 4.5 suggestion, **3. Models** step, never saved | Light | Create a pool |
@@ -363,7 +400,8 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-security-group-members` | Console | `/identity?tab=security-groups`, **AI Model Users** selected, scrolled to read-only **Security group members** | Dark | Security group members |
 | `console-directory-verification` | Console | `/identity?tab=security-groups`, **AI Model Users** selected, explicit complete-read check against the fictional directory, scrolled to its scoped diagnostic status | Light | Complete group-read verification |
 | `console-entitlements` | Console | `/entitlements`, selected grant with detailed state and limits | Light | Entitlements |
-| `console-access-requests` | Console | `/entitlements?tab=requests`, pending queue with the first request selected in **Selected access request** detail | Light | Access requests |
+| `console-access-requests` | Console | `/entitlements?tab=requests`, pending queue with an unknown requester's captured identity in **Selected access request** detail | Light | Access requests |
+| `console-access-request-approval` | Console | `/entitlements?tab=requests`, unknown requester in full-workspace **Approve access request**, with initial label, token snapshot, and grant limits; never submitted | Light | Unknown requester approval |
 | `console-model-access-settings` | Console | `/entitlements?tab=settings`, GPT-4o selected | Dark | Model access settings |
 | `console-overlapping-grants` | Console | `/entitlements?tab=effective`, **Overlapping grants** | Dark | Overlapping grants |
 | `console-cost-centers` | Console | `/cost-centers`, selected detail beside the compact list | Light | Cost centers |
@@ -381,7 +419,7 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-analytics` | Console | `/analytics`, **Overview** section | Dark | Analytics |
 | `console-analytics-filters` | Console | `/analytics`, grouped draft **Filters** open, never applied | Light | Analytics filters |
 | `console-request-notifications` | Console | `/dashboard`, pending-approvals popover open, separate from unread inbox bell | Light | Pending approvals |
-| `console-bulk-approval` | Console | `/entitlements?tab=requests`, two explicit pending requests in **Review bulk approvals**, never submitted | Dark | Bulk approval review |
+| `console-bulk-approval` | Console | `/entitlements?tab=requests`, two explicit pending requests with label and token-snapshot provenance in **Review bulk approvals**, never submitted | Dark | Bulk approval review |
 | `console-approval-policy` | Console | `/entitlements?tab=approvalPolicies`, disabled **Development office hours** policy in the full-workspace editor, never saved or enabled | Light | Scheduled approval policy |
 | `console-notification-inbox` | Console | `/notifications`, category/unread filters and selected exact notification | Dark | Administrator inbox |
 | `console-notification-preferences` | Console | `/profile`, **Edit preferences** workspace with independent administrator channel/cadence and digest controls, never saved | Light | Administrator preferences |
@@ -402,7 +440,7 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-email-settings` | Console | `/settings?tab=notifications&notificationView=email`, saved Graph mailbox, read-only access checks and last explicit test | Light | Email setup |
 | `console-teams-shared` | Console | `/settings?tab=notifications&notificationView=teams`, selected fictional Workflow with denied vault access, correction guidance and saved test | Light | Shared Teams access |
 | `console-teams-private` | Console | `/settings?tab=notifications&notificationView=personalTeams`, saved bot registration, caller-scoped runtime access check, installation, opt-in and test | Dark | Private Teams access |
-| `portal-request-access` | Portal | `/catalog`, GPT-4o mini's exact Commercial offering selected in the access drawer, never submitted | Light | Request access |
+| `portal-request-access` | Portal | `/catalog`, GPT-4o mini's exact Commercial offering with its administrator-authored summary selected in the access drawer, never submitted | Light | Request access |
 | `portal-access` | Portal | `/access`, grouped model rows and an exact grant's **Connection details** open in a drawer | Light | My access |
 | `portal-connection-cost-center` | Portal | `/access`, the GPT-4o grant under General with **Connection details** open, scrolled to **Cost center header** | Light | Choosing a cost center |
 | `portal-pool-connection` | Portal | `/access`, Claude Sonnet 4.5 selected, **Connection details** drawer scrolled to **Authentication** and the shared-key note | Dark | Models that share a key |

@@ -22,12 +22,12 @@ from mosaic_api.domain import (
     GatewayCapabilities,
     McpAccessGrant,
     McpAccessSnapshot,
-    McpConnection,
     McpPublication,
     McpServer,
     McpServerRoute,
     McpTransportType,
     ModelApi,
+    PortalMcpConnection,
     Principal,
     PrincipalKind,
     PublicationStatus,
@@ -660,7 +660,7 @@ async def test_mcp_connection_routes_for_admin_and_portal(
     harness: Harness, http_client: TestClient
 ) -> None:
     principal = await harness.principal(USER_OID)
-    entitlement = await harness.grant(principal)
+    entitlement = await harness.grant(principal, enforcement=_call_limits())
     await harness.apply_grant(entitlement, principal)
 
     http_client.app.state.authenticator = Caller(USER_OID, roles=("Admin",))
@@ -673,7 +673,18 @@ async def test_mcp_connection_routes_for_admin_and_portal(
     http_client.app.state.authenticator = Caller(USER_OID, roles=("User",))
     portal = http_client.get(f"/api/v1/me/entitlements/{entitlement.id}/mcp-connection")
     assert portal.status_code == 200, portal.text
-    assert McpConnection.model_validate(portal.json()).enforced is True
+    assert PortalMcpConnection.model_validate(portal.json()).enforced is True
+    assert portal.json()["limits"] == {
+        "tokens": None,
+        "requests": {
+            "calls": 60,
+            "renewalPeriodSeconds": 60,
+            "callQuota": None,
+            "callQuotaPeriod": None,
+        },
+    }
+    assert admin.json()["limits"]["requests"]["counterKeyExpression"]
+    assert "counterKeyExpression" not in portal.text
 
 
 # API Management's words for a failed apply, as the publication records them. Fictional, but shaped

@@ -14,6 +14,10 @@ import httpx
 import pytest
 from apim_double import RESOURCE_ID, FakeCredential
 from azure.core.credentials_async import AsyncTokenCredential
+from fastapi import Request
+from fastapi.testclient import TestClient
+from mosaic_api.auth import AuthContext
+from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
 from mosaic_api.cost_centers import general_cost_center
 from mosaic_api.domain import (
     Entitlement,
@@ -31,6 +35,7 @@ from mosaic_api.domain import (
 from mosaic_api.errors import ConflictError, NotFoundError
 from mosaic_api.integrations.apim import ArmClient
 from mosaic_api.integrations.apim.credentials import ApimKeyManager
+from mosaic_api.main import create_app
 from mosaic_api.model_pools import ModelPool, PoolSafeguard
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.entitlements import EntitlementService
@@ -208,6 +213,62 @@ async def test_a_pool_model_connects_to_the_pool_and_sends_the_model_name(
 
     administered = await portal.access.connection(ACTOR, grant.id, administrator=True)
     assert administered.pool_name == "OpenAI"
+
+
+async def test_pool_http_connection_preserves_scope_and_shared_key_metadata(
+    portal: Portal,
+) -> None:
+    pool, ada, grant = await _published(portal, safeguard=PoolSafeguard(tokens_per_minute=1000))
+    await portal.update(pool.id, models=[_gpt4o("aoai-east"), MINI])
+    pool = await portal.pool(pool.id)
+    shared = await portal.grant_model(pool, ada, 1)
+    await portal.publish(pool.id)
+    key = await portal.access.create_key(_holder(ada), grant.id)
+
+    class Caller:
+        async def authenticate(self, _request: Request) -> AuthContext:
+            return AuthContext(
+                object_id=ada.object_id, tenant_id=TENANT, roles=frozenset({"Admin", "User"})
+            )
+
+        async def close(self) -> None:
+            pass
+
+    settings = Settings(
+        environment=Environment.TEST, auth_mode=AuthMode.LOCAL,
+        repository_backend=RepositoryBackend.MEMORY, tenant_id=TENANT,
+    )
+    with TestClient(create_app(settings)) as client:
+        client.app.state.authenticator = Caller()
+        client.app.state.portal_access_service = portal.access
+        response = client.get(f"/api/v1/me/entitlements/{grant.id}/connection")
+        assert response.status_code == 200, response.text
+        connection = response.json()
+        assert connection["endpoint"] == f"{GATEWAY_URL}/{pool.api_path.strip('/')}"
+        assert connection["deploymentName"] == "gpt-4o"
+        assert connection["poolId"] == pool.id
+        assert connection["poolModelId"] == grant.resource.id
+        assert connection["runtime"]["subscriptionName"] == key.subscription_name
+        assert connection["keyExists"] is True
+        assert connection["keySharedWith"] == [{
+            "poolModelId": shared.resource.id,
+            "displayName": "GPT-4o mini",
+            "publicName": "gpt-4o-mini",
+        }]
+        assert connection["publicationLimits"] == {
+            "tokensPerMinute": 1000, "tokenQuota": None, "tokenQuotaPeriod": None,
+            "estimatePromptTokens": False,
+        }
+        assert "poolName" not in connection
+        assert "counterKeyExpression" not in response.text
+        assert portal.reads == []
+
+        administrator = client.get(f"/api/v1/entitlements/{grant.id}/connection")
+        assert administrator.status_code == 200, administrator.text
+        assert administrator.json()["poolName"] == "OpenAI"
+        assert (
+            administrator.json()["publicationLimits"]["counterKeyExpression"] == grant.resource.id
+        )
 
 
 async def test_without_a_safeguard_the_model_has_no_shared_limit(portal: Portal) -> None:

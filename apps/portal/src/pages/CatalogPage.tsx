@@ -413,7 +413,8 @@ export function CatalogPage() {
                 <CatalogCapacityBadge entry={offering} />
               </div>
               <p className="resource-context">{entryDescription(offering)}</p>
-              {offering.summary && <p>{offering.summary}</p>}
+              {offering.summary && (!isModelResource(offering.kind) || offering.summary.trim()) &&
+                <p className={isModelResource(offering.kind) ? 'catalog-summary' : undefined}>{offering.summary}</p>}
               <p className="connection-note">Choose an exact offering and cost center. Automatic access uses its Entra group; Request-only access needs individual approval. Model and MCP grants are separate.</p>
               <CatalogAction entry={offering} />
             </div> : <p className="connection-note">Select an option to check access or make a request.</p>}
