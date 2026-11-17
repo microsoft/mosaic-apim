@@ -355,6 +355,23 @@ class TestCreateRequest:
 
 
 class TestRegistration:
+    @pytest.mark.parametrize(
+        ("provider_input", "source"),
+        [
+            ({}, "urlInference"),
+            ({"provider": None}, "urlInference"),
+            ({"provider": ModelProvider.AZURE_AI_FOUNDRY}, "registrationHint"),
+        ],
+    )
+    async def test_provider_evidence_distinguishes_inference_from_explicit_input(
+        self, world: KeyWorld, provider_input: dict[str, object], source: str,
+    ) -> None:
+        endpoint = await world.register(**provider_input)
+
+        assert endpoint.detail_evidence is not None
+        assert endpoint.detail_evidence.provider_source == source
+        assert endpoint.detail_evidence.provider_confirmed_at is None
+
     async def test_registers_the_resource_behind_a_project(self, world: KeyWorld) -> None:
         endpoint = await world.register(credential_secret_uri=f"{SECRET_URI}/{VERSION}")
 

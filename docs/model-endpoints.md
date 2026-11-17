@@ -217,8 +217,9 @@ for `Reader` on its own identity to read an endpoint or to scan subscriptions, i
 **Check access** or the scan still fails right after the grant, wait a few minutes and try again.
 
 OpenAI-compatible endpoints are registered with a Key Vault secret identifier the operator created.
-MOSAIC stores the URI only; discovery for those endpoints is not implemented yet. An Azure OpenAI or
-Foundry URL isn't registered as OpenAI-compatible: it takes the key path below.
+MOSAIC stores the URI only; discovery for those endpoints is not implemented yet. An explicit
+**Check access** request reports that verification is unsupported instead of recording a completed
+check. An Azure OpenAI or Foundry URL isn't registered as OpenAI-compatible: it takes the key path below.
 
 ## Endpoints reached with an API key
 

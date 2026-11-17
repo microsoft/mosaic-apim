@@ -311,6 +311,119 @@ def mcp_endpoint() -> McpEndpoint:
     )
 
 
+@pytest.mark.parametrize("cosmos_backed", [False, True])
+@pytest.mark.parametrize("missing_fact", ["endpoint", "provider", "both"])
+@pytest.mark.parametrize("partial_first", [False, True])
+async def test_partial_account_reads_preserve_individual_confirmed_facts(
+    cosmos_backed: bool, missing_fact: str, partial_first: bool,
+) -> None:
+    cosmos = Cosmos()
+    repo = (
+        CosmosModelEndpointRepository(
+            cast(CosmosClient, cosmos), "db", "desired", "audit", "sync", "observed"
+        )
+        if cosmos_backed
+        else InMemoryModelEndpointRepository()
+    )
+    original = await repo.create_endpoint(model_endpoint().model_copy(update={
+        "provider": ModelProvider.AZURE_AI_FOUNDRY,
+        "detail_evidence": EndpointDetailEvidence(
+            endpoint_source="resourceIdPlaceholder", provider_source="default",
+        ),
+    }), audit())
+    first = datetime(2026, 11, 1, tzinfo=UTC)
+    later = first + timedelta(seconds=1)
+    confirmed = ModelEndpoint.model_validate({
+        **original.model_dump(by_alias=False),
+        "endpoint": "https://confirmed.openai.azure.com",
+        "provider": ModelProvider.AZURE_OPENAI,
+        "detail_evidence": EndpointDetailEvidence(
+            endpoint_source="account", endpoint_confirmed_at=first,
+            provider_source="accountKind", provider_confirmed_at=first,
+            account_read_at=first,
+        ),
+        "capabilities": ModelEndpointCapabilities(kind="OpenAI", location="eastus"),
+    })
+    missing_url = missing_fact in {"endpoint", "both"}
+    missing_kind = missing_fact in {"provider", "both"}
+    partial = ModelEndpoint.model_validate({
+        **original.model_dump(by_alias=False),
+        "endpoint": original.endpoint if missing_url else "https://later.services.ai.azure.com",
+        "provider": ModelProvider.AZURE_AI_FOUNDRY,
+        "detail_evidence": EndpointDetailEvidence(
+            endpoint_source="resourceIdPlaceholder" if missing_url else "account",
+            endpoint_confirmed_at=None if missing_url else later,
+            provider_source="default" if missing_kind else "accountKind",
+            provider_confirmed_at=None if missing_kind else later,
+            account_read_at=later,
+        ),
+        "capabilities": ModelEndpointCapabilities(
+            kind="Unrecognized" if missing_kind else "AIServices", location="westus",
+        ),
+        "azure_environment_tag": "latest-tag",
+    })
+    for snapshot in (partial, confirmed) if partial_first else (confirmed, partial):
+        await repo.record_endpoint_state(snapshot)
+
+    recorded = await repo.get_endpoint(TENANT_ID, original.id)
+
+    assert recorded is not None and recorded.detail_evidence is not None
+    assert recorded.endpoint == (confirmed.endpoint if missing_url else partial.endpoint)
+    assert recorded.provider == (confirmed.provider if missing_kind else partial.provider)
+    assert recorded.detail_evidence.endpoint_source == "account"
+    assert recorded.detail_evidence.endpoint_confirmed_at == (first if missing_url else later)
+    assert recorded.detail_evidence.provider_source == "accountKind"
+    assert recorded.detail_evidence.provider_confirmed_at == (first if missing_kind else later)
+    assert recorded.detail_evidence.account_read_at == later
+    assert recorded.capabilities == partial.capabilities
+    assert recorded.azure_environment_tag == "latest-tag"
+
+
+@pytest.mark.parametrize("cosmos_backed", [False, True])
+@pytest.mark.parametrize("old_check_finishes_last", [False, True])
+async def test_late_runtime_rows_cannot_replace_a_newer_empty_preflight_snapshot(
+    cosmos_backed: bool, old_check_finishes_last: bool,
+) -> None:
+    cosmos = Cosmos()
+    repo = (
+        CosmosModelEndpointRepository(
+            cast(CosmosClient, cosmos), "db", "desired", "audit", "sync", "observed"
+        )
+        if cosmos_backed
+        else InMemoryModelEndpointRepository()
+    )
+    original = await repo.create_endpoint(model_endpoint(), audit())
+    started = datetime(2026, 11, 1, tzinfo=UTC)
+    old_check = original.model_copy(update={
+        "access": EndpointAccess(
+            checked_at=started, rules_revision=ENDPOINT_READINESS_RULES_REVISION,
+        ),
+        "runtime_access": [GatewayRuntimeAccess(
+            gateway_id="removed-gateway", gateway_name="Removed gateway",
+            checked_at=started + timedelta(seconds=2),
+            rules_revision=ENDPOINT_READINESS_RULES_REVISION,
+        )],
+    })
+    newer_check = original.model_copy(update={
+        "access": EndpointAccess(
+            checked_at=started + timedelta(seconds=1),
+            rules_revision=ENDPOINT_READINESS_RULES_REVISION,
+        ),
+        "runtime_access": [],
+    })
+    snapshots = (
+        (newer_check, old_check) if old_check_finishes_last else (old_check, newer_check)
+    )
+    for snapshot in snapshots:
+        await repo.record_endpoint_state(snapshot)
+
+    recorded = await repo.get_endpoint(TENANT_ID, original.id)
+
+    assert recorded is not None
+    assert recorded.access == newer_check.access
+    assert recorded.runtime_access == []
+
+
 async def test_memory_gateway_observation_preserves_authored_fields_and_updates_observed() -> None:
     repo = InMemoryGatewayRepository()
     original = await repo.create_gateway(gateway(), audit())

@@ -431,6 +431,8 @@ class TestKeyBasedEndpoints:
         assert endpoint.auth_mode == EndpointAuthMode.API_KEY
         assert endpoint.provider == ModelProvider.OPENAI_COMPATIBLE
         assert endpoint.credential_reference_id is not None
+        assert endpoint.detail_evidence is not None
+        assert endpoint.detail_evidence.provider_source == "urlInference"
 
     @pytest.mark.asyncio
     async def test_serialised_endpoint_never_carries_a_secret(self, endpoint_service) -> None:

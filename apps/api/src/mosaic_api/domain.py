@@ -3517,6 +3517,7 @@ class ModelEndpointCreate(MosaicModel):
             and (self.api_key is not None or bool(self.deployments))
         ):
             self.provider = ModelProvider.AWS_BEDROCK
+            self.model_fields_set.discard("provider")
         if self.provider == ModelProvider.AWS_BEDROCK:
             if self.credential_secret_uri is None and self.api_key is None:
                 raise ValueError(
@@ -3556,6 +3557,8 @@ class ModelEndpointCreate(MosaicModel):
             url = AzureAiEndpointUrl.parse(str(self.endpoint))
             if self.provider is None:
                 self.provider = url.provider
+                # Inference must not become explicit registration evidence.
+                self.model_fields_set.discard("provider")
             if self.credential_secret_uri is not None:
                 KeyVaultSecretId.parse(str(self.credential_secret_uri))
             validate_declarations(self.deployments or [], self.provider)
@@ -3571,7 +3574,9 @@ class ModelEndpointCreate(MosaicModel):
                 "for AWS Bedrock. Give an OpenAI-compatible endpoint the Key Vault secret URI that "
                 "holds its key"
             )
-        self.provider = ModelProvider.OPENAI_COMPATIBLE
+        if self.provider is None:
+            self.provider = ModelProvider.OPENAI_COMPATIBLE
+            self.model_fields_set.discard("provider")
         if self.credential_secret_uri is None:
             raise ValueError(
                 "An OpenAI-compatible endpoint needs a Key Vault secret URI holding its API key"

@@ -31,6 +31,35 @@ def _register(client: TestClient, **overrides: object) -> dict:
 
 
 class TestModelEndpointApi:
+    def test_unsupported_preflight_is_not_reported_as_a_completed_check(
+        self,
+        endpoint_client: TestClient,
+        endpoint_repository: InMemoryModelEndpointRepository,
+        fake_aoai: FakeCognitiveServices,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        created = _register(
+            endpoint_client,
+            azureResourceId=None, endpoint="https://models.example.com/v1",
+            credentialSecretUri="https://kv-contoso.vault.azure.net/secrets/model-key",
+        )
+        before = endpoint_repository.endpoints[created["id"]].model_dump_json()
+        fake_aoai.requests.clear()
+
+        async def unexpected_write(*args: object, **kwargs: object) -> None:
+            pytest.fail("An unsupported check must not record a completed evaluation")
+
+        monkeypatch.setattr(endpoint_repository, "record_endpoint_state", unexpected_write)
+
+        response = endpoint_client.post(
+            f"/api/v1/model-endpoints/{created['id']}/preflight"
+        )
+
+        assert response.status_code == 409
+        assert response.json()["details"]["reason"] == "accessCheckUnsupported"
+        assert fake_aoai.requests == []
+        assert endpoint_repository.endpoints[created["id"]].model_dump_json() == before
+
     def test_clients_cannot_supply_endpoint_verification_evidence(
         self, endpoint_client: TestClient
     ) -> None:

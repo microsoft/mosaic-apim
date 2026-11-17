@@ -815,7 +815,10 @@ class ModelEndpointService:
             provider=ModelProvider.OPENAI_COMPATIBLE,
             endpoint=request.endpoint,
             detail_evidence=EndpointDetailEvidence(
-                endpoint_source="registeredUrl", provider_source="registrationHint"
+                endpoint_source="registeredUrl",
+                provider_source=(
+                    "registrationHint" if "provider" in request.model_fields_set else "urlInference"
+                ),
             ),
             azure_cloud=request.azure_cloud,
             azure_connection_id=request.azure_connection_id,
@@ -1255,6 +1258,14 @@ class ModelEndpointService:
 
     async def preflight(self, actor: Actor, endpoint_id: str) -> ModelEndpoint:
         endpoint = await self.get_endpoint(actor, endpoint_id)
+        if not endpoint.uses_backend_key() and (
+            endpoint.auth_mode == EndpointAuthMode.API_KEY or not endpoint.azure_resource_id
+        ):
+            raise ConflictError(
+                "MOSAIC cannot check access to this OpenAI-compatible endpoint. Access "
+                "verification is not implemented for endpoints registered this way.",
+                details={"id": endpoint.id, "reason": "accessCheckUnsupported"},
+            )
         checked = await self._apply_preflight(endpoint)
         recorded = await self._repository.record_endpoint_state(checked)
         if recorded is None:
