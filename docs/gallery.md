@@ -90,6 +90,9 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
 
 ### Gateway policy capability feedback
 
+**Capture warning (PR #182):** this previously pending shot is inherited from merged `main`,
+not independently regenerated on this branch.
+
 <img src="images/screenshots/console-gateway-limit-refusal.png" width="720" alt="A retained new-grant draft with separate grant-limit and shared-publication-safeguard refusals for historical unverified embeddings">
 
 **Gateway policy capability refusal.** The summary identifies the limit and shared safeguard

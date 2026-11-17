@@ -22,6 +22,7 @@ Start with the [architecture](docs/architecture.md), [workflow diagrams](docs/wo
 | Answer questions about Entra, limits, billing, and failure behavior | [FAQ](docs/faq.md) |
 | See the applications | [Selected screenshots](#screenshots) and [full gallery](docs/gallery.md) |
 | Run locally or deploy to Azure | [Development](docs/development.md) and [deployment](docs/deployment.md) |
+| Upgrade an existing environment or recover safely | [Upgrades and recovery](docs/upgrades.md) |
 | Explore the opt-in multi-environment customer demo | [Federal demonstration estate](docs/federal-demo.md) |
 | Register gateways and model endpoints | [Gateways](docs/gateways.md) and [model endpoints](docs/model-endpoints.md) |
 | Publish models or combine deployments | [Model publishing](docs/model-publishing.md) and [model pools](docs/model-pools.md) |
@@ -139,6 +140,10 @@ rather than treating approval as usable access.
 [Gateway policy feedback](docs/gallery.md#gateway-policy-capability-feedback) shows refused
 grant limits and shared safeguards with field-specific recovery and a retained draft. Historical
 embeddings are unverified read-only intent, not current enforcement evidence.
+
+**Capture warning (PR #182):** the previously pending gateway-feedback shot and other refreshed
+views are inherited from merged `main`, not independently regenerated on this branch.
+See the [capture provenance warning](docs/screenshots.md#shot-inventory).
 
 The gallery also shows the [User-only portal handoff](docs/gallery.md#portal-handoff-for-end-users):
 an explanation and a deliberate portal action for someone who opened the administrator console
