@@ -3,6 +3,7 @@ import { useMemo } from 'react'
 import { runtimeConfig } from './runtime-config'
 import { adminApi, type AdminApi } from './admin-api'
 import type { CapabilityCheck } from './admin-types'
+import { isGatewayPolicyCapabilities } from './policy-capabilities'
 import type {
   AccessRequest,
   AccessRequestApproval,
@@ -66,6 +67,7 @@ import type {
   EntitlementBinding,
   EntitlementEnforcement,
   EntitlementResource,
+  GatewayPolicyCapabilities,
   EntitlementSubject,
   EnvironmentAssignmentRequest,
   EnvironmentAssignmentResult,
@@ -351,6 +353,7 @@ export interface MosaicApi extends AdminApi {
   ): Promise<Gateway>
   deleteGateway(gatewayId: string): Promise<void>
   preflightGateway(gatewayId: string): Promise<Gateway>
+  getGatewayPolicyCapabilities(gatewayId: string, resource?: EntitlementResource | null): Promise<GatewayPolicyCapabilities>
   syncGateway(gatewayId: string): Promise<GatewaySyncRun>
   getSyncRun(gatewayId: string, runId: string): Promise<GatewaySyncRun>
   listSyncRuns(gatewayId: string): Promise<GatewaySyncRun[]>
@@ -996,6 +999,30 @@ export function useMosaicApi(): MosaicApi {
       deleteGateway: (id) => request<void>(`/api/v1/gateways/${id}`, { method: 'DELETE' }),
       preflightGateway: (id) =>
         request<Gateway>(`/api/v1/gateways/${id}/preflight`, { method: 'POST' }),
+      getGatewayPolicyCapabilities: async (id, resource) => {
+        const query = new URLSearchParams()
+        if (resource) {
+          query.set('resourceKind', resource.kind)
+          query.set('resourceId', resource.id)
+          if (resource.scopeId) query.set('scopeId', resource.scopeId)
+        }
+        const suffix = query.size ? `?${query.toString()}` : ''
+        const result = await request<unknown>(
+          `/api/v1/gateways/${encodeURIComponent(id)}/policy-capabilities${suffix}`,
+        )
+        if (!isGatewayPolicyCapabilities(result)) {
+          throw new Error('Gateway policy support could not be verified: the capability response is incomplete.')
+        }
+        const matchesResource = resource
+          ? result.resource?.kind === resource.kind
+            && result.resource.id === resource.id
+            && (result.resource.scopeId ?? '') === (resource.scopeId ?? '')
+          : result.resource == null && result.apiShape === null
+        if (result.gatewayId !== id || !matchesResource) {
+          throw new Error('Gateway policy support could not be verified: the response does not match the requested target.')
+        }
+        return result
+      },
       syncGateway: (id) =>
         request<GatewaySyncRun>(`/api/v1/gateways/${id}/sync`, { method: 'POST' }),
       getSyncRun: (id, runId) =>

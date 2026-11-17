@@ -70,6 +70,7 @@ from mosaic_api.domain import (
     AccessRequestApproval,
     AccessRequestCreate,
     AccessRequestState,
+    AuditEvent,
     CatalogEntryUpdate,
     CognitiveServicesResourceId,
     DirectoryObject,
@@ -88,11 +89,14 @@ from mosaic_api.domain import (
     McpPublicationCreate,
     ModelAccessSettings,
     ModelApiCatalogUpdate,
+    ModelApi,
     ModelCatalogSummaryUpdate,
     ModelEndpointCreate,
     PrincipalCreate,
     PrincipalKind,
     PublicationCreate,
+    Publication,
+    PublicationStatus,
     PublishRunStatus,
     RequestEnforcement,
     TokenEnforcement,
@@ -100,6 +104,8 @@ from mosaic_api.domain import (
     general_cost_center_id,
     mcp_server_id,
     model_api_id,
+    publication_id,
+    entitlement_id,
     subject_kind_for,
     utc_now,
 )
@@ -110,6 +116,7 @@ from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.integrations.aoai.key_check import KeyCheckOutcome, KeyCheckResult
 from mosaic_api.integrations.aoai.writer import ModelDeploymentWriter
 from mosaic_api.integrations.apim import ApimClient, ApimWriter, ArmClient
+from mosaic_api.integrations.apim.model_apis import CURATED_SHAPE_VERSION, default_names
 from mosaic_api.integrations.apim.credentials import ApimCredentialClient, ApimKeyManager
 from mosaic_api.integrations.email import EmailAccessResult, EmailMessage, EmailSendResult
 from mosaic_api.integrations.graph import DirectoryPhoto, FakeGroupManagement
@@ -1825,7 +1832,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
             "gpt-4o-mini",
             "GPT-4o mini",
             _tokens(per_minute=100_000, quota=20_000_000, period="Monthly"),
-            ModelAccessSettings(keys_enabled=True, entra_enabled=False),
+            governed,
             "Fast, low-cost chat for high-volume workloads.",
         ),
         (
@@ -1846,6 +1853,41 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         ),
     ]
     for endpoint_id, deployment, display_name, limits, access, summary in publications:
+        if deployment == "text-embedding-3-large":
+            # Historical compatibility data only: no current save/apply is claimed to succeed.
+            endpoint = await services.endpoints.get_endpoint(admin, endpoint_id)
+            names = default_names(endpoint.name, deployment)
+            model_id = model_api_id(tenant_id, gateway.id, names.api_name)
+            historical = Publication(
+                id=publication_id(tenant_id, gateway.id, endpoint_id, deployment),
+                tenant_id=tenant_id, gateway_id=gateway.id, model_endpoint_id=endpoint_id,
+                deployment_name=deployment, provider=endpoint.provider,
+                display_name="Historical text embeddings (unverified)",
+                api_name=names.api_name, api_path=names.api_path, backend_name=names.backend_name,
+                fragment_name=names.fragment_name, product_name=names.product_name,
+                subscription_name=names.subscription_name, enforcement=limits,
+                governed_access=access, shape_version=CURATED_SHAPE_VERSION,
+                status=PublicationStatus.DRAFT, model_api_id=model_id,
+            )
+            audit = AuditEvent(
+                id=deterministic_id("audit", historical.id, "historicalFixture"),
+                tenant_id=tenant_id, action="fixture.historicalIntent",
+                resource_type="publication", resource_id=historical.id,
+                actor_object_id=admin.object_id,
+            )
+            await services.gateway_repository.save_publication(historical, audit)
+            await services.gateway_repository.save_model_api(ModelApi(
+                id=model_id, tenant_id=tenant_id, gateway_id=gateway.id,
+                api_name=names.api_name, display_name=historical.display_name,
+                path=names.api_path, publication_id=historical.id,
+                summary=(
+                    "Historical fictional intent only. Token-schema support is unverified; "
+                    "no access is currently enforced and new managed apply is ineligible."
+                ),
+            ), audit)
+            estate.publications[display_name] = historical.id
+            estate.model_apis[display_name] = model_id
+            continue
         publication = await services.publishing.create(
             admin,
             PublicationCreate(
@@ -1968,6 +2010,27 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         else:
             kind = "group"
             subject_id = estate.groups[subject]
+        if resource_id == estate.model_apis["Text embeddings (large)"]:
+            resource = EntitlementResource.model_validate(
+                {"kind": resource_kind, "id": resource_id, "scopeId": scope_id}
+            )
+            reference = EntitlementSubject.model_validate({"kind": kind, "id": subject_id})
+            center_id = estate.cost_centers[cost_center] if cost_center else general_cost_center_id(tenant_id)
+            record = Entitlement(
+                id=entitlement_id(
+                    tenant_id, reference, resource, center_id
+                ),
+                tenant_id=tenant_id, subject=reference,
+                resource=resource, cost_center_id=center_id, enabled=False, enforcement=enforcement,
+                notes="Historical fictional intent: unverified and not currently enforced.",
+            )
+            await services.entitlement_repository.create_entitlement(record, AuditEvent(
+                id=deterministic_id("audit", record.id, "historicalFixture"),
+                tenant_id=tenant_id, action="fixture.historicalIntent",
+                resource_type="entitlement", resource_id=record.id,
+                actor_object_id=admin.object_id,
+            ))
+            return
         await services.entitlements.create_entitlement(
             admin,
             EntitlementCreate(
@@ -2031,7 +2094,6 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     resources = [
         model(gpt4o),
         model(gpt4o_mini),
-        model(embeddings),
         model(phi4),
         EntitlementResource.model_validate({"kind": "mcpServer", "id": published_docs_mcp}),
         *(pool_model(resource_id) for resource_id in claude_models.values()),
@@ -2046,7 +2108,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
                     CostCenterResourceAccessMode.NOT_AVAILABLE
                     if code == "FIN-310" and resource.id == gpt4o_mini
                     else CostCenterResourceAccessMode.AUTOMATIC
-                    if code == "CI-204" and resource.id in {embeddings, published_docs_mcp}
+                    if code == "CI-204" and resource.id in {gpt4o_mini, published_docs_mcp}
                     else CostCenterResourceAccessMode.REQUEST_ONLY
                 ),
             )
@@ -2296,7 +2358,9 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         prototype,
         AccessRequestApproval(
             note="Approved for development. Ask for production when the prototype is ready.",
-            enforcement=EntitlementEnforcement(tokens=_tokens(per_minute=10_000)),
+            enforcement=EntitlementEnforcement(
+                requests=_calls(per_window=30, window_seconds=60)
+            ),
         ),
     )
     await request_access(
@@ -2306,7 +2370,13 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         "Taking the claims summarization prototype to production.",
         cost_center="general",
     )
-    await request_access(ISAIAH, "modelApi", gpt4o_mini, "Prototype for customer email triage.")
+    await request_access(
+        ISAIAH,
+        "modelApi",
+        gpt4o_mini,
+        "Prototype for customer email triage.",
+        cost_center="general",
+    )
     await request_access(
         LIDIA,
         "modelApi",
@@ -2357,9 +2427,9 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     )
     claude_granted_at = utc_now() - timedelta(days=35)
     repository = services.entitlement_repository
-    for entitlement_id, entitlement in list(repository.entitlements.items()):
+    for grant_id, entitlement in list(repository.entitlements.items()):
         if entitlement.resource.kind == "poolModel":
-            repository.entitlements[entitlement_id] = entitlement.model_copy(
+            repository.entitlements[grant_id] = entitlement.model_copy(
                 update={"created_at": claude_granted_at}
             )
     await request_access(
@@ -2381,7 +2451,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         McpModelCallerUpdate(principal_id=estate.principals[DOCS_SEARCH_SERVICE.label]),
     )
     await _publish_mcp(services, admin, published_docs.id, published_docs.display_name)
-    for display_name in ("GPT-4o", "GPT-4o mini", "Phi-4", "Text embeddings (large)"):
+    for display_name in ("GPT-4o", "GPT-4o mini", "Phi-4"):
         await _publish(services, admin, estate.publications[display_name], display_name)
     await _publish_pool(services, admin, claude_pool.id, claude_pool.display_name)
     # Keys exist only where someone asked for one: the support copilot's, the key Megan's
@@ -3181,7 +3251,7 @@ async def traffic_streams(
             weekend=0.5,
             latency_ms=300,
         ),
-        # Text embeddings was published without governed access, so its calls trace no grant.
+        # Historical fictional logs only; no current managed access or apply is implied.
         adopted(
             "docs-indexer",
             embeddings.api_name,

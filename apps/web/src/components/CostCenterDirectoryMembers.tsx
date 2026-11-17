@@ -1,6 +1,6 @@
-import { Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, MessageBar, MessageBarBody, Text, Title3 } from '@fluentui/react-components'
+import { AnnounceProvider, Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, MessageBar, MessageBarBody, Text, Title3, useRestoreFocusTarget } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { MEMBERSHIP_KEY_WARNING, MEMBERSHIP_PROPAGATION_WARNING, supportedDirectoryMember, workloadDirectoryMember } from '../cost-centers'
@@ -12,6 +12,8 @@ import { CostCenterCapabilityNotice } from './CostCenterSetupForm'
 import { CostCenterDirectoryPicker } from './CostCenterDirectoryPicker'
 import { CostCenterDirectoryOperations } from './CostCenterDirectoryOperations'
 import { IdentityAvatar } from './IdentityAvatar'
+import { useDialogFocusReturn } from './useDialogFocusReturn'
+import { useFocusAwareAnnounce } from './useFocusAwareAnnounce'
 import styles from './CostCenterSetup.module.css'
 
 interface MemberIntent { objectId: string; memberKind: DirectoryObject['kind']; key: string }
@@ -26,6 +28,13 @@ export function CostCenterDirectoryMembers({ costCenter, onSetup }: { costCenter
   const addIntent = useRef<MemberIntent | null>(null)
   const [removeIntent, setRemoveIntent] = useState<{ member: CostCenterDirectMember; key: string; recovering: boolean } | null>(null)
   const [lastOperation, setLastOperation] = useState<CostCenterDirectoryOperationView | null>(null)
+  const [operationFeedbackKey, setOperationFeedbackKey] = useState(0)
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const outcomeRef = useRef<HTMLDivElement>(null)
+  const fallbackRef = useRef<HTMLElement>(null)
+  const restoreFocus = useRestoreFocusTarget()
+  const motion = useDialogFocusReturn({ open: removeIntent !== null, surfaceRef, fallbackRef })
+  const announcement = useFocusAwareAnnounce(outcomeRef)
   const removeKeys = useRef(new Map<string, { key: string; operationId?: string }>())
   const operations = useQuery({
     queryKey: ['cost-centers', costCenter.id, 'directory-operations'],
@@ -49,6 +58,7 @@ export function CostCenterDirectoryMembers({ costCenter, onSetup }: { costCenter
   }, [operations.data])
   async function record(operation: CostCenterDirectoryOperationView) {
     setLastOperation(operation)
+    setOperationFeedbackKey((key) => key + 1)
     queryClient.setQueryData<CostCenterDirectoryOperationView[]>(
       ['cost-centers', costCenter.id, 'directory-operations'],
       (current) => [operation, ...(current ?? []).filter((item) => item.id !== operation.id)],
@@ -84,6 +94,7 @@ export function CostCenterDirectoryMembers({ costCenter, onSetup }: { costCenter
       await record(operation)
     },
   })
+  useLayoutEffect(() => { if (removeIntent && remove.isError) outcomeRef.current?.focus() }, [removeIntent, remove.isError, remove.submittedAt])
   const permissionFor = (kind: DirectoryObject['kind'] | null) => Boolean(kind && supportedDirectoryMember(kind)
     && (workloadDirectoryMember(kind) ? capabilities.data?.canAddServicePrincipals : capabilities.data?.canAddUsers))
   const frozenAdd = add.isPending || (add.isError && Boolean(addIntent.current))
@@ -113,8 +124,9 @@ export function CostCenterDirectoryMembers({ costCenter, onSetup }: { costCenter
     <Link to={`/entitlements?costCenter=${encodeURIComponent(costCenter.id)}`}>Review individual grants and keys</Link>
   </section>
   return <div className={styles.stack}>
-    <section className={styles.stack} aria-label="Entra group members">
-      <Title3 as="h2">Members</Title3>
+    <section className={styles.stack} aria-label="Entra group members"
+      ref={(node) => { fallbackRef.current = node?.querySelector<HTMLElement>('h2') ?? null }}>
+      <Title3 as="h2" tabIndex={-1}>Members</Title3>
       {!ready ? <MessageBar intent="warning"><MessageBarBody>
         Setup required. No local member list is used as authorization.
         {' '}<Button onClick={onSetup}>Finish group setup</Button>
@@ -140,7 +152,7 @@ export function CostCenterDirectoryMembers({ costCenter, onSetup }: { costCenter
         {capabilities.isSuccess && !capabilities.data.canAddUsers && !capabilities.data.canAddServicePrincipals && !capabilities.data.canRemoveMembers && <MessageBar intent="info"><MessageBarBody>
           Membership is read-only with the observed permissions. The verified group can still support runtime token access; missing write consent does not unconfigure the center.
         </MessageBarBody></MessageBar>}
-        {observedLastOperation && <MessageBar intent={observedLastOperation.state === 'succeeded' && observedLastOperation.directoryUpdated ? 'info' : 'warning'}><MessageBarBody>
+        {observedLastOperation && <MessageBar key={operationFeedbackKey} intent={observedLastOperation.state === 'succeeded' && observedLastOperation.directoryUpdated ? 'info' : 'warning'}><MessageBarBody>
           {observedLastOperation.state === 'succeeded' && observedLastOperation.directoryUpdated
             ? 'Directory updated. Propagation and token refresh remain pending; this does not confirm runtime access or key revocation.'
             : `Directory change not confirmed: ${observedLastOperation.state}. Inspect its recorded operation; do not assume success or repeat an uncertain write.`}
@@ -175,7 +187,7 @@ export function CostCenterDirectoryMembers({ costCenter, onSetup }: { costCenter
                   {uncertainFor(member.objectId) && <Text>A previous write for this member is pending or unknown. Inspect its durable operation and recover without another write.</Text>}
                 </div>
               </div>
-              <Button disabled={!removalAllowed || remove.isPending} onClick={() => {
+              <Button {...restoreFocus} disabled={!removalAllowed} disabledFocusable={remove.isPending} onClick={() => {
                 remove.reset()
                 const original = interruptedRemoval(member.objectId)
                 setRemoveIntent({ member, key: original?.key ?? crypto.randomUUID(), recovering: Boolean(original) })
@@ -216,8 +228,8 @@ export function CostCenterDirectoryMembers({ costCenter, onSetup }: { costCenter
       </>}
     </section>
     <CostCenterDirectoryOperations costCenterId={costCenter.id} />
-    <Dialog open={removeIntent !== null} onOpenChange={(_, data) => { if (!data.open && !remove.isPending && !remove.isError) setRemoveIntent(null) }}>
-      <DialogSurface>
+    <Dialog open={removeIntent !== null} surfaceMotion={motion} onOpenChange={(_, data) => { if (!data.open && !remove.isPending && !remove.isError) setRemoveIntent(null) }}>
+      <DialogSurface ref={surfaceRef}>
         <DialogBody>
           <DialogTitle>Remove real Entra membership</DialogTitle>
           <DialogContent className={styles.confirmation}>
@@ -225,11 +237,11 @@ export function CostCenterDirectoryMembers({ costCenter, onSetup }: { costCenter
               : <Text>Remove <strong>{removeIntent?.member.displayName || 'this member'}</strong> from this center&apos;s actual bound group? Other applications using the group may also be affected.</Text>}
             <Text>{MEMBERSHIP_PROPAGATION_WARNING}</Text>
             <Text>{MEMBERSHIP_KEY_WARNING}</Text>
-            {remove.isError && <><ErrorState title="Removal outcome unavailable" error={remove.error} /><Text>Retrieve the same recorded operation before another write. The original idempotency key is retained.</Text></>}
+            {remove.isError && <AnnounceProvider value={announcement}><div ref={outcomeRef} tabIndex={-1}><ErrorState context="action" title="Removal outcome unavailable" error={remove.error} announcementKey={remove.submittedAt} /><Text>Retrieve the same recorded operation before another write. The original idempotency key is retained.</Text></div></AnnounceProvider>}
           </DialogContent>
           <DialogActions>
-            <Button disabled={remove.isPending} onClick={() => { setRemoveIntent(null); remove.reset() }}>Close without another write</Button>
-            <Button appearance="primary" disabled={remove.isPending} onClick={() => removeIntent && remove.mutate(removeIntent)}>
+            <Button disabledFocusable={remove.isPending} onClick={() => { setRemoveIntent(null); remove.reset() }}>Close without another write</Button>
+            <Button appearance="primary" disabledFocusable={remove.isPending} onClick={() => { if (removeIntent && !remove.isPending) remove.mutate(removeIntent) }}>
               {remove.isError || removeIntent?.recovering ? 'Retrieve same removal operation' : 'Remove from Entra group'}
             </Button>
           </DialogActions>

@@ -10,6 +10,7 @@ from collections.abc import Iterator, Sequence
 from typing import Any
 
 import pytest
+from conftest import seed_known_policy_target
 from fastapi import Request
 from fastapi.testclient import TestClient
 from mosaic_api.auth import AuthContext, LocalAuthenticator
@@ -124,10 +125,16 @@ def _publication() -> Publication:
     )
 
 
-async def _seed(client: TestClient, *, published: bool = False) -> None:
+async def _seed(
+    client: TestClient, *, published: bool = False, verified: bool = False
+) -> None:
     gateways: InMemoryGatewayRepository = client.app.state.gateway_repository
-    if published:
-        await gateways.save_publication(_publication(), _audit())
+    if published or verified:
+        await seed_known_policy_target(
+            gateways, client.app.state.model_endpoint_repository, _model_api(),
+            publication=_publication(),
+        )
+        return
     await gateways.save_model_api(_model_api("publication_seed" if published else None), _audit())
 
 
@@ -382,7 +389,7 @@ async def test_approval_rejects_duplicate_requester_even_with_an_exact_match(
 async def test_approving_again_returns_the_same_grant_without_duplicating_it(
     client: TestClient,
 ) -> None:
-    await _seed(client)
+    await _seed(client, verified=True)
     created = await _request(client)
     first = client.post(
         f"/api/v1/access-requests/{created.id}/approve",
@@ -512,6 +519,22 @@ async def test_only_an_administrator_may_approve(client: TestClient) -> None:
             }
         },
         {"requests": {"counterKeyExpression": "@(context.Subscription.Id)", "calls": 60}},
+        {"requests": {"counterKeyExpression": "subject", "callQuota": 100}},
+        {"requests": {"counterKeyExpression": "subject", "callQuotaPeriod": "Weekly"}},
+        {
+            "requests": {
+                "counterKeyExpression": "subject",
+                "callQuota": 0,
+                "callQuotaPeriod": "Weekly",
+            }
+        },
+        {
+            "requests": {
+                "counterKeyExpression": "subject",
+                "callQuota": 100,
+                "callQuotaPeriod": "Rolling",
+            }
+        },
         {"tokens": {"counterKeyExpression": "x", "tokensPerMinute": 0}},
         {"unknown": True},
     ],

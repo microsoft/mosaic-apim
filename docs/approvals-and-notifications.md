@@ -61,6 +61,11 @@ For resource access, select explicit requests in **Entitlements**, then review t
 most 100 requests; it is not a live "approve everything matching this filter" query. Review each
 request's resource, current environment, cost center, effective limits, and blockers.
 
+Shared and individual overrides include an absolute call quota and UTC calendar period separately
+from the short call-rate window and token quota. The decision summary keeps inherited and proposed
+limits distinct. Editing shared fields only changes the local draft; **Apply limits to compatible
+selection** affects included requests, and approval remains a separate explicit action.
+
 Do not treat a cost-center creation or membership request as an item in a resource-grant batch
 or feed it to a model/MCP approval template. Their reviews configure a center or change directory
 membership, not an entitlement.
@@ -79,6 +84,11 @@ environment/resource/cost-center conditions, a bounded grant template, minimum r
 weekly local-time approval windows. Preview a rule against pending requests before enabling it.
 The persistent evaluator starts paused. After verifying hosting and reviewing the rules, an
 administrator must explicitly resume it; the environment switch never resumes it automatically.
+
+The bounded template uses the same quota controls as manual approval and preserves saved quotas
+and counter metadata on unrelated edits. A wildcard template does not claim universal gateway
+support: each concrete request is revalidated during preview and approval. Weekly approval windows
+use the configured local time zone; a Weekly call quota instead starts Monday at 00:00 UTC.
 
 - Choose an IANA time zone, such as `Europe/London`; the default is `UTC`. Minimum waiting time
   is elapsed time from the original UTC request timestamp, not a local clock calculation.

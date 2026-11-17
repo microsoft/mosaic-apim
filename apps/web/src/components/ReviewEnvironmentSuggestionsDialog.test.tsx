@@ -1,9 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../api'
-import type { EnvironmentCatalogView } from '../types'
+import type { EnvironmentAssignmentResult, EnvironmentCatalogView } from '../types'
 import { ReviewEnvironmentSuggestionsDialog } from './ReviewEnvironmentSuggestionsDialog'
 
 const api = {
@@ -70,5 +70,38 @@ describe('ReviewEnvironmentSuggestionsDialog', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Submit selections' }))
 
     expect(await screen.findByRole('button', { name: 'Also classify suggested MCP servers' })).toBeVisible()
+  })
+
+  it('shows a failed suggestions query rather than an empty success', async () => {
+    api.listEnvironmentSuggestions.mockRejectedValue(new Error('Suggestions could not be loaded. Retry later.'))
+    renderDialog()
+    expect(await screen.findByText('Suggestions could not be loaded. Retry later.')).toBeVisible()
+    expect(screen.queryByText('No unclassified resources need review.')).not.toBeInTheDocument()
+  })
+
+  it('keeps pending focus, blocks duplicate submits, and focuses the result when no rows remain', async () => {
+    const user = userEvent.setup()
+    let finish!: (result: EnvironmentAssignmentResult) => void
+    api.assignEnvironments.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    renderDialog()
+    await user.click(await screen.findByRole('checkbox', { name: 'Select Gateway' }))
+    const submit = screen.getByRole('button', { name: 'Submit selections' })
+    await user.click(submit)
+    expect(submit).toHaveFocus()
+    expect(submit).toHaveAttribute('aria-disabled', 'true')
+    expect(submit).not.toBeDisabled()
+    await user.click(submit)
+    expect(api.assignEnvironments).toHaveBeenCalledOnce()
+    api.listEnvironmentSuggestions.mockResolvedValue({ items: [] })
+    await act(async () => finish({
+      results: [{
+        resourceKind: 'gateway', resourceId: 'gateway_1', resourceName: 'Gateway',
+        environment: 'production', previousEnvironment: null, status: 'applied',
+      }],
+      grantsCarried: 0, warnings: [],
+    }))
+    expect(await screen.findByText('No unclassified resources need review.')).toBeVisible()
+    await waitFor(() => expect(screen.getByText('Gateway: applied').closest('[tabindex]')).toHaveFocus())
+    expect(submit).toBeDisabled()
   })
 })

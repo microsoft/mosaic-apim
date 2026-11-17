@@ -293,10 +293,16 @@
 }
 
 .dialogForm {
+  grid-template-columns: minmax(0, 1fr);
   display: grid;
   gap: 16px;
-  max-width: 960px;
   min-width: 0;
+}
+
+.dialogForm :global(.fui-Select) {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
 }
 
 .accessPanel {

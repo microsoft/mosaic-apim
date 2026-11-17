@@ -96,6 +96,19 @@ information. On an Anthropic publication, governed access permits only the Messa
 Publication limits remain safeguards even when a grant has no additional limits. Native rate and
 quota enforcement is distributed and gateway-scoped, not an exact global accounting ledger.
 
+### Author grant limits
+
+The console's full-workspace grant and approval forms keep token limits, the call rate and its
+seconds window, and the absolute call quota and its calendar period separate. Call quotas support
+Hourly, Daily, Weekly, Monthly and Yearly UTC boundaries; Weekly starts Monday at 00:00 UTC.
+The decision summary compares the actual saved or inherited limits with the proposed grant.
+
+Any explicit limit replaces the complete cost-center per-person set; shared publication, pool and
+cost-center safeguards still apply. Remove a call quota to clear its amount and period without
+removing the call rate, or leave every amount empty to return to per-person defaults where
+configured. Metadata-only grant edits leave enforcement untouched. Saving intent never applies
+the gateway plan. See [call-quota authoring in the gallery](gallery.md#grant-call-quota).
+
 Administrators can explicitly reveal/copy an applied grant's key. Portal clients with the MOSAIC
 `User` role can use:
 

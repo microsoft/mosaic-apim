@@ -10,19 +10,25 @@ from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 import pytest
+from conftest import seed_known_policy_target
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
 from mosaic_api.domain import (
     AuditEvent,
     CatalogVisibility,
+    Entitlement,
+    EntitlementEnforcement,
+    EntitlementResource,
+    EntitlementSubject,
     McpServer,
     ModelApi,
+    RequestEnforcement,
     new_id,
 )
 from mosaic_api.main import create_app
 from mosaic_api.observed import ObservedApimUser, ObservedSubscription
-from mosaic_api.repositories import InMemoryGatewayRepository
+from mosaic_api.repositories import InMemoryGatewayRepository, InMemoryModelEndpointRepository
 
 TENANT = "tenant-test"
 
@@ -63,7 +69,8 @@ def _audit() -> AuditEvent:
 
 
 async def _seed_model_api(
-    repository: InMemoryGatewayRepository, record_id: str = "modelApi_seed"
+    repository: InMemoryGatewayRepository, record_id: str = "modelApi_seed", *,
+    endpoints: InMemoryModelEndpointRepository | None = None,
 ) -> ModelApi:
     record = ModelApi(
         id=record_id,
@@ -75,6 +82,8 @@ async def _seed_model_api(
         product_names=["premium"],
         imported_from_snapshot_id="snapshot-1",
     )
+    if endpoints is not None:
+        return await seed_known_policy_target(repository, endpoints, record)
     return await repository.save_model_api(record, _audit())
 
 
@@ -107,7 +116,10 @@ def _group(client: TestClient, name: str) -> dict[str, Any]:
 
 
 async def test_entitlement_round_trip_and_deterministic_identity(app_client: TestClient) -> None:
-    await _seed_model_api(app_client.app.state.gateway_repository)
+    await _seed_model_api(
+        app_client.app.state.gateway_repository,
+        endpoints=app_client.app.state.model_endpoint_repository,
+    )
     principal = _principal(app_client, "user-object-1")
 
     payload = {
@@ -124,6 +136,8 @@ async def test_entitlement_round_trip_and_deterministic_identity(app_client: Tes
                 "counterKeyExpression": "@(context.Subscription?.Key)",
                 "calls": 60,
                 "renewalPeriodSeconds": 60,
+                "callQuota": 1000,
+                "callQuotaPeriod": "Weekly",
             },
         },
     }
@@ -134,6 +148,38 @@ async def test_entitlement_round_trip_and_deterministic_identity(app_client: Tes
     assert body["resource"]["kind"] == "modelApi"
     assert body["enforcement"]["tokens"]["tokensPerMinute"] == 10000
     assert body["enforcement"]["requests"]["calls"] == 60
+    assert body["enforcement"]["requests"]["callQuota"] == 1000
+    assert body["enforcement"]["requests"]["callQuotaPeriod"] == "Weekly"
+
+    noted = app_client.patch(f"/api/v1/entitlements/{body['id']}", json={"notes": "Quota review"})
+    assert noted.status_code == 200, noted.text
+    assert noted.json()["enforcement"] == body["enforcement"]
+    edited_limits = {
+        **body["enforcement"],
+        "requests": {
+            **body["enforcement"]["requests"],
+            "callQuota": 2000,
+            "callQuotaPeriod": "Yearly",
+        },
+    }
+    edited = app_client.patch(
+        f"/api/v1/entitlements/{body['id']}", json={"enforcement": edited_limits}
+    )
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["enforcement"] == edited_limits
+    cleared_quota = {
+        **edited_limits,
+        "requests": {
+            **edited_limits["requests"],
+            "callQuota": None,
+            "callQuotaPeriod": None,
+        },
+    }
+    cleared = app_client.patch(
+        f"/api/v1/entitlements/{body['id']}", json={"enforcement": cleared_quota}
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["enforcement"]["requests"] == cleared_quota["requests"]
 
     # Deterministic on subject and resource, so re-granting is a conflict rather than a duplicate.
     duplicate = app_client.post("/api/v1/entitlements", json=payload)
@@ -175,6 +221,60 @@ async def test_unrestricted_entitlement_is_allowed_but_empty_enforcement_is_not(
         },
     )
     assert meaningless.status_code == 422, meaningless.text
+
+
+async def test_gateway_policy_direct_api_does_not_infer_a_missing_gateway(
+    app_client: TestClient,
+) -> None:
+    await _seed_model_api(app_client.app.state.gateway_repository)
+    principal = _principal(app_client, "policy-requester")
+    response = app_client.post("/api/v1/entitlements", json={
+        "subject": {"kind": "user", "id": principal["id"]},
+        "resource": {"kind": "modelApi", "id": "modelApi_seed"},
+        "enforcement": {"requests": {
+            "counterKeyExpression": "@(context.Subscription.Id)",
+            "calls": 20, "renewalPeriodSeconds": 60,
+        }},
+    })
+    assert response.status_code == 422
+    body = response.json()
+    assert body["code"] == "validation_error"
+    assert body["details"]["boundary"] == "save"
+    assert body["details"]["issues"][0]["field"] == "enforcement.requests.calls"
+    assert body["details"]["issues"][0]["support"] == "unknown"
+    assert app_client.get("/api/v1/entitlements").json() == []
+
+
+async def test_gateway_policy_legacy_api_round_trip_disable_clear_and_reenable(
+    app_client: TestClient,
+) -> None:
+    await _seed_model_api(app_client.app.state.gateway_repository)
+    principal = _principal(app_client, "legacy-policy-requester")
+    legacy = Entitlement(
+        id="legacy-policy-grant", tenant_id=TENANT,
+        subject=EntitlementSubject(kind="user", id=principal["id"]),
+        resource=EntitlementResource(kind="modelApi", id="modelApi_seed"),
+        enforcement=EntitlementEnforcement(requests=RequestEnforcement(
+            counter_key_expression="@(context.Subscription.Id)",
+            call_quota=5000, call_quota_period="Weekly",
+        )),
+    )
+    await app_client.app.state.entitlement_repository.create_entitlement(legacy, _audit())
+    url = f"/api/v1/entitlements/{legacy.id}"
+    saved = app_client.patch(url, json={
+        "notes": "Metadata only", "enforcement": legacy.enforcement.model_dump(mode="json"),
+    })
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["enforcement"]["requests"]["callQuotaPeriod"] == "Weekly"
+    assert app_client.patch(url, json={"enabled": False}).status_code == 200
+    refused = app_client.patch(url, json={"enabled": True})
+    assert refused.status_code == 422
+    assert refused.json()["details"]["issues"][0]["policy"] == "quota-by-key"
+    assert app_client.get(url).json()["enabled"] is False
+    cleared = app_client.patch(url, json={"enforcement": None})
+    assert cleared.status_code == 200
+    assert cleared.json()["enforcement"] is None
+    assert app_client.patch(url, json={"enabled": True}).status_code == 200
 
 
 async def test_grant_to_ungoverned_resource_is_refused(app_client: TestClient) -> None:
@@ -338,7 +438,10 @@ async def test_a_direct_grant_wins_over_a_group_grant_for_the_same_resource(
 ) -> None:
     """Otherwise a loose group limit could silently supersede a deliberately tight direct one."""
 
-    await _seed_model_api(app_client.app.state.gateway_repository)
+    await _seed_model_api(
+        app_client.app.state.gateway_repository,
+        endpoints=app_client.app.state.model_endpoint_repository,
+    )
     principal = _principal(app_client, "user-object-8")
     group = _group(app_client, "Everyone")
     app_client.put(f"/api/v1/groups/{group['id']}/members/{principal['id']}")

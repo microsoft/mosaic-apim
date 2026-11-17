@@ -1,5 +1,6 @@
 import {
   Button,
+  AnnounceProvider,
   Field,
   Input,
   Checkbox,
@@ -8,14 +9,14 @@ import {
   Select,
   Text,
 } from '@fluentui/react-components'
-import { type FormEvent, useEffect, useRef, useState } from 'react'
+import { type FormEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
-  QUOTA_PERIODS,
   buildEnforcement,
-  callRateError,
+  limitInputError,
   describePersonLimits,
   emptyLimitForm,
   limitFormFrom,
+  personLimitsFor,
   type LimitForm,
 } from '../entitlement-limits'
 import { EnvironmentBadge } from './EnvironmentBadge'
@@ -31,10 +32,12 @@ import type {
   EnvironmentCatalogView,
   ModelPool,
   Publication,
-  QuotaPeriod,
 } from '../types'
-import { ErrorState } from './AsyncState'
+import { PolicyCapabilityError } from './PolicyCapabilityFeedback'
+import { policyReviewFields } from '../policy-capabilities'
 import { AccessRequestRequester } from './AccessRequestRequester'
+import { LimitFields, type LimitTargetContext } from './GovernanceFields'
+import { useFocusAwareAnnounce } from './useFocusAwareAnnounce'
 import type { RequesterDisplay } from '../requester-display'
 import {
   WorkspaceDialog as Dialog,
@@ -44,14 +47,6 @@ import {
   WorkspaceDialogSurface as DialogSurface,
 } from './WorkspaceDialog'
 import styles from '../pages/EntitlementsPage.module.css'
-
-/** The per-person defaults a cost center sets on the requested resource, if any. */
-function personDefaultsFor(costCenter: CostCenter | undefined, resource: AccessRequest['resource']) {
-  return costCenter?.limits.find(
-    (limit) => limit.resource.kind === resource.kind && limit.resource.id === resource.id
-      && (limit.resource.scopeId ?? '') === (resource.scopeId ?? ''),
-  )?.person ?? null
-}
 
 export type ApprovalRequester = RequesterDisplay
 
@@ -68,10 +63,13 @@ export function ApproveAccessRequestDialog({
   publication,
   pool,
   governed,
+  defaultCostCenterId,
   existingGrant,
   locked = false,
   pending,
   error,
+  errorKey,
+  targetContext = 'conditional',
   onCancel,
   onApprove,
 }: {
@@ -86,12 +84,16 @@ export function ApproveAccessRequestDialog({
   pool?: Pick<ModelPool, 'displayName' | 'governedAccess'>
   /** Whether MOSAIC applies this grant to API Management through the model's plan. */
   governed: boolean
+  /** The requester's recorded default, or the recorded tenant default for a new principal. */
+  defaultCostCenterId?: string
   /** The requester already holds a direct grant for this resource, so approval would conflict. */
   existingGrant: boolean
   /** The resource is applying or unknown, so approval must wait for recovery. */
   locked?: boolean
   pending: boolean
   error: unknown
+  errorKey?: string | number
+  targetContext?: LimitTargetContext
   onCancel: () => void
   onApprove: (approval: AccessRequestApproval) => void
 }) {
@@ -100,8 +102,8 @@ export function ApproveAccessRequestDialog({
   const [costCenterId, setCostCenterId] = useState(requestedCostCenterId)
   // The grant is charged to the cost center chosen here, or else the requested one, or else, for a
   // request that names none, the requester's default.
-  const charged = costCenters.find((item) => item.id === (costCenterId || requestedCostCenterId))
-  const personDefaults = personDefaultsFor(charged, accessRequest.resource)
+  const charged = costCenters.find((item) => item.id === (costCenterId || requestedCostCenterId || defaultCostCenterId))
+  const personDefaults = personLimitsFor(charged, accessRequest.resource)
   // A grant that sets no limits takes its cost center's per-person defaults, so a publication's limit
   // prefills only when there are none. Until an administrator edits the limits, they follow the choice.
   const [editedLimits, setEditedLimits] = useState<LimitForm | null>(null)
@@ -111,7 +113,7 @@ export function ApproveAccessRequestDialog({
   const [currentEnvironment, setCurrentEnvironment] = useState<string | null>(
     () => accessRequest.resourceSummary?.environment ?? null,
   )
-  const rateError = callRateError(limits)
+  const rateError = limitInputError(limits)
   // MCP servers are limited by calls, never tokens, so their grants offer no token limits.
   const mcp = accessRequest.resource.kind === 'mcpServer'
   const pooled = accessRequest.resource.kind === 'poolModel'
@@ -159,13 +161,15 @@ export function ApproveAccessRequestDialog({
   // the message bar doesn't announce itself. The failure only ever follows a submission, so it takes focus
   // from a field too, such as the one Enter submitted from. Fluent places focus as the dialog opens.
   const errorRef = useRef<HTMLDivElement>(null)
-  const shownError = useRef(error)
-  useEffect(() => {
+  const formRef = useRef<HTMLFormElement>(null)
+  const errorAnnouncement = useFocusAwareAnnounce(errorRef)
+  const shownError = useRef({ error, key: errorKey })
+  useLayoutEffect(() => {
     const shown = shownError.current
-    shownError.current = error
-    if (!error || Object.is(error, shown)) return
+    shownError.current = { error, key: errorKey }
+    if (!error || (Object.is(error, shown.error) && errorKey === shown.key)) return
     errorRef.current?.focus()
-  }, [error])
+  }, [error, errorKey])
 
   return (
     <Dialog
@@ -179,7 +183,7 @@ export function ApproveAccessRequestDialog({
       }}
     >
       <DialogSurface>
-        <form onSubmit={submit}>
+        <form ref={formRef} onSubmit={submit}>
           <DialogBody>
             <DialogContent className={styles.dialogForm}>
               {(locked || accessRequest.state !== 'pending') && <MessageBar intent="warning"><MessageBarBody>
@@ -188,9 +192,13 @@ export function ApproveAccessRequestDialog({
                   : 'Access is applying or its state is unknown. Recover the affected resource before approving.'}
               </MessageBarBody></MessageBar>}
               {Boolean(error) && (
-                <div ref={errorRef} tabIndex={-1}>
-                  <ErrorState error={error} />
-                </div>
+                <AnnounceProvider value={errorAnnouncement}>
+                  <div ref={errorRef} tabIndex={-1}>
+                    <PolicyCapabilityError title="Unable to approve access request" error={error}
+                      reviewFields={policyReviewFields(formRef.current, error)}
+                      announcementKey={errorKey} />
+                  </div>
+                </AnnounceProvider>
               )}
               <dl className={styles.detailList}>
                 <div>
@@ -272,8 +280,8 @@ export function ApproveAccessRequestDialog({
                 </Text>
               ) : mcp ? (
                 <Text size={200}>
-                  MCP servers are limited by calls, not tokens. Leave the call rate empty to add no
-                  grant-specific limit.
+                  MCP servers are limited by calls, not tokens. Leave both call amounts empty to
+                  add no grant-specific call restriction.
                 </Text>
               ) : (
                 <Text size={200}>
@@ -284,62 +292,9 @@ export function ApproveAccessRequestDialog({
                   does not mean unrestricted gateway access.
                 </Text>
               )}
-              {!mcp && (
-                <>
-                  <div className={styles.dialogGrid}>
-                    <Field label="Tokens per minute">
-                      <Input
-                        type="number"
-                        min={1}
-                        value={limits.tokensPerMinute}
-                        onChange={(_, data) => editLimits({ ...limits, tokensPerMinute: data.value })}
-                      />
-                    </Field>
-                    <Field label="Token quota">
-                      <Input
-                        type="number"
-                        min={1}
-                        value={limits.tokenQuota}
-                        onChange={(_, data) => editLimits({ ...limits, tokenQuota: data.value })}
-                      />
-                    </Field>
-                    <Field label="Quota period">
-                      <Select
-                        value={limits.tokenQuotaPeriod}
-                        onChange={(_, data) =>
-                          editLimits({ ...limits, tokenQuotaPeriod: data.value as QuotaPeriod })
-                        }
-                      >
-                        {QUOTA_PERIODS.map((period) => (
-                          <option key={period} value={period}>
-                            {period}
-                          </option>
-                        ))}
-                      </Select>
-                    </Field>
-                  </div>
-                </>
-              )}
-              <div className={styles.switchGrid}>
-                <Field label="Calls" validationMessage={rateError ?? undefined}>
-                  <Input
-                    type="number"
-                    min={1}
-                    value={limits.calls}
-                    onChange={(_, data) => editLimits({ ...limits, calls: data.value })}
-                  />
-                </Field>
-                <Field label="Per how many seconds">
-                  <Input
-                    type="number"
-                    min={1}
-                    value={limits.renewalPeriodSeconds}
-                    onChange={(_, data) =>
-                      editLimits({ ...limits, renewalPeriodSeconds: data.value })
-                    }
-                  />
-                </Field>
-              </div>
+              <LimitFields value={limits} onChange={editLimits} mcp={mcp}
+                targetContext={targetContext}
+                inherited={personDefaults} inheritedLabel={charged ? `${charged.name} per-person defaults` : 'Cost-center defaults (resolved on save)'} />
               <Field label="Cost center" hint="The grant is charged here. Choose another cost center the requester may charge.">
                 <Select value={costCenterId} onChange={(_, data) => setCostCenterId(data.value)}>
                   {requestedCostCenterId ? (

@@ -275,6 +275,30 @@ async def harness() -> Harness:
     return built
 
 
+@pytest.mark.parametrize("sku", ["Consumption", None])
+async def test_gateway_policy_mcp_apply_refuses_live_tier_drift(
+    harness: Harness, sku: str | None
+) -> None:
+    publication_id = await harness.create()
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    principal = await harness.principal(
+        "policy-person", "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    )
+    await harness.entitlement(
+        "policy-grant", EntitlementSubjectKind.USER, principal.id,
+        publication.mcp_server_id, enforcement=request_limits(),
+    )
+    plan = await harness.service.plan(ACTOR, publication_id)
+    harness.apim.sku_name = sku
+    harness.apim.http_calls.clear()
+    with pytest.raises(ValidationError) as refused:
+        await harness.service.apply(ACTOR, publication_id, plan.id)
+    assert refused.value.details["boundary"] == "apply"
+    assert refused.value.details["issues"][0]["policy"] == "rate-limit-by-key"
+    assert not any(call["method"] in {"PUT", "PATCH", "DELETE"} for call in harness.apim.http_calls)
+    assert (await harness.service.get_publication(ACTOR, publication_id)).status == "planned"
+
+
 async def test_capability_reports_every_reason_and_happy_path(harness: Harness) -> None:
     assert (await harness.service.capability(ACTOR, harness.gateway_id)).supported is True
 

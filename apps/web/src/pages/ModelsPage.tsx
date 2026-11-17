@@ -25,7 +25,7 @@ import {
 } from '@fluentui/react-components'
 import { AddRegular, ArrowDownloadRegular, ArrowUploadRegular, ServerRegular } from '@fluentui/react-icons'
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { environmentLabel, lookupCompatibility, useEnvironmentCatalog } from '../environments'
@@ -199,6 +199,7 @@ function PublishedModels({ onMessage, onPublish }: { onMessage: (message: string
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const restoreFocus = useRestoreFocusTarget()
+  const focusFallback = useRef<HTMLElement>(null)
   const workspace = useWorkbenchLocation({ section: 'published' })
   const catalog = useEnvironmentCatalog()
   const [removing, setRemoving] = useState<Publication | null>(null)
@@ -342,7 +343,7 @@ function PublishedModels({ onMessage, onPublish }: { onMessage: (message: string
         <ErrorState error={modelApis.error} title="Unable to refresh catalog metadata" />
         <Button onClick={() => void modelApis.refetch()}>Retry catalog metadata</Button>
       </div>}
-      {!publications.isPending && (!publications.data?.length || workspace.selectedId || initializedSelection.current) && <ResourceWorkbench title="Published models"
+      {!publications.isPending && (!publications.data?.length || workspace.selectedId || initializedSelection.current) && <ResourceWorkbench focusReturnRef={focusFallback} title="Published models"
         description="Publish registered deployments through reviewed plans. Reviewing does not apply changes to API Management."
         actions={<Button appearance="primary" icon={<AddRegular />} onClick={onPublish}>Publish a model</Button>}
         items={publications.data ?? []} getId={(item) => item.id}
@@ -443,6 +444,7 @@ function PublishedModels({ onMessage, onPublish }: { onMessage: (message: string
       onUnpublished={onMessage}
     />
     <RemovalDialog
+      fallbackFocusRef={focusFallback}
       open={removing !== null}
       title={`Remove ${removing?.displayName ?? 'this publication'}?`}
       confirmLabel="Remove publication"
@@ -1022,6 +1024,7 @@ function RuntimeAccessRow({
 }
 
 function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void }) {
+  const focusFallback = useRef<HTMLElement>(null)
   const api = useMosaicApi()
   const location = useLocation()
   const navigate = useNavigate()
@@ -1347,7 +1350,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
         {endpoints.isError && <ErrorState error={endpoints.error} />}
         {sync.isError && <ErrorState error={sync.error} />}
         {recheck.isError && <ErrorState error={recheck.error} />}
-        {!endpoints.isPending && (!filteredEndpoints.length || workspace.selectedId || initializedSelection.current) && <ResourceWorkbench title="Model endpoints"
+        {!endpoints.isPending && (!filteredEndpoints.length || workspace.selectedId || initializedSelection.current) && <ResourceWorkbench focusReturnRef={focusFallback} title="Model endpoints"
           description="Discover provider models and deploy new models to opted-in Azure accounts. Publishing through API Management remains a separate action; MOSAIC never calls a model."
           actions={<Button appearance="primary" icon={<AddRegular />} onClick={openDialog} {...restoreFocus}>Register endpoint</Button>}
           toolbar={
@@ -1808,6 +1811,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
         }} />}
 
       <RemovalDialog
+        fallbackFocusRef={focusFallback}
         open={removing !== null}
         title={`Remove ${removing?.name ?? 'this endpoint'}?`}
         confirmLabel="Remove endpoint"
@@ -1878,7 +1882,11 @@ export function ModelsPage() {
   const location = useLocation()
   const navigate = useNavigate()
   const hasConsumedImportQueryRef = useRef(false)
-  const [liveBanner, setLiveBanner] = useState<string | null>(null)
+  const [liveBanner, setLiveBannerState] = useState<{ text: string; key: number } | null>(null)
+  const bannerKey = useRef(0)
+  const setLiveBanner = useCallback((text: string | null) => {
+    setLiveBannerState(text ? { text, key: ++bannerKey.current } : null)
+  }, [])
   const params = useMemo(() => new URLSearchParams(location.search), [location.search])
   const [section, selectSection] = usePageSection(modelSections,
     params.has('import') ? 'imported' : params.get('register') === '1' ? 'endpoints' : 'published')
@@ -1934,8 +1942,8 @@ export function ModelsPage() {
       />
 
       {liveBanner && (
-        <MessageBar intent="success">
-          <MessageBarBody>{liveBanner}</MessageBarBody>
+        <MessageBar key={liveBanner.key} intent="success" politeness="polite">
+          <MessageBarBody>{liveBanner.text}</MessageBarBody>
         </MessageBar>
       )}
 

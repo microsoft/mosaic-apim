@@ -191,7 +191,7 @@ describe('CatalogPage', () => {
     expect(within(drawer).queryByText(/First offering/)).not.toBeInTheDocument()
     expect(within(drawer).getByText('Second offering copy.')).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Close details' }))
-    await user.type(screen.getByRole('textbox', { name: 'Search catalog' }), 'Public draft copy')
+    await user.type(await screen.findByRole('textbox', { name: 'Search catalog' }), 'Public draft copy')
     expect(screen.getByRole('button', { name: 'View access options for demo-chat' })).toBeVisible()
   })
 

@@ -19,7 +19,7 @@ import {
 } from '@fluentui/react-components'
 import { AddRegular, ArrowDownloadRegular, PlugConnectedRegular, ServerRegular } from '@fluentui/react-icons'
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { mcpCallerReviewValues, rememberEdit } from '../change-review'
@@ -565,6 +565,7 @@ function ModelCallerForm({ publication, principals, pending, error, onClose, onS
 }
 
 function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void }) {
+  const focusFallback = useRef<HTMLElement>(null)
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const restoreFocus = useRestoreFocusTarget()
@@ -722,7 +723,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
         {setModelCaller.isError && <ErrorState error={setModelCaller.error} />}
         {clearModelCaller.isError && <ErrorState error={clearModelCaller.error} />}
         {publications.isError && <ErrorState error={publications.error} />}
-      <ResourceWorkbench title="Published MCP servers"
+      <ResourceWorkbench focusReturnRef={focusFallback} title="Published MCP servers"
         description="Registered servers MOSAIC publishes in API Management through a reviewed plan and explicit Apply."
         actions={<Button appearance="primary" icon={<AddRegular />} onClick={() => workbench.open('publish')}>Publish an MCP server</Button>}
         items={publications.data ?? []} getId={(publication) => publication.id}
@@ -814,6 +815,7 @@ function PublishedMcpServers({ onBanner }: { onBanner: (message: string) => void
         onUnpublished={onBanner}
       />
       <RemovalDialog
+        fallbackFocusRef={focusFallback}
         open={removing !== null}
         title={`Remove ${removing?.displayName ?? 'this MCP publication'}?`}
         confirmLabel="Remove publication"
@@ -1018,7 +1020,11 @@ export function McpsPage() {
   const navigate = useNavigate()
   const params = useMemo(() => new URLSearchParams(location.search), [location.search])
   const [section, selectSection] = usePageSection(mcpSections, params.has('import') ? 'imported' : 'published')
-  const [banner, setBanner] = useState<string | null>(null)
+  const [banner, setBannerState] = useState<{ text: string; key: number } | null>(null)
+  const bannerKey = useRef(0)
+  const setBanner = useCallback((text: string | null) => {
+    setBannerState(text ? { text, key: ++bannerKey.current } : null)
+  }, [])
   useEffect(() => {
     if (!params.has('import')) return
     const next = new URLSearchParams(params)
@@ -1050,8 +1056,8 @@ export function McpsPage() {
       </MessageBar>
 
       {banner && (
-        <MessageBar intent="success">
-          <MessageBarBody>{banner}</MessageBarBody>
+        <MessageBar key={banner.key} intent="success" politeness="polite">
+          <MessageBarBody>{banner.text}</MessageBarBody>
         </MessageBar>
       )}
 

@@ -626,6 +626,31 @@ def configure_model_deployment(page: Page) -> None:
     page.get_by_text(re.compile(r"Subscription quota: 2000 available")).wait_for()
 
 
+def preview_gateway_limit_refusal(page: Page) -> None:
+    page.get_by_role("button", name="New grant", exact=True).click()
+    page.get_by_role("heading", name="New grant", exact=True).wait_for()
+    page.get_by_label("Subject", exact=True).select_option(index=1)
+    resources = page.get_by_label("Resource", exact=True)
+    target = resources.locator("option").filter(
+        has_text="Historical text embeddings (unverified)"
+    )
+    if target.count() != 1:
+        raise CaptureError("The fictional historical embeddings option must be unique")
+    resources.select_option(value=target.get_attribute("value"))
+    centers = page.get_by_label("Cost center", exact=True)
+    general = centers.locator("option").filter(has_text=re.compile(r"^General \("))
+    if general.count() != 1:
+        raise CaptureError("The fictional General cost center must be unique")
+    centers.select_option(value=general.get_attribute("value"))
+    page.get_by_role("radio", name="Set explicit grant limits", exact=True).check()
+    page.get_by_label("Tokens per minute", exact=True).fill("1000")
+    page.get_by_role("button", name="Grant access", exact=True).click()
+    page.get_by_text("Unable to save grant", exact=True).wait_for()
+    page.get_by_text(
+        "This resource does not use a documented LLM token API schema.", exact=True
+    ).first.wait_for()
+
+
 SHOTS: list[Shot] = [
     # The same view in both themes, shown side by side.
     Shot(
@@ -974,6 +999,32 @@ SHOTS: list[Shot] = [
         height=1100,
     ),
     Shot(
+        "console-grant-call-quota",
+        "console",
+        "/entitlements",
+        "dark",
+        "Grants",
+        actions=(
+            select_first_resource("Grants"),
+            click_button("Edit grant"),
+            wait_for_text("Edit grant"),
+            fill_text("Call quota", "1000"),
+            select_option("Call quota period", "Weekly"),
+            wait_for_text("Decision summary"),
+            wait_for_text("UTC weeks start Monday at 00:00."),
+        ),
+        height=1700,
+    ),
+    Shot(
+        "console-gateway-limit-refusal",
+        "console",
+        "/entitlements",
+        "light",
+        "Unable to save grant",
+        actions=(preview_gateway_limit_refusal,),
+        height=1900,
+    ),
+    Shot(
         "console-access-requests",
         "console",
         "/entitlements?tab=requests",
@@ -993,8 +1044,10 @@ SHOTS: list[Shot] = [
             click_button("Approve"),
             wait_for_text("Approve access request"),
             wait_for_text("Label for new registration"),
+            fill_text("Call quota", "1000"),
+            select_option("Call quota period", "Weekly"),
         ),
-        height=1700,
+        height=2100,
     ),
     Shot(
         "console-bulk-approval",
@@ -1002,8 +1055,13 @@ SHOTS: list[Shot] = [
         "/entitlements?tab=requests",
         "dark",
         "Requests",
-        actions=(review_demo_requests, wait_for_text("Compatible shared limits")),
-        height=2100,
+        actions=(
+            review_demo_requests,
+            wait_for_text("Compatible shared limits"),
+            fill_text("Call quota", "1000"),
+            select_option("Call quota period", "Weekly"),
+        ),
+        height=2400,
     ),
     Shot(
         "console-approval-policy",
@@ -1015,8 +1073,10 @@ SHOTS: list[Shot] = [
             click_button("Development office hours"),
             click_button("Edit policy and dry-run"),
             wait_for_text("Bounded grant template"),
+            fill_text("Call quota", "1000"),
+            select_option("Call quota period", "Weekly"),
         ),
-        height=2780,
+        height=3400,
     ),
     Shot(
         "console-notification-inbox",
@@ -1097,7 +1157,7 @@ SHOTS: list[Shot] = [
             click_button("Customer Insights"),
             click_tab("Resource access"),
             wait_for_list("Exact resource offerings"),
-            click_button("Text embeddings (large)"),
+            click_button("GPT-4o mini"),
             wait_for_text("Saved resource caller configuration"),
         ),
         height=1900,
@@ -2239,8 +2299,9 @@ def _check_identity_workspace(page: Page) -> None:
     editor = page.get_by_role("region", name="Edit Megan Bowen", exact=True)
     editor.wait_for()
     label = editor.get_by_role("textbox", name="Local label", exact=True)
+    heading = editor.get_by_role("heading", name="Edit Megan Bowen", level=2, exact=True)
     page.wait_for_function(
-        "(element) => element === document.activeElement", arg=label.element_handle()
+        "(element) => element === document.activeElement", arg=heading.element_handle()
     )
     label.fill("Megan Bowen review draft")
     page.locator("[data-workspace-editor]").get_by_role("button", name="Back", exact=True).click()
