@@ -1,10 +1,11 @@
 import { FluentProvider, webLightTheme } from '@fluentui/react-components'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import type { ReactNode } from 'react'
+import { type ReactNode, useState } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NOTIFICATION_CATEGORIES, type ApprovalPreview, type NotificationPreferences as Preferences } from '../admin-types'
+import type { CostCenter } from '../types'
 import { BulkApprovalWorkspace, RecommendationEvidence } from './BulkApprovalWorkspace'
 import { NotificationPreferences } from './NotificationPreferences'
 import { limitInputError, notificationPreferencesInput, notificationTarget, unresolvedRequestIds, validTimeZone } from '../admin-governance'
@@ -34,6 +35,30 @@ const first: ApprovalPreview = {
   limitsSource: 'costCenter', effectiveEnforcement: { requests: { calls: 20, renewalPeriodSeconds: 60, counterKeyExpression: '@(context.Subscription.Id)' } }, mutationLocked: false, blockers: [], requiresPlanApply: true,
 }
 const second: ApprovalPreview = { ...first, request: { ...first.request, id: 'r2' }, resourceSummary: { ...first.resourceSummary!, displayName: 'Another fictional model' }, revision: { contextRevision: 'context-2' } }
+function reviewCenter(id: string, name: string, calls: number | null,
+  resource: CostCenter['limits'][number]['resource'] = { kind: 'modelApi', id: 'model' }): CostCenter {
+  return {
+    id, name, code: id, tenantId: first.request.tenantId, entityType: 'costCenter',
+    description: null, owners: [], setupState: 'ready',
+    resourceAccess: [{ resource, mode: 'requestOnly' }], members: [], keysAllowed: true, builtIn: false,
+    limits: calls === null ? [] : [{ resource, pool: null, person: {
+      tokensPerMinute: null, tokenQuota: null, tokenQuotaPeriod: null,
+      callsPerMinute: calls, callQuota: null, callQuotaPeriod: null,
+    } }],
+    createdAt: first.request.createdAt, updatedAt: first.request.updatedAt,
+    isTenantDefault: false, memberDetails: [], grantCount: 0, enabledGrantCount: 0, defaultFor: 0,
+  }
+}
+function formedPreview(resource: CostCenter['limits'][number]['resource'] = { kind: 'modelApi', id: 'model' }): ApprovalPreview {
+  return { ...first, effectiveCostCenterId: 'original',
+    resourceSummary: { ...first.resourceSummary!, ...resource },
+    request: { ...first.request, resource, costCenterId: 'original', requestForm: {
+      formatVersion: 1, revision: 3,
+      questions: [{ id: 'purpose', kind: 'paragraph', label: 'Intended use', helpText: null, required: true, maxLength: 2000, options: [] }],
+      answers: [{ questionId: 'purpose', value: 'Only fictional notes.' }],
+    } },
+  }
+}
 const preferences: Preferences = {
   id: 'preferences-record', revision: 2, persona: 'admin', userObjectId: 'self-only', timeZone: 'UTC',
   categories: NOTIFICATION_CATEGORIES.map(({ value: category }) => ({ category, inApp: true, email: { mode: 'off', digestPeriods: [] }, teams: { mode: 'off', digestPeriods: [] } })),
@@ -57,6 +82,79 @@ beforeEach(() => {
   api.listPrincipals.mockResolvedValue([])
 })
 describe('bulk approval workspace', () => {
+  it.each([
+    { resource: { kind: 'modelApi' as const, id: 'model' }, calls: 40, expected: '40 calls per minute' },
+    { resource: { kind: 'poolModel' as const, id: 'model', scopeId: 'pool-b' }, calls: 40, expected: '40 calls per minute' },
+    { resource: { kind: 'modelApi' as const, id: 'model' }, calls: null, expected: 'No grant-specific limit is configured.' },
+  ])('confirms the selected center defaults for $resource.kind with calls=$calls', async ({ resource, calls, expected }) => {
+    const preview = formedPreview(resource)
+    const alternate = reviewCenter('alternate', 'Alternate center', calls, resource)
+    if (resource.kind === 'poolModel') {
+      alternate.limits.unshift(...reviewCenter('wrong-pool', 'Other pool', 99,
+        { kind: 'poolModel', id: resource.id, scopeId: 'pool-a' }).limits)
+    }
+    api.previewBulkApprovals.mockResolvedValue({ items: [preview], unavailable: [] })
+    api.approveBulkRequests.mockResolvedValue({ items: [{ requestId: 'r1', status: 'approved', entitlementId: 'grant', requiresPlanApply: true }] })
+    mount(<BulkApprovalWorkspace requestIds={['r1']} principals={[]}
+      costCenters={[reviewCenter('original', 'Original center', 20, resource), alternate]}
+      onBack={vi.fn()} onComplete={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Next: Grant settings' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Charged cost center' }), { target: { value: 'alternate' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Next: Confirm' }))
+    expect(api.approveBulkRequests).not.toHaveBeenCalled()
+    expect(screen.getByText('Charged cost center', { selector: 'dt' }).nextElementSibling).toHaveTextContent('Alternate center')
+    expect(screen.getByText('Effective grant limits').nextElementSibling).toHaveTextContent(expected)
+    expect(screen.getByText('Effective grant limits').nextElementSibling).not.toHaveTextContent('20 calls per minute')
+    expect(screen.getByText('Effective grant limits').nextElementSibling).not.toHaveTextContent('99 calls per minute')
+    fireEvent.click(screen.getByRole('button', { name: 'Approve 1 selected' }))
+    await waitFor(() => expect(api.approveBulkRequests).toHaveBeenCalledOnce())
+    expect(api.approveBulkRequests.mock.calls[0][0].items[0].approval).toEqual({ note: null, costCenterId: 'alternate' })
+  })
+  it('retains explicit limits and note edits across target-center changes and Next/Back', async () => {
+    api.previewBulkApprovals.mockResolvedValue({ items: [formedPreview()], unavailable: [] })
+    api.approveBulkRequests.mockResolvedValue({ items: [{ requestId: 'r1', status: 'approved', entitlementId: 'grant', requiresPlanApply: true }] })
+    mount(<BulkApprovalWorkspace requestIds={['r1']} principals={[]}
+      costCenters={[reviewCenter('original', 'Original center', 20), reviewCenter('alternate', 'Alternate center', 40)]}
+      onBack={vi.fn()} onComplete={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Next: Grant settings' }))
+    const item = within(screen.getByRole('region', { name: 'Review Fictional model' }))
+    fireEvent.click(item.getByRole('checkbox', { name: 'Override inherited grant limits for this request' }))
+    fireEvent.change(item.getByRole('spinbutton', { name: 'Calls' }), { target: { value: '17' } })
+    fireEvent.change(item.getByRole('textbox', { name: 'Approval note' }), { target: { value: 'Reviewed explicitly.' } })
+    fireEvent.change(item.getByRole('combobox', { name: 'Charged cost center' }), { target: { value: 'alternate' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Next: Confirm' }))
+    expect(screen.getByText('Effective grant limits').nextElementSibling).toHaveTextContent('17 calls per minute')
+    expect(api.approveBulkRequests).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Previous step' }))
+    expect(item.getByRole('spinbutton', { name: 'Calls' })).toHaveValue(17)
+    expect(item.getByRole('textbox', { name: 'Approval note' })).toHaveValue('Reviewed explicitly.')
+    fireEvent.click(screen.getByRole('button', { name: 'Next: Confirm' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Approve 1 selected' }))
+    await waitFor(() => expect(api.approveBulkRequests).toHaveBeenCalledOnce())
+    expect(api.approveBulkRequests.mock.calls[0][0].items[0].approval).toMatchObject({
+      costCenterId: 'alternate', note: 'Reviewed explicitly.',
+      enforcement: { requests: { calls: 17, renewalPeriodSeconds: 60 } },
+    })
+  })
+  it('does not present the original preview as a changed target whose defaults became unavailable', async () => {
+    api.previewBulkApprovals.mockResolvedValue({ items: [formedPreview()], unavailable: [] })
+    const original = reviewCenter('original', 'Original center', 20)
+    function Review() {
+      const [centers, setCenters] = useState([original, reviewCenter('alternate', 'Alternate center', 40)])
+      return <>
+        <button onClick={() => setCenters([original])}>Remove alternate defaults</button>
+        <BulkApprovalWorkspace requestIds={['r1']} principals={[]} costCenters={centers} onBack={vi.fn()} onComplete={vi.fn()} />
+      </>
+    }
+    mount(<Review />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Next: Grant settings' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Charged cost center' }), { target: { value: 'alternate' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Next: Confirm' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove alternate defaults' }))
+    expect(screen.getByText('Effective grant limits').nextElementSibling).toHaveTextContent('Cost-center defaults unavailable.')
+    expect(screen.getByRole('button', { name: 'Approve 1 selected' })).toBeDisabled()
+    expect(api.approveBulkRequests).not.toHaveBeenCalled()
+  })
   it('keeps form evidence separate from guided grant settings and submits only the final reviewed intents', async () => {
     const request = { ...first.request, requestForm: { formatVersion: 1, revision: 3,
       questions: [{ id: 'purpose', kind: 'paragraph', label: 'Intended use', helpText: null, required: true, maxLength: 2000, options: [] }],

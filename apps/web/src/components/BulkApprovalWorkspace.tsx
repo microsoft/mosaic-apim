@@ -8,7 +8,7 @@ import type { CostCenter, Principal } from '../types'
 import { requesterDisplay } from '../requester-display'
 import { AccessRequestRequester } from './AccessRequestRequester'
 import { RequestFormAnswers } from './RequestFormAnswers'
-import { buildEnforcement, callOnlyLimitForm, copyLimitForm, describeLimits, emptyLimitForm, hasLimitValues, type LimitForm } from '../entitlement-limits'
+import { buildEnforcement, callOnlyLimitForm, copyLimitForm, describeLimits, emptyLimitForm, hasLimitValues, limitFormFromPerson, personLimitsFor, type LimitForm } from '../entitlement-limits'
 import { ErrorState, Loading } from './AsyncState'
 import { PolicyCapabilityFeedback } from './PolicyCapabilityFeedback'
 import { LimitFields } from './GovernanceFields'
@@ -21,6 +21,19 @@ function initialDraft(item: ApprovalPreview): ItemDraft {
   return { included: item.blockers.length === 0 && !item.mutationLocked, explicitLimits: false, limits: { ...emptyLimitForm }, costCenterId: item.effectiveCostCenterId ?? '', note: '', confirmedMove: false }
 }
 function moved(item: ApprovalPreview) { return (item.request.requestedEnvironment ?? null) !== (item.currentEnvironment ?? null) }
+function targetCenterId(item: ApprovalPreview, draft: ItemDraft) {
+  return draft.costCenterId || item.request.costCenterId || item.effectiveCostCenterId
+}
+function inheritedLimits(item: ApprovalPreview, draft: ItemDraft, costCenters: CostCenter[]) {
+  const centerId = targetCenterId(item, draft)
+  const center = costCenters.find(value => value.id === centerId)
+  if (center) {
+    const person = personLimitsFor(center, item.request.resource)
+    return person ? buildEnforcement(limitFormFromPerson(person), true) : null
+  }
+  return centerId === (item.effectiveCostCenterId ?? item.request.costCenterId)
+    ? item.effectiveEnforcement ?? null : undefined
+}
 export function RecommendationEvidence({ value, contextRevision }: { value: AiApprovalRecommendation; contextRevision: string }) {
   const stale = value.context.contextRevision !== contextRevision || new Date(value.expiresAt).getTime() <= Date.now()
   return <section className={styles.evidenceSection} aria-label="AI advisory evidence">
@@ -79,7 +92,9 @@ export function BulkApprovalWorkspace({ requestIds, principals, principalsPendin
   const compatible = selected.length > 0 && new Set(selected.map(item => item.request.resource.kind === 'mcpServer' ? 'mcp' : 'model')).size === 1
   const invalid = selected.some(item => {
     const draft = draftFor(item)
-    return item.blockers.length > 0 || item.mutationLocked || (moved(item) && !draft.confirmedMove) || (draft.explicitLimits && (limitInputError(draft.limits) || !hasLimitValues(draft.limits)))
+    return item.blockers.length > 0 || item.mutationLocked || (moved(item) && !draft.confirmedMove) ||
+      (guided && !draft.explicitLimits && inheritedLimits(item, draft, costCenters) === undefined) ||
+      (draft.explicitLimits && (limitInputError(draft.limits) || !hasLimitValues(draft.limits)))
   })
   const outcomes = useMemo(() => results ? {
     approved: results.filter(i => i.status === 'approved').length, existing: results.filter(i => i.status === 'alreadyApproved').length, unresolved: unresolvedRequestIds(results),
@@ -156,6 +171,9 @@ export function BulkApprovalWorkspace({ requestIds, principals, principalsPendin
         {items.map(item => {
           const draft = draftFor(item)
           const requester = requesterDisplay(item.request, principals)
+          const centerId = targetCenterId(item, draft)
+          const defaultsUnavailable = guided && !draft.explicitLimits &&
+            inheritedLimits(item, draft, costCenters) === undefined
           return <section key={item.request.id} className={styles.section} aria-label={`Review ${item.resourceSummary?.displayName ?? 'request'}`}>
             <div className={styles.toolbar}>
               <Checkbox label={`Include ${item.resourceSummary?.displayName ?? 'request'}`} checked={draft.included} disabled={item.blockers.length > 0 || item.mutationLocked || guided && step === 2} onChange={(_, d) => update(item, { included: Boolean(d.checked) })} />
@@ -173,6 +191,7 @@ export function BulkApprovalWorkspace({ requestIds, principals, principalsPendin
             {item.request.requestForm && <RequestFormAnswers form={item.request.requestForm} />}
             </div>
             {item.blockers.map((b, i) => <MessageBar key={`${b.code}-${i}`} intent="error"><MessageBarBody>{b.message} {b.nextAction}</MessageBarBody></MessageBar>)}
+            {defaultsUnavailable && <Text role="alert">The selected cost-center defaults are unavailable. Choose a loaded center in Grant settings, or return to the request list and reload before approving.</Text>}
             <div className={styles.stack} hidden={guided && step !== 1}>
             <div className={styles.form}>
               <Field label="Charged cost center" hint="Changing the cost center revalidates eligibility and inherited limits during execution.">
@@ -189,10 +208,10 @@ export function BulkApprovalWorkspace({ requestIds, principals, principalsPendin
             </div>
             {guided && step === 2 && <dl className={styles.facts}>
               <div><dt>Resource</dt><dd>{item.resourceSummary?.displayName ?? 'Recorded resource'}</dd></div>
-              <div><dt>Charged cost center</dt><dd>{costCenters.find(center => center.id === draft.costCenterId)?.name ?? item.request.costCenterId ?? 'Requester default (revalidated)'}</dd></div>
-              <div><dt>Effective grant limits</dt><dd>{describeLimits({ enforcement: draft.explicitLimits
+              <div><dt>Charged cost center</dt><dd>{costCenters.find(center => center.id === centerId)?.name ?? centerId ?? 'Requester default (revalidated)'}</dd></div>
+              <div><dt>Effective grant limits</dt><dd>{defaultsUnavailable ? 'Cost-center defaults unavailable.' : describeLimits({ enforcement: draft.explicitLimits
                 ? buildEnforcement(item.request.resource.kind === 'mcpServer' ? callOnlyLimitForm(draft.limits) : draft.limits, true)
-                : item.effectiveEnforcement }).join(' ')}</dd></div>
+                : inheritedLimits(item, draft, costCenters) }).join(' ')}</dd></div>
               <div><dt>Effect</dt><dd>Independent grant intent only. Shared safeguards and separate gateway review/apply remain.</dd></div>
               {draft.note && <div><dt>Approval note</dt><dd>{draft.note}</dd></div>}
             </dl>}
