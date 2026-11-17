@@ -370,6 +370,11 @@ shows both themes. Keep new shots in that pattern.
 Every shot below appears in [the gallery](gallery.md). The README selection is the console overview
 and portal catalog, each in light and dark; keep those shared images and descriptions in step.
 
+**Capture warning (PR #182):** `console-grant-call-quota`, `console-access-request-approval`,
+`console-bulk-approval`, and `console-approval-policy` were independently captured on this branch.
+Other refreshed images, including the formerly pending `console-gateway-limit-refusal`, are
+inherited from merged `main`, not independent PR #182 capture evidence.
+
 The portal shots use the console's cool light/dark palette and glass navigation, with opaque
 resource lists, forms, and connection drawers. The Usage & cost overview uses a taller viewport
 to include both the daily trend and the complete last-24-hours chart.
