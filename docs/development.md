@@ -36,6 +36,11 @@ subscription permissions below apply when connecting to Azure or [deploying](dep
 - Node.js 24 and npm
 - Docker for local container validation
 
+These are the combined development tools, not prerequisites for every deployment path.
+For the [before-deployment service/permission checklist](deployment.md#before-you-deploy) and
+the separate tool requirements for azd versus standalone Terraform, see [Deployment](deployment.md).
+The public reference does not require pre-created hosting/backing services or private networking.
+
 The reference development target is region `eastus2` with environment name `mosaic-dev`. Supply
 your own subscription when deploying.
 
@@ -200,6 +205,7 @@ Run from the repository root after installing the application dependencies:
 
 ```powershell
 uv run ruff check apps/api e2e/mcp-servers
+uv run ruff check scripts/deploy_terraform.py scripts/architecture scripts/tests/test_deploy_terraform.py
 uv run mypy apps/api/src
 uv run pytest apps/api/tests
 
@@ -225,6 +231,10 @@ npm run test:offline
 Set-Location ..
 
 az bicep build --file infra\main.bicep
+terraform -chdir=infra\terraform fmt -check -recursive
+terraform -chdir=infra\terraform init -backend=false -input=false
+terraform -chdir=infra\terraform validate
+terraform -chdir=infra\terraform test "-var-file=example.tfvars"
 az bicep build --file e2e\mcp-servers\deploy\main.bicep
 uv run python -m unittest discover -s scripts/tests -t .
 uv run ruff check scripts/federal_demo `
@@ -242,6 +252,10 @@ and an M-protected Docker smoke check; their commands live in the
 [MCP fixture guide](../e2e/mcp-servers/README.md). The E2E browser checks use mocked traffic and
 temporary contexts, not live fixtures or persona profiles; CI installs Chromium's Linux system
 dependencies as well.
+
+Terraform's tests use mocked providers and fictional inputs; no Azure account or resource creation
+is involved. Standalone deployment helpers share the existing scripts test job. See the
+[Terraform guide](../infra/terraform/README.md) for operator prerequisites and live deployment steps.
 
 The [federal demo runtime](../demo/federal/README.md#run-and-validate) has its own pinned environment
 and isolated test/lint commands. Its CI job does not make live directory, gateway, or model calls.

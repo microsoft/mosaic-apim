@@ -21,6 +21,8 @@ to understand the boundaries, then follow the guide for the task you need to per
 | --- | --- |
 | Run locally, contribute, and run quality checks | [Development](development.md) |
 | Provision the reference Azure deployment | [Deployment](deployment.md) |
+| Deploy public hosting without azd | [Standalone Terraform](../infra/terraform/README.md) |
+| Design administrator-owned private endpoints, VNet/subnets and DNS | [Private-network reference](private-networking.md) |
 | Register gateways, inspect APIs, import resources, or register an MCP server | [Gateway onboarding and inventory](gateways.md) |
 | Register endpoints, check runtime readiness, or explicitly create an Azure model deployment | [Model endpoints](model-endpoints.md) |
 | Publish or unpublish an individual model through a reviewed plan | [Model publishing](model-publishing.md) |

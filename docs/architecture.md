@@ -47,6 +47,11 @@ Backend requests can still depend on Entra, Key Vault, and networking according 
 authentication. API/application telemetry in Application Insights and optional notification
 providers are additional operational integrations, not authorization sources.
 
+The supported [Bicep/azd and Terraform deployments](deployment.md) use public networking.
+For an illustrative VNet/subnet CIDR plan, service private endpoints and private DNS mappings,
+see the [administrator-managed private-network reference](private-networking.md). It is not
+provisioned or maintained by those deployment paths.
+
 The administrator console and the end-user portal are separate applications with separate
 Entra registrations and separate app roles, so they are independently governable. The portal
 reaches only `/api/v1/portal/*` and the current-user `/api/v1/me/*` routes. Every one of them is

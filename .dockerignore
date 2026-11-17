@@ -17,6 +17,12 @@
 **/.mypy_cache
 **/.ruff_cache
 infra/main.json
+infra/terraform
+**/.terraform
+**/.mosaic-terraform
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfplan
 # Exclude tenant-bearing harness artifacts; the federal image reuses only these three helpers.
 e2e/**
 !e2e/mcp-servers/

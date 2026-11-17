@@ -183,6 +183,8 @@ links below lead to the relevant guide.
 | <a id="what-is-implemented"></a><a id="roadmap"></a><a id="azure-government-from-a-commercial-deployment"></a>Capabilities and direction | [Inventory and roadmap](docs/overview.md) |
 | <a id="prerequisites"></a><a id="local-development"></a><a id="merging-into-main"></a>Local setup and contribution | [Development](docs/development.md) |
 | <a id="deploy-with-azd"></a>Azure provisioning and configuration | [Deployment](docs/deployment.md) |
+| Public deployment without azd | [Standalone Terraform](infra/terraform/README.md) |
+| Administrator-managed private endpoints, VNet ranges and DNS | [Private-network architecture and setup](docs/private-networking.md) |
 | <a id="data-model-and-cosmos-layout"></a><a id="security-model"></a><a id="reconciliation-boundary"></a>State, security, and reconciliation | [Architecture](docs/architecture.md) |
 | <a id="gateways"></a><a id="mcp-servers"></a><a id="importing-models-and-mcp-servers"></a><a id="registering-mcp-servers"></a><a id="policies-without-markup"></a>Gateway inventory and MCP registration | [Gateways](docs/gateways.md) |
 | <a id="model-endpoints"></a><a id="deploy-a-new-azure-model"></a><a id="endpoint-and-gateway-access"></a><a id="endpoints-reached-with-an-api-key"></a><a id="aws-bedrock-endpoints"></a>Backend registration and readiness | [Model endpoints](docs/model-endpoints.md) |
@@ -198,6 +200,8 @@ links below lead to the relevant guide.
 
 [Development and quality checks](docs/development.md#quality-checks) contains the validation commands
 and contribution rules; [CI](.github/workflows/ci.yml) defines the required checks.
+Infrastructure checks include Terraform formatting/validation and mocked-provider deployment
+tests, alongside Bicep compilation. Neither is evidence of a live Azure deployment.
 
 ## License and support
 
