@@ -66,11 +66,16 @@ not whether the requester is eligible.
 
 For a matching individual Request-only offering, the portal's **Continue request** opens
 **Offering > Questions > Review**. The API resolves the exact offering's current environment and
-eligible cost center; it does not trust a submitted environment. Final submission revalidates the
+eligible cost center; the resolved environment, including Unclassified, supplies the displayed
+badge after recovery rather than a stale catalog value. The cost-center choice is locked during
+resolution. The API does not trust a submitted environment. Final submission revalidates the
 active schema and answers with a storage-level revision guard. Missing required/invalid answers
 return actionable validation errors. A stale or now-required form returns a conflict and asks
 the requester to reload/review, not silently use newer questions or fall back to General.
 An unavailable form blocks submission with a retry action.
+Concurrent admissions retry the atomic form-head guard with bounded jittered backoff and fresh
+validation. Exhausted contention reports a retryable submission conflict, not a claim that the
+schema changed; no request, audit entry, or notification is partially saved.
 
 Changed forms retain the local draft until the requester chooses whether to keep compatible
 answers. Removed/incompatible values are not submitted; changed acknowledgment wording must be
@@ -84,12 +89,16 @@ center's code or ID: it never creates a funding entity, changes the charged cent
 membership, or establishes permission. Approvers can select another eligible center through the
 existing checked approval field without rewriting the submitted reference.
 
-MOSAIC records the applicable question definitions, choice labels, acknowledgment wording, and
+MOSAIC records the applicable question definitions, original help/conditions, choice labels,
+acknowledgment wording, and
 canonical answers together with their revision and request context. Later publication, withdrawal,
 denial, or approval cannot edit this evidence. Lists contain only a form revision/count summary;
 authorized selected detail returns `recordedForm`. The requester can read their own answers in
 **My requests**; administrators review the same history through **Evidence > Grant > Confirm**
-in single or mixed bulk review. Approval still saves individual grant intent, not gateway apply.
+in single or mixed bulk review, including the recorded help text. Bulk Grant and Confirm retain
+each requester's identity even when several requests name the same offering. Detail reads fetch
+only the selected record, with tenant and ownership checks before parsing caller evidence.
+Approval still saves individual grant intent, not gateway apply.
 
 Form-bearing requests require human review in Phase 1, even if all questions are optional or the
 form is later disabled. Existing no-form requests keep their current deterministic-policy behavior.
@@ -123,7 +132,7 @@ This feature adds no migration or deployment machinery.
 | --- | --- |
 | `GET /request-form`, `GET /request-form/revisions/{revision}` | Administrator active configuration and immutable published history |
 | `POST /request-form/preview`, `PUT /request-form` | Administrator read-only applicability preview and explicit expected-revision publication/disable |
-| `POST /portal/access-requests/form` | Resolve applicable questions for exact `resource` and `costCenterId` |
+| `POST /portal/access-requests/form` | Resolve applicable questions and the authoritative current `environment` for exact `resource` and `costCenterId` |
 | `POST /portal/access-requests` | Existing request contract plus optional `requestForm` with revision, context revision, and question-ID/value answers |
 | `GET /access-requests/{id}`, `GET /portal/access-requests/{id}` | Administrator or owner-only detail with an explicit read-only `recordedForm` projection |
 

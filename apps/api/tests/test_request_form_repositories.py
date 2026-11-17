@@ -1,6 +1,7 @@
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import cast
+from unittest.mock import patch
 
 import pytest
 from azure.cosmos.aio import CosmosClient
@@ -47,6 +48,33 @@ def store(request: pytest.FixtureRequest) -> Store:
             cosmos,
         )
     return Store(InMemoryEntitlementRepository())
+
+
+async def test_requester_point_reads_are_tenant_scoped_and_filter_before_parsing(
+    store: Store,
+) -> None:
+    record = AccessRequest(
+        id="owned-evidence", tenant_id=TENANT, requester_object_id=USER, resource=RESOURCE,
+    )
+    await store.repository.create_access_request(record, audit())
+    own = await store.repository.get_access_request(
+        TENANT, record.id, requester_object_id=USER
+    )
+    assert own is not None and own.id == record.id
+    assert await store.repository.get_access_request(
+        "other-tenant", record.id, requester_object_id=USER
+    ) is None
+    if store.cosmos:
+        with patch.object(
+            store.repository, "_model", side_effect=AssertionError("Foreign evidence was parsed")
+        ):
+            assert await store.repository.get_access_request(
+                TENANT, record.id, requester_object_id="another-user"
+            ) is None
+    else:
+        assert await store.repository.get_access_request(
+            TENANT, record.id, requester_object_id="another-user"
+        ) is None
 
 
 async def test_guard_closes_first_publication_race_atomically(store: Store) -> None:

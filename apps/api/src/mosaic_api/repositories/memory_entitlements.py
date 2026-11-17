@@ -159,11 +159,18 @@ class InMemoryEntitlementRepository:
             for item in sorted(items, key=lambda item: item.created_at, reverse=True)
         ]
 
-    async def get_access_request(self, tenant_id: str, request_id: str) -> AccessRequest | None:
+    async def get_access_request(
+        self, tenant_id: str, request_id: str, *, requester_object_id: str | None = None,
+    ) -> AccessRequest | None:
         access_request = self.access_requests.get(request_id)
         return (
             access_request.model_copy(deep=True)
-            if access_request and access_request.tenant_id == tenant_id else None
+            if access_request and access_request.tenant_id == tenant_id
+            and (
+                requester_object_id is None
+                or access_request.requester_object_id == requester_object_id
+            )
+            else None
         )
 
     async def get_request_form_head(self, tenant_id: str) -> RequestFormHead | None:

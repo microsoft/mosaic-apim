@@ -2463,6 +2463,7 @@ class RequestFormResolution(MosaicModel):
     status: Literal["configured", "notRequired"]
     revision: int = Field(ge=0)
     context_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
+    environment: str | None
     questions: list[RequestQuestionView] = Field(default_factory=list, max_length=20)
 
 

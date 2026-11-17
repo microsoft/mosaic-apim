@@ -145,8 +145,12 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
         items = await self._query(AccessRequest, tenant_id, "accessRequest", extra, parameters)
         return sorted(items, key=lambda item: item.created_at, reverse=True)
 
-    async def get_access_request(self, tenant_id: str, request_id: str) -> AccessRequest | None:
-        return await self._read_request(AccessRequest, tenant_id, request_id)
+    async def get_access_request(
+        self, tenant_id: str, request_id: str, *, requester_object_id: str | None = None,
+    ) -> AccessRequest | None:
+        return await self._read_request(
+            AccessRequest, tenant_id, request_id, requester_object_id=requester_object_id
+        )
 
     async def create_access_request(
         self, access_request: AccessRequest, audit_event: AuditEvent,
@@ -380,13 +384,19 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
         return await self._read_request(CostCenterRequest, tenant_id, request_id)
 
     async def _read_request(
-        self, model_type: type[RequestT], tenant_id: str, request_id: str
+        self, model_type: type[RequestT], tenant_id: str, request_id: str,
+        *, requester_object_id: str | None = None,
     ) -> RequestT | None:
         try:
             document = await self._desired.read_item(item=request_id, partition_key=tenant_id)
         except exceptions.CosmosResourceNotFoundError:
             return None
         if document.get("entityType") != model_type.model_fields["entity_type"].default:
+            return None
+        if (
+            requester_object_id is not None
+            and document.get("requesterObjectId") != requester_object_id
+        ):
             return None
         model = self._model(model_type, document)
         return model if model.tenant_id == tenant_id else None

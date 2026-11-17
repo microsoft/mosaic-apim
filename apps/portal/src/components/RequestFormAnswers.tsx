@@ -17,7 +17,7 @@ export function RequestFormAnswers({ form, draft = false }: { form: RequestFormS
         : question.kind === 'singleChoice' ? question.options.find(option => option.id === value)?.label ?? 'Recorded choice unavailable'
         : String(value)
       return <div key={question.id}><dt>{question.label}{question.required ? ' (required)' : ' (optional)'}</dt>
-        <dd>{text}</dd></div>
+        <dd>{question.helpText && <p>{question.helpText}</p>}{text}</dd></div>
     })}</dl>
     <p>Acknowledgments are self-reported, not proof of permission or data safety. A charge reference does not change the charged cost center.</p>
   </section>

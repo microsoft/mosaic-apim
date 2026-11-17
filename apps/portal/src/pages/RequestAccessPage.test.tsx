@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -20,7 +20,7 @@ const entry: CatalogEntry = {
   costCenterAccess: [{ costCenter: { id: 'center', name: 'Fictional research', code: 'DEMO' }, mode: 'requestOnly', isDefault: true, keysAllowed: true }],
 }
 const resolution: RequestFormResolution = {
-  revision: 3, status: 'configured', contextRevision: 'a'.repeat(64),
+  revision: 3, status: 'configured', contextRevision: 'a'.repeat(64), environment: 'development',
   questions: [
     { id: 'purpose', kind: 'paragraph', label: 'Intended use', helpText: 'High-level context only.', required: true, maxLength: 2000, options: [] },
     { id: 'data', kind: 'singleChoice', label: 'Data class', helpText: null, required: true, maxLength: null, options: [{ id: 'synthetic', label: 'Synthetic' }, { id: 'unsure', label: 'Unsure' }] },
@@ -28,10 +28,13 @@ const resolution: RequestFormResolution = {
   ],
 }
 function Result() { return <div>My requests: {useLocation().search}</div> }
-function mount() {
+function mount(offering: CatalogEntry = entry) {
   const router = createMemoryRouter([
-    { path: '/catalog', element: <RequestAccessPage entry={entry}
-      environments={[{ key: 'development', displayName: 'Development review', description: null, color: 'brand', production: false, order: 10 }]}
+    { path: '/catalog', element: <RequestAccessPage entry={offering}
+      environments={[
+        { key: 'development', displayName: 'Development review', description: null, color: 'brand', production: false, order: 10 },
+        { key: 'production', displayName: 'Production review', description: null, color: 'danger', production: true, order: 20 },
+      ]}
       initialCostCenterId="center" onBack={() => router.navigate('/back')} /> },
     { path: '/requests', element: <Result /> }, { path: '/back', element: <div>Catalog restored</div> },
   ], { initialEntries: ['/catalog'] })
@@ -69,6 +72,7 @@ describe('guided resource request', () => {
     expect(api.createAccessRequest).not.toHaveBeenCalled()
     await userEvent.click(screen.getByRole('button', { name: 'Next: Review' }))
     expect(screen.getByRole('heading', { name: 'Review request' })).toHaveFocus()
+    expect(screen.getByText('High-level context only.')).toBeVisible()
     await userEvent.click(screen.getByRole('button', { name: 'Back' }))
     expect(screen.getByRole('textbox', { name: /Intended use/ })).toHaveValue('Only fictional research notes.')
     await userEvent.click(screen.getByRole('button', { name: 'Next: Review' }))
@@ -95,6 +99,42 @@ describe('guided resource request', () => {
     expect(screen.getByRole('textbox', { name: /Intended use/ })).toHaveValue('Only fictional research notes.')
     expect(screen.getByRole('checkbox', { name: /I acknowledge/ })).not.toBeChecked()
     expect(api.createAccessRequest).toHaveBeenCalledOnce()
+  })
+  it.each([
+    { environment: 'production', label: 'Production review' },
+    { environment: null, label: 'Unclassified' },
+  ])('shows the resolved $label context after stale recovery instead of the cached offering environment', async ({ environment, label }) => {
+    api.createAccessRequest.mockRejectedValueOnce(new ApiError('The context changed.', 409, { details: { reason: 'requestFormChanged' } }))
+    mount(); await fill()
+    await userEvent.click(screen.getByRole('button', { name: 'Request access' }))
+    await screen.findByText(/Your draft is retained/)
+    api.resolveRequestForm.mockResolvedValue({ ...resolution, revision: 4, contextRevision: 'b'.repeat(64), environment })
+    await userEvent.click(screen.getByRole('button', { name: 'Reload current form' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Keep compatible answers and review' }))
+    expect(screen.getByText(label)).toBeVisible()
+    expect(screen.queryByText('Development review')).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: /Intended use/ })).toHaveValue('Only fictional research notes.')
+    await userEvent.click(screen.getByRole('button', { name: 'Next: Review' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Request access' }))
+    await waitFor(() => expect(api.createAccessRequest).toHaveBeenCalledTimes(2))
+    expect(api.createAccessRequest.mock.calls[1][0].requestForm.contextRevision).toBe('b'.repeat(64))
+  })
+  it('locks the selected cost center until its pending resolution completes', async () => {
+    let finish!: (value: RequestFormResolution) => void
+    api.resolveRequestForm.mockImplementationOnce(() => new Promise<RequestFormResolution>(resolve => { finish = resolve }))
+    mount({ ...entry, costCenterAccess: [
+      ...entry.costCenterAccess!,
+      { costCenter: { id: 'alternate', name: 'Other fictional team', code: 'OTHER' }, mode: 'requestOnly', isDefault: false, keysAllowed: true },
+    ] })
+    await userEvent.click(await screen.findByRole('button', { name: 'Next: Questions' }))
+    const center = screen.getByRole('combobox', { name: 'Cost center' })
+    expect(center).toBeDisabled()
+    await userEvent.selectOptions(center, 'alternate')
+    expect(center).toHaveValue('center')
+    await act(async () => finish(resolution))
+    await screen.findByRole('textbox', { name: /Intended use/ })
+    expect(api.resolveRequestForm).toHaveBeenCalledWith({ kind: 'modelApi', id: 'demo', scopeId: null }, 'center')
+    expect(api.createAccessRequest).not.toHaveBeenCalled()
   })
   it('does not turn a failed form lookup into a legacy submission path', async () => {
     api.resolveRequestForm.mockRejectedValue(new Error('Form storage unavailable.'))

@@ -1,3 +1,4 @@
+import asyncio
 from copy import deepcopy
 from unittest.mock import AsyncMock
 
@@ -209,6 +210,7 @@ def test_applicability_intersects_exact_pool_scope_and_environment() -> None:
             "center",
         )
         assert bool(result.questions) is matched
+        assert result.model_dump()["environment"] == environment
         assert all("scope" not in item.model_dump() for item in result.questions)
 
 
@@ -297,6 +299,75 @@ async def test_form_guard_race_requires_new_answers_without_a_partial_write() ->
     assert not h.repository.access_requests
     assert not h.repository.notification_events
     assert not any(e.action == "accessRequest.created" for e in h.repository.audit_events.values())
+
+
+@pytest.mark.parametrize("configured", [False, True])
+async def test_concurrent_distinct_admissions_retry_unchanged_form_guards(configured: bool) -> None:
+    h = Harness()
+    await h.seed()
+    if configured:
+        await h.entitlements.publish_request_form(
+            ADMIN, RequestFormPublishInput(
+                expected_revision=0, definition=definition(), enable_confirmed=True,
+            ),
+        )
+    current = h.entitlements.request_forms.current
+    barriers = [asyncio.Barrier(4), asyncio.Barrier(3), asyncio.Barrier(2)]
+    reads = 0
+
+    async def synchronized_current(tenant: str):
+        nonlocal reads
+        result = await current(tenant)
+        position = reads
+        reads += 1
+        if position < 4:
+            await barriers[0].wait()
+        elif position < 7:
+            await barriers[1].wait()
+        elif position < 9:
+            await barriers[2].wait()
+        return result
+
+    h.entitlements.request_forms.current = AsyncMock(side_effect=synchronized_current)
+    results = await asyncio.gather(*(
+        h.entitlements.create_access_request(
+            Actor(tenant_id=TENANT, object_id=f"fictional-concurrent-{index}"),
+            AccessRequestCreate(
+                resource=RESOURCE,
+                request_form=submission(definition()) if configured else None,
+            ),
+        )
+        for index in range(4)
+    ), return_exceptions=True)
+    assert not [item for item in results if isinstance(item, BaseException)]
+    assert len(h.repository.access_requests) == 4
+    assert len(h.repository.notification_events) == 4
+    assert len([
+        event for event in h.repository.audit_events.values()
+        if event.action == "accessRequest.created"
+    ]) == 4
+
+
+async def test_admission_contention_stays_bounded_without_claiming_the_schema_changed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    h = Harness()
+    await h.seed()
+    write = AsyncMock(side_effect=ConflictError(
+        "Conflicting form-head ETag.", details={"reason": "requestFormWriteConflict"},
+    ))
+    h.repository.create_access_request = write
+    wait = AsyncMock()
+    monkeypatch.setattr("mosaic_api.services.entitlements.sleep", wait)
+    with pytest.raises(ConflictError, match="Nothing was saved") as busy:
+        await h.request()
+    assert busy.value.details["reason"] == "requestFormWriteConflict"
+    assert 4 <= write.await_count <= 16
+    assert wait.await_count == write.await_count - 1
+    assert all(0 <= call.args[0] <= 0.4 for call in wait.await_args_list)
+    assert not h.repository.access_requests
+    assert not h.repository.notification_events
+    assert not h.repository.audit_events
 
 
 async def test_form_manual_review_preserves_legacy_policies_and_ai_allowlist() -> None:

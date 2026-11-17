@@ -162,7 +162,7 @@ function requesterLines() {
 describe('ApproveAccessRequestDialog', () => {
   it('guides a form-bearing request through evidence and grant review before the final intent action', async () => {
     const recorded: RequestFormSnapshotView = { formatVersion: 1, revision: 3, questions: [{
-      id: 'purpose', kind: 'paragraph', label: 'Original intended use', helpText: null, required: true,
+      id: 'purpose', kind: 'paragraph', label: 'Original intended use', helpText: 'Original conditions: fictional data only.', required: true,
       maxLength: 2000, options: [],
     }], answers: [{ questionId: 'purpose', value: 'Only fictional research notes.' }] }
     const { onApprove } = renderDialog({ accessRequest: {
@@ -170,6 +170,7 @@ describe('ApproveAccessRequestDialog', () => {
       requestFormSummary: { revision: 3, questionCount: 1, answerCount: 1 },
     } })
     expect(screen.getByText('Only fictional research notes.')).toBeVisible()
+    expect(screen.getByText('Original conditions: fictional data only.')).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Approve and create grant' })).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Next: Grant settings' }))
     const note = screen.getByRole('textbox', { name: 'Decision note' })

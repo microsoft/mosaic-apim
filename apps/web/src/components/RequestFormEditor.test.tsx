@@ -1,11 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../api'
 import { MosaicThemeProvider } from '../theme'
 import { RequestFormEditor } from './RequestFormEditor'
-import type { RequestFormPublishInput } from '../types'
+import type { RequestFormPublishInput, RequestFormResolution } from '../types'
 
 const api = vi.hoisted(() => ({
   getRequestForm: vi.fn(), publishRequestForm: vi.fn(), previewRequestForm: vi.fn(),
@@ -15,7 +15,10 @@ vi.mock('../api', async importOriginal => ({
 }))
 function mount() {
   render(<MosaicThemeProvider><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-    <RequestFormEditor resources={[{ label: 'Fictional model', resource: { kind: 'modelApi', id: 'demo' } }]} />
+    <RequestFormEditor resources={[
+      { label: 'Fictional model', resource: { kind: 'modelApi', id: 'demo' } },
+      { label: 'Other fictional model', resource: { kind: 'modelApi', id: 'other' } },
+    ]} />
   </QueryClientProvider></MosaicThemeProvider>)
 }
 async function prepare() {
@@ -33,6 +36,28 @@ beforeEach(() => {
   api.publishRequestForm.mockImplementation(async (body: RequestFormPublishInput) => ({ revision: 1, definition: body.definition }))
 })
 describe('guided request form publication', () => {
+  it('clears a different offering preview and prevents selection changes while resolving it', async () => {
+    api.previewRequestForm.mockResolvedValueOnce({
+      revision: 0, status: 'configured', contextRevision: 'a'.repeat(64), environment: 'development',
+      questions: [{ id: 'first', kind: 'paragraph', label: 'First offering evidence', required: true }],
+    })
+    mount(); await prepare()
+    const offering = screen.getByRole('combobox', { name: 'Preview exact offering' })
+    await userEvent.selectOptions(offering, JSON.stringify(['modelApi', null, 'demo']))
+    await userEvent.click(screen.getByRole('button', { name: 'Preview questions' }))
+    expect(await screen.findByText('Current draft preview')).toBeVisible()
+    await userEvent.selectOptions(offering, JSON.stringify(['modelApi', null, 'other']))
+    expect(screen.queryByText('Current draft preview')).not.toBeInTheDocument()
+    expect(screen.queryByText(/First offering evidence -/)).not.toBeInTheDocument()
+    let finish!: (value: RequestFormResolution) => void
+    api.previewRequestForm.mockImplementationOnce(() => new Promise<RequestFormResolution>(resolve => { finish = resolve }))
+    await userEvent.click(screen.getByRole('button', { name: 'Preview questions' }))
+    expect(offering).toBeDisabled()
+    await act(async () => finish({ revision: 0, status: 'notRequired', contextRevision: 'b'.repeat(64), environment: 'production', questions: [] }))
+    expect(await screen.findByText('Current draft preview')).toBeVisible()
+    expect(offering).toHaveValue(JSON.stringify(['modelApi', null, 'other']))
+    expect(api.publishRequestForm).not.toHaveBeenCalled()
+  })
   it('previews without a write and requires explicit enablement at the final publish step', async () => {
     mount(); await prepare()
     await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Preview exact offering' }), JSON.stringify(['modelApi', null, 'demo']))

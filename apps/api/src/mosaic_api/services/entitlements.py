@@ -8,9 +8,11 @@ subscription and a grant with no binding cannot be joined to a usage row.
 
 import hashlib
 import json
+from asyncio import sleep
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from random import uniform
 from typing import Any, cast
 
 import structlog
@@ -2635,9 +2637,17 @@ class EntitlementService:
             and item.object_id.casefold() in actor.group_ids
         ]
 
-    async def get_access_request(self, actor: Actor, request_id: str) -> AccessRequest:
+    async def get_access_request(
+        self, actor: Actor, request_id: str, *, requester_object_id: str | None = None,
+    ) -> AccessRequest:
         try:
-            access_request = await self._repository.get_access_request(actor.tenant_id, request_id)
+            access_request = (
+                await self._repository.get_access_request(
+                    actor.tenant_id, request_id, requester_object_id=requester_object_id
+                )
+                if requester_object_id is not None
+                else await self._repository.get_access_request(actor.tenant_id, request_id)
+            )
         except SchemaValidationError:
             raise ConflictError(
                 "Recorded request evidence is unavailable. Contact an administrator; "
@@ -2739,7 +2749,7 @@ class EntitlementService:
             requested_environment=summary.environment,
             resource_snapshot=self._snapshot_from_summary(summary),
         )
-        for attempt in range(3):
+        for attempt in range(8):
             head, config = await self.request_forms.current(actor.tenant_id)
             if attempt:
                 principal, book, cost_center, groups = await self._request_eligibility(
@@ -2796,8 +2806,15 @@ class EntitlementService:
                     form_guard=head,
                 )
             except ConflictError as error:
-                if error.details.get("reason") != "requestFormWriteConflict" or attempt == 2:
+                if error.details.get("reason") != "requestFormWriteConflict":
                     raise
+                if attempt == 7:
+                    raise ConflictError(
+                        "Concurrent updates prevented saving this request. Nothing was saved; "
+                        "retry the request shortly.",
+                        details={"reason": "requestFormWriteConflict"},
+                    ) from error
+                await sleep(uniform(0, min(0.4, 0.025 * 2**attempt)))
         raise AssertionError("The bounded request-form write did not return")
 
     async def create_catalog_access_request(

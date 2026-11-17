@@ -226,7 +226,9 @@ export function RequestFormEditor({ resources, environments }: {
         </div>)}
       </section>)}
       <section><h4>Preview applicable questions</h4>
-        <Field label="Preview exact offering"><Select value={previewResource} onChange={(_, data) => setPreviewResource(data.value)}>
+        <Field label="Preview exact offering"><Select value={previewResource} disabled={preview.isPending} onChange={(_, data) => {
+          setPreviewResource(data.value); preview.reset(); setPreviewDraft('')
+        }}>
           <option value="">Choose an offering</option>{resources.map(item => <option key={key(item.resource)} value={key(item.resource)}>{item.label}</option>)}
         </Select></Field>
         <Button disabled={!previewResource} disabledFocusable={preview.isPending} onClick={() => { if (!preview.isPending) preview.mutate() }}>Preview questions</Button>

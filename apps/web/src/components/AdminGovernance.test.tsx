@@ -82,6 +82,23 @@ beforeEach(() => {
   api.listPrincipals.mockResolvedValue([])
 })
 describe('bulk approval workspace', () => {
+  it('keeps distinct requesters visible while editing and confirming requests for the same offering', async () => {
+    const firstItem = formedPreview()
+    const nextItem = formedPreview()
+    firstItem.request = { ...firstItem.request, requesterName: 'Fictional Avery' }
+    nextItem.request = { ...nextItem.request, id: 'r2', requesterObjectId: 'other-requester', requesterName: 'Fictional Morgan' }
+    api.previewBulkApprovals.mockResolvedValue({ items: [firstItem, nextItem], unavailable: [] })
+    mount(<BulkApprovalWorkspace requestIds={['r1', 'r2']} principals={undefined} costCenters={[]}
+      onBack={vi.fn()} onComplete={vi.fn()} />)
+    expect(await screen.findByText('Fictional Avery')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Next: Grant settings' }))
+    expect(screen.getByText('Fictional Avery')).toBeVisible()
+    expect(screen.getByText('Fictional Morgan')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Next: Confirm' }))
+    expect(screen.getByText('Fictional Avery')).toBeVisible()
+    expect(screen.getByText('Fictional Morgan')).toBeVisible()
+    expect(api.approveBulkRequests).not.toHaveBeenCalled()
+  })
   it.each([null, 99])('retains the authoritative original preview when cached original defaults are %s', async calls => {
     api.previewBulkApprovals.mockResolvedValue({ items: [formedPreview()], unavailable: [] })
     mount(<BulkApprovalWorkspace requestIds={['r1']} principals={[]}

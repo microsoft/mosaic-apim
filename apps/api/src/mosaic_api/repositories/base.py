@@ -555,7 +555,9 @@ class EntitlementRepository(Protocol):
         state: str | None = None,
     ) -> list[AccessRequest]: ...
 
-    async def get_access_request(self, tenant_id: str, request_id: str) -> AccessRequest | None: ...
+    async def get_access_request(
+        self, tenant_id: str, request_id: str, *, requester_object_id: str | None = None,
+    ) -> AccessRequest | None: ...
 
     async def create_access_request(
         self, access_request: AccessRequest, audit_event: AuditEvent,

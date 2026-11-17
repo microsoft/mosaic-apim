@@ -181,8 +181,10 @@ export function BulkApprovalWorkspace({ requestIds, principals, principalsPendin
               <Checkbox label={`Include ${item.resourceSummary?.displayName ?? 'request'}`} checked={draft.included} disabled={item.blockers.length > 0 || item.mutationLocked || guided && step === 2} onChange={(_, d) => update(item, { included: Boolean(d.checked) })} />
               <Badge appearance="outline">{item.production ? 'Production' : item.currentEnvironment ?? 'Unclassified'}</Badge>
             </div>
-            <div hidden={guided && step !== 0}><dl className={styles.facts}>
+            <dl className={styles.facts}>
               <div><dt>Requester</dt><dd><AccessRequestRequester requester={requester} showRegistrationEffect registrationPending={principalsPending} /></dd></div>
+            </dl>
+            <div hidden={guided && step !== 0}><dl className={styles.facts}>
               <div><dt>Resource</dt><dd>{item.resourceSummary?.displayName ?? item.request.resourceSnapshot?.displayName ?? 'Resource unavailable'}</dd></div>
               <div><dt>Environment</dt><dd>Requested: {item.request.requestedEnvironment ?? 'Unclassified'} · current: {item.currentEnvironment ?? 'Unclassified'}</dd></div>
               <div><dt>Justification</dt><dd>{item.request.justification ?? 'None supplied'}</dd></div>

@@ -80,6 +80,7 @@
 .recorded-request-form dl > div { padding: 16px 0; border-top: 1px solid var(--mosaic-border-soft); }
 .recorded-request-form dt { color: var(--mosaic-text-muted); font-weight: 600; }
 .recorded-request-form dd { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.recorded-request-form dd p { margin: 0 0 8px; max-width: 75ch; color: var(--mosaic-text-muted); }
 
 html,
 body,

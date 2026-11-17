@@ -443,8 +443,8 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-request-notifications` | Console | `/dashboard`, pending-approvals popover open, separate from unread inbox bell | Light | Pending approvals |
 | `console-bulk-approval` | Console | `/entitlements?tab=requests`, two explicit pending requests with requester provenance and a draft shared Weekly call quota in **Review bulk approvals**; shared override never applied and approvals never submitted | Dark | Bulk approval review |
 | `console-request-form-authoring` | Console | `/entitlements?tab=requestForm`, Questions step of the full-workspace editor based on active v4, never published | Light | Request-form authoring |
-| `console-request-form-review` | Console | `/entitlements?tab=requests`, recorded v3 answers in Evidence despite active v4, never approved | Light | Recorded answer review |
-| `console-request-form-bulk` | Console | `/entitlements?tab=requests`, two explicit form-bearing requests in bulk Evidence with separate recorded snapshots, never approved | Dark | Guided bulk evidence |
+| `console-request-form-review` | Console | `/entitlements?tab=requests`, recorded v3 questions, original help and answers in Evidence despite active v4, never approved | Light | Recorded answer review |
+| `console-request-form-bulk` | Console | `/entitlements?tab=requests`, two explicit form-bearing requests in bulk Evidence with requester identities and separate recorded questions, help and answers, never approved | Dark | Guided bulk evidence |
 | `console-approval-policy` | Console | `/entitlements?tab=approvalPolicies`, disabled **Development office hours** policy with a draft Weekly call quota and decision summary in the full-workspace editor; never saved or enabled | Light | Scheduled approval policy |
 | `console-notification-inbox` | Console | `/notifications`, category/unread filters and selected exact notification | Dark | Administrator inbox |
 | `console-notification-preferences` | Console | `/profile`, **Edit preferences** workspace with independent administrator channel/cadence and digest controls, never saved | Light | Administrator preferences |
@@ -466,7 +466,7 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-teams-shared` | Console | `/settings?tab=notifications&notificationView=teams`, selected fictional Workflow with denied vault access, correction guidance and saved test | Light | Shared Teams access |
 | `console-teams-private` | Console | `/settings?tab=notifications&notificationView=personalTeams`, saved bot registration, caller-scoped runtime access check, installation, opt-in and test | Dark | Private Teams access |
 | `portal-request-access` | Portal | `/catalog`, GPT-4o mini's exact Commercial offering with its administrator-authored summary selected in the access drawer, never submitted | Light | Request access |
-| `portal-request-form` | Portal | `/catalog`, exact Commercial GPT-4o mini under General in Offering/Questions/Review, fictional v4 draft answers reviewed but never submitted | Light | Guided request form |
+| `portal-request-form` | Portal | `/catalog`, exact Commercial GPT-4o mini under General in Offering/Questions/Review, fictional v4 question help and draft answers reviewed but never submitted | Light | Guided request form |
 | `portal-access` | Portal | `/access`, grouped model rows and an exact grant's **Connection details** open in a drawer | Light | My access |
 | `portal-connection-cost-center` | Portal | `/access`, the GPT-4o grant under General with **Connection details** open, scrolled to **Cost center header** | Light | Choosing a cost center |
 | `portal-pool-connection` | Portal | `/access`, Claude Sonnet 4.5 selected, **Connection details** drawer scrolled to **Authentication** and the shared-key note | Dark | Models that share a key |

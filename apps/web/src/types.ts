@@ -784,6 +784,7 @@ export interface RequestFormResolution {
   status: 'configured' | 'notRequired'
   revision: number
   contextRevision: string
+  environment: string | null
   questions: RequestQuestionView[]
 }
 export interface RequestFormAnswer { questionId: string; value: string | boolean }

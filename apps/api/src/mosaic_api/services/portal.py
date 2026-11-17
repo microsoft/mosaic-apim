@@ -239,10 +239,10 @@ class PortalService:
     async def access_request_detail(
         self, actor: Actor, request_id: str,
     ) -> PortalAccessRequestDetail:
-        record = next(
-            (item for item in await self._requests(actor) if item.id == request_id), None
+        record = await self._entitlements.get_access_request(
+            actor, request_id, requester_object_id=actor.object_id,
         )
-        if record is None:
+        if record.requester_object_id != actor.object_id:
             raise NotFoundError("Access request was not found.")
         projected = (await self._portal_requests(actor, [record]))[0]
         return PortalAccessRequestDetail(

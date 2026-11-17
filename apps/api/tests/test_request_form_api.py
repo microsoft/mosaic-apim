@@ -1,4 +1,5 @@
 import json
+from unittest.mock import patch
 
 from fastapi import Request
 from fastapi.testclient import TestClient
@@ -83,6 +84,7 @@ async def test_form_http_authorization_submission_and_explicit_safe_views() -> N
         assert resolved.status_code == 200, resolved.text
         form = resolved.json()
         assert form["status"] == "configured"
+        assert form["environment"] == "development"
         assert all("scope" not in question for question in form["questions"])
         created = client.post(
             "/api/v1/portal/access-requests",
@@ -108,7 +110,11 @@ async def test_form_http_authorization_submission_and_explicit_safe_views() -> N
             assert "requestFormSummary" in response.text
             assert "requesterName" not in response.text
             assert "approvalProvenance" not in response.text
-        detail = client.get(f"/api/v1/portal/access-requests/{request_id}")
+        with patch.object(
+            h.repository, "list_access_requests", wraps=h.repository.list_access_requests
+        ) as history:
+            detail = client.get(f"/api/v1/portal/access-requests/{request_id}")
+            assert history.call_count == 0
         assert detail.status_code == 200
         assert "LUNA-042" in detail.text
         assert set(detail.json()["recordedForm"]) == {

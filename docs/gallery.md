@@ -683,22 +683,22 @@ resource lists, forms, and connection drawers remain solid for readability.
     </td>
     <td width="50%" valign="top">
       <img src="images/screenshots/portal-request-form.png" alt="The portal's Review step with fictional answers to the active v4 request form and a separate charged cost center">
-      <p><b>Review before requesting.</b> Offering, Questions, and Review gather context
-      without changing charging eligibility or granting access. The final request records the
+      <p><b>Review before requesting.</b> Review the resolved offering, original question help
+      and answers without changing charging eligibility or granting access. The final request records the
       reviewed version; a typed charge reference remains informational.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
       <img src="images/screenshots/console-request-form-review.png" alt="A single approval's Evidence step showing immutable v3 answers after v4 publication">
-      <p><b>Read recorded evidence.</b> Review the submitted questions, choice labels and
+      <p><b>Read recorded evidence.</b> Review the submitted questions, original help/conditions, choice labels and
       acknowledgments rather than today's form. Grant settings and final confirmation remain
       separate, and approval saves intent rather than applying a gateway plan.</p>
     </td>
     <td width="50%" valign="top">
       <img src="images/screenshots/console-request-form-bulk.png" alt="Two form-bearing requests in bulk Evidence with separate recorded snapshots and the next Grant settings step">
-      <p><b>Keep bulk evidence independent.</b> Each selected request retains its own
-      historical answers through Evidence, Grant, and Confirm. AI does not receive the
+      <p><b>Keep bulk evidence independent.</b> Review each selected requester's recorded
+      questions, help and answers before its independent grant decision. AI does not receive the
       structured answers, and automatic policies leave these requests for a person.</p>
     </td>
   </tr>

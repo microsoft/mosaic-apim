@@ -136,6 +136,7 @@ export function RequestAccessPage({ entry, environments, initialCostCenterId, in
     setStep(latest.status === 'configured' ? 1 : 2)
   }
   const error = create.isError ? create.error : resolver.isError ? resolver.error : check.isError ? check.error : null
+  const displayedContext = latest ?? resolution
   return <section className="governance-request" data-request-form>
     <UnsavedChanges dirty={dirty} title="Discard this access request?" />
     <Button appearance="subtle" onClick={() => onBack(centerId)} disabled={busy}>Back to Catalog</Button>
@@ -145,7 +146,7 @@ export function RequestAccessPage({ entry, environments, initialCostCenterId, in
     </ol>
     <h2 ref={heading} tabIndex={-1}>{['Confirm offering', 'Governance questions', 'Review request'][step]}</h2>
     <div className="governance-context"><strong>{entry.displayName}</strong>
-      <EnvironmentBadge azureCloud={entry.azureCloud ?? 'commercial'} environment={entry.environment} environments={environments} />
+      <EnvironmentBadge azureCloud={entry.azureCloud ?? 'commercial'} environment={displayedContext ? displayedContext.environment : entry.environment} environments={environments} />
       {access && <span>Charged to {access.costCenter.name} ({access.costCenter.code})</span>}
     </div>
     {error && <AnnounceProvider value={announcement}><div ref={outcome} tabIndex={-1}>
@@ -155,7 +156,7 @@ export function RequestAccessPage({ entry, environments, initialCostCenterId, in
     <form ref={form} onSubmit={submit} className="governance-form" autoComplete="off" noValidate>
       {step === 0 && <>
         <Field label="Cost center" required hint="Only an eligible Request-only cost center can receive this individual request. A default is not permission.">
-          <Select value={centerId} onChange={(_, data) => setSelectedCenter(data.value)}>
+          <Select value={centerId} disabled={busy} onChange={(_, data) => setSelectedCenter(data.value)}>
             <option value="">Choose a cost center</option>
             {centerId && !entry.costCenterAccess?.some(item => item.costCenter.id === centerId) && <option value={centerId}>Selected cost center unavailable</option>}
             {(entry.costCenterAccess ?? []).map(item => <option key={item.costCenter.id} value={item.costCenter.id}>
