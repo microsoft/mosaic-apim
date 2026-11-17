@@ -320,9 +320,21 @@ specific non-production offering and existing identity, accepted auth method, fi
 requests/retries, time limit, token/output limit, and spend allowance. Do not enable a grant,
 issue/reveal/rotate a key, consent a client, or obtain credentials as an implicit upgrade step.
 
-Reuse [model verification](verification.md#verifying-a-real-gateway) or the existing caller guide.
-The model verifier requires `--send-model-requests` and defaults to at most 8 output tokens **per
-call**, not a total-cost or total-request limit. Establish its exact request count for the selected
+For an inference-only smoke, use the
+[caller request shape](call-models-with-entra-tokens.md#call-the-model) with an existing approved
+runtime token and one approved authentication method. Set an explicit supported output/token
+limit and the approved request/time bounds before sending; do not include token acquisition or
+optional key steps from the caller guide.
+
+The [model verifier](verification.md#verifying-a-real-gateway) is **not inference-only**. For
+selected key-enabled user/application grants, it can create missing keys and reveals primary
+keys. It also sends denial probes and exercises every enabled authentication method. Running it
+requires explicit approval for those credential operations, probes, and all methods exercised,
+in addition to the overall request/time/token/spend bounds. Include the denial probes in that
+budget; permission for bounded inference alone does not authorize these operations.
+
+The verifier requires `--send-model-requests` and defaults to at most 8 output tokens **per call**,
+not a total-cost or total-request limit. Establish its exact request count for the selected
 grants/methods before running it; do not invent a request-limit flag or run it broadly. Exclude
 quota/limit proofs, watch/revocation flows, and model-calling MCP tools from a routine smoke.
 Even retrieval/diagnostic queries can incur cloud charges.
