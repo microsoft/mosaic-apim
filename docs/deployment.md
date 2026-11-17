@@ -6,6 +6,9 @@ Check the [prerequisites](development.md#prerequisites) first. These commands pr
 reference hosting deployment; they are separate from publishing a model through a managed gateway.
 For identities and network paths, see [architecture](architecture.md).
 
+For an existing environment, use [Upgrades and recovery](upgrades.md) instead of repeating
+initial provisioning.
+
 - [Deploy with `azd`](#deploy-with-azd)
 - [Optional cost-center group management](#optional-cost-center-group-management)
 - [Billing-derived pricing](#billing-derived-pricing)
