@@ -599,10 +599,10 @@ resource lists, forms, and connection drawers remain solid for readability.
       header lets the caller charge that grant instead of their default cost center.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="images/screenshots/portal-requests.png" alt="Resource-access, cost-center creation, and membership requests with type and status filters">
+      <img src="images/screenshots/portal-requests.png" alt="Mixed request kinds with caller-owned recorded v3 governance answers expanded while v4 is active">
       <p><b>My requests.</b> Resource-access, cost-center creation, and membership requests share a typed,
-      filterable history showing each request's context and status. Withdrawing a pending
-      request requires confirmation.</p>
+      filterable history with context, status, and caller-owned historical form answers.
+      Later form publication does not rewrite submitted answers, and withdrawal requires confirmation.</p>
     </td>
   </tr>
   <tr>
@@ -637,8 +637,8 @@ resource lists, forms, and connection drawers remain solid for readability.
     <td width="50%" valign="top">
       <img src="images/screenshots/portal-request-access.png" alt="The catalog with a contextual access request panel for a selected model">
       <p><b>Request access.</b> Open a model's options without shifting the catalog, then choose
-      the exact offering and cost center for a request. The drawer shows that offering's
-      administrator-authored summary, existing access or pending requests, and a justification field.</p>
+      the exact offering and eligible cost center for a request. Configured questions continue
+      into a guided form; existing access, pending requests, and Automatic access stay distinct.</p>
     </td>
     <td width="50%" valign="top">
       <img src="images/screenshots/portal-usage-breakdowns.png" alt="Usage breakdowns with aggregate cost-center totals and pooled quotas">
@@ -667,6 +667,39 @@ resource lists, forms, and connection drawers remain solid for readability.
       <p><b>Usage summaries and alert timing.</b> Schedule daily, weekly, and monthly summaries
       in your time zone, with quiet hours and configurable threshold reminders. These choices
       change notification timing, not grant quotas or budget enforcement.</p>
+    </td>
+  </tr>
+</table>
+
+### Governance request forms
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/console-request-form-authoring.png" alt="Questions step in the administrator's versioned request-form editor with required fields, types and character bounds">
+      <p><b>Author request questions.</b> Define bounded required or optional questions in
+      Questions, target exact offerings and environments in Applicability, then explicitly Publish.
+      The active version and unsaved draft stay separate.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/portal-request-form.png" alt="The portal's Review step with fictional answers to the active v4 request form and a separate charged cost center">
+      <p><b>Review before requesting.</b> Offering, Questions, and Review gather context
+      without changing charging eligibility or granting access. The final request records the
+      reviewed version; a typed charge reference remains informational.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/console-request-form-review.png" alt="A single approval's Evidence step showing immutable v3 answers after v4 publication">
+      <p><b>Read recorded evidence.</b> Review the submitted questions, choice labels and
+      acknowledgments rather than today's form. Grant settings and final confirmation remain
+      separate, and approval saves intent rather than applying a gateway plan.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/console-request-form-bulk.png" alt="Two form-bearing requests in bulk Evidence with separate recorded snapshots and the next Grant settings step">
+      <p><b>Keep bulk evidence independent.</b> Each selected request retains its own
+      historical answers through Evidence, Grant, and Confirm. AI does not receive the
+      structured answers, and automatic policies leave these requests for a person.</p>
     </td>
   </tr>
 </table>

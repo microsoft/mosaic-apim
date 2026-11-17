@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { GOVERNED_COUNTER_KEY } from '../entitlement-limits'
 import { modelPublication } from '../test/model-access'
 import { ApiError } from '../api'
-import type { AccessRequest, AccessRequestApproval, CostCenter, EnvironmentCatalogView } from '../types'
+import type { AccessRequest, AccessRequestApproval, CostCenter, EnvironmentCatalogView, RequestFormSnapshotView } from '../types'
 import { requesterDisplay } from '../requester-display'
 import { ApproveAccessRequestDialog, type ApprovalRequester } from './ApproveAccessRequestDialog'
 
@@ -86,6 +86,7 @@ function renderDialog(props: Partial<DialogProps> = {}) {
   const onCancel = vi.fn()
   render(
     <FluentProvider theme={webLightTheme}>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <ApproveAccessRequestDialog
         accessRequest={accessRequest}
         requester={{ label: 'Ada Lovelace', objectId: 'user-object-1', registered: true }}
@@ -100,6 +101,7 @@ function renderDialog(props: Partial<DialogProps> = {}) {
         onApprove={onApprove}
         {...props}
       />
+      </QueryClientProvider>
     </FluentProvider>,
   )
   return { onApprove, onCancel }
@@ -158,6 +160,33 @@ function requesterLines() {
 }
 
 describe('ApproveAccessRequestDialog', () => {
+  it('guides a form-bearing request through evidence and grant review before the final intent action', async () => {
+    const recorded: RequestFormSnapshotView = { formatVersion: 1, revision: 3, questions: [{
+      id: 'purpose', kind: 'paragraph', label: 'Original intended use', helpText: null, required: true,
+      maxLength: 2000, options: [],
+    }], answers: [{ questionId: 'purpose', value: 'Only fictional research notes.' }] }
+    const { onApprove } = renderDialog({ accessRequest: {
+      ...accessRequest, recordedForm: recorded,
+      requestFormSummary: { revision: 3, questionCount: 1, answerCount: 1 },
+    } })
+    expect(screen.getByText('Only fictional research notes.')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Approve and create grant' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Next: Grant settings' }))
+    const note = screen.getByRole('textbox', { name: 'Decision note' })
+    await userEvent.type(note, 'Human reviewed.')
+    await userEvent.keyboard('{Enter}')
+    expect(onApprove).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'Next: Confirm' }))
+    expect(screen.getByRole('heading', { name: 'Confirm grant intent' })).toHaveFocus()
+    expect(onApprove).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'Previous step' }))
+    expect(screen.getByRole('textbox', { name: 'Decision note' })).toHaveValue('Human reviewed.')
+    await userEvent.click(screen.getByRole('button', { name: 'Next: Confirm' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Approve and create grant' }))
+    expect(onApprove).toHaveBeenCalledOnce()
+    expect(onApprove.mock.calls[0][0]).toMatchObject({ note: 'Human reviewed.' })
+    expect(onApprove.mock.calls[0][0]).not.toHaveProperty('requestForm')
+  })
   it('shows who asked for what and why, with limits prefilled from the publication', async () => {
     renderDialog()
 

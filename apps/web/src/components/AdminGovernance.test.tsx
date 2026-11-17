@@ -57,6 +57,25 @@ beforeEach(() => {
   api.listPrincipals.mockResolvedValue([])
 })
 describe('bulk approval workspace', () => {
+  it('keeps form evidence separate from guided grant settings and submits only the final reviewed intents', async () => {
+    const request = { ...first.request, requestForm: { formatVersion: 1, revision: 3,
+      questions: [{ id: 'purpose', kind: 'paragraph', label: 'Intended use', helpText: null, required: true, maxLength: 2000, options: [] }],
+      answers: [{ questionId: 'purpose', value: 'Only fictional notes.' }],
+    } }
+    api.previewBulkApprovals.mockResolvedValue({ items: [{ ...first, request }, second], unavailable: [] })
+    api.approveBulkRequests.mockResolvedValue({ items: [{ requestId: request.id, status: 'approved', entitlementId: 'grant', requiresPlanApply: true }] })
+    mount(<BulkApprovalWorkspace requestIds={['r1', 'r2']} principals={[]} costCenters={[]} onBack={vi.fn()} onComplete={vi.fn()} />)
+    expect(await screen.findByText('Only fictional notes.')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Next: Grant settings' }))
+    expect(api.approveBulkRequests).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Next: Confirm' }))
+    expect(screen.getByRole('heading', { name: 'Confirm independent grant intents' })).toHaveFocus()
+    expect(api.approveBulkRequests).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Approve 2 selected' }))
+    await waitFor(() => expect(api.approveBulkRequests).toHaveBeenCalledOnce())
+    expect(JSON.stringify(api.approveBulkRequests.mock.calls[0][0])).not.toContain('Only fictional notes')
+    expect(api.approveBulkRequests.mock.calls[0][0].items).toHaveLength(2)
+  })
   it.each([true, false])('preserves unknown registration evidence in bulk provenance while checking is %s', async (principalsPending) => {
     api.previewBulkApprovals.mockResolvedValue({ items: [{
       ...first, request: { ...first.request, requesterPrincipalId: 'known-principal', requesterName: 'Jordan Rowan' },

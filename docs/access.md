@@ -3,6 +3,7 @@
 [Documentation](README.md) | [MOSAIC](../README.md)
 
 - [Governed model access](#governed-model-access)
+- [Governance questions on access requests](#governance-questions-on-access-requests)
 - [Cost-center eligibility and resource modes](#cost-center-eligibility-and-resource-modes)
 - [Published MCP server access](#published-mcp-server-access)
 - [Recovering an interrupted operation](#recovering-an-interrupted-operation)
@@ -40,6 +41,95 @@ principal's label. Older requests and tokens without display claims remain valid
 an unlabeled registration; no migration, backfill, or extra Graph consent is required. Existing
 directory lookup remains a display fallback where available, not evidence added to the snapshot.
 Approval still saves grant intent only; gateway plan review and apply remain separate.
+
+## Governance questions on access requests
+
+Administrators use **Entitlements > Request form** to author bounded questions in
+**Questions > Applicability > Publish**. Next/Back keep an in-memory draft; only the final
+publication changes the active revision. Enabling collection requires an explicit confirmation.
+The default is unconfigured/disabled, and publishing never rewrites an existing request.
+
+A form contains at most 20 ordered questions: short text (up to 200 characters), paragraph
+(up to 2,000), single choice (2-12 stable choices), and acknowledgment. Labels are limited to
+120 characters, help to 500, choices to 100, answer JSON to 16 KiB, form configuration to
+64 KiB, and the complete recorded snapshot to 80 KiB. Smaller authored text bounds are allowed.
+Required text must be nonblank; required acknowledgment means the boolean `true`, not a typed
+claim. Optional unanswered questions stay absent rather than receive defaults.
+
+Each question can intersect resource types, exact offerings, and environments, including
+Unclassified. No filters means **All** in that dimension, including future matching offerings;
+values within a filter are alternatives. Pool-model references include their exact pool scope.
+New model-API and MCP requests do not accept a `scopeId`; legacy stored requests remain readable.
+There is no precedence between forms, answer-dependent branching, or custom executable validator.
+Unavailable targets must be corrected before publication. Scope determines which questions appear,
+not whether the requester is eligible.
+
+For a matching individual Request-only offering, the portal's **Continue request** opens
+**Offering > Questions > Review**. The API resolves the exact offering's current environment and
+eligible cost center; it does not trust a submitted environment. Final submission revalidates the
+active schema and answers with a storage-level revision guard. Missing required/invalid answers
+return actionable validation errors. A stale or now-required form returns a conflict and asks
+the requester to reload/review, not silently use newer questions or fall back to General.
+An unavailable form blocks submission with a retry action.
+
+Changed forms retain the local draft until the requester chooses whether to keep compatible
+answers. Removed/incompatible values are not submitted; changed acknowledgment wording must be
+acknowledged again. Nothing is auto-submitted. Drafts never enter URLs, history state, browser
+storage, notifications, or a file upload. After an uncertain network result, check **My requests**
+before deliberately retrying.
+
+The existing optional justification remains separate. **Cost center** is still the authoritative
+eligible charging choice. A custom **Charge reference** is informational even if it matches a
+center's code or ID: it never creates a funding entity, changes the charged center, proves
+membership, or establishes permission. Approvers can select another eligible center through the
+existing checked approval field without rewriting the submitted reference.
+
+MOSAIC records the applicable question definitions, choice labels, acknowledgment wording, and
+canonical answers together with their revision and request context. Later publication, withdrawal,
+denial, or approval cannot edit this evidence. Lists contain only a form revision/count summary;
+authorized selected detail returns `recordedForm`. The requester can read their own answers in
+**My requests**; administrators review the same history through **Evidence > Grant > Confirm**
+in single or mixed bulk review. Approval still saves individual grant intent, not gateway apply.
+
+Form-bearing requests require human review in Phase 1, even if all questions are optional or the
+form is later disabled. Existing no-form requests keep their current deterministic-policy behavior.
+Answers do not establish identity, directory membership, cost-center eligibility, model/MCP access,
+resource scope, relaxed limits, or gateway readiness. Automatic center access, direct administrator
+grants, and cost-center creation/join requests retain their separate existing workflows.
+
+Do not submit secrets, credentials, personal data, sensitive code, files, or datasets; describe use
+and code at a high level. This warning is not a promise of secret detection. Question/answer text
+is untrusted plain text, never executed or fetched. Answers follow access-request retention and are
+excluded from notifications/email/Teams/digests, audit payloads, logs, list/search snippets, new
+exports, and AI advisory evidence. Existing AI remains advisory and uses its existing evidence
+allowlist; it does not review the new structured answers.
+
+The form configuration/history and administrator request detail require `Admin`; portal resolution
+requires the existing portal role and current offering/charging eligibility, and portal detail
+requires ownership of that request. A guessed URL supplies no permission. Future delegated
+reviewers must obtain their own scoped authorization before reusing the read-only recorded-answer
+contract; cost-center POC delegation (#173) and answer-based approval conditions (Phase 2 of #167)
+are not implemented here.
+
+**Upgrade boundary:** deploy compatible API readers/writers and approval workers before first
+enablement. Once a required form is published, an old API that ignores it is an unsafe mixed-version
+admission writer even before the first populated snapshot is saved. Omitting unused optional fields
+only preserves unused record shapes; it does not make populated schemas/answers backward-readable
+or make old writers enforce new requirements. Follow the compatible-reader/writer and quiescence
+guidance in [upgrades](upgrades.md) rather than rolling an old writer into an enabled deployment.
+This feature adds no migration or deployment machinery.
+
+| Route under `/api/v1` | Contract |
+| --- | --- |
+| `GET /request-form`, `GET /request-form/revisions/{revision}` | Administrator active configuration and immutable published history |
+| `POST /request-form/preview`, `PUT /request-form` | Administrator read-only applicability preview and explicit expected-revision publication/disable |
+| `POST /portal/access-requests/form` | Resolve applicable questions for exact `resource` and `costCenterId` |
+| `POST /portal/access-requests` | Existing request contract plus optional `requestForm` with revision, context revision, and question-ID/value answers |
+| `GET /access-requests/{id}`, `GET /portal/access-requests/{id}` | Administrator or owner-only detail with an explicit read-only `recordedForm` projection |
+
+No form changes the separation between saved intent and the runtime behavior described below.
+
+## Existing registrations and runtime access
 
 Existing registrations remain readable, including older non-GUID IDs. Self-service direct
 access requires one unambiguous registration for the caller and a grant naming that same

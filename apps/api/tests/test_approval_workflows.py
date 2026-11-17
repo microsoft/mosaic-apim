@@ -493,6 +493,10 @@ async def test_cosmos_approval_batch_includes_source_grant_audit_and_event() -> 
         state="approved",
         granted_entitlement_id="grant",
     )
+    repository._desired.read_item = AsyncMock(return_value={
+        **request.model_dump(mode="json"),
+        "state": "pending", "grantedEntitlementId": None, "_etag": "read-etag",
+    })
     grant = Entitlement(
         id="grant",
         tenant_id=TENANT,

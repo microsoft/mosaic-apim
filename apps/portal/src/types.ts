@@ -140,7 +140,38 @@ export interface AccessRequestCreate {
   resource: EntitlementResource
   costCenterId?: string
   justification?: string
+  requestForm?: RequestFormSubmission
 }
+
+export type RequestQuestionKind = 'shortText' | 'paragraph' | 'singleChoice' | 'acknowledgment'
+export interface RequestQuestionView {
+  id: string
+  kind: RequestQuestionKind
+  label: string
+  helpText: string | null
+  required: boolean
+  maxLength: number | null
+  options: { id: string; label: string }[]
+}
+export interface RequestFormAnswer { questionId: string; value: string | boolean }
+export interface RequestFormSubmission {
+  revision: number
+  contextRevision: string
+  answers: RequestFormAnswer[]
+}
+export interface RequestFormResolution {
+  status: 'configured' | 'notRequired'
+  revision: number
+  contextRevision: string
+  questions: RequestQuestionView[]
+}
+export interface RequestFormSnapshotView {
+  formatVersion: 1
+  revision: number
+  questions: RequestQuestionView[]
+  answers: RequestFormAnswer[]
+}
+export interface RequestFormSummary { revision: number; questionCount: number; answerCount: number }
 
 export interface ResourceSummary {
   azureCloud?: AzureCloud
@@ -233,6 +264,8 @@ export interface AccessRequest {
   model?: PortalModel | null
   costCenterId?: string | null
   costCenter?: CostCenterRef | null
+  requestFormSummary?: RequestFormSummary | null
+  recordedForm?: RequestFormSnapshotView | null
 }
 
 export interface TokenEnforcement {

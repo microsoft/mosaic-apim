@@ -6,6 +6,7 @@ import { ApiError, usePortalApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader } from '../components/PageHeader'
+import { SubmittedRequestForm } from '../components/RequestFormAnswers'
 import { CostCenterRequestDetails } from '../components/CostCenterRequestDetails'
 import { CostCenterMembershipDetails } from '../components/CostCenterMembershipDetails'
 import { gatewayLabel, requestStateLabel, withResourceKind } from '../entitlement-format'
@@ -266,6 +267,7 @@ export function MyRequestsPage() {
                   </div>
                 )}
               </dl>
+              {row.request.requestFormSummary && <SubmittedRequestForm requestId={row.request.id} summary={row.request.requestFormSummary} />}
               </>}
               {canWithdraw && (
                 <div className="request-actions">

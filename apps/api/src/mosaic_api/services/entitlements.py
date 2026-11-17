@@ -38,6 +38,7 @@ from mosaic_api.domain import (
     AccessRequestCreate,
     AccessRequestResourceSnapshot,
     AccessRequestState,
+    AdminAccessRequestDetail,
     AdminAccessRequestListItem,
     AuditEvent,
     BindingSource,
@@ -67,6 +68,11 @@ from mosaic_api.domain import (
     PrincipalCreate,
     PrincipalKind,
     Publication,
+    RequestFormConfiguration,
+    RequestFormContextInput,
+    RequestFormPreviewInput,
+    RequestFormPublishInput,
+    RequestFormResolution,
     ResolvedEntitlement,
     ResourceSummary,
     canonical_object_id,
@@ -103,6 +109,14 @@ from mosaic_api.repositories import (
     ModelEndpointRepository,
 )
 from mosaic_api.repositories.approvals import AccessRequestEventRepository
+from mosaic_api.request_forms import (
+    MANUAL_FORM_REVIEW,
+    form_hash,
+    form_summary,
+    resolve_form,
+    snapshot_view,
+    validate_submission,
+)
 from mosaic_api.services.cost_center_access import verified_cost_center_members
 from mosaic_api.services.cost_centers import load_book, record_recheck
 from mosaic_api.services.directory import Actor, DirectoryService, find_unique_principal
@@ -134,6 +148,7 @@ from mosaic_api.services.pool_access import (
     pool_model_listed,
     pool_model_offered,
 )
+from mosaic_api.services.request_forms import RequestFormsService
 
 logger = structlog.get_logger()
 
@@ -342,6 +357,7 @@ class EntitlementService:
         self._cost_centers = cost_center_repository
         self._environments = environment_repository
         self._entra_group_claims_enabled = entra_group_claims_enabled
+        self.request_forms = RequestFormsService(repository)
 
     def governed_records(self, tenant_id: str) -> GovernedRecords:
         """Records to share across the lookups that serve one response."""
@@ -2515,9 +2531,16 @@ class EntitlementService:
         requester_object_id: str | None = None,
         state: str | None = None,
     ) -> list[AccessRequest]:
-        return await self._repository.list_access_requests(
-            actor.tenant_id, requester_object_id=requester_object_id, state=state
-        )
+        try:
+            return await self._repository.list_access_requests(
+                actor.tenant_id, requester_object_id=requester_object_id, state=state
+            )
+        except SchemaValidationError:
+            raise ConflictError(
+                "Recorded request evidence is unavailable. Contact an administrator; "
+                "the current form cannot replace historical answers.",
+                details={"reason": "requestEvidenceUnavailable"},
+            ) from None
 
     async def list_access_request_items(
         self,
@@ -2529,6 +2552,11 @@ class EntitlementService:
         requests = await self.list_access_requests(
             actor, requester_object_id=requester_object_id, state=state
         )
+        return await self._access_request_items(actor, requests)
+
+    async def _access_request_items(
+        self, actor: Actor, requests: list[AccessRequest],
+    ) -> list[AdminAccessRequestListItem]:
         summaries = await self.resource_summaries(
             actor.tenant_id,
             [item.resource for item in requests],
@@ -2542,10 +2570,58 @@ class EntitlementService:
                     **item.model_dump(by_alias=False),
                     "resource_summary": summaries[index],
                     "cost_center": book.ref(item.cost_center_id) if book else None,
+                    "request_form_summary": form_summary(item.request_form),
                 }
             )
             for index, item in enumerate(requests)
         ]
+
+    async def access_request_detail(
+        self, actor: Actor, request_id: str,
+    ) -> AdminAccessRequestDetail:
+        record = await self.get_access_request(actor, request_id)
+        item = (await self._access_request_items(actor, [record]))[0]
+        return AdminAccessRequestDetail(
+            **item.model_dump(by_alias=False),
+            recorded_form=snapshot_view(record.request_form),
+        )
+
+    async def publish_request_form(
+        self, actor: Actor, payload: RequestFormPublishInput,
+    ) -> RequestFormConfiguration:
+        catalog = (
+            await self._environments.get_environment_catalog(actor.tenant_id)
+            if self._environments else None
+        ) or EnvironmentCatalog.new(actor.tenant_id)
+        known = {item.key for item in catalog.environments} | {"unclassified"}
+        for question in payload.definition.questions:
+            if set(question.scope.environments) - known:
+                raise ValidationError(
+                    "Choose existing environments for every question.",
+                    details={"reason": "invalidRequestFormScope", "questionId": question.id},
+                )
+            for resource in question.scope.resources:
+                await self._describe_resource(actor, resource)
+        return await self.request_forms.publish(actor, payload)
+
+    async def preview_request_form(
+        self, actor: Actor, payload: RequestFormPreviewInput,
+    ) -> RequestFormResolution:
+        await self._describe_resource(actor, payload.resource)
+        summary = await self.resource_summary(actor.tenant_id, payload.resource)
+        return resolve_form(payload.definition, 0, payload.resource, summary.environment, "")
+
+    async def resolve_request_form(
+        self, actor: Actor, context: RequestFormContextInput,
+    ) -> RequestFormResolution:
+        summary = await self._catalog_request_summary(actor, context.resource)
+        _, _, center, _ = await self._request_eligibility(
+            actor, context.resource, context.cost_center_id
+        )
+        head, config = await self.request_forms.current(actor.tenant_id)
+        return resolve_form(
+            config.definition, head.revision, context.resource, summary.environment, center.id
+        )
 
     async def caller_group_principal_ids(self, actor: Actor) -> list[str]:
         """The security groups MOSAIC records that the caller's own token says they're in."""
@@ -2560,31 +2636,34 @@ class EntitlementService:
         ]
 
     async def get_access_request(self, actor: Actor, request_id: str) -> AccessRequest:
-        access_request = await self._repository.get_access_request(actor.tenant_id, request_id)
+        try:
+            access_request = await self._repository.get_access_request(actor.tenant_id, request_id)
+        except SchemaValidationError:
+            raise ConflictError(
+                "Recorded request evidence is unavailable. Contact an administrator; "
+                "do not approve using an empty or current form.",
+                details={"reason": "requestEvidenceUnavailable"},
+            ) from None
         if not access_request:
             raise NotFoundError("Access request was not found", details={"id": request_id})
         return access_request
 
-    async def create_access_request(
+    async def _request_eligibility(
         self,
         actor: Actor,
-        request: AccessRequestCreate,
-        *,
-        summary: ResourceSummary | None = None,
-    ) -> AccessRequest:
-        descriptor = await self._describe_resource(actor, request.resource)
-        if summary is None:
-            summary = await self.resource_summary(actor.tenant_id, request.resource)
+        resource: EntitlementResource,
+        selected_cost_center_id: str | None,
+    ) -> tuple[Principal | None, CostCenterBook, CostCenter, list[str]]:
         principal = await self._directory.find_principal_by_object_id(
             actor.tenant_id, actor.object_id
         )
         book = await self.cost_center_book(actor.tenant_id)
-        cost_center_id = request.cost_center_id or book.default_for(principal)
+        cost_center_id = selected_cost_center_id or book.default_for(principal)
         cost_center = book.get(cost_center_id)
         groups = await self.caller_group_principal_ids(actor)
         if cost_center is not None:
             await self._require_resource_access(
-                actor, cost_center, request.resource, request_only=True
+                actor, cost_center, resource, request_only=True
             )
             if not cost_center.is_general and actor.groups_overage:
                 raise ValidationError(
@@ -2593,7 +2672,7 @@ class EntitlementService:
                 )
             if (
                 not cost_center.is_general
-                and await self._catalog_visible_resource(actor.tenant_id, request.resource) is None
+                and await self._catalog_visible_resource(actor.tenant_id, resource) is None
             ):
                 raise NotFoundError("That resource isn't in your catalog.")
         # Only the caller's own token decides which groups they're in, so a person can name only
@@ -2609,6 +2688,22 @@ class EntitlementService:
                 "You can't charge that cost center. Choose one of yours.",
                 details={"reason": "notACostCenterMember", "costCenterId": cost_center_id},
             )
+        return principal, book, cost_center, groups
+
+    async def create_access_request(
+        self,
+        actor: Actor,
+        request: AccessRequestCreate,
+        *,
+        summary: ResourceSummary | None = None,
+    ) -> AccessRequest:
+        catalog_request = summary is not None
+        descriptor = await self._describe_resource(actor, request.resource)
+        if summary is None:
+            summary = await self.resource_summary(actor.tenant_id, request.resource)
+        principal, book, cost_center, groups = await self._request_eligibility(
+            actor, request.resource, request.cost_center_id
+        )
         if principal is not None:
             existing = await self._repository.get_entitlement(
                 actor.tenant_id,
@@ -2621,20 +2716,6 @@ class EntitlementService:
                     f"You already have access to this under {cost_center.name}.",
                     details={"reason": "alreadyGranted", "costCenterId": cost_center.id},
                 )
-        default_id = book.default_for(principal)
-        open_requests = [
-            item
-            for item in await self._repository.list_access_requests(
-                actor.tenant_id, requester_object_id=actor.object_id, state="pending"
-            )
-            if _resource_key(item.resource) == _resource_key(request.resource)
-            and (item.cost_center_id or default_id) == cost_center.id
-        ]
-        if open_requests:
-            raise ConflictError(
-                "You already have an open request for this resource under this cost center",
-                details={"id": open_requests[0].id, "costCenterId": cost_center.id},
-            )
         record = AccessRequest(
             id=deterministic_id(
                 "accessRequest",
@@ -2658,26 +2739,79 @@ class EntitlementService:
             requested_environment=summary.environment,
             resource_snapshot=self._snapshot_from_summary(summary),
         )
-        return await self._repository.create_access_request(
-            record,
-            self._audit(
-                actor,
-                "accessRequest.created",
-                "accessRequest",
-                record.id,
-                {
-                    "requestedEnvironment": record.requested_environment,
-                    "costCenterId": cost_center.id,
-                },
-            ),
-        )
+        for attempt in range(3):
+            head, config = await self.request_forms.current(actor.tenant_id)
+            if attempt:
+                principal, book, cost_center, groups = await self._request_eligibility(
+                    actor, request.resource, request.cost_center_id
+                )
+            open_requests = [
+                item for item in await self.list_access_requests(
+                    actor, requester_object_id=actor.object_id, state="pending"
+                )
+                if _resource_key(item.resource) == _resource_key(request.resource)
+                and (item.cost_center_id or book.default_for(principal)) == cost_center.id
+            ]
+            if open_requests:
+                raise ConflictError(
+                    "You already have an open request for this resource under this cost center",
+                    details={"id": open_requests[0].id, "costCenterId": cost_center.id},
+                )
+            fresh = (
+                await self._catalog_request_summary(actor, request.resource)
+                if catalog_request else
+                await self.resource_summary(actor.tenant_id, request.resource)
+            )
+            resolution = resolve_form(
+                config.definition, head.revision, request.resource,
+                fresh.environment, cost_center.id,
+            )
+            snapshot = validate_submission(
+                resolution, request.request_form, schema_hash=form_hash(config.definition),
+                resource=request.resource, environment=fresh.environment,
+                cost_center_id=cost_center.id,
+            )
+            record = AccessRequest.model_validate({
+                **record.model_dump(by_alias=False),
+                "request_form": snapshot,
+                "requested_environment": fresh.environment,
+                "resource_snapshot": self._snapshot_from_summary(fresh),
+                "cost_center_id": cost_center.id,
+                "requester_principal_id": principal.id if principal else None,
+                "cost_center_group_ids": (
+                    sorted(set(groups) & cost_center.member_ids()) if cost_center.is_general else []
+                ),
+            })
+            try:
+                return await self._repository.create_access_request(
+                    record,
+                    self._audit(
+                        actor, "accessRequest.created", "accessRequest", record.id,
+                        {
+                            "requestedEnvironment": record.requested_environment,
+                            "costCenterId": cost_center.id,
+                            **({"requestFormRevision": snapshot.revision} if snapshot else {}),
+                        },
+                    ),
+                    form_guard=head,
+                )
+            except ConflictError as error:
+                if error.details.get("reason") != "requestFormWriteConflict" or attempt == 2:
+                    raise
+        raise AssertionError("The bounded request-form write did not return")
 
     async def create_catalog_access_request(
         self, actor: Actor, request: AccessRequestCreate
     ) -> AccessRequest:
+        summary = await self._catalog_request_summary(actor, request.resource)
+        return await self.create_access_request(actor, request, summary=summary)
+
+    async def _catalog_request_summary(
+        self, actor: Actor, resource: EntitlementResource,
+    ) -> ResourceSummary:
         # Only what the caller's catalog shows may be requested, and a private, unknown, product,
         # or deployment resource all get the same answer, so a guessed ID confirms nothing.
-        summary = await self._catalog_visible_resource(actor.tenant_id, request.resource)
+        summary = await self._catalog_visible_resource(actor.tenant_id, resource)
         if summary is None:
             raise NotFoundError("That resource isn't in your catalog.")
         # A discoverable model or MCP server whose API isn't in API Management right now: the
@@ -2688,11 +2822,11 @@ class EntitlementService:
                 "can't take access requests for it. Try again once an administrator publishes it.",
                 details={
                     "reason": "notPublished",
-                    "resourceKind": str(request.resource.kind),
-                    "resourceId": request.resource.id,
+                    "resourceKind": str(resource.kind),
+                    "resourceId": resource.id,
                 },
             )
-        return await self.create_access_request(actor, request, summary=summary)
+        return summary
 
     async def decide_access_request(
         self,
@@ -2759,6 +2893,12 @@ class EntitlementService:
         if _approved_with_grant(access_request):
             return access_request
         self._require_pending(access_request)
+        if access_request.request_form is not None and provenance and provenance.origin == "policy":
+            raise ConflictError(
+                "This request has recorded governance answers and requires human review. "
+                "Its answers were not evaluated by an automatic policy.",
+                details={"reason": MANUAL_FORM_REVIEW},
+            )
         if expected_context:
             await self.require_approval_context(actor, request_id, expected_context)
         descriptor = await self._describe_resource(actor, access_request.resource)
@@ -3038,6 +3178,12 @@ class EntitlementService:
 
         if request.state != AccessRequestState.PENDING:
             block("requestFinal", f"This request is {request.state}.")
+        if automation and request.request_form is not None:
+            block(
+                MANUAL_FORM_REVIEW,
+                "Recorded governance answers require human review in Phase 1; "
+                "their values were not evaluated.",
+            )
         if not summary.available:
             block("resourceUnavailable", "The requested resource is not currently available.")
         if locked:

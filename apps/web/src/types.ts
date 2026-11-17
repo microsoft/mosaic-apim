@@ -742,6 +742,59 @@ export interface ResolvedEntitlement {
 
 export type AccessRequestState = 'pending' | 'approved' | 'denied' | 'withdrawn'
 
+export type RequestQuestionKind = 'shortText' | 'paragraph' | 'singleChoice' | 'acknowledgment'
+export interface RequestFormScope {
+  resourceKinds: ('modelApi' | 'poolModel' | 'mcpServer')[]
+  resources: EntitlementResource[]
+  environments: string[]
+}
+interface RequestQuestionBase {
+  id: string
+  label: string
+  helpText: string | null
+  required: boolean
+  scope: RequestFormScope
+}
+export type RequestQuestion = RequestQuestionBase & (
+  | { kind: 'shortText' | 'paragraph'; maxLength: number }
+  | { kind: 'singleChoice'; options: { id: string; label: string }[] }
+  | { kind: 'acknowledgment' }
+)
+export interface RequestQuestionView {
+  id: string
+  kind: RequestQuestionKind
+  label: string
+  helpText: string | null
+  required: boolean
+  maxLength: number | null
+  options: { id: string; label: string }[]
+}
+export interface RequestFormDefinition {
+  formatVersion: 1
+  enabled: boolean
+  questions: RequestQuestion[]
+}
+export interface RequestFormConfiguration { revision: number; definition: RequestFormDefinition }
+export interface RequestFormPublishInput {
+  expectedRevision: number
+  definition: RequestFormDefinition
+  enableConfirmed: boolean
+}
+export interface RequestFormResolution {
+  status: 'configured' | 'notRequired'
+  revision: number
+  contextRevision: string
+  questions: RequestQuestionView[]
+}
+export interface RequestFormAnswer { questionId: string; value: string | boolean }
+export interface RequestFormSnapshotView {
+  formatVersion: 1
+  revision: number
+  questions: RequestQuestionView[]
+  answers: RequestFormAnswer[]
+}
+export interface RequestFormSummary { revision: number; questionCount: number; answerCount: number }
+
 export interface AccessRequest {
   id: string
   tenantId: string
@@ -764,6 +817,9 @@ export interface AccessRequest {
   grantedEntitlementId?: string | null
   createdAt: string
   updatedAt: string
+  requestFormSummary?: RequestFormSummary | null
+  recordedForm?: RequestFormSnapshotView | null
+  requestForm?: RequestFormSnapshotView | null
 }
 
 /** Approving creates the requester's grant intent with these limits, never an APIM change. */

@@ -10,9 +10,23 @@ from mosaic_api.cost_center_membership_requests import (
     membership_guard_id,
 )
 from mosaic_api.cost_center_requests import CostCenterRequest
-from mosaic_api.domain import AccessRequest, AccessRequestState, AuditEvent, Entitlement, Principal
+from mosaic_api.domain import (
+    AccessRequest,
+    AccessRequestState,
+    AuditEvent,
+    Entitlement,
+    Principal,
+    RequestFormHead,
+    RequestFormRevision,
+)
 from mosaic_api.errors import ChangeNotRecordedError, ConflictError
 from mosaic_api.notifications import NotificationEvent, NotificationEventType
+from mosaic_api.repositories.access_request_writes import (
+    form_head_id,
+    form_revision_id,
+    require_human_form_review,
+    require_unchanged_form,
+)
 from mosaic_api.repositories.cosmos import CosmosRepositoryBase
 from mosaic_api.repositories.cost_center_request_writes import (
     REQUEST_CHANGED,
@@ -135,11 +149,43 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
         return await self._read_request(AccessRequest, tenant_id, request_id)
 
     async def create_access_request(
-        self, access_request: AccessRequest, audit_event: AuditEvent
+        self, access_request: AccessRequest, audit_event: AuditEvent,
+        *, form_guard: RequestFormHead | None = None,
     ) -> AccessRequest:
         return await self.create_access_request_with_events(
-            access_request, audit_event, [access_request_event(access_request)]
+            access_request, audit_event, [access_request_event(access_request)],
+            form_guard=form_guard,
         )
+
+    async def get_request_form_head(self, tenant_id: str) -> RequestFormHead | None:
+        return await self._read(RequestFormHead, tenant_id, form_head_id(tenant_id))
+
+    async def get_request_form_revision(
+        self, tenant_id: str, revision: int,
+    ) -> RequestFormRevision | None:
+        return await self._read(
+            RequestFormRevision, tenant_id, form_revision_id(tenant_id, revision)
+        )
+
+    async def publish_request_form(
+        self, head: RequestFormHead, revision: RequestFormRevision, audit: AuditEvent,
+    ) -> RequestFormRevision:
+        if (
+            head.tenant_id != revision.tenant_id
+            or head.tenant_id != audit.tenant_id
+            or head.revision != revision.revision
+        ):
+            raise ValueError("A form publication must share its tenant and revision")
+        await self._execute_batch(
+            [
+                self._replace_operation(head) if head.etag else ("create", (self._document(head),)),
+                ("create", (self._document(revision),)),
+                ("create", (self._document(audit),)),
+            ],
+            audit,
+            conflict_message="The request form changed; reload before publishing.",
+        )
+        return revision
 
     async def save_access_request(
         self, access_request: AccessRequest, audit_event: AuditEvent
@@ -155,26 +201,54 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
         events: Sequence[NotificationEvent],
         *,
         create: bool,
+        form_guard: RequestFormHead | None = None,
     ) -> AccessRequest:
         if any(event.tenant_id != request.tenant_id for event in events):
             raise ValueError("Notification events must belong to the source tenant")
-        await self._execute_batch(
-            [
+        if not create:
+            require_unchanged_form(
+                await self.get_access_request(request.tenant_id, request.id), request
+            )
+        guard = []
+        if form_guard is not None:
+            if form_guard.tenant_id != request.tenant_id:
+                raise ValueError("The request form guard must belong to the source tenant")
+            guard = [
+                self._replace_operation(form_guard) if form_guard.etag
+                else ("create", (self._document(form_guard),))
+            ]
+        try:
+            await self._execute_batch(
+                [
+                    *guard,
                 ("create", (self._document(request),))
                 if create
                 else self._replace_operation(request),
                 ("create", (self._document(audit_event),)),
                 *(("create", (self._document(event),)) for event in events),
-            ],
-            audit_event,
-            conflict_message="The access request changed; reload it and try again",
-        )
+                ],
+                audit_event,
+                conflict_message="The access request changed; reload it and try again",
+            )
+        except ConflictError as error:
+            cause = error.__cause__
+            if guard and isinstance(cause, exceptions.CosmosBatchOperationError) and (
+                cause.error_index == 0
+            ):
+                raise ConflictError(
+                    "The request form changed during submission. Reload and review it.",
+                    details={"reason": "requestFormWriteConflict"},
+                ) from error
+            raise
         return request
 
     async def create_access_request_with_events(
-        self, request: AccessRequest, audit_event: AuditEvent, events: Sequence[NotificationEvent]
+        self, request: AccessRequest, audit_event: AuditEvent, events: Sequence[NotificationEvent],
+        *, form_guard: RequestFormHead | None = None,
     ) -> AccessRequest:
-        return await self._request_events(request, audit_event, events, create=True)
+        return await self._request_events(
+            request, audit_event, events, create=True, form_guard=form_guard
+        )
 
     async def save_access_request_with_events(
         self, request: AccessRequest, audit_event: AuditEvent, events: Sequence[NotificationEvent]
@@ -380,6 +454,9 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
         provenance: ApprovalDecisionProvenance | None = None,
         policy_guard: ApprovalPolicy | None = None,
     ) -> AccessRequest:
+        require_human_form_review(
+            request, policy=bool(policy_guard or (provenance and provenance.origin == "policy"))
+        )
         access_request = request
         if provenance:
             access_request = request.model_copy(
@@ -393,6 +470,9 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
         # is replaced (conditionally on the etag it was read with) together or not at all.
         if not access_request.etag:
             raise ValueError("Approving a request requires the etag it was read with")
+        require_unchanged_form(
+            await self.get_access_request(request.tenant_id, request.id), access_request
+        )
         await self._execute_batch(
             [
                 ("create", (self._document(entitlement),)),
