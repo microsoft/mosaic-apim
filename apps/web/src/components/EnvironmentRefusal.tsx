@@ -26,7 +26,7 @@ export function PublicationsBlockedRefusal({
   catalog?: EnvironmentCatalogView
 }) {
   return (
-    <MessageBar intent="error" role="alert">
+    <MessageBar intent="error">
       <MessageBarBody>
         <MessageBarTitle>Environment rules block this change</MessageBarTitle>
         <div className={styles.stack}>
@@ -95,7 +95,7 @@ export function GrantsAcknowledgmentRefusal({
   const principals =
     details.principalCount === 1 ? '1 principal' : `${details.principalCount} principals`
   return (
-    <MessageBar intent="warning" role="alert">
+    <MessageBar intent="warning" politeness="polite">
       <MessageBarBody>
         <MessageBarTitle>Active grants will carry across environments</MessageBarTitle>
         <div className={styles.stack}>

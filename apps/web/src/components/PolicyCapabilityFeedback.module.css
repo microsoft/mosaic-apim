@@ -1,0 +1,29 @@
+.issues {
+  display: grid;
+  gap: 16px;
+  margin: 12px 0;
+  padding-inline-start: 20px;
+}
+
+.issues li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.state {
+  margin-inline-start: 8px;
+  color: var(--mosaic-text-muted);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.actions button,
+.actions a {
+  white-space: nowrap;
+}

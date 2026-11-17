@@ -1,6 +1,6 @@
-import { Badge, Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, Input, Select, Tab, TabList, Text, Title3, useRestoreFocusTarget } from '@fluentui/react-components'
+import { AnnounceProvider, Badge, Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, Input, Select, Tab, TabList, Text, Title3, useAnnounce, useRestoreFocusTarget } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { Link as RouterLink, useSearchParams } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import { NOTIFICATION_CATEGORIES, type NotificationChannelSettingsInput, type NotificationRoute, type NotificationRouteInput, type PersonalTeamsSettingsInput, type TeamsDestination, type TeamsDestinationInput } from '../admin-types'
@@ -12,6 +12,8 @@ import { ResourceWorkbench } from './ResourceWorkbench'
 import { EmailSettings } from './EmailSettings'
 import { CapabilityEvidence } from './NotificationChecks'
 import { PersonalTeamsAccess } from './PersonalTeamsAccess'
+import { useDialogFocusReturn } from './useDialogFocusReturn'
+import { useFocusAwareAnnounce } from './useFocusAwareAnnounce'
 export { CapabilityEvidence } from './NotificationChecks'
 import styles from './AdminGovernance.module.css'
 
@@ -43,7 +45,8 @@ function ChannelSettings() {
   if (draft) return <WorkspaceEditorFrame title="Edit notification channels" onBack={() => setDraft(null)} onCancel={() => setDraft(null)} dirty pending={save.isPending}
     description="Channel availability is not delivery evidence. External channels still require explicit recipient preferences and ready integrations."
     primaryAction={{ label: 'Save channels', onClick: () => save.mutate(draft), disabled: !Number.isInteger(draft.retentionDays) || draft.retentionDays < 7 || draft.retentionDays > 365 }}
-    error={save.isError ? <ErrorState error={save.error} /> : undefined}>
+    errorKey={save.submittedAt}
+    error={save.isError ? <ErrorState context="action" title="Unable to save notification channels" error={save.error} /> : undefined}>
     <div className={styles.stack}>
       <Checkbox label="Enable in-app notifications" checked={draft.inAppEnabled} onChange={(_, d) => setDraft({ ...draft, inAppEnabled: Boolean(d.checked) })} />
       <Checkbox label="Enable email channel" checked={draft.emailEnabled} onChange={(_, d) => setDraft({ ...draft, emailEnabled: Boolean(d.checked) })} />
@@ -113,29 +116,37 @@ function NotificationRoutes() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [editing, setEditing] = useState<{ id: string | null; body: NotificationRouteInput; expectedRevision?: number } | null>(null)
   const [deleting, setDeleting] = useState<NotificationRoute | null>(null)
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const outcomeRef = useRef<HTMLDivElement>(null)
+  const fallbackRef = useRef<HTMLElement>(null)
+  const restoreFocus = useRestoreFocusTarget()
+  const { announce } = useAnnounce()
+  const motion = useDialogFocusReturn({ open: Boolean(deleting), surfaceRef, fallbackRef })
+  const announcement = useFocusAwareAnnounce(outcomeRef)
   const save = useMutation({ mutationFn: (draft: { id: string | null; body: NotificationRouteInput; expectedRevision?: number }) => api.saveNotificationRoute(draft.id, draft.body, draft.expectedRevision), onSuccess: value => { void client.invalidateQueries({ queryKey: ['notification-routes'] }); setSelectedId(value.id); setEditing(null) } })
-  const remove = useMutation({ mutationFn: (value: NotificationRoute) => api.deleteNotificationRoute(value.id, value.revision), onSuccess: () => { void client.invalidateQueries({ queryKey: ['notification-routes'] }); setDeleting(null); setSelectedId(null) } })
+  const remove = useMutation({ mutationFn: (value: NotificationRoute) => api.deleteNotificationRoute(value.id, value.revision), onSuccess: () => { void client.invalidateQueries({ queryKey: ['notification-routes'] }); setDeleting(null); setSelectedId(null); announce('Notification route deleted. Previously accepted sends cannot be recalled.', { polite: true }) } })
   const preview = useMutation({ mutationFn: (id: string) => api.previewNotificationRoute(id) })
-  if (editing) return <RouteEditor initial={editing.body} onBack={() => setEditing(null)} onSave={body => save.mutate({ ...editing, body })} pending={save.isPending} error={save.error} />
+  useLayoutEffect(() => { if (deleting && remove.isError) outcomeRef.current?.focus() }, [deleting, remove.isError, remove.submittedAt])
+  if (editing) return <RouteEditor initial={editing.body} onBack={() => setEditing(null)} onSave={body => save.mutate({ ...editing, body })} pending={save.isPending} error={save.error} errorKey={save.submittedAt} />
   return <div className={styles.stack}>{routes.isError && <><ErrorState error={routes.error} /><Button onClick={() => void routes.refetch()}>Retry routes</Button></>}
-    <ResourceWorkbench title="Administrator routing" description="Personal opt-outs still apply to personal channels. A deliberately configured shared Teams route has its own opt-in."
+    <ResourceWorkbench focusReturnRef={fallbackRef} title="Administrator routing" description="Personal opt-outs still apply to personal channels. A deliberately configured shared Teams route has its own opt-in."
       items={routes.data ?? []} getId={r => r.id} selectedId={selectedId} onSelect={setSelectedId} listLabel="Notification routes" detailLabel="Selected notification route"
       actions={<Button appearance="primary" onClick={() => { save.reset(); setEditing({ id: null, body: newRoute() }) }}>New route</Button>}
       emptyList={routes.isPending ? <Loading label="Loading notification routes" /> : 'No routes configured.'}
       renderListItem={r => <div className={styles.stack}><strong>{r.name}</strong><Text>{r.channel} · {r.audience}</Text><Badge appearance="outline">{r.enabled ? 'Enabled' : 'Disabled'}</Badge></div>}
       renderDetail={r => <div className={styles.stack}><Title3 as="h3">{r.name}</Title3>
         <dl className={styles.facts}><div><dt>Audience</dt><dd>{r.audience}</dd></div><div><dt>Categories</dt><dd>{r.categories.map(c => NOTIFICATION_CATEGORIES.find(n => n.value === c)?.label).join(', ')}</dd></div><div><dt>Channel / cadence</dt><dd>{r.channel} · {r.cadence.mode} {r.cadence.digestPeriods.join(', ')}</dd></div><div><dt>Time zone</dt><dd>{r.timeZone}</dd></div></dl>
-        <div className={styles.toolbar}><Button appearance="primary" onClick={() => { save.reset(); setEditing({ id: r.id, expectedRevision: r.revision, body: { name: r.name, enabled: r.enabled, audience: r.audience, administratorObjectIds: [...r.administratorObjectIds], budgetId: r.budgetId, teamsDestinationId: r.teamsDestinationId, categories: [...r.categories], eventTypes: [...r.eventTypes], channel: r.channel, cadence: structuredClone(r.cadence), timeZone: r.timeZone, digestSchedules: structuredClone(r.digestSchedules) } }) }}>Edit route</Button><Button disabled={preview.isPending} onClick={() => preview.mutate(r.id)}>Preview effective recipients</Button><Button onClick={() => setDeleting(r)}>Delete route</Button></div>
-        {preview.isError && preview.variables === r.id && <ErrorState error={preview.error} />}
+        <div className={styles.toolbar}><Button appearance="primary" onClick={() => { save.reset(); setEditing({ id: r.id, expectedRevision: r.revision, body: { name: r.name, enabled: r.enabled, audience: r.audience, administratorObjectIds: [...r.administratorObjectIds], budgetId: r.budgetId, teamsDestinationId: r.teamsDestinationId, categories: [...r.categories], eventTypes: [...r.eventTypes], channel: r.channel, cadence: structuredClone(r.cadence), timeZone: r.timeZone, digestSchedules: structuredClone(r.digestSchedules) } }) }}>Edit route</Button><Button disabled={preview.isPending} onClick={() => preview.mutate(r.id)}>Preview effective recipients</Button><Button {...restoreFocus} onClick={() => { remove.reset(); setDeleting(r) }}>Delete route</Button></div>
+        {preview.isError && preview.variables === r.id && <ErrorState context="action" title="Unable to preview recipients" error={preview.error} announcementKey={preview.submittedAt} />}
         {preview.data?.routeId === r.id && <><Title3 as="h4">Effective recipient preview</Title3><Text>Checked {new Date(preview.data.checkedAt).toLocaleString()}. This uses a sample event, sends nothing, and is not evidence of receipt.</Text>
           {preview.data.unavailable.map((reason, i) => <Text key={i}>{reason}</Text>)}
           {!preview.data.recipients.length && <Text>No eligible recipients resolved for this sample event.</Text>}
           {preview.data.recipients.map((recipient, i) => <div key={i}><Text>{recipient.recipientReference} · {recipient.channel} · {recipient.eligible ? 'Eligible' : 'Suppressed'}</Text>{recipient.reasons.map((reason, j) => <Text key={j} block>{reason}</Text>)}<Text>Next delivery: {recipient.nextDeliveryAt ?? 'Not scheduled'}</Text></div>)}</>}
       </div>} />
-    <Dialog open={Boolean(deleting)} onOpenChange={(_, d) => { if (!d.open) setDeleting(null) }}><DialogSurface><DialogBody><DialogTitle>Delete notification route?</DialogTitle><DialogContent>Future messages will no longer use {deleting?.name}. Previously accepted provider sends cannot be recalled.{remove.isError && <ErrorState error={remove.error} />}</DialogContent><DialogActions><Button disabled={remove.isPending} onClick={() => setDeleting(null)}>Cancel</Button><Button appearance="primary" disabled={remove.isPending} onClick={() => deleting && remove.mutate(deleting)}>Delete route</Button></DialogActions></DialogBody></DialogSurface></Dialog>
+    <Dialog open={Boolean(deleting)} surfaceMotion={motion} onOpenChange={(_, d) => { if (!d.open) setDeleting(null) }}><DialogSurface ref={surfaceRef}><DialogBody><DialogTitle>Delete notification route?</DialogTitle><DialogContent>Future messages will no longer use {deleting?.name}. Previously accepted provider sends cannot be recalled.{remove.isError && <AnnounceProvider value={announcement}><div ref={outcomeRef} tabIndex={-1}><ErrorState context="action" title="Unable to delete the notification route" error={remove.error} announcementKey={remove.submittedAt} /></div></AnnounceProvider>}</DialogContent><DialogActions><Button disabledFocusable={remove.isPending} onClick={() => setDeleting(null)}>Cancel</Button><Button appearance="primary" disabledFocusable={remove.isPending} onClick={() => { if (deleting && !remove.isPending) remove.mutate(deleting) }}>Delete route</Button></DialogActions></DialogBody></DialogSurface></Dialog>
   </div>
 }
-function RouteEditor({ initial, onBack, onSave, pending, error }: { initial: NotificationRouteInput; onBack: () => void; onSave: (body: NotificationRouteInput) => void; pending: boolean; error: unknown }) {
+function RouteEditor({ initial, onBack, onSave, pending, error, errorKey }: { initial: NotificationRouteInput; onBack: () => void; onSave: (body: NotificationRouteInput) => void; pending: boolean; error: unknown; errorKey?: number }) {
   const api = useMosaicApi()
   const [draft, setDraft] = useState(() => structuredClone(initial))
   const [eventTypesText, setEventTypesText] = useState(initial.eventTypes.join(', '))
@@ -149,7 +160,7 @@ function RouteEditor({ initial, onBack, onSave, pending, error }: { initial: Not
     || (draft.audience === 'budgetRecipients' && !draft.budgetId)
     || (draft.cadence.mode === 'digest' && !draft.cadence.digestPeriods.length)
   return <WorkspaceEditorFrame title={initial.name ? `Edit ${initial.name}` : 'New notification route'} onBack={onBack} onCancel={onBack} dirty={JSON.stringify(initial) !== JSON.stringify(draft) || eventTypesText !== initial.eventTypes.join(', ')} pending={pending}
-    error={error ? <ErrorState error={error} /> : undefined}
+    errorKey={errorKey} error={error ? <ErrorState context="action" title="Unable to save the notification route" error={error} /> : undefined}
     primaryAction={{ label: 'Save route', onClick: () => onSave({ ...draft, eventTypes: eventTypesText.split(',').map(s => s.trim()).filter(Boolean) }), disabled: invalid }}>
     <div className={styles.stack}>
       <Field label="Route name"><Input value={draft.name} maxLength={120} onChange={(_, d) => setDraft({ ...draft, name: d.value })} /></Field>
@@ -182,12 +193,24 @@ function TeamsDestinations() {
   const [editing, setEditing] = useState<{ id: string | null; body: TeamsDestinationInput } | null>(null)
   const [deleting, setDeleting] = useState<TeamsDestination | null>(null)
   const [testing, setTesting] = useState<TeamsDestination | null>(null)
+  const testSurface = useRef<HTMLDivElement>(null)
+  const deleteSurface = useRef<HTMLDivElement>(null)
+  const testOutcome = useRef<HTMLDivElement>(null)
+  const deleteOutcome = useRef<HTMLDivElement>(null)
+  const fallbackRef = useRef<HTMLElement>(null)
+  const { announce } = useAnnounce()
+  const testMotion = useDialogFocusReturn({ open: Boolean(testing), surfaceRef: testSurface, fallbackRef })
+  const deleteMotion = useDialogFocusReturn({ open: Boolean(deleting), surfaceRef: deleteSurface, fallbackRef })
+  const testAnnouncement = useFocusAwareAnnounce(testOutcome)
+  const deleteAnnouncement = useFocusAwareAnnounce(deleteOutcome)
   const test = useMutation({ mutationFn: (id: string) => api.testTeamsDestination(id), onSuccess: (_, id) => {
     void client.invalidateQueries({ queryKey: ['teams-destination-checks', id] })
     void client.invalidateQueries({ queryKey: ['notification-health'] })
   } })
   const save = useMutation({ mutationFn: (value: { id: string | null; body: TeamsDestinationInput }) => api.saveTeamsDestination(value.id, value.body), onSuccess: value => { setEditing(null); setSelectedId(value.id); void destinations.refetch() } })
-  const remove = useMutation({ mutationFn: (id: string) => api.deleteTeamsDestination(id), onSuccess: () => { setDeleting(null); setSelectedId(null); void destinations.refetch() } })
+  const remove = useMutation({ mutationFn: (id: string) => api.deleteTeamsDestination(id), onSuccess: () => { setDeleting(null); setSelectedId(null); void destinations.refetch(); announce('Teams destination deleted. Previously accepted sends cannot be recalled.', { polite: true }) } })
+  useLayoutEffect(() => { if (testing && (test.isError || test.isSuccess)) testOutcome.current?.focus() }, [testing, test.isError, test.isSuccess, test.submittedAt])
+  useLayoutEffect(() => { if (deleting && remove.isError) deleteOutcome.current?.focus() }, [deleting, remove.isError, remove.submittedAt])
   if (editing) return <TeamsDestinationEditor initial={editing.body} existing={Boolean(editing.id)} onBack={() => setEditing(null)} onSave={body => save.mutate({ id: editing.id, body })} pending={save.isPending} error={save.error} />
   return <div className={styles.stack}>
     <details className={styles.section}><summary className={styles.setupSummary}>Shared Teams setup instructions</summary>
@@ -200,20 +223,22 @@ function TeamsDestinations() {
       <a href="https://learn.microsoft.com/en-us/power-automate/teams/send-a-message-in-teams" target="_blank" rel="noreferrer">Teams Workflow configuration reference</a>
     </details>
     {destinations.isError && <><ErrorState error={destinations.error} /><Button onClick={() => void destinations.refetch()}>Retry Teams destinations</Button></>}
-    <ResourceWorkbench title="Shared Teams destinations" items={destinations.data ?? []} getId={d => d.id} selectedId={selectedId} onSelect={setSelectedId} listLabel="Teams destinations" detailLabel="Selected Teams destination"
+    <ResourceWorkbench focusReturnRef={fallbackRef} title="Shared Teams destinations" items={destinations.data ?? []} getId={d => d.id} selectedId={selectedId} onSelect={setSelectedId} listLabel="Teams destinations" detailLabel="Selected Teams destination"
       actions={<Button appearance="primary" onClick={() => { save.reset(); setEditing({ id: null, body: { name: '', enabled: false, allowedCategories: ['operationalIssues'] } }) }}>New Teams destination</Button>}
       emptyList={destinations.isPending ? <Loading label="Loading Teams destinations" /> : 'No shared Teams destinations.'}
       renderListItem={d => <div className={styles.stack}><strong>{d.name}</strong><Badge appearance="outline">{d.enabled ? 'Enabled' : 'Disabled'}</Badge></div>}
       renderDetail={d => <div className={styles.stack}><Title3 as="h3">{d.name}</Title3><Text>{d.allowedCategories.map(c => NOTIFICATION_CATEGORIES.find(n => n.value === c)?.label).join(', ')}</Text><Text>Credential is not returned. Saved configuration is not verified delivery.</Text>
-        <div className={styles.toolbar}><Button appearance="primary" onClick={() => { save.reset(); setEditing({ id: d.id, body: { name: d.name, enabled: d.enabled, allowedCategories: [...d.allowedCategories] } }) }}>Edit destination</Button><Button {...restoreFocus} onClick={() => { test.reset(); setTesting(d) }}>Test destination</Button><Button onClick={() => setDeleting(d)}>Delete destination</Button></div>
+        <div className={styles.toolbar}><Button appearance="primary" onClick={() => { save.reset(); setEditing({ id: d.id, body: { name: d.name, enabled: d.enabled, allowedCategories: [...d.allowedCategories] } }) }}>Edit destination</Button><Button {...restoreFocus} onClick={() => { test.reset(); setTesting(d) }}>Test destination</Button><Button {...restoreFocus} onClick={() => { remove.reset(); setDeleting(d) }}>Delete destination</Button></div>
         <TeamsDestinationChecks key={`${d.id}-${d.revision}`} destination={d} /></div>} />
-    <Dialog open={Boolean(testing)} onOpenChange={(_, d) => { if (!d.open && !test.isPending) setTesting(null) }}><DialogSurface><DialogBody><DialogTitle>Send a shared Teams test?</DialogTitle><DialogContent>
+    <Dialog open={Boolean(testing)} surfaceMotion={testMotion} onOpenChange={(_, d) => { if (!d.open && !test.isPending) setTesting(null) }}><DialogSurface ref={testSurface}><DialogBody><DialogTitle>Send a shared Teams test?</DialogTitle><DialogContent>
       This sends a synthetic MOSAIC message to {testing?.name}. Provider acceptance is not confirmed user delivery.
-      {test.isError && <ErrorState error={test.error} />}
+      {(test.isError || test.data) && <AnnounceProvider value={testAnnouncement}><div ref={testOutcome} tabIndex={-1}>
+      {test.isError && <ErrorState context="action" title="Unable to send the shared Teams test" error={test.error} announcementKey={test.submittedAt} />}
       {test.data && <Text block>{test.data.outcome}: {test.data.message} · {new Date(test.data.testedAt).toLocaleString()}. {test.data.confirmedDelivered ? 'Confirmed delivery evidence reported.' : 'No confirmed delivery evidence.'}</Text>}
       {test.data?.errorCode && <Text block>Diagnostic: {test.data.errorCode}</Text>}
-    </DialogContent><DialogActions><Button disabled={test.isPending} onClick={() => setTesting(null)}>Close</Button><Button appearance="primary" disabled={test.isPending || test.isSuccess} onClick={() => testing && test.mutate(testing.id)}>Send synthetic Teams test</Button></DialogActions></DialogBody></DialogSurface></Dialog>
-    <Dialog open={Boolean(deleting)} onOpenChange={(_, d) => { if (!d.open) setDeleting(null) }}><DialogSurface><DialogBody><DialogTitle>Delete Teams destination?</DialogTitle><DialogContent>Routes using {deleting?.name} will no longer be able to deliver there. Existing provider sends cannot be recalled.{remove.isError && <ErrorState error={remove.error} />}</DialogContent><DialogActions><Button disabled={remove.isPending} onClick={() => setDeleting(null)}>Cancel</Button><Button appearance="primary" disabled={remove.isPending} onClick={() => deleting && remove.mutate(deleting.id)}>Delete destination</Button></DialogActions></DialogBody></DialogSurface></Dialog>
+      </div></AnnounceProvider>}
+    </DialogContent><DialogActions><Button disabledFocusable={test.isPending} onClick={() => setTesting(null)}>Close</Button><Button appearance="primary" disabled={test.isSuccess} disabledFocusable={test.isPending} onClick={() => { if (testing && !test.isPending && !test.isSuccess) test.mutate(testing.id) }}>Send synthetic Teams test</Button></DialogActions></DialogBody></DialogSurface></Dialog>
+    <Dialog open={Boolean(deleting)} surfaceMotion={deleteMotion} onOpenChange={(_, d) => { if (!d.open) setDeleting(null) }}><DialogSurface ref={deleteSurface}><DialogBody><DialogTitle>Delete Teams destination?</DialogTitle><DialogContent>Routes using {deleting?.name} will no longer be able to deliver there. Existing provider sends cannot be recalled.{remove.isError && <AnnounceProvider value={deleteAnnouncement}><div ref={deleteOutcome} tabIndex={-1}><ErrorState context="action" title="Unable to delete the Teams destination" error={remove.error} announcementKey={remove.submittedAt} /></div></AnnounceProvider>}</DialogContent><DialogActions><Button disabledFocusable={remove.isPending} onClick={() => setDeleting(null)}>Cancel</Button><Button appearance="primary" disabledFocusable={remove.isPending} onClick={() => { if (deleting && !remove.isPending) remove.mutate(deleting.id) }}>Delete destination</Button></DialogActions></DialogBody></DialogSurface></Dialog>
   </div>
 }
 function TeamsDestinationChecks({ destination }: { destination: TeamsDestination }) {

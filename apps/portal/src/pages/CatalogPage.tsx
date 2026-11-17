@@ -1,7 +1,7 @@
-import { Badge, Button, Input, Textarea, Text } from '@fluentui/react-components'
+import { Badge, Button, Input, Textarea, Text, useAnnounce } from '@fluentui/react-components'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { usePortalApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
@@ -66,6 +66,15 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
   const profile = useQuery({ queryKey: ['portal', 'profile'], queryFn: api.getProfile })
   const entitlements = useQuery({ queryKey: ['portal', 'entitlements'], queryFn: api.listEntitlements })
   const [justification, setJustification] = useState('')
+  const { announce } = useAnnounce()
+  const mounted = useRef(false)
+  const requestFocus = useRef<HTMLElement | null>(null)
+  const costCenterRef = useRef<HTMLSelectElement>(null)
+  const successRef = useRef<HTMLElement>(null)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
   const [params] = useSearchParams()
   const [selectedCostCenterId, setSelectedCostCenterId] = useState<string | undefined>(() => params.get('costCenter') ?? undefined)
   const resource = resourceFromCatalog(entry)
@@ -96,6 +105,7 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
   )
   const selectedAlreadyRequested = Boolean(effectiveCostCenterId && (requestedCostCenters.has(effectiveCostCenterId) || pendingRequest))
   const selectedUnavailable = selectedAlreadyGranted || selectedAlreadyRequested
+  const showRequestControls = !selectedUnavailable && selectedDefinition?.mode === 'requestOnly'
   const government = entry.azureCloud === 'government'
   const keysDisallowed = government && selectedDefinition?.keysAllowed === false
   const defaultUnavailable = profile.data?.defaultCostCenter && (profile.data.defaultCostCenterEligible === false ||
@@ -112,12 +122,24 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
         justification: justification.trim() || undefined,
       })
     },
-    onSuccess: () => invalidateRequests(queryClient),
+    onSuccess: () => {
+      if (mounted.current) announce('Request submitted. Track it in My requests. Gateway access may still need to be applied after approval.', { polite: true })
+      return invalidateRequests(queryClient)
+    },
   })
   const withdraw = useMutation({
     mutationFn: (requestId: string) => api.withdrawAccessRequest(requestId),
     onSuccess: () => invalidateRequests(queryClient),
   })
+  const submittedId = create.isSuccess && pendingRequest?.id === create.data.id ? create.data.id : null
+  useLayoutEffect(() => {
+    if (!showRequestControls && requestFocus.current && !requestFocus.current.isConnected
+      && document.activeElement === document.body) {
+      const target = submittedId ? successRef.current : costCenterRef.current
+      target?.focus()
+      requestFocus.current = null
+    }
+  }, [showRequestControls, submittedId])
 
   return (
     <div className="action-stack">
@@ -140,6 +162,7 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
         <label className="cost-center-select">
           <span>Cost center</span>
           <select
+            ref={costCenterRef}
             aria-label={`Cost center for ${entry.displayName}`}
             value={effectiveCostCenterId ?? ''}
             onChange={(event) => setSelectedCostCenterId(event.currentTarget.value)}
@@ -181,8 +204,8 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
       {selectedAlreadyRequested && !selectedAlreadyGranted && <Text>A request is already open for this cost center.</Text>}
       {selectedAlreadyRequested && pendingRequest && (
         <Button
-          onClick={() => withdraw.mutate(pendingRequest.id)}
-          disabled={withdraw.isPending}
+          onClick={() => { if (!withdraw.isPending) withdraw.mutate(pendingRequest.id) }}
+          disabledFocusable={withdraw.isPending}
         >
           Withdraw
         </Button>
@@ -199,7 +222,7 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
           : 'Choose an eligible cost center for this exact offering. If none are available, ask an administrator to review group setup, membership, resource mode, and caller-side token support.'}</Text>
         <Link to="/cost-centers">Find or request a cost center</Link>
       </div>}
-      {!selectedUnavailable && selectedDefinition?.mode === 'requestOnly' && (
+      {showRequestControls && (
         <>
           <Badge appearance="outline">Request-only</Badge>
           <Text>Approval is for you under this cost center. Gateway apply is a separate step.
@@ -211,16 +234,19 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
             placeholder="Optional justification"
             resize="vertical"
             onChange={(_, data) => setJustification(data.value)}
+            onFocus={(event) => { requestFocus.current = event.currentTarget }}
           />
-          <Button appearance="primary" onClick={() => create.mutate()} disabled={create.isPending || keysDisallowed || !effectiveCostCenterId}>
+          <Button appearance="primary" onFocus={(event) => { requestFocus.current = event.currentTarget }}
+            onClick={() => { if (!create.isPending && !keysDisallowed && effectiveCostCenterId) create.mutate() }}
+            disabled={keysDisallowed || !effectiveCostCenterId} disabledFocusable={create.isPending}>
             Request access
           </Button>
         </>
       )}
       {create.isError && <Text role="alert" className="form-error">{create.error.message}</Text>}
       {withdraw.isError && <Text role="alert" className="form-error">{withdraw.error.message}</Text>}
-      {create.isSuccess && pendingRequest?.id === create.data.id && (
-        <Text>Request submitted. <Link to={`/requests?request=${encodeURIComponent(create.data.id)}`}>Track it in My requests</Link>. Gateway access may still need to be applied after approval.</Text>
+      {submittedId && (
+        <Text ref={successRef} tabIndex={-1}>Request submitted. <Link to={`/requests?request=${encodeURIComponent(submittedId)}`}>Track it in My requests</Link>. Gateway access may still need to be applied after approval.</Text>
       )}
     </div>
   )

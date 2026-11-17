@@ -368,8 +368,10 @@ describe('ApproveAccessRequestDialog', () => {
     await user.clear(tokensPerMinute)
     await user.type(tokensPerMinute, '5000')
     await user.type(within(dialog).getByRole('spinbutton', { name: 'Token quota' }), '100000')
-    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Quota period' }), 'Daily')
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Token quota period' }), 'Daily')
     await user.type(within(dialog).getByRole('spinbutton', { name: 'Calls' }), '30')
+    await user.type(within(dialog).getByRole('spinbutton', { name: 'Call quota' }), '1000')
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Call quota period' }), 'Weekly')
     await user.type(within(dialog).getByRole('textbox', { name: 'Decision note' }), '  Pilot team  ')
     await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
 
@@ -387,6 +389,8 @@ describe('ApproveAccessRequestDialog', () => {
           counterKeyExpression: '@(context.Subscription.Id)',
           calls: 30,
           renewalPeriodSeconds: 60,
+          callQuota: 1000,
+          callQuotaPeriod: 'Weekly',
         },
       },
     })
@@ -414,6 +418,65 @@ describe('ApproveAccessRequestDialog', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Approve and create grant' }))
 
     expect(onApprove).toHaveBeenCalledExactlyOnceWith({ note: null, enforcement: null })
+  })
+
+  it('approves a quota-only MCP grant without a rate window or token limits', async () => {
+    const user = userEvent.setup()
+    const { onApprove } = renderDialog({
+      accessRequest: { ...accessRequest, resource: { kind: 'mcpServer', id: 'mcp-test' } },
+      publication: undefined,
+    })
+    const workspace = await screen.findByRole('region', { name: 'Approve access request' })
+    await user.type(within(workspace).getByRole('spinbutton', { name: 'Call quota' }), '100')
+    await user.selectOptions(within(workspace).getByRole('combobox', { name: 'Call quota period' }), 'Weekly')
+    expect(within(workspace).queryByRole('spinbutton', { name: 'Token quota' })).not.toBeInTheDocument()
+    expect(onApprove).not.toHaveBeenCalled()
+    await user.click(within(workspace).getByRole('button', { name: 'Approve and create grant' }))
+    expect(onApprove).toHaveBeenCalledExactlyOnceWith({
+      note: null, enforcement: { requests: { counterKeyExpression: GOVERNED_COUNTER_KEY, callQuota: 100, callQuotaPeriod: 'Weekly' } },
+    })
+  })
+
+  it('keeps quota validation in the field and never approves a fractional quota', async () => {
+    const user = userEvent.setup()
+    const { onApprove } = renderDialog()
+    const workspace = await screen.findByRole('region', { name: 'Approve access request' })
+    const input = within(workspace).getByRole('spinbutton', { name: 'Call quota' })
+    await user.type(input, '1.5')
+    expect(input).toHaveFocus()
+    expect(within(workspace).getByText('Limits must be positive whole numbers, or left empty.')).toBeVisible()
+    expect(within(workspace).getByRole('button', { name: 'Approve and create grant' })).toBeDisabled()
+    expect(onApprove).not.toHaveBeenCalled()
+  })
+
+  it('does not materialize inherited quotas while reviewing and deliberately copies the full set for an override', async () => {
+    const user = userEvent.setup()
+    const center: CostCenter = { ...supportCostCenter, limits: [{
+      resource: { kind: 'modelApi', id: accessRequest.resource.id },
+      person: { tokensPerMinute: 12000, tokenQuota: null, tokenQuotaPeriod: null, callsPerMinute: 30, callQuota: 100, callQuotaPeriod: 'Weekly' },
+      pool: null,
+    }] }
+    const { onApprove, onCancel } = renderDialog({
+      accessRequest: { ...accessRequest, costCenterId: center.id }, costCenters: [center],
+    })
+    const workspace = await screen.findByRole('region', { name: 'Approve access request' })
+    expect(within(workspace).getByRole('spinbutton', { name: 'Call quota' })).toHaveValue(null)
+    expect(within(workspace).getByRole('radio', { name: 'Use cost-center per-person defaults' })).toBeChecked()
+    expect(onApprove).not.toHaveBeenCalled()
+    await user.click(within(workspace).getByRole('radio', { name: 'Set explicit grant limits' }))
+    expect(within(workspace).getByRole('spinbutton', { name: 'Tokens per minute' })).toHaveValue(12000)
+    expect(within(workspace).getByRole('spinbutton', { name: 'Calls' })).toHaveValue(30)
+    expect(within(workspace).getByRole('spinbutton', { name: 'Call quota' })).toHaveValue(100)
+    await user.click(within(workspace).getByRole('radio', { name: 'Use cost-center per-person defaults' }))
+    await user.click(within(workspace).getByRole('button', { name: 'Cancel' }))
+    const discard = await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })
+    await user.click(within(discard).getByRole('button', { name: 'Stay' }))
+    expect(within(workspace).getByRole('spinbutton', { name: 'Call quota' })).toHaveValue(null)
+    expect(onCancel).not.toHaveBeenCalled()
+    await user.click(within(workspace).getByRole('button', { name: 'Cancel' }))
+    await user.click(await screen.findByRole('button', { name: 'Discard changes' }))
+    expect(onCancel).toHaveBeenCalledOnce()
+    expect(onApprove).not.toHaveBeenCalled()
   })
 
   it('approves with no grant-specific limit once the prefilled limit is cleared', async () => {

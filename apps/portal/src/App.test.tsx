@@ -106,7 +106,8 @@ describe('App', () => {
 
     expect(await screen.findByText('You do not have access to the portal yet')).toBeVisible()
     expect(
-      screen.getByText(/An administrator must grant you the MOSAIC User role/),
+      within(screen.getByRole('group', { name: 'You do not have access to the portal yet' }))
+        .getByText(/An administrator must grant you the MOSAIC User role/),
     ).toBeVisible()
   })
 

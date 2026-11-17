@@ -1,5 +1,6 @@
 import {
   Button,
+  AnnounceProvider,
   Dialog,
   DialogActions,
   DialogBody,
@@ -20,7 +21,7 @@ import {
   useId,
 } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
+import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useMosaicApi } from '../api'
 import { ENTITLEMENT_SUBJECT_KIND_LABELS, PRINCIPAL_KIND_LABELS, plural } from '../labels'
 import { runtimeConfig } from '../runtime-config'
@@ -34,6 +35,8 @@ import type {
   PublishStepStatus,
 } from '../types'
 import { ErrorState, Loading } from './AsyncState'
+import { useFocusAwareAnnounce } from './useFocusAwareAnnounce'
+import { useDialogFocusReturn } from './useDialogFocusReturn'
 import { ChangeReview, TechnicalExecution } from './ChangeReview'
 import { ModelAccessRecovery } from './ModelAccessRecovery'
 import styles from './UnpublishDialog.module.css'
@@ -244,15 +247,18 @@ function UnpublishSession({
   const reviewRef = useRef<HTMLElement>(null)
   const statusRef = useRef<HTMLElement>(null)
   const outcomeRef = useRef<HTMLDivElement>(null)
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const surfaceMotion = useDialogFocusReturn({ open, surfaceRef })
+  const announcement = useFocusAwareAnnounce(outcomeRef)
   const firstPlanRef = useRef<string | null>(null)
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open || !plan || phase !== 'review' || firstPlanRef.current !== null) return
     firstPlanRef.current = plan.id
     reviewRef.current?.focus()
   }, [open, plan, phase])
   const outcome = phase === 'run' ? (finishedRun?.id ?? null) : (planning.error ?? unpublish.error ?? null)
   const shownRef = useRef({ phase, outcome })
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return
     const shown = shownRef.current
     shownRef.current = { phase, outcome }
@@ -266,11 +272,12 @@ function UnpublishSession({
     <Dialog
       modalType="alert"
       open={open}
+      surfaceMotion={surfaceMotion}
       onOpenChange={(_, data) => {
         if (!data.open && !busy) onClose()
       }}
     >
-      <DialogSurface aria-describedby={introId}>
+      <DialogSurface ref={surfaceRef} aria-describedby={introId}>
         <DialogBody>
           <DialogTitle>Unpublish {publication.displayName}?</DialogTitle>
           <DialogContent className={styles.content}>
@@ -281,17 +288,17 @@ function UnpublishSession({
 
             {phase === 'review' && planning.isPending && <Loading label="Planning the unpublish" />}
             {phase === 'review' && planning.isError && (
-              <div ref={outcomeRef} tabIndex={-1}>
+              <AnnounceProvider value={announcement}><div ref={outcomeRef} tabIndex={-1}>
                 <MessageBar intent="error">
                   <MessageBarBody>
                     <MessageBarTitle>MOSAIC can&apos;t unpublish {publication.displayName}</MessageBarTitle>
                     {planning.error instanceof Error ? planning.error.message : 'An unexpected error occurred.'}
                   </MessageBarBody>
                 </MessageBar>
-              </div>
+              </div></AnnounceProvider>
             )}
             {phase === 'review' && refusal && (
-              <div ref={confirmError ? undefined : outcomeRef} tabIndex={-1}>
+              <AnnounceProvider value={announcement}><div ref={confirmError ? undefined : outcomeRef} tabIndex={-1}>
                 <MessageBar intent="warning">
                   <MessageBarBody>
                     <MessageBarTitle>MOSAIC didn&apos;t unpublish with the plan you reviewed</MessageBarTitle>
@@ -301,20 +308,20 @@ function UnpublishSession({
                     )}
                   </MessageBarBody>
                 </MessageBar>
-              </div>
+              </div></AnnounceProvider>
             )}
             {phase === 'review' && plan && (
               <UnpublishReview plan={plan} target={target} reviewRef={reviewRef} />
             )}
             {phase === 'review' && confirmError && (
-              <div ref={outcomeRef} tabIndex={-1}>
+              <AnnounceProvider value={announcement}><div ref={outcomeRef} tabIndex={-1}>
                 <ErrorState
                   title={`MOSAIC didn't unpublish ${publication.displayName}`}
                   error={confirmError}
                 />
-              </div>
+              </div></AnnounceProvider>
             )}
-            {phase === 'review' && refreshError && <ErrorState error={refreshError} />}
+            {phase === 'review' && refreshError && <ErrorState context="action" title="Unable to refresh the unpublish plan" error={refreshError} announcementKey={unpublish.submittedAt} />}
 
             {phase === 'run' && (
               <>
@@ -322,17 +329,17 @@ function UnpublishSession({
                   {finishedRun ? 'Unpublish finished' : `Unpublishing ${publication.displayName}`}
                 </Text>
                 {!finishedRun && <Loading label="MOSAIC is deleting the resources you reviewed" />}
-                {run.isError && <ErrorState error={run.error} />}
+                {run.isError && <ErrorState title="Unable to refresh the unpublish run" error={run.error} announcementKey={`${runId}:${run.error.message}`} />}
                 {currentRun && (
-                  <div ref={finishedRun ? outcomeRef : undefined} tabIndex={-1}>
+                  <AnnounceProvider value={announcement}><div ref={finishedRun ? outcomeRef : undefined} tabIndex={-1}>
                     <UnpublishResult run={currentRun} target={target} name={publication.displayName} />
-                  </div>
+                  </div></AnnounceProvider>
                 )}
               </>
             )}
           </DialogContent>
           <DialogActions>
-            <Button appearance="secondary" disabled={busy} onClick={onClose}>
+            <Button appearance="secondary" disabledFocusable={busy} onClick={onClose}>
               {phase === 'review' && (planning.isPending || plan) ? 'Cancel' : 'Close'}
             </Button>
             {/* A browser takes focus off a button that becomes disabled, so a busy button stays focusable. */}
@@ -342,7 +349,7 @@ function UnpublishSession({
                 className={styles.destructive}
                 disabled={invalidPlan}
                 disabledFocusable={busy}
-                onClick={() => unpublish.mutate()}
+                onClick={() => { if (!busy && !invalidPlan) unpublish.mutate() }}
               >
                 {busy ? 'Unpublishing…' : `Unpublish ${noun}`}
               </Button>

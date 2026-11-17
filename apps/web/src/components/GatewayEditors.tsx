@@ -49,12 +49,12 @@ export function GatewayRegistrationEditor({ suggestion, onClose, onSaved }: {
   })
   function submit() {
     setTouched(true)
-    if (environment && resourceId.trim()) register.mutate()
+    if (!register.isPending && environment && resourceId.trim()) register.mutate()
   }
   return <WorkspaceEditorFrame title="Onboard a gateway" onBack={onClose} onCancel={onClose}
     backLabel="Back to gateways" dirty={dirty} pending={register.isPending} pendingLabel="Checking access…"
     description="Register an existing API Management service in MOSAIC. Registration saves intent and never changes APIM."
-    primaryAction={{ label: 'Check access and onboard', onClick: submit, disabled: register.isPending }}>
+    primaryAction={{ label: 'Check access and onboard', onClick: submit }}>
     <form className={styles.form} onSubmit={(event) => { event.preventDefault(); submit() }}
       onChangeCapture={() => setDirty(true)}>
       <AzureConnectionPicker value={connection} onChange={(selection) => { setConnection(selection); setResourceId(''); setDirty(true) }} />
@@ -76,7 +76,7 @@ export function GatewayRegistrationEditor({ suggestion, onClose, onSaved }: {
       {suggestion?.azureEnvironmentTag && !suggestion.suggestedEnvironment &&
         <Text size={200}>Azure tag: {suggestion.azureEnvironmentTag}</Text>}
       {catalog.isError && <ErrorState error={catalog.error} />}
-      {register.isError && <ErrorState error={register.error} />}
+      {register.isError && <ErrorState context="action" title="Unable to onboard the gateway" error={register.error} announcementKey={register.submittedAt} />}
     </form>
   </WorkspaceEditorFrame>
 }
@@ -126,7 +126,7 @@ export function GatewayRecordEditor({ gateway, onClose, onSaved }: {
       <EnvironmentPicker catalog={catalog.data} value={environment} allowUnclassified label="Environment"
         onChange={(value) => { setEnvironment(value); setAcknowledged(false); setSuggested([]); save.reset() }} />
       {blocked && <PublicationsBlockedRefusal details={blocked} catalog={catalog.data} />}
-      {blocked && suggested.length > 0 && <Button disabled={save.isPending} onClick={() => save.mutate(true)}>
+      {blocked && suggested.length > 0 && <Button disabledFocusable={save.isPending} onClick={() => { if (!save.isPending) save.mutate(true) }}>
         Also classify {suggested.length === 1 ? 'this resource' : `these ${suggested.length} resources`} as {environmentLabel(catalog.data, suggested[0]?.environment)}
       </Button>}
       {grants && <GrantsAcknowledgmentRefusal details={grants} catalog={catalog.data} />}
@@ -135,7 +135,7 @@ export function GatewayRecordEditor({ gateway, onClose, onSaved }: {
       {savedEnvironment !== gateway.environment && save.isError && <MessageBar intent="warning"><MessageBarBody>
         The environment was saved, but the display name was not. Retry Save changes to finish.
       </MessageBarBody></MessageBar>}
-      {save.isError && !blocked && !grants && <ErrorState error={save.error} />}
+      {save.isError && !blocked && !grants && <ErrorState context="action" title="Unable to save gateway changes" error={save.error} announcementKey={save.submittedAt} />}
       {catalog.isError && <ErrorState error={catalog.error} />}
     </div>
   </WorkspaceEditorFrame>

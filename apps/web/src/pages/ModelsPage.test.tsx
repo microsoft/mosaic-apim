@@ -801,7 +801,7 @@ describe('ModelsPage', () => {
     const dialog = await screen.findByRole('alertdialog')
     await user.click(within(dialog).getByRole('button', { name: 'Remove publication' }))
 
-    const refusal = await within(dialog).findByRole('alert')
+    const refusal = await within(dialog).findByRole('group', { name: "MOSAIC didn't remove this publication" })
     expect(screen.getByRole('alertdialog', { name: 'Remove GPT-4o production?' })).toBe(dialog)
     expect(dialog).toBeVisible()
     expect(refusal).toHaveTextContent("MOSAIC didn't remove this publication")
@@ -891,9 +891,9 @@ describe('ModelsPage', () => {
     await user.click(screen.getByRole('button', { name: 'Save summary' }))
     await waitFor(() => expect(api.updateModelApiCatalog).toHaveBeenCalledExactlyOnceWith(record.id, { summary: 'New catalog copy' }))
     expect(await screen.findByText('Catalog summary saved.')).toBeVisible()
+    await waitFor(() => expect(screen.getByTestId('location')).not.toHaveTextContent('mode=edit'))
     expect(screen.getByTestId('location')).toHaveTextContent(`selected=${section === 'published' ? publication.id : record.id}`)
     expect(screen.getByTestId('location')).toHaveTextContent('filter=keep')
-    expect(screen.getByTestId('location')).not.toHaveTextContent('mode=edit')
     expect(record.visibility).toBe('private')
     expect(api.applyPublishPlan).not.toHaveBeenCalled()
     expect(api.createPublishPlan).not.toHaveBeenCalled()
@@ -1377,7 +1377,7 @@ describe('ModelsPage model endpoints', () => {
     const dialog = await screen.findByRole('alertdialog')
     await user.click(within(dialog).getByRole('button', { name: 'Remove endpoint' }))
 
-    const refusal = await within(dialog).findByRole('alert')
+    const refusal = await within(dialog).findByRole('group', { name: "MOSAIC didn't remove this endpoint" })
     // Queries within a dialog that has closed still find its detached content, so check it's still
     // the open dialog on the page.
     expect(screen.getByRole('alertdialog', { name: 'Remove Contoso models?' })).toBe(dialog)
@@ -3457,7 +3457,7 @@ describe('ModelsPage model endpoints', () => {
       const dialog = await screen.findByRole('alertdialog')
       await user.click(within(dialog).getByRole('button', { name: 'Remove endpoint' }))
 
-      const refusal = await within(dialog).findByRole('alert')
+      const refusal = await within(dialog).findByRole('group', { name: "MOSAIC didn't remove this endpoint" })
       expect(refusal).toHaveTextContent("MOSAIC didn't remove this endpoint")
       expect(refusal).toHaveTextContent(message)
       expect(within(dialog).getByText('Take it out of these model pools first')).toBeVisible()

@@ -365,9 +365,62 @@ describe('Entitlements workbench', () => {
     renderPage('/entitlements?selected=entitlement_1&mode=edit')
     const editor = await screen.findByRole('region', { name: 'Edit grant' })
     expect(within(editor).getByRole('spinbutton', { name: 'Calls' })).toHaveValue(30)
+    expect(within(editor).getByRole('spinbutton', { name: 'Call quota' })).toHaveValue(500)
     await user.type(within(editor).getByRole('textbox', { name: 'Notes' }), ' added')
     await user.click(within(editor).getByRole('button', { name: 'Save grant' }))
-    await waitFor(() => expect(api.updateEntitlement).toHaveBeenCalledWith(entitlement.id, expect.objectContaining({ enforcement })))
+    await waitFor(() => expect(api.updateEntitlement).toHaveBeenCalledWith(entitlement.id, { notes: 'Engineering evaluation added' }))
+  })
+
+  it('edits the quota and period without resetting the rate or saved policy metadata', async () => {
+    const user = userEvent.setup()
+    const enforcement = {
+      tokens: { ...entitlement.enforcement!.tokens!, estimatePromptTokens: false },
+      requests: { calls: 30, renewalPeriodSeconds: 60, callQuota: 500, callQuotaPeriod: 'Monthly' as const, counterKeyExpression: '@("retained-call-counter")' },
+    }
+    api.listEntitlements.mockResolvedValue([{ ...entitlement, enforcement }])
+    renderPage('/entitlements?selected=entitlement_1&mode=edit')
+    const editor = await screen.findByRole('region', { name: 'Edit grant' })
+    const summary = within(editor).getByRole('complementary', { name: 'Decision summary' })
+    expect(within(summary).getByText('Before: Saved explicit limits')).toBeVisible()
+    await user.clear(within(editor).getByRole('spinbutton', { name: 'Call quota' }))
+    await user.type(within(editor).getByRole('spinbutton', { name: 'Call quota' }), '1000')
+    await user.selectOptions(within(editor).getByRole('combobox', { name: 'Call quota period' }), 'Weekly')
+    await user.click(within(editor).getByRole('button', { name: 'Save grant' }))
+    await waitFor(() => expect(api.updateEntitlement).toHaveBeenCalledWith(entitlement.id, {
+      notes: entitlement.notes,
+      enforcement: { ...enforcement, requests: { ...enforcement.requests, callQuota: 1000, callQuotaPeriod: 'Weekly' } },
+    }))
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+  })
+
+  it('clears only the quota and preserves an untouched legacy rate window', async () => {
+    const user = userEvent.setup()
+    const enforcement = { requests: { calls: 30, renewalPeriodSeconds: 900, callQuota: 500, callQuotaPeriod: 'Monthly' as const, counterKeyExpression: GOVERNED_COUNTER_KEY } }
+    api.listEntitlements.mockResolvedValue([{ ...entitlement, enforcement }])
+    renderPage('/entitlements?selected=entitlement_1&mode=edit')
+    const editor = await screen.findByRole('region', { name: 'Edit grant' })
+    await user.click(within(editor).getByRole('button', { name: 'Remove call quota' }))
+    expect(within(editor).getByRole('combobox', { name: 'Call quota period' })).toBeDisabled()
+    await user.click(within(editor).getByRole('button', { name: 'Save grant' }))
+    await waitFor(() => expect(api.updateEntitlement).toHaveBeenCalledWith(entitlement.id, {
+      notes: entitlement.notes,
+      enforcement: { requests: { counterKeyExpression: GOVERNED_COUNTER_KEY, calls: 30, renewalPeriodSeconds: 900 } },
+    }))
+  })
+
+  it('retains quota and period after a failed save and never puts the draft in a URL', async () => {
+    const user = userEvent.setup()
+    api.updateEntitlement.mockRejectedValue(new Error('Quota save failed'))
+    const { params } = renderPage('/entitlements?selected=entitlement_1&mode=edit')
+    const editor = await screen.findByRole('region', { name: 'Edit grant' })
+    await user.type(within(editor).getByRole('spinbutton', { name: 'Call quota' }), '1000')
+    await user.selectOptions(within(editor).getByRole('combobox', { name: 'Call quota period' }), 'Weekly')
+    await user.click(within(editor).getByRole('button', { name: 'Save grant' }))
+    expect(await within(editor).findByText('Quota save failed')).toBeVisible()
+    expect(within(editor).getByRole('spinbutton', { name: 'Call quota' })).toHaveValue(1000)
+    expect(within(editor).getByRole('combobox', { name: 'Call quota period' })).toHaveValue('Weekly')
+    expect(params().toString()).not.toMatch(/1000|Weekly/)
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
   })
 
   it('keeps imported-only direct grants desired-only', async () => {
@@ -375,6 +428,34 @@ describe('Entitlements workbench', () => {
     renderPage(`/entitlements?selected=${directGrant.id}`)
     expect(await screen.findByText('No runtime orchestration. APIM is unchanged by this grant.')).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Manage model' })).not.toBeInTheDocument()
+  })
+
+  it('uses the captured null enforcement baseline after a concurrent refetch and omits metadata-only enforcement', async () => {
+    const user = userEvent.setup()
+    const initial = { ...entitlement, enforcement: null }
+    api.listEntitlements.mockResolvedValue([initial])
+    const { queryClient } = renderPage('/entitlements?selected=entitlement_1&mode=edit')
+    const editor = await screen.findByRole('region', { name: 'Edit grant' })
+    await waitFor(() => expect(within(editor).getByRole('spinbutton', { name: 'Call quota' })).toHaveValue(null))
+    await act(() => queryClient.setQueryData(['entitlements', { costCenter: 'all' }], [{
+      ...initial,
+      enforcement: { requests: { counterKeyExpression: GOVERNED_COUNTER_KEY, calls: 30, renewalPeriodSeconds: 900, callQuota: 500, callQuotaPeriod: 'Monthly' } },
+    }]))
+    const summary = within(editor).getByRole('complementary', { name: 'Decision summary' })
+    expect(within(summary).queryByText('Before: Saved explicit limits')).not.toBeInTheDocument()
+    expect(within(editor).getByRole('spinbutton', { name: 'Call quota' })).toHaveValue(null)
+    await user.type(within(editor).getByRole('textbox', { name: 'Notes' }), ' reviewed')
+    await user.click(within(editor).getByRole('button', { name: 'Save grant' }))
+    await waitFor(() => expect(api.updateEntitlement).toHaveBeenCalledWith(entitlement.id, { notes: 'Engineering evaluation reviewed' }))
+  })
+
+  it.each(['product', 'modelDeployment'] as const)('makes no managed-apply claim while editing desired-only %s grants', async kind => {
+    api.listEntitlements.mockResolvedValue([{ ...entitlement, resource: { kind, id: 'observed-resource', scopeId: 'gateway_1' } }])
+    renderPage('/entitlements?selected=entitlement_1&mode=edit')
+    const editor = await screen.findByRole('region', { name: 'Edit grant' })
+    const summary = within(editor).getByRole('complementary', { name: 'Decision summary' })
+    expect(within(summary).getByText('Saving records desired state only. No managed gateway plan is generated for this resource.')).toBeVisible()
+    expect(within(summary).queryByText(/affected gateway plan/)).not.toBeInTheDocument()
   })
 
   it('refuses half-filled call limits in the grant workspace', async () => {

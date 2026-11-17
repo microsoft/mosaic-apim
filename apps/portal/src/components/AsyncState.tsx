@@ -39,15 +39,22 @@ function errorStatus(error: unknown) {
   return undefined
 }
 
-export function ErrorState({ error }: { error: unknown }) {
-  if (errorStatus(error) === 403) {
+export type ErrorStateProps = {
+  error: unknown
+  announcementKey?: string | number
+} & ({ context?: 'load'; title?: string } | { context: 'action'; title: string })
+
+export function ErrorState({
+  error, context = 'load', title = 'Unable to load data', announcementKey,
+}: ErrorStateProps) {
+  if (context === 'load' && errorStatus(error) === 403) {
     return <NoPortalAccess />
   }
   const message = error instanceof Error ? error.message : 'An unexpected error occurred.'
   return (
-    <MessageBar intent="error">
+    <MessageBar key={announcementKey} intent="error">
       <MessageBarBody>
-        <MessageBarTitle>Unable to load data</MessageBarTitle>
+        <MessageBarTitle>{title}</MessageBarTitle>
         {message}
       </MessageBarBody>
     </MessageBar>

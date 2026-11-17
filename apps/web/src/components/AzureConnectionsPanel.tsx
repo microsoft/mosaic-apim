@@ -1,14 +1,16 @@
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Badge, Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface,
-  DialogTitle, Field, Input, MessageBar, MessageBarBody, Select, Text,
+  DialogTitle, Field, Input, MessageBar, MessageBarBody, Select, Text, AnnounceProvider, useAnnounce, useRestoreFocusTarget,
 } from '@fluentui/react-components'
 import { useMosaicApi } from '../api'
 import type { AzureConnection } from '../types'
 import { ErrorState, Loading } from './AsyncState'
 import { WorkspaceEditorFrame } from './WorkspaceEditorFrame'
 import { completeWorkspaceNavigation } from './WorkspaceLeaveGuard'
+import { useDialogFocusReturn } from './useDialogFocusReturn'
+import { useFocusAwareAnnounce } from './useFocusAwareAnnounce'
 import styles from './AzureConnectionsPanel.module.css'
 
 type Editor = { kind: 'create' } | { kind: 'name' | 'secret'; connection: AzureConnection }
@@ -92,6 +94,13 @@ export function AzureConnectionsPanel() {
   const queryClient = useQueryClient()
   const [editor, setEditor] = useState<Editor | null>(null)
   const [removing, setRemoving] = useState<AzureConnection | null>(null)
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const outcomeRef = useRef<HTMLDivElement>(null)
+  const fallbackRef = useRef<HTMLHeadingElement>(null)
+  const restoreFocus = useRestoreFocusTarget()
+  const { announce } = useAnnounce()
+  const motion = useDialogFocusReturn({ open: removing !== null, surfaceRef, fallbackRef })
+  const announcement = useFocusAwareAnnounce(outcomeRef)
   const connections = useQuery({
     queryKey: ['azure-connections'], queryFn: () => api.listAzureConnections(),
   })
@@ -104,14 +113,16 @@ export function AzureConnectionsPanel() {
     onSuccess: () => {
       setRemoving(null)
       void queryClient.invalidateQueries({ queryKey: ['azure-connections'] })
+      announce('Azure connection removed from MOSAIC. Azure resources are unchanged.', { polite: true })
     },
   })
+  useLayoutEffect(() => { if (removing && remove.isError) outcomeRef.current?.focus() }, [removing, remove.isError, remove.submittedAt])
   if (editor) return <ConnectionEditor key={editor.kind === 'create' ? 'create' : `${editor.kind}:${editor.connection.id}`}
     editor={editor} onClose={() => setEditor(null)} />
   return <section className={styles.panel} aria-labelledby="azure-connections-heading">
     <div className={styles.toolbar}>
       <div>
-        <h2 id="azure-connections-heading">Azure connections</h2>
+        <h2 id="azure-connections-heading" ref={fallbackRef} tabIndex={-1}>Azure connections</h2>
         <Text>Choose the management identity used to discover and manage each Azure estate.</Text>
       </div>
       <Button appearance="primary" onClick={() => setEditor({ kind: 'create' })}>Add connection</Button>
@@ -123,7 +134,7 @@ export function AzureConnectionsPanel() {
     </MessageBarBody></MessageBar>
     {connections.isPending && <Loading label="Loading Azure connections" />}
     {connections.isError && <ErrorState error={connections.error} />}
-    {test.isError && <ErrorState error={test.error} />}
+    {test.isError && <ErrorState context="action" title="Unable to test the connection" error={test.error} announcementKey={test.submittedAt} />}
     <div className={styles.list}>
       {connections.data?.map((connection) => <article className={styles.connection} key={connection.id}>
         <div className={styles.heading}>
@@ -143,23 +154,23 @@ export function AzureConnectionsPanel() {
           <Button disabled={test.isPending} onClick={() => test.mutate(connection.id)}>Test authentication</Button>
           <Button onClick={() => setEditor({ kind: 'name', connection })}>Rename</Button>
           <Button onClick={() => setEditor({ kind: 'secret', connection })}>Replace secret</Button>
-          <Button disabled={connection.inUse} onClick={() => { remove.reset(); setRemoving(connection) }}>Remove</Button>
+          <Button {...restoreFocus} disabled={connection.inUse} onClick={() => { remove.reset(); setRemoving(connection) }}>Remove</Button>
           {connection.inUse && <Text size={200}>Registered resources use this connection.</Text>}
         </div>}
       </article>)}
     </div>
-    <Dialog open={removing !== null} onOpenChange={(_, data) => { if (!data.open && !remove.isPending) setRemoving(null) }}>
-      <DialogSurface><DialogBody>
+    <Dialog open={removing !== null} surfaceMotion={motion} onOpenChange={(_, data) => { if (!data.open && !remove.isPending) setRemoving(null) }}>
+      <DialogSurface ref={surfaceRef}><DialogBody>
         <DialogTitle>Remove Azure connection?</DialogTitle>
         <DialogContent>
           Remove {removing?.name} from MOSAIC and delete its stored management secret.
           This does not remove the service principal or any Azure resource.
-          {remove.isError && <ErrorState error={remove.error} />}
+          {remove.isError && <AnnounceProvider value={announcement}><div ref={outcomeRef} tabIndex={-1}><ErrorState context="action" title="Unable to remove the connection" error={remove.error} announcementKey={remove.submittedAt} /></div></AnnounceProvider>}
         </DialogContent>
         <DialogActions>
-          <Button disabled={remove.isPending} onClick={() => setRemoving(null)}>Cancel</Button>
-          <Button appearance="primary" disabled={remove.isPending}
-            onClick={() => { if (removing) remove.mutate(removing.id) }}>Remove connection</Button>
+          <Button disabledFocusable={remove.isPending} onClick={() => setRemoving(null)}>Cancel</Button>
+          <Button appearance="primary" disabledFocusable={remove.isPending}
+            onClick={() => { if (removing && !remove.isPending) remove.mutate(removing.id) }}>Remove connection</Button>
         </DialogActions>
       </DialogBody></DialogSurface>
     </Dialog>

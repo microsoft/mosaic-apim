@@ -34,6 +34,7 @@ from mosaic_api.domain import (
     CatalogVisibility,
     DeclaredDeployment,
     EntitlementBinding,
+    EntitlementResource,
     EntitlementSubjectKind,
     EnvironmentVerdict,
     Gateway,
@@ -76,7 +77,16 @@ from mosaic_api.integrations.apim.model_apis import (
     assess_deployment,
     backend_origin,
     is_anthropic_model,
-    token_limits_note,
+    token_metrics_emitted,
+)
+from mosaic_api.integrations.apim.policy_capabilities import (
+    PolicyBoundary,
+    changed_limit_policies,
+    limit_policy_issues,
+    require_supported_limits,
+    required_emitted_policies,
+    required_limit_policies,
+    shared_policy_capabilities,
 )
 from mosaic_api.integrations.apim.policy_semantics import content_digest
 from mosaic_api.integrations.apim.writer import DEFAULT_SUBSCRIPTION_KEY_NAMES, ApimWriter
@@ -163,6 +173,13 @@ from mosaic_api.services.model_access import (
     local_mutation_active,
     model_api_offered,
     publication_lock,
+)
+from mosaic_api.services.policy_capabilities import (
+    deployment_policy_capabilities,
+    pool_policy_capabilities,
+    pooled_limit_policies,
+    refresh_policy_gateway,
+    safeguard_limit_policies,
 )
 from mosaic_api.services.pool_access import (
     denied_pool_access_snapshot,
@@ -1409,7 +1426,8 @@ class ModelPoolService:
         )
 
     async def _access_snapshot(
-        self, pool: ModelPool, gateway: Gateway, shape: str
+        self, pool: ModelPool, gateway: Gateway, shape: str, *,
+        boundary: PolicyBoundary = "plan",
     ) -> tuple[PoolAccessSnapshot | None, list[str]]:
         """Compile the grants on the pool's models into the snapshot its policy enforces.
 
@@ -1439,7 +1457,7 @@ class ModelPoolService:
             "subscription-key (query); each apply explicitly enforces these parameter names.",
         ]
         book = await load_book(self._cost_centers, pool.tenant_id)
-        metered = token_limits_note(shape, gateway.capabilities.sku_name) is None
+        metered = token_metrics_emitted(shape, gateway_tier(gateway.capabilities.sku_name))
         routed = {route.model_id for route in _routes(pool)}
         grants: list[PoolAccessGrant] = []
         quotas: dict[tuple[str, str], PoolModelQuota] = {}
@@ -1510,7 +1528,21 @@ class ModelPoolService:
                     )
                     continue
                 enforcement = effective_enforcement(entitlement, intent)
-                if not metered and enforcement is not None and enforcement.tokens is not None:
+                if entitlement.enabled and (settings.keys_enabled or settings.entra_enabled):
+                    capabilities = await pool_policy_capabilities(
+                        self._endpoints, pool, gateway, resource=entitlement.resource
+                    )
+                    requirements = required_limit_policies(enforcement)
+                    if intent.pool is not None:
+                        requirements += pooled_limit_policies(
+                            intent.pool.monthly_tokens, intent.pool.monthly_calls,
+                            field_prefix="costCenter.limits.pool",
+                        )
+                    require_supported_limits(capabilities, requirements, boundary=boundary)
+                if (
+                    entitlement.enabled and not metered
+                    and enforcement is not None and enforcement.tokens is not None
+                ):
                     # Granting access without the token limits an administrator set would widen
                     # it, so the grant stays out until its limits fit what the gateway can apply.
                     warnings.append(
@@ -1520,7 +1552,7 @@ class ModelPoolService:
                     )
                     continue
                 if (
-                    not metered
+                    entitlement.enabled and not metered
                     and intent.pool is not None
                     and intent.pool.monthly_tokens is not None
                 ):
@@ -1697,6 +1729,7 @@ class ModelPoolService:
             )
             if request.models:
                 pool = await self._with_models(actor, pool, gateway, request.models)
+            await self._require_safeguard_change(pool, gateway)
             _check_linear(pool)
             await self._reject_desired_collisions(actor, pool)
             await self._repository.save_model_pool(
@@ -1730,6 +1763,7 @@ class ModelPoolService:
                     "Governed access cannot be cleared. Disable keys and Entra independently "
                     "instead."
                 )
+            before = pool
             changes: dict[str, Any] = {}
             for name in (
                 "display_name",
@@ -1755,6 +1789,7 @@ class ModelPoolService:
                 previous = pool
                 pool = await self._with_models(actor, pool, gateway, request.models)
                 _check_granted_models(previous, pool)
+            await self._require_safeguard_change(pool, gateway, before)
             _check_linear(pool)
             pool = pool.model_copy(
                 update={
@@ -2174,13 +2209,17 @@ class ModelPoolService:
                 f"The pool's API is published for {pool.api_shape} requests, and its deployments "
                 f"now need {shape}. Unpublish the pool before changing what it serves."
             )
-        if pool.safeguard is not None and shape is not None:
-            note = token_limits_note(shape, gateway.capabilities.sku_name)
-            if note is not None:
-                problems.append(
-                    f"This gateway can't apply the pool's safeguard. {note} Remove the safeguard "
-                    "to publish the pool here."
+        settings = pool.governed_access
+        if pool.safeguard is not None and (
+            settings is None or settings.keys_enabled or settings.entra_enabled
+        ):
+            capabilities = await pool_policy_capabilities(self._endpoints, pool, gateway)
+            problems.extend(
+                issue.message
+                for issue in limit_policy_issues(
+                    capabilities, safeguard_limit_policies(pool.safeguard)
                 )
+            )
         if gateway.capabilities.gateway_url is None:
             warnings.append(
                 "MOSAIC hasn't read this gateway's URL, so it can't show callers where to "
@@ -2682,6 +2721,10 @@ class ModelPoolService:
                 fit = _fit(entry, deployment, gateway)
                 declared = deployment.deployment_name.casefold() in entry.declared
                 reason = self._ineligible(deployment, fit, verdict, readiness, message)
+                policy_capabilities = deployment_policy_capabilities(
+                    gateway, endpoint,
+                    entry.declared.get(deployment.deployment_name.casefold(), deployment),
+                )
                 candidate = PoolCandidateDeployment(
                     azure_cloud=endpoint.azure_cloud,
                     model_endpoint_id=endpoint.id,
@@ -2707,6 +2750,7 @@ class ModelPoolService:
                     declared=declared,
                     api_key=endpoint.uses_backend_key(),
                     provider=endpoint.provider,
+                    policy_capabilities=policy_capabilities,
                 )
                 if declared and deployment.model_format is None:
                     unknown.append((deployment.model_name, fit.api_shape, candidate))
@@ -2735,6 +2779,10 @@ class ModelPoolService:
                 model_name=name,
                 model_format=model_format,
                 api_shape=shape,
+                policy_capabilities=shared_policy_capabilities([
+                    candidate.policy_capabilities for candidate in deployments[key]
+                    if candidate.policy_capabilities is not None
+                ]),
                 deployments=sorted(
                     deployments[key],
                     key=lambda item: (item.endpoint_name.casefold(), item.deployment_name),
@@ -3218,14 +3266,26 @@ class ModelPoolService:
                 raise ConflictError(_UNKNOWN_ACCESS, details={"id": pool_id})
             gateway = await self._load_gateway(actor, pool.gateway_id)
             self._require_writable(gateway)
+            resource = gateway.arm_resource()
+            client = self._client_factory(resource)
+            settings = pool.governed_access
+            if settings is None or settings.keys_enabled or settings.entra_enabled:
+                gateway = await refresh_policy_gateway(client, gateway)
+                require_supported_limits(
+                    await pool_policy_capabilities(self._endpoints, pool, gateway),
+                    safeguard_limit_policies(pool.safeguard), boundary="plan",
+                )
             assessment = await self._assess(actor, pool, gateway)
             shape = self._require_shape(pool, assessment)
             await self._reject_desired_collisions(actor, pool)
-            resource = gateway.arm_resource()
-            client = self._client_factory(resource)
             await self._reject_collisions(actor, pool, gateway, client)
             snapshot, access_warnings = await self._access_snapshot(pool, gateway, shape)
             policy = _policy(pool, shape, snapshot, assessment.keyed())
+            require_supported_limits(
+                await pool_policy_capabilities(self._endpoints, pool, gateway),
+                required_emitted_policies(policy.fragment_xml, policy.api_policy_xml),
+                boundary="plan",
+            )
             desired = _desired(pool, gateway, assessment, shape)
             if snapshot is None:
                 steps = await self._steps(client, pool, desired)
@@ -3318,11 +3378,24 @@ class ModelPoolService:
             raise ConflictError(_UNKNOWN_ACCESS, details={"id": pool_id})
         gateway = await self._load_gateway(actor, pool.gateway_id)
         self._require_writable(gateway)
+        client = self._client_factory(gateway.arm_resource())
+        settings = pool.governed_access
+        if settings is None or settings.keys_enabled or settings.entra_enabled:
+            gateway = await refresh_policy_gateway(client, gateway)
+            require_supported_limits(
+                await pool_policy_capabilities(self._endpoints, pool, gateway),
+                safeguard_limit_policies(pool.safeguard), boundary="apply",
+            )
         plan = await self._resolve_plan(actor, pool, plan_id)
         assessment = await self._assess(actor, pool, gateway)
         shape = self._require_shape(pool, assessment)
-        snapshot, _ = await self._access_snapshot(pool, gateway, shape)
+        snapshot, _ = await self._access_snapshot(pool, gateway, shape, boundary="apply")
         policy = _policy(pool, shape, snapshot, assessment.keyed())
+        require_supported_limits(
+            await pool_policy_capabilities(self._endpoints, pool, gateway),
+            required_emitted_policies(policy.fragment_xml, policy.api_policy_xml),
+            boundary="apply",
+        )
         desired = _desired(pool, gateway, assessment, shape)
         if (
             pool_digest(pool, shape, policy, desired, assessment.fingerprints(), snapshot)
@@ -3332,7 +3405,6 @@ class ModelPoolService:
         run = self._claim(actor, pool, plan, owner)
         await self._repository.save_publish_run(run)
         await self._mark_applying(pool, run.id)
-        client = self._client_factory(gateway.arm_resource())
         if snapshot is None:
             self._spawn(self._run_apply(pool, gateway, client, plan, policy, desired, run))
         else:
@@ -3340,6 +3412,36 @@ class ModelPoolService:
                 self._run_governed_apply(pool, gateway, client, plan, policy, desired, shape, run)
             )
         return run
+
+    async def _require_safeguard_change(
+        self, pool: ModelPool, gateway: Gateway, before: ModelPool | None = None
+    ) -> None:
+        after = safeguard_limit_policies(pool.safeguard)
+        changed = changed_limit_policies(
+            safeguard_limit_policies(before.safeguard if before else None), after
+        )
+        if not after:
+            return
+        if not pool.models and changed:
+            require_supported_limits(
+                await pool_policy_capabilities(self._endpoints, pool, gateway), changed
+            )
+        previous_models = {model.id for model in before.models} if before else set()
+        for model in pool.models:
+            requirements = (
+                after if before is None or model.id not in previous_models
+                or pool.api_shape != before.api_shape else changed
+            )
+            if requirements:
+                require_supported_limits(
+                    await pool_policy_capabilities(
+                        self._endpoints, pool, gateway,
+                        resource=EntitlementResource(
+                            kind="poolModel", id=model.id, scope_id=pool.id
+                        ),
+                    ),
+                    requirements,
+                )
 
     @staticmethod
     def _claim(actor: Actor, pool: ModelPool, plan: PublishPlan, owner: str) -> PublishRun:

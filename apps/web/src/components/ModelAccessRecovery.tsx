@@ -1,5 +1,6 @@
-import { Button, MessageBar, MessageBarBody, Text } from '@fluentui/react-components'
+import { Button, MessageBar, MessageBarBody, Text, useAnnounce } from '@fluentui/react-components'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useRef } from 'react'
 import { useMosaicApi } from '../api'
 import { ErrorState } from './AsyncState'
 import styles from '../pages/EntitlementsPage.module.css'
@@ -16,6 +17,8 @@ export function ModelAccessRecovery({
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const noun = target === 'pool' ? 'pool' : 'publication'
+  const { announce } = useAnnounce()
+  const reported = useRef<number | null>(null)
   const diagnostic = useMutation({
     mutationFn: async () => {
       const lock = target === 'mcp'
@@ -46,6 +49,14 @@ export function ModelAccessRecovery({
       ])
     },
   })
+  useEffect(() => {
+    if (!diagnostic.isSuccess || reported.current === diagnostic.submittedAt) return
+    reported.current = diagnostic.submittedAt
+    const result = diagnostic.data.run
+      ? `Diagnostic reported run status: ${diagnostic.data.run.status}. ${diagnostic.data.run.errors.join(' ')}`
+      : `No ${noun} write lock is currently held.`
+    announce(`${result} No operator confirmation was sent. This is not proof of applied access or revocation.`, { polite: true })
+  }, [diagnostic.isSuccess, diagnostic.submittedAt, diagnostic.data, noun, announce])
 
   return (
     <div className={styles.cellStack}>
@@ -59,10 +70,10 @@ export function ModelAccessRecovery({
           the lock.
         </MessageBarBody>
       </MessageBar>
-      <Button disabled={diagnostic.isPending} onClick={() => diagnostic.mutate()}>
+      <Button disabledFocusable={diagnostic.isPending} onClick={() => { if (!diagnostic.isPending) diagnostic.mutate() }}>
         {diagnostic.isPending ? 'Checking recovery status…' : 'Check recovery status (diagnostic only)'}
       </Button>
-      {diagnostic.isError && <ErrorState error={diagnostic.error} />}
+      {diagnostic.isError && <ErrorState context="action" title="Unable to check recovery status" error={diagnostic.error} announcementKey={diagnostic.submittedAt} />}
       {diagnostic.data && (
         <div className={styles.cellStack}>
           <Text>

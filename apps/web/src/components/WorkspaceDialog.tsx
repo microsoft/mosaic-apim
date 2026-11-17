@@ -1,6 +1,7 @@
-import { type ComponentPropsWithoutRef, type ReactNode, useLayoutEffect, useRef, useState } from 'react'
+import { type ComponentPropsWithoutRef, type ReactNode, type RefObject, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { WorkspaceEditorFrame } from './WorkspaceEditorFrame'
+import { restoreFocusTo } from './useDialogFocusReturn'
 import sectionStyles from './SectionLayout.module.css'
 import styles from './WorkspaceDialog.module.css'
 
@@ -13,6 +14,9 @@ export interface WorkspaceDialogProps {
   children: ReactNode | ((requestClose: () => void) => ReactNode)
   dirty?: boolean
   pending?: boolean
+  error?: ReactNode
+  errorKey?: string | number
+  fallbackFocusRef?: RefObject<HTMLElement | null>
 }
 
 /**
@@ -23,11 +27,14 @@ export function WorkspaceDialog(props: WorkspaceDialogProps) {
   const anchor = useRef<HTMLSpanElement>(null)
   const [host, setHost] = useState<HTMLElement | null>(null)
   const opener = useRef<HTMLElement | null>(null)
+  const content = useRef<HTMLDivElement>(null)
+  const editor = useRef<HTMLElement | null>(null)
   const [edited, setEdited] = useState(false)
 
   useLayoutEffect(() => {
     if (!props.open || !anchor.current?.parentElement) return
     opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const fallback = props.fallbackFocusRef?.current
     const scroll = { left: window.scrollX, top: window.scrollY }
     const parent = anchor.current.parentElement
     let sectionContent = parent.closest<HTMLElement>(`.${sectionStyles.content}`)
@@ -68,7 +75,7 @@ export function WorkspaceDialog(props: WorkspaceDialogProps) {
         else child.style.removeProperty('display')
       }
       setHost(null)
-      if (opener.current?.isConnected) opener.current.focus({ preventScroll: true })
+      restoreFocusTo(opener.current, fallback, editor.current)
       queueMicrotask(() => {
         if (!target.isConnected) return
         target.scrollLeft = hostScroll.left
@@ -76,7 +83,11 @@ export function WorkspaceDialog(props: WorkspaceDialogProps) {
         window.scrollTo(scroll)
       })
     }
-  }, [props.open])
+  }, [props.open, props.fallbackFocusRef])
+
+  useLayoutEffect(() => {
+    if (props.open && host) editor.current = content.current?.closest<HTMLElement>('[data-workspace-editor]') ?? null
+  }, [props.open, host])
 
   const close = () => props.onOpenChange(undefined, { open: false })
   return <>
@@ -84,8 +95,9 @@ export function WorkspaceDialog(props: WorkspaceDialogProps) {
     {props.open && host && createPortal(
       <WorkspaceEditorFrame title={props.title} description={props.description}
         actions={(requestLeave) => typeof props.actions === 'function' ? props.actions(() => requestLeave(close)) : props.actions}
-        onBack={close} onCancel={close} dirty={props.dirty ?? edited} pending={props.pending}>
-        {(requestLeave) => <div onChangeCapture={() => setEdited(true)}>
+        onBack={close} onCancel={close} dirty={props.dirty ?? edited} pending={props.pending}
+        error={props.error} errorKey={props.errorKey}>
+        {(requestLeave) => <div ref={content} onChangeCapture={() => setEdited(true)}>
           {typeof props.children === 'function' ? props.children(() => requestLeave(close)) : props.children}
         </div>}
       </WorkspaceEditorFrame>, host,

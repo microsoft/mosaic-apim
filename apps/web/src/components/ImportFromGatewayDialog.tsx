@@ -1,5 +1,6 @@
 import {
   Badge,
+  AnnounceProvider,
   Button,
   Checkbox,
   Dialog,
@@ -20,12 +21,14 @@ import {
   Text,
 } from '@fluentui/react-components'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useMosaicApi } from '../api'
 import { environmentFindingsQueryKey } from '../environments'
 import { AI_KIND_LABELS } from '../labels'
 import type { Gateway } from '../types'
 import { ErrorState, Loading } from './AsyncState'
+import { useFocusAwareAnnounce } from './useFocusAwareAnnounce'
+import { useDialogFocusReturn } from './useDialogFocusReturn'
 import {
   WorkspaceDialog,
   WorkspaceDialogActions,
@@ -72,15 +75,7 @@ const COPY: Record<
   },
 }
 
-export function ImportFromGatewayDialog({
-  kind,
-  mutationKey,
-  open,
-  initialGatewayId,
-  onClose,
-  onImported,
-  surface = 'workspace',
-}: {
+interface ImportFromGatewayProps {
   kind: ImportKind
   mutationKey?: readonly unknown[]
   open: boolean
@@ -88,7 +83,24 @@ export function ImportFromGatewayDialog({
   onClose: (importedId?: string) => void
   onImported: (count: number) => void
   surface?: 'workspace' | 'dialog'
-}) {
+}
+
+export function ImportFromGatewayDialog(props: ImportFromGatewayProps) {
+  const [session, setSession] = useState({ open: props.open, key: 0 })
+  if (props.open && !session.open) setSession({ open: true, key: session.key + 1 })
+  else if (!props.open && session.open) setSession({ ...session, open: false })
+  return <ImportFromGatewaySession key={session.key} {...props} />
+}
+
+function ImportFromGatewaySession({
+  kind,
+  mutationKey,
+  open,
+  initialGatewayId,
+  onClose,
+  onImported,
+  surface = 'workspace',
+}: ImportFromGatewayProps) {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const copy = COPY[kind]
@@ -97,6 +109,8 @@ export function ImportFromGatewayDialog({
   const [touched, setTouched] = useState(false)
   const [gatewayTouched, setGatewayTouched] = useState(false)
   const appliedInitialGatewayRef = useRef(false)
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const surfaceMotion = useDialogFocusReturn({ open: open && surface === 'dialog', surfaceRef })
 
   const gateways = useQuery({
     queryKey: ['gateways'],
@@ -215,17 +229,14 @@ export function ImportFromGatewayDialog({
     },
   })
 
-  // An import that fails keeps the dialog open with the reason. Move focus there, so a screen reader reads
-  // it: the message bar doesn't announce itself. The failure only ever follows pressing Import, so it takes
-  // focus from a field too. An import that succeeds closes the dialog, and the page reports it. Fluent
-  // places focus as the dialog opens.
+  // An explicit import failure takes focus; the next opening gets a fresh attempt.
   const failureRef = useRef<HTMLDivElement>(null)
+  const announcement = useFocusAwareAnnounce(failureRef)
   const failure = importMutation.error
   const shownFailure = useRef(failure)
-  useEffect(() => {
+  useLayoutEffect(() => {
     const shown = shownFailure.current
     shownFailure.current = failure
-    // The last failure is still shown when the dialog opens again, and it isn't new.
     if (!open || !failure || Object.is(failure, shown)) return
     failureRef.current?.focus()
   }, [open, failure])
@@ -253,9 +264,9 @@ export function ImportFromGatewayDialog({
     <Text size={200} className={styles.footerNote}>
       {selectedCount} selected{!touched && selectedCount > 0 ? ' by detection' : ''}
     </Text>
-    {surface === 'dialog' && <Button appearance="secondary" disabled={importMutation.isPending} onClick={requestClose}>Cancel</Button>}
+    {surface === 'dialog' && <Button appearance="secondary" disabledFocusable={importMutation.isPending} onClick={requestClose}>Cancel</Button>}
     <Button appearance="primary" disabled={selectedCount === 0} disabledFocusable={importMutation.isPending}
-      onClick={() => importMutation.mutate([...selected])}>
+      onClick={() => { if (!importMutation.isPending && selectedCount > 0) importMutation.mutate([...selected]) }}>
       {importMutation.isPending ? 'Importing...' : `Import ${selectedCount}`}
     </Button>
   </WorkspaceDialogActions>
@@ -335,9 +346,9 @@ export function ImportFromGatewayDialog({
             )}
 
             {importMutation.isError && (
-              <div ref={failureRef} tabIndex={-1}>
-                <ErrorState error={importMutation.error} />
-              </div>
+              <AnnounceProvider value={announcement}><div ref={failureRef} tabIndex={-1}>
+                <ErrorState context="action" title={`Unable to import ${copy.plural}`} error={importMutation.error} announcementKey={importMutation.submittedAt} />
+              </div></AnnounceProvider>
             )}
 
             {candidatesQuery.isPending && gatewayId !== '' && (
@@ -422,8 +433,8 @@ export function ImportFromGatewayDialog({
         </>
   )
   if (surface === 'dialog') {
-    return <Dialog open={open} onOpenChange={(_, data) => !data.open && !importMutation.isPending && onClose()}>
-      <DialogSurface><DialogBody><DialogTitle>{copy.title}</DialogTitle>{content(() => onClose())}</DialogBody></DialogSurface>
+    return <Dialog open={open} surfaceMotion={surfaceMotion} onOpenChange={(_, data) => !data.open && !importMutation.isPending && onClose()}>
+      <DialogSurface ref={surfaceRef}><DialogBody><DialogTitle>{copy.title}</DialogTitle>{content(() => onClose())}</DialogBody></DialogSurface>
     </Dialog>
   }
   return <WorkspaceDialog open={open} title={copy.title} dirty={touched || gatewayTouched} actions={actions}

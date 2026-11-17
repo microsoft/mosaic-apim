@@ -33,6 +33,7 @@ import type {
   PublishStepStatus,
 } from '../types'
 import { ErrorState, Loading } from './AsyncState'
+import { PolicyCapabilityError, PolicyCapabilityFeedback } from './PolicyCapabilityFeedback'
 import { ChangeReview, TechnicalExecution } from './ChangeReview'
 import { ModelAccessRecovery } from './ModelAccessRecovery'
 import { PolicyFacetItem } from './PolicyFacets'
@@ -208,7 +209,7 @@ export function PoolPlanDialog({ pool, mode, onClose, onFinished, locked = false
               : 'A plan is being applied. Wait for it to finish before editing or reviewing another plan.')}
           </MessageBarBody>
         </MessageBar>
-        {apply.error && <ErrorState error={apply.error}
+        {apply.error && <PolicyCapabilityError error={apply.error}
           title={publishing ? 'MOSAIC didn’t apply the plan' : `MOSAIC didn’t unpublish ${pool.displayName}`} />}
         {(pool.accessState === 'unknown' || interruptedRunId) && <ModelAccessRecovery
           publicationId={pool.id} runId={interruptedRunId ?? pool.lastRunId} target="pool" />}
@@ -257,7 +258,7 @@ export function PoolPlanDialog({ pool, mode, onClose, onFinished, locked = false
                     </MessageBarBody>
                   </MessageBar>
                 ) : (
-                  <ErrorState
+                  <PolicyCapabilityError
                     error={planning.error}
                     title={
                       publishing
@@ -294,7 +295,7 @@ export function PoolPlanDialog({ pool, mode, onClose, onFinished, locked = false
             )}
             {phase === 'review' && confirmError && (
               <div ref={outcomeRef} tabIndex={-1}>
-                <ErrorState
+                <PolicyCapabilityError
                   error={confirmError}
                   title={publishing ? 'MOSAIC didn’t apply the plan' : `MOSAIC didn’t unpublish ${pool.displayName}`}
                 />
@@ -310,11 +311,7 @@ export function PoolPlanDialog({ pool, mode, onClose, onFinished, locked = false
                         <li key={problem}>{problem}</li>
                       ))}
                     </ul>
-                  ) : replanError instanceof Error ? (
-                    replanError.message
-                  ) : (
-                    'An unexpected error occurred.'
-                  )}
+                  ) : <PolicyCapabilityFeedback title="Unable to plan pool again" error={replanError} />}
                 </MessageBarBody>
               </MessageBar>
             )}

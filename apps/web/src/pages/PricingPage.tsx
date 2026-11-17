@@ -1,5 +1,6 @@
 import {
   Badge,
+  AnnounceProvider,
   Button,
   Checkbox,
   Dialog,
@@ -20,6 +21,8 @@ import {
   Spinner,
   Text,
   Textarea,
+  useAnnounce,
+  useRestoreFocusTarget,
 } from '@fluentui/react-components'
 import {
   AddRegular,
@@ -31,7 +34,7 @@ import {
   WarningRegular,
 } from '@fluentui/react-icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { type ChangeEvent, type FormEvent, Fragment, useEffect, useMemo, useState } from 'react'
+import { type ChangeEvent, type FormEvent, Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Link as RouterLink } from 'react-router-dom'
 import { SectionLayout } from '../components/SectionLayout'
@@ -41,6 +44,8 @@ import { PageHeader } from '../components/PageHeader'
 import { RowActions } from '../components/RowActions'
 import { WorkspaceEditorFrame } from '../components/WorkspaceEditorFrame'
 import { completeWorkspaceNavigation } from '../components/WorkspaceLeaveGuard'
+import { useDialogFocusReturn } from '../components/useDialogFocusReturn'
+import { useFocusAwareAnnounce } from '../components/useFocusAwareAnnounce'
 import { formatRate } from '../cost-format'
 import { plural } from '../labels'
 import type {
@@ -556,17 +561,10 @@ function PriceDialog({
   const api = useMosaicApi()
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState(initial)
-  useEffect(() => {
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    return () => {
-      for (const child of Array.from(document.body.children)) {
-        if (child instanceof HTMLElement && child.getAttribute('aria-hidden') === 'true') {
-          child.removeAttribute('aria-hidden')
-        }
-      }
-      if (opener?.isConnected) opener.focus({ preventScroll: true })
-    }
-  }, [])
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const outcomeRef = useRef<HTMLDivElement>(null)
+  const motion = useDialogFocusReturn({ open: true, surfaceRef })
+  const announcement = useFocusAwareAnnounce(outcomeRef)
   const save = useMutation({
     mutationFn: () => api.addPrice(payloadFrom(draft)),
     onSuccess: async () => {
@@ -578,15 +576,17 @@ function PriceDialog({
   const set = (key: keyof PriceDraft) => (_: unknown, data: { value: string }) =>
     setDraft((current) => ({ ...current, [key]: data.value }))
   const knownCloud = clouds.some((cloud) => cloud.key === draft.cloud)
+  useLayoutEffect(() => { if (save.isError) outcomeRef.current?.focus() }, [save.isError, save.submittedAt])
 
   function submit(event: FormEvent) {
     event.preventDefault()
+    if (save.isPending) return
     save.mutate()
   }
 
   return (
-    <Dialog open onOpenChange={(_, data) => !data.open && onClose()}>
-      <DialogSurface className={styles.dialog}>
+    <Dialog open surfaceMotion={motion} onOpenChange={(_, data) => !data.open && onClose()}>
+      <DialogSurface ref={surfaceRef} className={styles.dialog}>
         <form onSubmit={submit}>
           <DialogBody>
             <DialogTitle>{draft.title}</DialogTitle>
@@ -669,17 +669,17 @@ function PriceDialog({
                 <Textarea value={draft.note} onChange={set('note')} resize="vertical" />
               </Field>
               {save.isError && (
-                <MessageBar intent="error">
+                <AnnounceProvider value={announcement}><div ref={outcomeRef} tabIndex={-1}><MessageBar key={save.submittedAt} intent="error">
                   <MessageBarBody>
                     <MessageBarTitle>MOSAIC didn't save this price</MessageBarTitle>
                     {save.error instanceof Error ? save.error.message : 'Try again.'}
                   </MessageBarBody>
-                </MessageBar>
+                </MessageBar></div></AnnounceProvider>
               )}
             </DialogContent>
             <DialogActions>
-              <Button onClick={onClose} disabled={save.isPending}>Cancel</Button>
-              <Button appearance="primary" type="submit" disabled={save.isPending}>
+              <Button onClick={onClose} disabledFocusable={save.isPending}>Cancel</Button>
+              <Button appearance="primary" type="submit" disabledFocusable={save.isPending}>
                 {save.isPending ? 'Saving…' : 'Save price'}
               </Button>
             </DialogActions>
@@ -2577,6 +2577,13 @@ function BillingTab({
   const [fetchMonth, setFetchMonth] = useState(previousCompleteMonth)
   const [checkResult, setCheckResult] = useState<BillingConnectionCheckResult | null>(null)
   const [removingConnection, setRemovingConnection] = useState<BillingConnectionView | null>(null)
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const outcomeRef = useRef<HTMLDivElement>(null)
+  const fallbackRef = useRef<HTMLHeadingElement>(null)
+  const restoreFocus = useRestoreFocusTarget()
+  const { announce } = useAnnounce()
+  const motion = useDialogFocusReturn({ open: removingConnection !== null, surfaceRef, fallbackRef })
+  const announcement = useFocusAwareAnnounce(outcomeRef)
 
   const connections = useQuery({
     queryKey: ['pricing', 'billing', 'connections'],
@@ -2623,8 +2630,10 @@ function BillingTab({
       setRemovingConnection(null)
       await queryClient.invalidateQueries({ queryKey: ['pricing', 'billing', 'connections'] })
       await queryClient.invalidateQueries({ queryKey: ['pricing', 'overview'] })
+      announce('Billing connection deleted. Existing runs and published prices are retained.', { polite: true })
     },
   })
+  useLayoutEffect(() => { if (removingConnection && deleteConnectionMutation.isError) outcomeRef.current?.focus() }, [removingConnection, deleteConnectionMutation.isError, deleteConnectionMutation.submittedAt])
 
   if (activeRunId) {
     return <BillingRunReviewWorkspace key={activeRunId} runId={activeRunId} onClose={() => onSelectRun(null)} />
@@ -2715,7 +2724,7 @@ function BillingTab({
 
       <div className={styles.billingSection}>
         <div className={styles.billingSectionHeader}>
-          <h3>Connected billing sources</h3>
+          <h3 ref={fallbackRef} tabIndex={-1}>Connected billing sources</h3>
           <label className={styles.control}>
             <span>Source month to fetch (YYYY-MM)</span>
             <Input
@@ -2816,6 +2825,7 @@ function BillingTab({
                         Edit
                       </Button>
                       <Button
+                        {...restoreFocus}
                         size="small"
                         onClick={() => {
                           deleteConnectionMutation.reset()
@@ -2954,29 +2964,30 @@ function BillingTab({
 
       <Dialog
         open={removingConnection !== null}
+        surfaceMotion={motion}
         onOpenChange={(_, data) => {
           if (!data.open && !deleteConnectionMutation.isPending) setRemovingConnection(null)
         }}
       >
-        <DialogSurface>
+        <DialogSurface ref={surfaceRef}>
           <DialogBody>
             <DialogTitle>Delete billing connection?</DialogTitle>
             <DialogContent>
               Remove {removingConnection?.name} from MOSAIC and delete any stored credential secret. Existing billing runs and published prices are retained.
-              {deleteConnectionMutation.isError && <ErrorState error={deleteConnectionMutation.error} />}
+              {deleteConnectionMutation.isError && <AnnounceProvider value={announcement}><div ref={outcomeRef} tabIndex={-1}><ErrorState context="action" title="Unable to delete the billing connection" error={deleteConnectionMutation.error} announcementKey={deleteConnectionMutation.submittedAt} /></div></AnnounceProvider>}
             </DialogContent>
             <DialogActions>
               <Button
-                disabled={deleteConnectionMutation.isPending}
+                disabledFocusable={deleteConnectionMutation.isPending}
                 onClick={() => setRemovingConnection(null)}
               >
                 Cancel
               </Button>
               <Button
                 appearance="primary"
-                disabled={deleteConnectionMutation.isPending}
+                disabledFocusable={deleteConnectionMutation.isPending}
                 onClick={() => {
-                  if (removingConnection) deleteConnectionMutation.mutate(removingConnection)
+                  if (removingConnection && !deleteConnectionMutation.isPending) deleteConnectionMutation.mutate(removingConnection)
                 }}
               >
                 Delete connection

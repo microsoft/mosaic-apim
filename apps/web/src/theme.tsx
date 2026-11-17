@@ -1,5 +1,9 @@
 import {
   FluentProvider,
+  AriaLiveAnnouncer,
+  AnnounceProvider,
+  type AnnounceContextValue,
+  useAnnounce,
   webDarkTheme,
   webLightTheme,
 } from '@fluentui/react-components'
@@ -7,6 +11,7 @@ import {
   type PropsWithChildren,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react'
 import {
@@ -24,6 +29,29 @@ function storedPreference(): ThemePreference {
 
 function systemTheme(): ResolvedTheme {
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+}
+
+// Mount consumers after Fluent's fallback live region exists.
+function AnnouncedContent({ children }: PropsWithChildren) {
+  const [ready, setReady] = useState(false)
+  const { announce } = useAnnounce()
+  const delivered = useRef(new Set<string>())
+  const announcement = useMemo<AnnounceContextValue>(() => ({
+    announce: (message, options) => {
+      const key = JSON.stringify([message, options?.polite, options?.alert, options?.priority])
+      // StrictMode can replay Fluent's MessageBar effect within the same turn.
+      if (delivered.current.has(key)) return
+      delivered.current.add(key)
+      queueMicrotask(() => delivered.current.delete(key))
+      announce(message, options)
+    },
+  }), [announce])
+  useEffect(() => {
+    let active = true
+    queueMicrotask(() => { if (active) setReady(true) })
+    return () => { active = false }
+  }, [])
+  return ready ? <AnnounceProvider value={announcement}>{children}</AnnounceProvider> : null
 }
 
 export function MosaicThemeProvider({ children }: PropsWithChildren) {
@@ -74,7 +102,7 @@ export function MosaicThemeProvider({ children }: PropsWithChildren) {
         borderRadiusMedium: '8px',
         borderRadiusLarge: '12px',
       }}>
-        {children}
+        <AriaLiveAnnouncer><AnnouncedContent>{children}</AnnouncedContent></AriaLiveAnnouncer>
       </FluentProvider>
     </ThemeContext.Provider>
   )

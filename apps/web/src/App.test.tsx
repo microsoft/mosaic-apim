@@ -101,12 +101,12 @@ beforeEach(() => {
 })
 
 describe('App shell', () => {
-  it('uses MOSAIC branding and the requested navigation', () => {
+  it('uses MOSAIC branding and the requested navigation', async () => {
     mocks.config.authMode = 'local'
 
     renderApp()
 
-    expect(screen.getAllByText('MOSAIC').length).toBeGreaterThan(0)
+    expect((await screen.findAllByText('MOSAIC')).length).toBeGreaterThan(0)
     for (const label of primaryLinks) {
       expect(screen.getByRole('link', { name: label })).toBeVisible()
     }
@@ -122,12 +122,12 @@ describe('App shell', () => {
     expect(labels.indexOf('Pricing')).toBe(labels.indexOf('Analytics') + 1)
   })
 
-  it('leaves local mode unchanged: no role check and a Local mode label', () => {
+  it('leaves local mode unchanged: no role check and a Local mode label', async () => {
     mocks.config.authMode = 'local'
 
     renderApp()
 
-    expect(screen.getByRole('link', { name: 'Dashboard' })).toBeVisible()
+    expect(await screen.findByRole('link', { name: 'Dashboard' })).toBeVisible()
     expect(screen.getByText('Local mode')).toBeVisible()
     expect(screen.queryByText('MOSAIC Admin')).not.toBeInTheDocument()
     expect(mocks.getConsoleAccess).not.toHaveBeenCalled()

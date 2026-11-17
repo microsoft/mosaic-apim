@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { anthropicPool, draftPool, observedGateway, poolCandidates, poolGateway } from '../test/pool-fixtures'
+import { developerChatPolicyCapabilities } from '../test/policy-fixtures'
 import type { ModelPool } from '../types'
 import { PoolEditorDialog } from './PoolEditorDialog'
 
@@ -247,5 +248,53 @@ describe('PoolEditorDialog', () => {
         },
       ],
     })
+  })
+
+  it('shows selected deployment evidence without stripping unchanged legacy safeguard intent', async () => {
+    const user = userEvent.setup()
+    const message = 'The selected deployment has no verified token schema.'
+    const recorded = {
+      ...developerChatPolicyCapabilities,
+      gatewayId: poolGateway.id,
+      skuName: 'StandardV2',
+      tier: 'v2' as const,
+      apiShape: 'anthropicMessages' as const,
+    }
+    api.getPoolCandidates.mockResolvedValue({
+      ...poolCandidates,
+      models: poolCandidates.models.map((model) => ({
+        ...model,
+        policyCapabilities: recorded,
+        deployments: model.deployments.map((deployment) => ({
+          ...deployment,
+          policyCapabilities: {
+            ...recorded,
+            policies: {
+              ...recorded.policies,
+              'llm-token-limit': {
+                ...recorded.policies['llm-token-limit'],
+                support: 'unknown',
+                reason: 'unknownApiShape',
+                message,
+                nextAction: 'reviewResource',
+              },
+            },
+          },
+        })),
+      })),
+    })
+    api.updateModelPool.mockResolvedValue(anthropicPool)
+    const { onSaved } = renderEditor(anthropicPool)
+    const editor = await screen.findByRole('region', { name: 'Edit Anthropic Claude' })
+
+    await user.click(within(editor).getByRole('tab', { name: '4. Limits and review' }))
+    expect(await within(editor).findAllByText(new RegExp(message))).toHaveLength(3)
+    expect(within(editor).getByRole('spinbutton', { name: 'Tokens per minute' })).toHaveValue(200000)
+    await user.click(within(editor).getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(anthropicPool, false))
+    expect(api.updateModelPool).toHaveBeenCalledWith(anthropicPool.id, expect.objectContaining({
+      safeguard: { tokensPerMinute: 200000, tokenQuota: null, tokenQuotaPeriod: null },
+    }))
   })
 })

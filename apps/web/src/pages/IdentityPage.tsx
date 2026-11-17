@@ -16,6 +16,7 @@ import {
   Text,
   Textarea,
   Title3,
+  useRestoreFocusTarget,
 } from '@fluentui/react-components'
 import { BotRegular, PeopleRegular, PersonRegular, ShieldRegular, AppsRegular } from '@fluentui/react-icons'
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -31,6 +32,7 @@ import { PrincipalKindBadge } from '../components/PrincipalKindBadge'
 import { SectionLayout } from '../components/SectionLayout'
 import { ResourceWorkbench, type ResourceWorkbenchProps } from '../components/ResourceWorkbench'
 import { WorkspaceEditorFrame } from '../components/WorkspaceEditorFrame'
+import { useDialogFocusReturn } from '../components/useDialogFocusReturn'
 import {
   WorkspaceDialog,
   WorkspaceDialogSurface,
@@ -237,21 +239,20 @@ export function IdentityPage() {
   const [groupDraftDescription, setGroupDraftDescription] = useState('')
   const [principalToAdd, setPrincipalToAdd] = useState('')
   const [confirmation, setConfirmation] = useState<ConfirmationState>(null)
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const focusFallback = useRef<HTMLElement>(null)
+  const restoreFocus = useRestoreFocusTarget()
+  const confirmationMotion = useDialogFocusReturn({ open: confirmation !== null, surfaceRef, fallbackRef: focusFallback })
   const [saveCommitted, setSaveCommitted] = useState(false)
   const editButtonRef = useRef<HTMLButtonElement>(null)
-  const editFormRef = useRef<HTMLFormElement>(null)
   const previousEditing = useRef(false)
   const draftedPrincipalId = useRef<string | undefined>(undefined)
   const draftedGroupId = useRef<string | undefined>(undefined)
   const principalWorkspaceTab = useRef<IdentityTab | null>(null)
 
   useEffect(() => {
-    if (workbench.selectedId) {
-      if (detailEditing) {
-        editFormRef.current?.querySelector<HTMLInputElement | HTMLTextAreaElement>('input, textarea')?.focus()
-      } else if (previousEditing.current) {
-        editButtonRef.current?.focus()
-      }
+    if (workbench.selectedId && !detailEditing && previousEditing.current) {
+      editButtonRef.current?.focus()
     }
     previousEditing.current = detailEditing
   }, [detailEditing, workbench.selectedId])
@@ -720,6 +721,7 @@ export function IdentityPage() {
   return (
     <section className={styles.page}>
       <PageHeader
+        focusReturnRef={focusFallback}
         title="Identity"
         description="Manage registered identity references and local groups. Microsoft Entra remains authoritative for directory identities and security-group membership."
       />
@@ -818,7 +820,7 @@ export function IdentityPage() {
                       </Button>}
                       {!detailEditing && (!managedGroup || selectedGroup.costCenterId) && <Button ref={editButtonRef} appearance="secondary" onClick={() => { setSaveCommitted(false); workbench.open('edit') }}>{managedGroup ? 'Edit members' : 'Edit group'}</Button>}
                     </div>
-                    {!managedGroup && <Button
+                    {!managedGroup && <Button {...restoreFocus}
                       appearance="subtle"
                       className={styles.dangerButton}
                       disabled={
@@ -858,7 +860,7 @@ export function IdentityPage() {
                     </MessageBar>
                   )}
 
-                  <form ref={editFormRef} className={styles.detailSection} onSubmit={submitGroupDetails}>
+                  <form className={styles.detailSection} onSubmit={submitGroupDetails}>
                     <div className={styles.readOnlyPanel}>
                       <Text className={styles.readOnlyLabel}>Authoritative source</Text>
                       <Text block className={styles.muted}>
@@ -882,7 +884,8 @@ export function IdentityPage() {
                       <Button
                         appearance="primary"
                         type="submit"
-                        disabled={!groupDetailHasChanges || updateGroup.isPending}
+                        disabled={!groupDetailHasChanges}
+                        disabledFocusable={updateGroup.isPending}
                       >
                         Save changes
                       </Button>
@@ -915,7 +918,8 @@ export function IdentityPage() {
                         className={styles.addMemberButton}
                         appearance="primary"
                         type="submit"
-                        disabled={!principalToAdd || addMembership.isPending || removeMembership.isPending}
+                        disabled={!principalToAdd}
+                        disabledFocusable={addMembership.isPending || removeMembership.isPending}
                       >
                         Add member
                       </Button>
@@ -958,7 +962,7 @@ export function IdentityPage() {
                                   {principal?.objectId ?? membership.principalId}
                                 </code>
                               </div>
-                              {groupEditing && <Button
+                              {groupEditing && <Button {...restoreFocus}
                                 appearance="subtle"
                                 className={styles.dangerButton}
                                 disabled={addMembership.isPending || removeMembership.isPending}
@@ -1074,7 +1078,7 @@ export function IdentityPage() {
                     </div>
                     {!detailEditing && <Button ref={editButtonRef} appearance="secondary" onClick={() => { setSaveCommitted(false); workbench.open('edit') }}>Edit local metadata</Button>}
                   </div>
-                  <Button
+                  <Button {...restoreFocus}
                     appearance="subtle"
                     className={styles.dangerButton}
                     disabled={deletePrincipal.isPending || updatePrincipal.isPending}
@@ -1099,7 +1103,7 @@ export function IdentityPage() {
                   </MessageBar>
                 )}
 
-                <form ref={editFormRef} className={styles.detailSection} onSubmit={submitPrincipalDetails}>
+                <form className={styles.detailSection} onSubmit={submitPrincipalDetails}>
                   <div className={styles.readOnlyPanel}>
                     <Text className={styles.readOnlyLabel}>Authoritative source</Text>
                     <Text>Microsoft Entra. MOSAIC stores only the reference, local label, kind mapping, and charge default.</Text>
@@ -1195,7 +1199,8 @@ export function IdentityPage() {
                     <Button
                       appearance="primary"
                       type="submit"
-                      disabled={!principalDetailHasChanges || updatePrincipal.isPending}
+                      disabled={!principalDetailHasChanges}
+                      disabledFocusable={updatePrincipal.isPending}
                     >
                       Save changes
                     </Button>
@@ -1287,6 +1292,7 @@ export function IdentityPage() {
       </SectionLayout>
 
       <WorkspaceDialog open={principalDialogOpen} title={principalDialogTitle}
+        fallbackFocusRef={focusFallback}
         pending={!saveCommitted && activeMutations > 0}
         onOpenChange={(_, data) => !data.open && closePrincipalDialog()}>
         {(requestClose) => <WorkspaceDialogSurface>
@@ -1414,7 +1420,8 @@ export function IdentityPage() {
                   <Button
                     appearance="primary"
                     type="submit"
-                    disabled={!createPrincipalObjectId.trim() || createPrincipal.isPending}
+                    disabled={!createPrincipalObjectId.trim()}
+                    disabledFocusable={createPrincipal.isPending}
                   >
                     Save
                   </Button>
@@ -1426,6 +1433,7 @@ export function IdentityPage() {
       </WorkspaceDialog>
 
       <WorkspaceDialog open={createGroupOpen} title="Create group"
+        fallbackFocusRef={focusFallback}
         pending={!saveCommitted && createGroup.isPending}
         onOpenChange={(_, data) => !data.open && closeGroupDialog()}>
         <WorkspaceDialogSurface>
@@ -1464,7 +1472,8 @@ export function IdentityPage() {
                 <Button
                   appearance="primary"
                   type="submit"
-                  disabled={!createGroupName.trim() || createGroup.isPending}
+                  disabled={!createGroupName.trim()}
+                  disabledFocusable={createGroup.isPending}
                 >
                   Save
                 </Button>
@@ -1474,8 +1483,8 @@ export function IdentityPage() {
         </WorkspaceDialogSurface>
       </WorkspaceDialog>
 
-      <Dialog open={confirmation !== null} onOpenChange={(_, data) => !data.open && setConfirmation(null)}>
-        <DialogSurface>
+      <Dialog open={confirmation !== null} surfaceMotion={confirmationMotion} onOpenChange={(_, data) => !data.open && setConfirmation(null)}>
+        <DialogSurface ref={surfaceRef}>
           <DialogBody>
             <DialogTitle>Confirm action</DialogTitle>
             <DialogContent>

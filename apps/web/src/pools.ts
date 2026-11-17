@@ -1,10 +1,12 @@
 import { API_SHAPE_SHORT_LABELS } from './key-endpoint'
 import { holdsApi } from './publication-state'
+import { isGatewayPolicyCapabilities } from './policy-capabilities'
 import type {
   ApiShape,
   BreakerPreset,
   CapacityType,
   Gateway,
+  GatewayPolicyCapabilities,
   ModelPool,
   ModelPoolSummary,
   ModelPoolType,
@@ -824,26 +826,19 @@ export function capacitySummary(capacity: Partial<Record<CapacityType, number>>)
   return parts.join(' · ') || '—'
 }
 
-const V2_SKUS = new Set(['basicv2', 'standardv2', 'premiumv2'])
-const CLASSIC_SKUS = new Set(['developer', 'basic', 'standard', 'premium', 'isolated'])
-
-/**
- * Why the gateway can't apply a pool's safeguard, or null when it can. API Management meters the
- * Anthropic Messages API only on the v2 tiers; the API makes the same check before it plans.
- */
-export function safeguardTierNote(apiShape: ApiShape | null | undefined, skuName: string | null | undefined): string | null {
-  if (apiShape !== 'anthropicMessages') return null
-  const sku = (skuName ?? '').trim().toLowerCase()
-  if (V2_SKUS.has(sku)) return null
-  const lead =
-    'API Management applies token limits to the Anthropic Messages API only on v2 tiers (Basic v2, Standard v2, and Premium v2).'
-  if (sku === 'consumption') {
-    return `${lead} This gateway uses the Consumption tier, so it can't apply the safeguard. Remove it to publish the pool here.`
+/** Saving unchanged legacy intent is not evidence that a new safeguard can be enforced. */
+export function safeguardPolicyNote(
+  capabilities: GatewayPolicyCapabilities | null | undefined,
+  gatewayId: string,
+  apiShape: ApiShape | null | undefined,
+): string | null {
+  if (!isGatewayPolicyCapabilities(capabilities) || capabilities.gatewayId !== gatewayId
+    || !apiShape || capabilities.apiShape !== apiShape) {
+    return 'Token-limit support is not confirmed. Sync the gateway and model endpoint before adding or changing this safeguard.'
   }
-  if (CLASSIC_SKUS.has(sku)) {
-    return `${lead} This gateway uses the ${skuName?.trim()} tier, a classic tier, so it can't apply the safeguard. Remove it to publish the pool here.`
-  }
-  return `${lead} MOSAIC hasn't read this gateway's tier. Re-run the gateway's access check, or remove the safeguard.`
+  const tokenLimit = capabilities.policies['llm-token-limit']
+  return tokenLimit.support === 'available' ? null
+    : `${tokenLimit.message} Choose a supported target or clear the safeguard before adding or changing it.`
 }
 
 /** How a caller reaches one pool model: the request line, and where the model's name goes. */
