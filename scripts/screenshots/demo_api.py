@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from io import BytesIO, StringIO
 from typing import Any, Literal, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import uvicorn
@@ -132,6 +132,7 @@ from mosaic_api.integrations.teams import (
     WorkflowEndpointPolicy,
 )
 from mosaic_api.main import create_app
+from mosaic_api.model_lifecycle import ProposalContextUpdate
 from mosaic_api.model_pools import (
     ModelPoolCreate,
     ModelPoolType,
@@ -200,6 +201,7 @@ from mosaic_api.services.feature_readiness import gateway_usage_probe
 from mosaic_api.services.mcp_endpoints import build_mcp_client_factory
 from mosaic_api.services.mcp_publishing import McpPublishingService
 from mosaic_api.services.model_deployments import ModelDeploymentService
+from mosaic_api.services.model_lifecycle import ModelLifecycleService
 from mosaic_api.services.model_pools import ModelPoolService
 from mosaic_api.services.notification_events import build_notification_event
 from mosaic_api.services.notification_visibility import NotificationVisibility
@@ -800,7 +802,11 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
     send_logs_to_workspace(gov_apim)
     log_every_call(gov_apim)
     gateway_arm, gateway_http = _arm(gateway_handler(apim, dev_apim))
-    ai_arm, ai_http = _arm(cognitive_handler(build_cognitive_accounts()))
+    ai_accounts = build_cognitive_accounts()
+    ai_arm, ai_http = _arm(cognitive_handler(ai_accounts))
+    state.demo_discovery_account = next(
+        account for account in ai_accounts if account.resource_id == AI_RESOURCE_ID
+    )
     gov_gateway_arm, gov_gateway_http = _arm(gateway_handler(gov_apim), "government")
     gov_accounts = [
         account
@@ -948,6 +954,14 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         ),
         connection_validator=connections.validate_resource,
         sleep=_no_sleep,
+    )
+    state.model_lifecycle_service = ModelLifecycleService(
+        state.model_endpoint_repository,
+        gateways=state.gateway_repository,
+        environments=state.environment_repository,
+        cost_centers=state.cost_center_repository,
+        client_factory=lambda resource: CognitiveServicesClient(ai_arm, resource),
+        connection_validator=connections.validate_resource,
     )
     state.publishing_service = publishing
     state.mcp_publishing_service = mcp_publishing
@@ -3780,6 +3794,32 @@ def origins_for(port: int) -> list[str]:
     return [f"http://localhost:{port}", f"http://127.0.0.1:{port}"]
 
 
+async def seed_model_discovery(app: FastAPI, estate: Estate) -> None:
+    """Observe a catalog-only version arriving in the fictional ARM fixture."""
+    actor = Actor(ADMIN.object_id, TENANT_ID)
+    lifecycle: ModelLifecycleService = app.state.model_lifecycle_service
+    account = app.state.demo_discovery_account
+    models = account.models
+    account.models = [item for item in models if item["model"]["name"] != "gpt-4.1"]
+    try:
+        baseline = await lifecycle.discover(actor, estate.aoai_endpoint_id, uuid4())
+    finally:
+        account.models = models
+    run = await lifecycle.discover(actor, estate.aoai_endpoint_id, uuid4())
+    if baseline.status != "complete" or run.status != "complete":
+        raise SeedError(f"Fictional model discovery failed: {baseline.findings}; {run.findings}")
+    found = await lifecycle.list_proposals(actor, estate.aoai_endpoint_id)
+    item = next(row for row in found.items if row.model.model_name == "gpt-4.1")
+    proposal = await lifecycle.get_proposal(actor, estate.aoai_endpoint_id, item.id)
+    await lifecycle.save_context(
+        actor, estate.aoai_endpoint_id, item.id, ProposalContextUpdate(
+            evidence_run_id=run.id, evidence_digest=proposal.evidence_digest, expected_revision=0,
+            environment="production", gateway_id=estate.gateway_id,
+            cost_center_id=estate.cost_centers["CI-204"],
+        ),
+    )
+
+
 def build_demo_app(console_port: int, portal_port: int) -> FastAPI:
     portal_origins = origins_for(portal_port)
     lookup = build_directory_lookup()
@@ -3798,6 +3838,7 @@ def build_demo_app(console_port: int, portal_port: int) -> FastAPI:
             services = install_demo_services(demo_app, portal_origins)
             try:
                 estate = await seed_estate(services, TENANT_ID)
+                await seed_model_discovery(demo_app, estate)
                 await seed_billing(services, estate, TENANT_ID)
                 await seed_public_catalog(services, TENANT_ID)
                 center = await services.cost_centers.get_cost_center(

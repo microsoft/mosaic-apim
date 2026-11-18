@@ -1567,6 +1567,74 @@ export interface DeploymentModelRef {
   sourceAccount?: string | null
 }
 
+export interface ModelDiscoveryRun {
+  id: string
+  status: 'running' | 'complete' | 'partial' | 'failed' | 'interrupted'
+  source: {
+    provider: ModelProvider
+    cloud: 'commercial'
+    location: string | null
+    accountScope: string
+    connectionId: string | null
+    apiVersion: string
+  }
+  rulesRevision: string
+  startedAt: string
+  completedAt: string | null
+  catalogObservedAt: string | null
+  deploymentsObservedAt: string | null
+  findings: string[]
+}
+
+export interface ModelProposalSummary {
+  id: string
+  model: DeploymentModelRef
+  listed: boolean
+  change: 'baseline' | 'new' | 'changed' | 'unchanged' | 'unlisted' | 'deploymentOnly'
+  deploymentStatus: 'observed' | 'notObserved' | 'unconfirmed'
+  contextRevision: number
+}
+
+export interface ModelProposalList {
+  supported: boolean
+  latestAttempt: ModelDiscoveryRun | null
+  lastComplete: ModelDiscoveryRun | null
+  evidenceCurrent: boolean
+  items: ModelProposalSummary[]
+}
+
+export interface ModelProposalContext {
+  environment: string | null
+  gatewayId: string | null
+  costCenterId: string | null
+}
+
+export interface ModelProposalContextUpdate extends ModelProposalContext {
+  evidenceRunId: string
+  evidenceDigest: string
+  expectedRevision: number
+}
+
+export interface ModelProposalDetail extends ModelProposalSummary {
+  evidence: ModelDiscoveryRun
+  evidenceDigest: string
+  evidenceCurrent: boolean
+  lifecycleStatus: string | null
+  deployments: { name: string; provisioningState: string | null }[]
+  publications: {
+    gatewayId: string
+    deploymentName: string
+    status: string
+    appliedApiRecorded: boolean
+  }[]
+  savedContext: { context: ModelProposalContext; revision: number; updatedAt: string } | null
+  contextStatus: 'notSaved' | 'incomplete' | 'recorded' | 'outOfDate'
+  contextNotes: string[]
+  runtimeFreshness: string | null
+  runtimeCheckedAt: string | null
+  runtimeRulesRevision: string | null
+}
+
 export interface DeploymentAccess {
   canDeploy: boolean
   evaluation: 'allowed' | 'denied' | 'unknown' | 'unsupported'

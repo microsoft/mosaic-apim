@@ -851,6 +851,21 @@ SHOTS: list[Shot] = [
         height=1700,
     ),
     Shot(
+        "console-model-discovery",
+        "console",
+        "/models?tab=endpoints",
+        "light",
+        "Model endpoints",
+        actions=(
+            click_button("Contoso Azure OpenAI"),
+            click_button("Model discovery"),
+            click_button(re.compile(r"gpt-4\.1.*New catalog version")),
+            wait_for_text("No exact deployment observed"),
+            wait_for_text("Draft context recorded."),
+        ),
+        height=1420,
+    ),
+    Shot(
         "console-deploy-model",
         "console",
         "/models?tab=endpoints",

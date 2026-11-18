@@ -58,6 +58,7 @@ import { useWorkbenchLocation } from '../components/useWorkbenchLocation'
 import { WorkspaceDialog } from '../components/WorkspaceDialog'
 import { ModelEndpointEditor, ModelEndpointEnvironmentEditor } from '../components/ModelEndpointEditor'
 import { DeployModelWorkspace } from '../components/DeployModelWorkspace'
+import { ModelDiscoveryWorkbench } from '../components/ModelDiscoveryWorkbench'
 import { completeWorkspaceNavigation } from '../components/WorkspaceLeaveGuard'
 import { UnpublishDialog } from '../components/UnpublishDialog'
 import { CatalogSummaryDetails, CatalogSummaryEditor } from '../components/CatalogSummaryEditor'
@@ -1112,6 +1113,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
   const queryClient = useQueryClient()
   const restoreFocus = useRestoreFocusTarget()
   const workspace = useWorkbenchLocation({ section: 'endpoints' })
+  const discoveryEndpoint = new URLSearchParams(location.search).get('discoveryEndpoint')
   const dialogOpen = workspace.mode === 'new'
   // Where the last registration came from, so a refusal is shown next to the button that asked.
   const [registerOrigin, setRegisterOrigin] = useState<'dialog' | 'suggestion'>('dialog')
@@ -1152,6 +1154,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
   const suggestions = useQuery({
     queryKey: ['model-endpoint-suggestions', connection],
     queryFn: () => api.listSuggestedModelEndpoints(connection),
+    enabled: discoveryEndpoint === null || discoveryEndpoint !== workspace.selectedId,
   })
 
   const initializedSelection = useRef(false)
@@ -1436,6 +1439,20 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
     }
   }, [dialogOpen])
 
+  const discoveryOpen = selected != null
+    && discoveryEndpoint === selected.id
+  function showDiscovery(endpointId: string | null) {
+    const params = new URLSearchParams(location.search)
+    if (endpointId) params.set('discoveryEndpoint', endpointId)
+    else params.delete('discoveryEndpoint')
+    navigate({ pathname: location.pathname, search: `?${params}`, hash: location.hash })
+  }
+  if (discoveryOpen && selected) return <ModelDiscoveryWorkbench key={selected.id} endpoint={selected}
+    onClose={() => {
+      showDiscovery(null)
+      requestAnimationFrame(() => document.getElementById('open-model-discovery')?.focus())
+    }} />
+
   return (
     <>
         {endpoints.isPending && <Loading label="Loading model endpoints" />}
@@ -1496,6 +1513,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
             <RowActions label={`More actions for ${endpoint.name}`}
               primary={<>
                 {supportsModelDeployment(endpoint) && <Button appearance="primary" onClick={() => setDeploying(endpoint)}>Deploy model</Button>}
+                <Button id="open-model-discovery" onClick={() => showDiscovery(endpoint.id)}>Model discovery</Button>
                 <Button
                   onClick={() => { if (!recheck.isPending) recheck.mutate(endpoint.id) }}
                   disabledFocusable={recheck.isPending}

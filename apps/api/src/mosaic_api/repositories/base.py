@@ -43,6 +43,7 @@ from mosaic_api.domain import (
 )
 from mosaic_api.environments import EnvironmentCatalog, EnvironmentUsage
 from mosaic_api.model_deployments import ModelDeploymentPlan, ModelDeploymentRun
+from mosaic_api.model_lifecycle import DiscoveryRow, LifecycleRecord, SavedProposalContext
 from mosaic_api.model_pools import ModelPool
 from mosaic_api.notifications import NotificationEvent
 from mosaic_api.observed import ObservedEndpointEntity, ObservedEntity
@@ -459,6 +460,22 @@ class ModelEndpointRepository(EndpointStateRepository, Protocol):
     async def list_model_deployment_runs(
         self, tenant_id: str, endpoint_id: str, *, limit: int = 20
     ) -> list[ModelDeploymentRun]: ...
+
+    async def get_lifecycle[R: LifecycleRecord](
+        self, record_type: type[R], tenant_id: str, record_id: str
+    ) -> R | None: ...
+
+    async def list_discovery_rows(self, tenant_id: str, run_id: str) -> list[DiscoveryRow]: ...
+
+    async def list_proposal_contexts(
+        self, tenant_id: str, endpoint_id: str
+    ) -> list[SavedProposalContext]: ...
+
+    async def save_lifecycle(
+        self, records: list[LifecycleRecord], audit: AuditEvent | None = None
+    ) -> None:
+        """Create or conditionally replace records in one tenant batch."""
+        ...
 
 
 class McpEndpointRepository(EndpointStateRepository, Protocol):
