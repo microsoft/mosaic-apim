@@ -1929,16 +1929,6 @@ SHOTS: list[Shot] = [
     Shot(
         "portal-budget-banner", "portal", "/access", "light", "near its monthly budget", height=720
     ),
-    # This saves an unapplied key-setting change; keep it after all connection screenshots.
-    Shot(
-        "console-model-change-review",
-        "console",
-        "/entitlements?tab=settings",
-        "light",
-        "Published model",
-        actions=(review_demo_changes,),
-        height=2600,
-    ),
     Shot(
         "console-register-bedrock", "console", "/models?register=1", "light",
         "Register model endpoint",
@@ -1976,6 +1966,7 @@ SHOTS: list[Shot] = [
         ),
         height=1700,
     ),
+    # Draft-saving reviews share the API. Keep this terminal block after all read-only shots.
     Shot(
         "console-vertex-review", "console", "/models", "light",
         "Publish a model", actions=(review_vertex_release,), height=2200,
@@ -1991,6 +1982,16 @@ SHOTS: list[Shot] = [
     Shot(
         "console-bedrock-release-mobile", "console", "/models", "dark", "Publish a model",
         actions=(review_bedrock_release,), width=390, height=1600,
+    ),
+    # Keep the unapplied key-setting change last, after provider reviews and connection shots.
+    Shot(
+        "console-model-change-review",
+        "console",
+        "/entitlements?tab=settings",
+        "light",
+        "Published model",
+        actions=(review_demo_changes,),
+        height=2600,
     ),
 ]
 
