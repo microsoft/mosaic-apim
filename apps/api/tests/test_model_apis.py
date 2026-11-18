@@ -149,8 +149,10 @@ def test_required_data_actions_are_the_distinct_actions_of_a_shape() -> None:
     )
 
 
-@pytest.mark.parametrize("shape", list(ApiShape))
-def test_every_shape_declares_data_actions_in_the_cognitive_services_namespace(
+@pytest.mark.parametrize("shape", [
+    ApiShape.AZURE_OPENAI, ApiShape.FOUNDRY_MODELS, ApiShape.ANTHROPIC_MESSAGES
+])
+def test_azure_shapes_declare_data_actions_in_the_cognitive_services_namespace(
     shape: ApiShape,
 ) -> None:
     actions = required_data_actions(shape)

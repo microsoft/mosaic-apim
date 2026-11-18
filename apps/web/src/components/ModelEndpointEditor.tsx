@@ -24,7 +24,8 @@ export function ModelEndpointEditor({ endpoint, mutationKey, onClose, onSaved }:
   const api = useMosaicApi()
   const [name, setName] = useState(endpoint.name)
   const [secretUri, setSecretUri] = useState('')
-  const externalKey = usesBackendKey(endpoint) && !endpoint.keyStoredByMosaic
+  const externalKey = (usesBackendKey(endpoint) && !endpoint.keyStoredByMosaic)
+    || Boolean(endpoint.vertex && endpoint.vertex.authMode !== 'workloadIdentityFederation')
   const mutation = useMutation({
     mutationKey,
     mutationFn: () => api.updateModelEndpoint(endpoint.id, {

@@ -7,6 +7,7 @@
 - [Endpoint and gateway access](#endpoint-and-gateway-access)
 - [Endpoints reached with an API key](#endpoints-reached-with-an-api-key)
 - [AWS Bedrock endpoints](#aws-bedrock-endpoints)
+- [Native Google Vertex AI and custom chat](#native-google-vertex-ai-and-custom-chat)
 
 ## Model endpoints
 
@@ -123,6 +124,80 @@ deployments remain ineligible for synchronous publication and pools.
 API-key-only Azure registrations, AWS Bedrock, and OpenAI-compatible endpoints do not support this
 management workflow. Commercial and Government resources use their stored cloud and management
 connection throughout. See [ADR 0028](adr/0028-reviewed-azure-model-deployment.md).
+
+## Native Google Vertex AI and custom chat
+
+These are explicit, separately governed registration contracts, not Azure account discovery.
+**Register** saves endpoint, environment, exact declared models and credential references only.
+**Check configuration** is offline for these providers: it does not fetch credentials, resolve
+DNS, contact Google or test a key. A URL, declaration or successful synthetic protocol test is not
+proof that the gateway can invoke a model.
+
+The shared Guided release keeps **Register**, **Review**, **Apply publication**, and **Grant and
+connect** separate. Saving publication intent does not create a plan. Explicit Review describes
+the route, authentication, gateway blockers and caller consequences without changing APIM.
+Unresolved execution evidence keeps Apply blocked on the server as well as in the console.
+Neither declaration, publication intent nor a saved grant means a usable connection.
+
+### Native Vertex contract
+
+Choose **Google Vertex AI** and supply an exact Google Cloud project ID. The bounded contract is
+native Vertex **v1**, **gemini-3.8-flash**, Standard PayGo **us multi-region**, at the fixed
+`https://aiplatform.us.rep.googleapis.com` origin. This is not a US single-region deployment,
+the OpenAI compatibility endpoint, a model discovery service, or an automatic global fallback.
+Routes bind the project, `us` location, publisher and exact model:
+
+```text
+/v1/projects/{project}/locations/us/publishers/google/models/gemini-3.8-flash:generateContent
+/v1/projects/{project}/locations/us/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse
+```
+
+Three authentication choices retain independent configuration and unresolved proof:
+
+| Choice | Stored intent | Still unproven for APIM execution |
+| --- | --- | --- |
+| Workload identity federation | Exact federation audience and service account; no backend secret | Gateway managed-identity subject token, fixed STS exchange and exact service-account impersonation |
+| Service-account signing | Exact service account and Key Vault reference; no pasted private key | Gateway-supported restricted-runtime signing, short-lived OAuth exchange, key representation and rotation |
+| Google authorization key | Key Vault reference to an operator-managed key | Service-account-bound authorization-key restrictions, exact native US route and streaming acceptance |
+
+These choices never fall back to one another. A Google API key without an authorized principal
+is not assumed to confer IAM access. The Google Azure federation guide describes VMs, not proof
+that APIM supports this exchange. Saving a secret reference neither reads it nor proves signing.
+MOSAIC does not enable an unproved signer, egress configuration or key route.
+
+The bounded request envelope allows inline PNG/JPEG images and application-executed functions.
+Native thought signatures and thinking defaults remain opaque and are not rewritten. Remote
+media, audio/video, hosted search/code tools and pools are outside this release. Native streaming
+uses a separate operation; APIM token-policy documentation listing a schema is not proof of
+recognition or counters for that operation. Missing accounting evidence means unknown, not zero
+cost or free usage.
+
+### Approved-public-HTTPS custom chat
+
+Choose **OpenAI compatible** to opt a new registration explicitly into the custom-chat contract.
+Supply an approved public HTTPS origin/base path, a Key Vault credential reference and exact
+case-sensitive model declarations. Only Chat Completions is in scope. Inline images and
+application-executed functions are allowed; remote media and server-executed tools are not.
+Slash-qualified model IDs remain body values and never become URL paths.
+
+Equivalent default bases such as `https://chat.example.com` and
+`https://chat.example.com/v1` identify the same effective `/v1/chat/completions` destination
+within one environment. Distinct environments keep separate endpoint and credential IDs.
+Existing legacy IDs are not silently migrated. Case-only sibling declarations are rejected
+because downstream accounting keys cannot yet distinguish them, while request matching remains
+exact and case-sensitive.
+
+Host admission rejects private/loopback/link-local/metadata addresses, non-HTTPS URLs,
+credentials in URLs, ambiguous encodings and unsupported ports. Public host syntax alone does
+not prove DNS-rebinding protection or constrained gateway egress. No registration probe is made;
+runtime stays unavailable until that execution boundary has controlled evidence. Eventual
+forwarding must remain unbuffered, accept only the reviewed operation/query and never follow
+credentialed redirects. Self-hosted APIM ingress/association work does not establish private
+model-backend reachability.
+
+No live provider call, permission assignment, deployment or gateway change is part of these
+offline workflows. See the [Phase 10 gates](e2e/roadmap.md#phase-10-gemini-and-aws-bedrock)
+for the separate owner-approved live prerequisites.
 
 ## Endpoint and gateway access
 

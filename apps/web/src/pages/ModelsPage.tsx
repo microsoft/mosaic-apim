@@ -39,13 +39,17 @@ import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
 import { DeclarationFields, DeclaredDeploymentsCard, StoredKeyActions } from '../components/KeyEndpoint'
 import { DeploymentPoolsCell, EndpointPoolsCard } from '../components/EndpointPools'
 import { poolsByDeployment, useEndpointPools } from '../endpoint-pools'
-import { GuidedReleaseProgress } from '../components/GuidedRelease'
+import { GuidedRelease, GuidedReleaseProgress } from '../components/GuidedRelease'
+import { ExternalEndpointGuidance, VertexEndpointFields } from '../components/ExternalEndpointFields'
 import {
   blankDeclaration,
+  initialVertex,
   isBedrockHost,
+  isExternalModelProvider,
   keyedProvider,
   toDeclarations,
   usesBackendKey,
+  usesDeclaredModels,
   type DeclarationDraft,
 } from '../key-endpoint'
 import { PublishModelDialog } from '../components/PublishModelDialog'
@@ -90,6 +94,7 @@ import type {
   PublishPlan,
   PublicationStatus,
   SubscriptionScanStatus,
+  VertexConfiguration,
 } from '../types'
 import styles from './ModelsPage.module.css'
 
@@ -118,6 +123,7 @@ const providerLabels: Record<ModelProvider, string> = {
   azureAiFoundry: 'Azure AI Foundry',
   openAiCompatible: 'OpenAI compatible',
   awsBedrock: 'AWS Bedrock',
+  googleVertex: 'Google Vertex AI',
 }
 
 function providerLabel(provider: string): string {
@@ -140,7 +146,7 @@ const REGISTRATION_REFUSED = "MOSAIC didn't register this endpoint"
 // Registering by resource ID is the default. The key path is the explicit alternative for a
 // resource MOSAIC's managed identity can't reach, such as one in another Microsoft Entra tenant.
 // AWS Bedrock is reached with a Bedrock API key the same way, and served only through model pools.
-type RegistrationMode = 'azure' | 'key' | 'bedrock' | 'compatible'
+type RegistrationMode = 'azure' | 'key' | 'bedrock' | 'compatible' | 'vertex'
 
 // On the key and Bedrock paths, the administrator either gives MOSAIC the key, which MOSAIC stores
 // in its own Key Vault, or the URI of a secret they stored themselves.
@@ -814,6 +820,18 @@ function AccessPanel({
         ? 'MOSAIC can read this endpoint'
         : 'MOSAIC cannot read this endpoint'
 
+  if (endpoint.provider === 'googleVertex' || endpoint.compatibleChat) {
+    return <section className={styles.detailSection}>
+      <Title3 as="h3">Configuration and runtime evidence</Title3>
+      <MessageBar intent="warning" layout="multiline"><MessageBarBody>
+        <MessageBarTitle>Runtime execution is not verified</MessageBarTitle>
+        {access.message ?? 'Saving configuration does not prove upstream authentication, model availability or gateway enforcement.'}
+      </MessageBarBody></MessageBar>
+      {endpoint.capabilities.notes.map((note) => <Text block key={note}>{note}</Text>)}
+      <ExternalEndpointGuidance vertex={endpoint.provider === 'googleVertex'} />
+    </section>
+  }
+
   return (
     <section className={styles.detailSection}>
       <Title3 as="h3">Access</Title3>
@@ -1102,7 +1120,10 @@ function RuntimeAccessRow({
   )
 }
 
-function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void }) {
+function ModelEndpoints({ onMessage, onReview }: {
+  onMessage: (message: string) => void
+  onReview: () => void
+}) {
   const { announce } = useAnnounce()
   const checkOutcomeRef = useRef<HTMLDivElement>(null)
   const checkAnnouncement = useFocusAwareAnnounce(checkOutcomeRef)
@@ -1120,6 +1141,10 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
   const [deploying, setDeploying] = useState<ModelEndpoint | null>(null)
   const [deployAfterRegistration, setDeployAfterRegistration] = useState(false)
   const [mode, setMode] = useState<RegistrationMode>('azure')
+  const [vertex, setVertex] = useState<VertexConfiguration>(initialVertex)
+  const [compatibleDeclarations, setCompatibleDeclarations] = useState<DeclarationDraft[]>(() => [
+    blankDeclaration('openAiCompatible'),
+  ])
   const [connection, setConnection] = useState<ConnectionSelection>({ azureCloud: 'commercial', azureConnectionId: null })
   const [resourceId, setResourceId] = useState('')
   const [endpointUrl, setEndpointUrl] = useState('')
@@ -1167,7 +1192,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
   const deployments = useQuery({
     queryKey: ['model-deployments', selected?.id],
     queryFn: () => api.listModelDeployments(selected!.id),
-    enabled: Boolean(selected) && !(selected && usesBackendKey(selected)),
+    enabled: Boolean(selected) && !(selected && usesDeclaredModels(selected)),
   })
   const endpointPools = useEndpointPools(selected?.id)
   const deploymentPools = useMemo(
@@ -1198,6 +1223,8 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
       setKeySource('paste')
       setDeclarations([blankDeclaration(null)])
       setBedrockDeclarations([blankDeclaration('awsBedrock')])
+      setCompatibleDeclarations([blankDeclaration('openAiCompatible')])
+      setVertex(initialVertex)
       setName('')
       setEnvironment(null)
       setEnvironmentTouched(false)
@@ -1205,6 +1232,9 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
       completeWorkspaceNavigation(() => workspace.close(endpoint.id))
       if (deployAfterRegistration && supportsModelDeployment(endpoint)) setDeploying(endpoint)
       setDeployAfterRegistration(false)
+      if (endpoint.provider === 'googleVertex' || endpoint.compatibleChat) {
+        onMessage(`Saved ${endpoint.name}. Configuration only: no provider calls, gateway changes or access grants. Review publication eligibility before continuing.`)
+      }
       await refresh()
     },
     onError: async () => {
@@ -1234,7 +1264,9 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
       queryClient.setQueryData<ModelEndpoint[]>(['model-endpoints'], current =>
         current?.map(endpoint => endpoint.id === checked.id ? checked : endpoint))
       announce(
-        `Access check completed for ${checked.name}. ` +
+        isExternalModelProvider(checked.provider)
+          ? `Offline configuration checked for ${checked.name}. No provider, credential or gateway execution was verified.`
+          : `Access check completed for ${checked.name}. ` +
         `${checked.access.canRead ? 'MOSAIC access was observed.' : 'MOSAIC access is not confirmed or was refused.'} ` +
         'Inspect the separate gateway results.',
         { polite: true },
@@ -1250,7 +1282,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
       workspace.select(null)
       onMessage(
         `Removed ${endpoint.name} from MOSAIC. Nothing changed in ` +
-          `${endpoint.provider === 'awsBedrock' ? 'AWS' : 'Azure'}.`,
+          `${endpoint.provider === 'awsBedrock' ? 'AWS' : endpoint.provider === 'googleVertex' ? 'Google Cloud' : endpoint.provider === 'openAiCompatible' ? 'the backend' : 'Azure'}.`,
       )
       await refresh()
       await queryClient.invalidateQueries({ queryKey: ['publications'] })
@@ -1343,11 +1375,33 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
       })
       return
     }
+    if (mode === 'vertex') {
+      register.mutate({
+        provider: 'googleVertex',
+        endpoint: 'https://aiplatform.us.rep.googleapis.com',
+        vertex: {
+          ...vertex,
+          projectId: vertex.projectId.trim(),
+          ...(vertex.serviceAccount ? { serviceAccount: vertex.serviceAccount.trim() } : {}),
+          ...(vertex.workloadIdentityAudience ? { workloadIdentityAudience: vertex.workloadIdentityAudience.trim() } : {}),
+        },
+        ...(vertex.authMode !== 'workloadIdentityFederation' ? { credentialSecretUri: secretUri.trim() } : {}),
+        name: name.trim() || undefined,
+        environment,
+        deployments: [{
+          deploymentName: 'gemini-3.8-flash', modelName: 'gemini-3.8-flash', apiShape: 'vertexGemini',
+        }],
+      })
+      return
+    }
     register.mutate({
+      provider: 'openAiCompatible',
+      compatibleChat: true,
       endpoint: endpointUrl.trim(),
       credentialSecretUri: secretUri.trim(),
       name: name.trim() || undefined,
       environment,
+      deployments: toDeclarations(compatibleDeclarations, 'openAiCompatible'),
     })
   }
 
@@ -1403,6 +1457,8 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
     setKeySource('paste')
     setDeclarations([blankDeclaration(null)])
     setBedrockDeclarations([blankDeclaration('awsBedrock')])
+    setCompatibleDeclarations([blankDeclaration('openAiCompatible')])
+    setVertex(initialVertex)
     setName('')
     setEnvironment(null)
     setEnvironmentTouched(false)
@@ -1476,7 +1532,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
             <span className={styles.primaryCell}>{endpoint.name}</span>
             <span className={styles.secondaryCell}>{endpoint.azureResourceId && !endpoint.detailEvidence?.providerConfirmedAt
               ? endpoint.detailEvidence ? 'Provider unconfirmed' : 'Provider confirmation not recorded'
-              : providerLabels[endpoint.provider]} · {usesBackendKey(endpoint) ? `${endpoint.declaredDeployments?.length ?? 0} declared models` : endpoint.lastSyncedAt ? `${endpoint.inventory.deployments} models` : 'Not synced'}</span>
+              : providerLabels[endpoint.provider]} · {usesDeclaredModels(endpoint) ? `${endpoint.declaredDeployments?.length ?? 0} declared models` : endpoint.lastSyncedAt ? `${endpoint.inventory.deployments} models` : 'Not synced'}</span>
             <div className={styles.resourceBadges}><EndpointAccessBadge endpoint={endpoint} /><EnvironmentBadge azureCloud={endpoint.azureCloud ?? 'commercial'} environment={endpoint.environment} catalog={catalog.data} /></div>
           </div>}
           renderDetail={(endpoint) => <div key={endpoint.id} className={styles.selectedDetail}>
@@ -1488,24 +1544,30 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
               <div><dt>Provider</dt><dd>{providerLabels[endpoint.provider]}<EndpointFactEvidence endpoint={endpoint} field="provider" /></dd></div>
               <div><dt>Environment</dt><dd><EnvironmentBadge azureCloud={endpoint.azureCloud ?? 'commercial'} environment={endpoint.environment} catalog={catalog.data} /></dd></div>
               <div><dt>Recorded status</dt><dd><EndpointStatusBadge status={endpoint.status} /><Text block size={200}>Inventory/registration status, not proof of current gateway access.</Text></dd></div>
-              <div><dt>Models</dt><dd>{usesBackendKey(endpoint) ? `${endpoint.declaredDeployments?.length ?? 0} declared` : endpoint.lastSyncedAt ? endpoint.inventory.deployments : 'Not synced'}</dd></div>
-              <div><dt>Management authentication</dt><dd>{usesBackendKey(endpoint) ? 'API key from Key Vault' : endpoint.azureConnectionId ? 'Selected Azure connection' : 'Host managed identity'}</dd></div>
+              <div><dt>Models</dt><dd>{usesDeclaredModels(endpoint) ? `${endpoint.declaredDeployments?.length ?? 0} declared` : endpoint.lastSyncedAt ? endpoint.inventory.deployments : 'Not synced'}</dd></div>
+              <div><dt>Authentication configuration</dt><dd>{endpoint.vertex
+                ? endpoint.vertex.authMode === 'workloadIdentityFederation' ? 'Google keyless federation (unverified)'
+                  : endpoint.vertex.authMode === 'serviceAccountKey' ? 'Key Vault-held Google signing credential (unverified)'
+                    : 'Google authorization key (unverified)'
+                : usesBackendKey(endpoint) ? 'API key from Key Vault' : endpoint.azureConnectionId ? 'Selected Azure connection' : 'Host managed identity'}</dd></div>
               {supportsModelDeployment(endpoint) && <div><dt>Deployment management</dt><dd>{endpoint.managementMode === 'manage' ? 'Manage deployments' : 'Read-only'}</dd></div>}
-              <div><dt>Last synced</dt><dd>{usesBackendKey(endpoint) ? 'Not applicable — declared models' : formatTimestamp(endpoint.lastSyncedAt)}</dd></div>
+              <div><dt>Last synced</dt><dd>{usesDeclaredModels(endpoint) ? 'Not applicable — declared models' : formatTimestamp(endpoint.lastSyncedAt)}</dd></div>
               {endpoint.environmentLabel && <div><dt>Legacy label</dt><dd>{endpoint.environmentLabel}</dd></div>}
             </dl>
             <RowActions label={`More actions for ${endpoint.name}`}
               primary={<>
                 {supportsModelDeployment(endpoint) && <Button appearance="primary" onClick={() => setDeploying(endpoint)}>Deploy model</Button>}
+                {(endpoint.vertex || endpoint.compatibleChat) && <Button appearance="primary"
+                  onClick={onReview}>Review publication eligibility</Button>}
                 <Button
                   onClick={() => { if (!recheck.isPending) recheck.mutate(endpoint.id) }}
                   disabledFocusable={recheck.isPending}
                   aria-busy={recheck.isPending && recheck.variables === endpoint.id}
-                >{recheck.isPending && recheck.variables === endpoint.id ? 'Checking access…' : 'Check access'}</Button>
+                >{recheck.isPending && recheck.variables === endpoint.id ? 'Checking access…' : endpoint.vertex || endpoint.compatibleChat ? 'Check configuration' : 'Check access'}</Button>
               </>}
               actions={[
                 { label: 'Edit endpoint', onClick: () => openEndpointEditor(endpoint) },
-                ...(!usesBackendKey(endpoint) ? [{ label: 'Sync models', disabled: sync.isPending || !endpoint.access.canRead, onClick: () => sync.mutate(endpoint.id) }] : []),
+                ...(!usesDeclaredModels(endpoint) ? [{ label: 'Sync models', disabled: sync.isPending || !endpoint.access.canRead, onClick: () => sync.mutate(endpoint.id) }] : []),
                 { label: 'Change environment', onClick: () => openEndpointEditor(endpoint, true) },
               ]}
               destructiveActions={[{ label: 'Remove', disabled: remove.isPending, onClick: () => confirmRemoval(endpoint) }]}
@@ -1516,14 +1578,18 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                   error={recheck.error} announcementKey={recheck.submittedAt} />
               </div>
             </AnnounceProvider>}
-            {recheck.variables === endpoint.id && recheck.isSuccess && <Text block>
+            {recheck.variables === endpoint.id && recheck.isSuccess && isExternalModelProvider(endpoint.provider) && <Text block>
+              Offline configuration checked at {formatTimestamp(recheck.data.access.checkedAt)}.
+              No provider, credential or gateway execution was verified. Inspect the blockers below.
+            </Text>}
+            {recheck.variables === endpoint.id && recheck.isSuccess && !isExternalModelProvider(endpoint.provider) && <Text block>
               Access check completed at {formatTimestamp(recheck.data.access.checkedAt)}.
               {' '}{recheck.data.access.canRead ? 'MOSAIC access was observed.' : 'MOSAIC access is not confirmed or was refused.'}
               {' '}Inspect the separate gateway results below.
             </Text>}
-            <Text size={200}>Removing an endpoint deletes only what MOSAIC stored about it. Nothing changes in Azure or AWS. MOSAIC refuses while a model from it is still published, on its own or in a model pool.</Text>
+            <Text size={200}>Removing an endpoint deletes only what MOSAIC stored about it. Nothing changes at the provider. MOSAIC refuses while a model from it is still published, on its own or in a model pool.</Text>
             <AccessPanel endpoint={endpoint} onMessage={onMessage} />
-            {usesBackendKey(endpoint) ? <DeclaredDeploymentsCard endpoint={endpoint} className={styles.detailSection} /> : (
+            {usesDeclaredModels(endpoint) ? <DeclaredDeploymentsCard endpoint={endpoint} className={styles.detailSection} /> : (
               <section className={styles.detailSection}>
                 <Title3 as="h3">Models on {endpoint.name}</Title3>
                 {endpoint.lastSyncError && <MessageBar intent="warning"><MessageBarBody>
@@ -1673,14 +1739,19 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
           ? 'First register the endpoint, then configure and review an Azure model deployment. Registration stays in MOSAIC if you cancel deployment. Nothing is deployed by this registration step.'
           : mode === 'bedrock'
           ? 'Registration saves the endpoint and declared models without calling AWS. It does not publish a model, change API Management or grant access.'
+          : mode === 'vertex' || mode === 'compatible'
+          ? 'Save endpoint configuration and exact declarations only. No provider calls, deployment, gateway changes or access grants.'
           : 'Registration records and discovers the endpoint. It does not publish a model or change API Management.'}
         pending={register.isPending}
         onOpenChange={(_, data) => !data.open && closeDialog()}>
         {(requestClose) => (
           <form onSubmit={submit}>
+            <GuidedRelease enabled={mode === 'vertex' || mode === 'compatible'} stage="register"
+              guidance={<ExternalEndpointGuidance vertex={mode === 'vertex'} />}>
               <div className={styles.dialogForm}>
                 {mode === 'bedrock' && <GuidedReleaseProgress stage="register" />}
                 <TabList
+                  className={styles.registrationTabs}
                   selectedValue={mode}
                   onTabSelect={(_, data) => {
                     setMode(data.value as RegistrationMode)
@@ -1689,11 +1760,14 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                     setApiKey('')
                     setApiKeyTouched(false)
                     setEndpointUrlChecked(false)
+                    setSecretUri('')
+                    setEndpointUrl('')
                   }}
                 >
                   <Tab value="azure">Azure AI</Tab>
                   <Tab value="key">Azure AI with an API key</Tab>
                   <Tab value="bedrock">AWS Bedrock</Tab>
+                  <Tab value="vertex">Google Vertex AI</Tab>
                   <Tab value="compatible">OpenAI compatible</Tab>
                 </TabList>
 
@@ -1865,9 +1939,22 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                     />
                   </>
                 )}
+                {mode === 'vertex' && <>
+                  <VertexEndpointFields value={vertex} onChange={(value) => {
+                    if (value.authMode !== vertex.authMode) setSecretUri('')
+                    setVertex(value)
+                  }} />
+                  {vertex.authMode !== 'workloadIdentityFederation' && <Field
+                    label={vertex.authMode === 'serviceAccountKey' ? 'Signing credential Key Vault secret URI' : 'Key Vault secret URI'}
+                    required hint="Reference only. MOSAIC never accepts or returns the credential value here. Availability and runtime use remain unverified.">
+                    <Input required type="url" value={secretUri} spellCheck={false}
+                      onChange={(_, data) => setSecretUri(data.value)} />
+                  </Field>}
+                </>}
                 {mode === 'compatible' && (
                   <>
-                    <Field label="Endpoint URL" required>
+                    <Field label="Endpoint URL" required
+                      hint="An explicitly approved public HTTPS origin and base path. Private backends, redirects and credential queries are excluded.">
                       <Input
                         value={endpointUrl}
                         onChange={(_, data) => setEndpointUrl(data.value)}
@@ -1885,6 +1972,8 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                         placeholder="https://my-vault.vault.azure.net/secrets/model-key"
                       />
                     </Field>
+                    <DeclarationFields drafts={compatibleDeclarations} provider="openAiCompatible"
+                      onChange={setCompatibleDeclarations} />
                   </>
                 )}
 
@@ -1907,6 +1996,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                   </div>
                 )}
               </div>
+            </GuidedRelease>
               <div className={styles.formActions}>
                 <Button appearance="primary" type="submit" disabledFocusable={register.isPending}>
                   {register.isPending ? 'Registering…' : deployAfterRegistration ? 'Register and continue' : 'Register'}
@@ -1921,7 +2011,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
         mutationKey={MODELS_PAGE_MUTATION_KEY} onClose={() => workspace.close()}
         onSaved={async (endpoint) => {
           completeWorkspaceNavigation(() => workspace.close(endpoint.id))
-          onMessage(`Updated ${endpoint.name}. Nothing changed in Azure or AWS.`)
+          onMessage(`Updated ${endpoint.name}. Nothing changed at the provider or gateway.`)
           await refresh()
         }} />}
 
@@ -2067,7 +2157,14 @@ export function ModelsPage() {
         onSelect={(value) => { if (!pendingOperations) selectSection(value) }}>
         {section === 'published' && <PublishedModels onMessage={setLiveBanner} onPublish={() => workspace.open('publish')} />}
         {section === 'imported' && <ImportedModelApis onRemoved={setLiveBanner} onImport={() => workspace.open('import')} />}
-        {section === 'endpoints' && <ModelEndpoints onMessage={setLiveBanner} />}
+        {section === 'endpoints' && <ModelEndpoints onMessage={setLiveBanner} onReview={() => {
+          const next = new URLSearchParams(location.search)
+          next.set('tab', 'published')
+          next.set('mode', 'publish')
+          next.set('workbench', `${location.pathname}:published`)
+          next.delete('selected')
+          navigate({ pathname: location.pathname, search: `?${next}`, hash: location.hash })
+        }} />}
       <PublishModelDialog
         open={section === 'published' && workspace.mode === 'publish'}
         mutationKey={MODELS_PAGE_MUTATION_KEY}

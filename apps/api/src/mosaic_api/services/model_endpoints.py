@@ -99,6 +99,11 @@ from mosaic_api.integrations.aoai.backend_key_access import (
 from mosaic_api.integrations.aoai.deployment_access import deployment_access
 from mosaic_api.integrations.aoai.key_check import KeyCheckOutcome, KeyCheckResult
 from mosaic_api.integrations.apim import classify_url
+from mosaic_api.integrations.generative_protocols import (
+    admit_custom_chat_url,
+    custom_operation_url,
+    publication_blockers,
+)
 from mosaic_api.integrations.key_vault import (
     MANAGED_BY,
     MANAGED_BY_TAG,
@@ -416,6 +421,8 @@ class ModelEndpointService:
         return await self._register(actor, request)
 
     async def _register(self, actor: Actor, request: ModelEndpointCreate) -> ModelEndpoint:
+        if request.provider == ModelProvider.GOOGLE_VERTEX or request.compatible_chat:
+            return await self._register_external(actor, request)
         await validate_resource_connection(
             self._connection_validator, actor.tenant_id,
             request.azure_connection_id, request.azure_cloud,
@@ -436,6 +443,91 @@ class ModelEndpointService:
         if request.provider != ModelProvider.OPENAI_COMPATIBLE:
             return await self._register_keyed(actor, request)
         return await self._register_compatible(actor, request)
+
+    async def _register_external(
+        self, actor: Actor, request: ModelEndpointCreate
+    ) -> ModelEndpoint:
+        """Store declarations and references only; no key reads, probes or gateway changes."""
+        assert request.endpoint is not None
+        assert request.provider is not None
+        assert request.environment is not None
+        url = (
+            custom_operation_url(str(request.endpoint)).removesuffix("/chat/completions")
+            if request.compatible_chat else str(request.endpoint).rstrip("/")
+        )
+        project = request.vertex.project_id if request.vertex else ""
+        identity = f"{request.provider}:{url}:{project}:{request.environment}"
+        async with scope_lease(self._gateways, actor.tenant_id, ENVIRONMENTS_SCOPE):
+            catalog = await load_environment_catalog(self._environments, actor.tenant_id)
+            _validate_environment_key(
+                {environment.key for environment in catalog.environments}, request.environment
+            )
+            for existing in await self._repository.list_endpoints(actor.tenant_id):
+                if (
+                    str(existing.endpoint).rstrip("/") in (
+                        {url, url.removesuffix("/v1")} if request.compatible_chat else {url}
+                    )
+                    and existing.environment == request.environment
+                    and (
+                        existing.vertex.project_id if existing.vertex else ""
+                    ) == project
+                ):
+                    raise ConflictError(
+                        "This endpoint URL is already registered in this exact environment",
+                        details={"id": existing.id, "name": existing.name},
+                    )
+            credential = (
+                CredentialReference(
+                    id=deterministic_id("credential", actor.tenant_id, identity),
+                    tenant_id=actor.tenant_id,
+                    name=f"{request.name or request.provider} credential reference",
+                    secret_uri=request.credential_secret_uri,
+                )
+                if request.credential_secret_uri is not None else None
+            )
+            endpoint = ModelEndpoint(
+                id=deterministic_id("endpoint", actor.tenant_id, identity),
+                tenant_id=actor.tenant_id,
+                name=(request.name or urlparse(url).hostname or url).strip(),
+                provider=request.provider,
+                endpoint=AnyHttpUrl(url),
+                vertex=request.vertex,
+                compatible_chat=request.compatible_chat,
+                environment=request.environment,
+                auth_mode=(
+                    EndpointAuthMode.API_KEY if credential else EndpointAuthMode.MANAGED_IDENTITY
+                ),
+                credential_reference_id=credential.id if credential else None,
+                declared_deployments=[
+                    DeclaredDeployment(
+                        **item.model_dump(by_alias=False), declared_by=actor.object_id
+                    ) for item in request.deployments or []
+                ],
+            )
+            endpoint = self._external_readiness(endpoint)
+            if credential is not None:
+                await self._repository.save_credential(
+                    credential, self._audit(actor, "credentialReference.recorded", credential.id)
+                )
+            return await self._repository.create_endpoint(
+                endpoint, self._audit(actor, "modelEndpoint.registered", endpoint.id)
+            )
+
+    @staticmethod
+    def _external_readiness(endpoint: ModelEndpoint) -> ModelEndpoint:
+        blockers = publication_blockers(
+            endpoint.provider, endpoint.vertex.auth_mode if endpoint.vertex else None
+        )
+        return endpoint.model_copy(update={
+            "status": ModelEndpointStatus.PENDING,
+            "access": EndpointAccess(message=" ".join(blockers)),
+            "runtime_access": [],
+            "capabilities": ModelEndpointCapabilities(notes=[
+                "Configuration recorded offline. No credentials were read and no external "
+                "authentication, model availability, inference or gateway checks were run.",
+                *blockers,
+            ]),
+        })
 
     async def _register_azure(
         self, actor: Actor, request: ModelEndpointCreate
@@ -857,6 +949,15 @@ class ModelEndpointService:
     async def update(
         self, actor: Actor, endpoint_id: str, request: ModelEndpointUpdate
     ) -> ModelEndpoint:
+        if "compatible_chat" in request.model_fields_set:
+            if request.api_key is not None:
+                raise ValidationError("Custom chat accepts only a credential secret reference")
+            async with scope_lease(self._gateways, actor.tenant_id, ENVIRONMENTS_SCOPE):
+                async with scope_lease(
+                    self._gateways, actor.tenant_id, endpoint_mutation_scope(endpoint_id)
+                ):
+                    endpoint = await self.get_endpoint(actor, endpoint_id)
+                    return await self._update(actor, endpoint, request)
         if request.api_key is not None:
             # Under the endpoint's lease, so a key can't be written into a secret that removing
             # the endpoint is deleting at the same moment.
@@ -902,7 +1003,45 @@ class ModelEndpointService:
         endpoint: ModelEndpoint,
         request: ModelEndpointUpdate,
     ) -> ModelEndpoint:
+        if (
+            "compatible_chat" in request.model_fields_set
+            and request.compatible_chat is not True
+        ):
+            raise ValidationError("compatibleChat is an explicit opt-in, not a downgrade")
         changes = request.model_dump(exclude_unset=True, by_alias=False)
+        if "compatible_chat" in changes:
+            if endpoint.provider != ModelProvider.OPENAI_COMPATIBLE:
+                raise ValidationError("compatibleChat applies only to OpenAI-compatible endpoints")
+            if endpoint.auth_mode != EndpointAuthMode.API_KEY:
+                raise ValidationError("Custom chat requires an existing API-key secret reference")
+            if not endpoint.environment:
+                raise ValidationError("Assign an exact environment before opting into custom chat")
+            try:
+                admit_custom_chat_url(str(endpoint.endpoint))
+            except ValueError as error:
+                raise ValidationError(str(error)) from None
+            effective_route = custom_operation_url(str(endpoint.endpoint))
+            for other in await self._repository.list_endpoints(actor.tenant_id):
+                if (
+                    other.id != endpoint.id and other.compatible_chat
+                    and other.environment == endpoint.environment
+                    and custom_operation_url(str(other.endpoint)) == effective_route
+                ):
+                    raise ConflictError(
+                        "This effective chat route is already registered in the exact environment",
+                        details={"id": other.id},
+                    )
+            credential = (
+                await self._repository.get_credential(
+                    actor.tenant_id, endpoint.credential_reference_id
+                ) if endpoint.credential_reference_id else None
+            )
+            if credential is None:
+                raise ValidationError("Custom chat requires a Key Vault credential reference")
+            try:
+                KeyVaultSecretId.parse(str(credential.secret_uri))
+            except ValueError as error:
+                raise ValidationError(str(error)) from None
         if request.management_mode is not None:
             if (
                 not endpoint.azure_resource_id
@@ -955,10 +1094,12 @@ class ModelEndpointService:
                 "updated_at": utc_now(),
             }
         )
+        if updated.is_governed_external():
+            updated = self._external_readiness(updated)
         saved = await self._repository.save_endpoint(
             updated, self._audit(actor, "modelEndpoint.updated", updated.id)
         )
-        if secret_uri is not None and saved.uses_backend_key():
+        if secret_uri is not None and saved.uses_backend_key() and not saved.is_governed_external():
             # A new secret makes every earlier check stale, MOSAIC's and the gateways' alike.
             recorded = await self._repository.record_endpoint_state(
                 await self._apply_preflight(saved)
@@ -1258,6 +1399,13 @@ class ModelEndpointService:
 
     async def preflight(self, actor: Actor, endpoint_id: str) -> ModelEndpoint:
         endpoint = await self.get_endpoint(actor, endpoint_id)
+        if endpoint.is_governed_external():
+            recorded = await self._repository.record_endpoint_state(
+                self._external_readiness(endpoint)
+            )
+            if recorded is None:
+                raise NotFoundError("Model endpoint was not found", details={"id": endpoint_id})
+            return recorded
         if not endpoint.uses_backend_key() and (
             endpoint.auth_mode == EndpointAuthMode.API_KEY or not endpoint.azure_resource_id
         ):
@@ -1274,7 +1422,7 @@ class ModelEndpointService:
 
     @staticmethod
     def _require_declarable(endpoint: ModelEndpoint) -> None:
-        if not endpoint.uses_backend_key():
+        if not endpoint.uses_backend_key() and not endpoint.is_governed_external():
             raise ConflictError(
                 "MOSAIC reads this endpoint's deployments from Azure, so none can be declared.",
                 details={"id": endpoint.id, "authMode": str(endpoint.auth_mode)},
@@ -1299,7 +1447,8 @@ class ModelEndpointService:
                 for item in endpoint.declared_deployments
             ):
                 raise ConflictError(
-                    f"Deployment {request.deployment_name} is already declared on {endpoint.name}.",
+                    f"Deployment {request.deployment_name} is already declared on {endpoint.name}; "
+                    "case-only siblings cannot be accounted for separately.",
                     details={"id": endpoint.id, "deploymentName": request.deployment_name},
                 )
             if len(endpoint.declared_deployments) >= MAX_DECLARED_DEPLOYMENTS:
@@ -1443,7 +1592,9 @@ class ModelEndpointService:
             )
 
     async def _apply_preflight(self, endpoint: ModelEndpoint) -> ModelEndpoint:
-        """Verify MOSAIC's control-plane access, then report each gateway's runtime access."""
+        """Verify control-plane access, or retain offline external configuration blockers."""
+        if endpoint.is_governed_external():
+            return self._external_readiness(endpoint)
 
         if endpoint.uses_backend_key():
             return await self._apply_key_preflight(endpoint)
@@ -1821,6 +1972,12 @@ class ModelEndpointService:
         self, actor: Actor, endpoint_id: str
     ) -> tuple[ModelEndpointSyncRun, asyncio.Task[None]]:
         endpoint = await self.get_endpoint(actor, endpoint_id)
+        if endpoint.is_governed_external():
+            raise ConflictError(
+                "Discovery is not supported. Declare exact model IDs; configuration checks "
+                "remain offline and do not prove gateway readiness.",
+                details={"reason": "exactDeclarationsRequired"},
+            )
         if endpoint.is_bedrock():
             raise ConflictError(
                 "MOSAIC can't list AWS Bedrock's models with a Bedrock API key. Declare the model "

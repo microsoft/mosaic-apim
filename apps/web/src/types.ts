@@ -1375,8 +1375,16 @@ export interface GatewayPolicyView {
   mosaicManagedCount: number
 }
 
-export type ModelProvider = 'azureOpenAi' | 'azureAiFoundry' | 'openAiCompatible' | 'awsBedrock'
+export type ModelProvider = 'azureOpenAi' | 'azureAiFoundry' | 'openAiCompatible' | 'awsBedrock' | 'googleVertex'
 export type EndpointAuthMode = 'managedIdentity' | 'apiKey'
+export interface VertexConfiguration {
+  projectId: string
+  location: 'us'
+  apiVersion: 'v1'
+  authMode: 'workloadIdentityFederation' | 'serviceAccountKey' | 'apiKey'
+  serviceAccount?: string | null
+  workloadIdentityAudience?: string | null
+}
 export type ModelEndpointStatus =
   | 'pending'
   | 'connected'
@@ -1549,6 +1557,8 @@ export interface ModelEndpoint {
   /** Legacy records are read-only until an administrator explicitly opts in. */
   managementMode?: ManagementMode
   credentialReferenceId?: string | null
+  vertex?: VertexConfiguration | null
+  compatibleChat?: boolean
   /**
    * True when MOSAIC keeps this endpoint's API key in its own Key Vault, because an administrator
    * gave MOSAIC the key. MOSAIC replaces it on request and deletes it with the endpoint.
@@ -1715,7 +1725,7 @@ export interface PublishedResource {
  * The curated operation set, backend host, and runtime auth a published model API uses. A Foundry
  * resource serves Anthropic models through the Anthropic Messages API (ADR 0012).
  */
-export type ApiShape = 'azureOpenAi' | 'foundryModels' | 'anthropicMessages'
+export type ApiShape = 'azureOpenAi' | 'foundryModels' | 'anthropicMessages' | 'vertexGemini' | 'openAiChat'
 
 export type DeploymentCapability =
   | 'chat'
@@ -1743,6 +1753,8 @@ export interface PublishableModel {
   apiShape?: ApiShape | null
   /** False when MOSAIC has no curated shape for this deployment; the reason says why. */
   publishable?: boolean
+  /** Allows an offline draft/review without asserting executable publication support. */
+  reviewable?: boolean
   unpublishableReason?: string | null
   /** False when the gateway's tier can't meter this shape; the note says why. */
   tokenLimitsSupported?: boolean
@@ -1956,6 +1968,8 @@ export interface PublishPlan {
   facets: PolicyFacet[]
   policyContentSha256: string | null
   warnings: string[]
+  executable?: boolean
+  executionBlockedReasons?: string[]
   target?: 'model' | 'mcp' | 'pool'
   /** Publish plans are applied; unpublish plans delete what MOSAIC created. Older plans omit it. */
   operation?: 'publish' | 'unpublish'

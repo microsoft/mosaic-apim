@@ -46,6 +46,7 @@ from mosaic_api.domain import (
     ModelApi,
     ModelEndpoint,
     ModelProvider,
+    PlanReview,
     Publication,
     PublicationCreate,
     PublicationStatus,
@@ -61,6 +62,7 @@ from mosaic_api.domain import (
     PublishStepResult,
     PublishStepStatus,
     ReadinessFreshness,
+    ReviewField,
     TokenEnforcement,
     grant_precedence_key,
     model_access_subscription_name,
@@ -617,7 +619,10 @@ class PublishingService:
         catalog = await load_environment_catalog(self._environments, actor.tenant_id)
         verdict = permits(catalog, gateway.environment, endpoint.environment)
         refuse_blocked_pairing(verdict)
-        if endpoint.provider == ModelProvider.OPENAI_COMPATIBLE:
+        external = endpoint.is_governed_external()
+        if external:
+            self._require_external_environment(endpoint, gateway)
+        if endpoint.provider == ModelProvider.OPENAI_COMPATIBLE and not external:
             raise ValidationError(
                 "MOSAIC has no curated API shape for OpenAI-compatible endpoints, so it cannot "
                 "publish from them yet.",
@@ -631,7 +636,7 @@ class PublishingService:
                 raise ValidationError("Standalone Bedrock publication requires governed access.")
         deployment = await self._require_known_deployment(actor, endpoint, request.deployment_name)
         fit = self._fit(endpoint, deployment, gateway)
-        if not fit.publishable:
+        if fit.api_shape is None or (not fit.publishable and not external):
             raise ValidationError(
                 fit.unpublishable_reason or "MOSAIC can't publish this deployment yet.",
                 details={
@@ -639,10 +644,11 @@ class PublishingService:
                     "capability": str(fit.capability),
                 },
             )
-        if endpoint.uses_backend_key():
+        if endpoint.uses_backend_key() and not external:
             self._require_key_identity(gateway)
 
         names = default_names(endpoint.name, request.deployment_name)
+        settings = request.governed_access or (ModelAccessSettings() if external else None)
         target = publication_id(actor.tenant_id, gateway.id, endpoint.id, request.deployment_name)
         existing = await self._repository.get_publication(actor.tenant_id, target)
         if existing and (
@@ -676,20 +682,46 @@ class PublishingService:
                 backend_key_name(names.backend_name) if endpoint.uses_backend_key() else None
             ),
             subscription_required=(
-                not request.governed_access.entra_enabled
-                if request.governed_access
+                not settings.entra_enabled
+                if settings
                 else request.subscription_required
             ),
             enforcement=request.enforcement,
-            governed_access=request.governed_access,
+            governed_access=settings,
             shape_version=CURATED_SHAPE_VERSION,
             api_shape=fit.api_shape,
             created_at=existing.created_at if existing else utc_now(),
         )
-        capabilities = await publication_policy_capabilities(self._endpoints, publication, gateway)
-        self._require_enforcement_fit(request.enforcement, capabilities)
+        if not external:
+            capabilities = await publication_policy_capabilities(
+                self._endpoints, publication, gateway
+            )
+            self._require_enforcement_fit(request.enforcement, capabilities)
         return await self._repository.save_publication(
             publication, self._audit(actor, "publication.created", publication.id)
+        )
+
+    @staticmethod
+    def _require_external_environment(endpoint: ModelEndpoint, gateway: Gateway) -> None:
+        if not endpoint.environment or gateway.environment != endpoint.environment:
+            raise ConflictError(
+                "External model drafts require a gateway in the exact endpoint environment.",
+                details={"reason": "externalEnvironmentMismatch"},
+            )
+
+    @staticmethod
+    def _require_external_execution(endpoint: ModelEndpoint) -> None:
+        from mosaic_api.integrations.generative_protocols import publication_blockers
+
+        raise ValidationError(
+            " ".join(publication_blockers(
+                endpoint.provider, endpoint.vertex.auth_mode if endpoint.vertex else None
+            )),
+            details={
+                "modelEndpointId": endpoint.id,
+                "reason": "externalExecutionUnproved",
+                "provider": str(endpoint.provider),
+            },
         )
 
     @staticmethod
@@ -699,12 +731,21 @@ class PublishingService:
         gateway: Gateway,
     ) -> DeploymentFit:
         if isinstance(deployment, DeclaredDeployment):
-            return assess_declared_deployment(
+            fit = assess_declared_deployment(
                 endpoint.provider,
                 deployment.api_shape,
                 endpoint=str(endpoint.endpoint),
                 gateway_sku=gateway.capabilities.sku_name,
             )
+            if endpoint.is_governed_external() and fit.api_shape is not None:
+                from mosaic_api.integrations.generative_protocols import publication_blockers
+
+                return DeploymentFit(
+                    fit.capability, fit.api_shape, " ".join(publication_blockers(
+                        endpoint.provider, endpoint.vertex.auth_mode if endpoint.vertex else None
+                    )),
+                )
+            return fit
         return assess_deployment(
             endpoint.provider,
             model_name=deployment.model_name,
@@ -759,7 +800,7 @@ class PublishingService:
     async def _require_known_deployment(
         self, actor: Actor, endpoint: ModelEndpoint, deployment_name: str
     ) -> ObservedModelDeployment | DeclaredDeployment:
-        if endpoint.uses_backend_key():
+        if endpoint.uses_backend_key() or endpoint.is_governed_external():
             declared = endpoint.declared(deployment_name)
             if declared is None:
                 raise ValidationError(
@@ -826,7 +867,14 @@ class PublishingService:
             return publication
         settings = request.governed_access or publication.governed_access
         gateway = await self._load_gateway(actor, publication.gateway_id)
-        if "enforcement" in changes and request.enforcement != publication.enforcement:
+        external = publication.provider == ModelProvider.GOOGLE_VERTEX or (
+            publication.provider == ModelProvider.OPENAI_COMPATIBLE
+            and publication.api_shape == ApiShape.OPENAI_CHAT
+        )
+        if (
+            "enforcement" in changes and request.enforcement != publication.enforcement
+            and not external
+        ):
             capabilities = await publication_policy_capabilities(
                 self._endpoints, publication, gateway
             )
@@ -961,10 +1009,13 @@ class PublishingService:
         catalog = await load_environment_catalog(self._environments, actor.tenant_id)
         candidates: list[PublishableModel] = []
         for endpoint in endpoints:
-            if endpoint.provider == ModelProvider.OPENAI_COMPATIBLE:
+            if (
+                endpoint.provider == ModelProvider.OPENAI_COMPATIBLE
+                and not endpoint.compatible_chat
+            ):
                 continue
             deployments: list[ObservedModelDeployment | DeclaredDeployment]
-            if endpoint.uses_backend_key():
+            if endpoint.uses_backend_key() or endpoint.is_governed_external():
                 deployments = list(endpoint.declared_deployments)
             else:
                 deployments = list(
@@ -1009,6 +1060,12 @@ class PublishingService:
                         capability=fit.capability,
                         api_shape=fit.api_shape,
                         publishable=fit.publishable and policy_fit and bedrock_reason is None,
+                        reviewable=(
+                            endpoint.is_governed_external()
+                            and bool(endpoint.environment)
+                            and endpoint.environment == gateway.environment
+                            and verdict.level != VerdictLevel.BLOCKED
+                        ),
                         unpublishable_reason=bedrock_reason or fit.unpublishable_reason or (
                             token_capability.message if not policy_fit else None
                         ),
@@ -1042,6 +1099,9 @@ class PublishingService:
         publication = await self.get_publication(actor, target_id)
         if publication.access_state == "unknown":
             raise ConflictError("Recover this publication's interrupted apply before replanning")
+        endpoint = await self._load_endpoint(actor, publication.model_endpoint_id)
+        if endpoint.is_governed_external():
+            return await self._plan_external(actor, publication, endpoint)
         gateway = await self._load_gateway(actor, publication.gateway_id)
         self._require_writable(gateway)
         resource = gateway.arm_resource()
@@ -1055,7 +1115,6 @@ class PublishingService:
                     await publication_policy_capabilities(self._endpoints, publication, gateway),
                     boundary="plan",
                 )
-        endpoint = await self._load_endpoint(actor, publication.model_endpoint_id)
         inherited = await self._bedrock_review(client, publication, endpoint, gateway)
         catalog = await load_environment_catalog(self._environments, actor.tenant_id)
         verdict = permits(catalog, gateway.environment, endpoint.environment)
@@ -1156,6 +1215,137 @@ class PublishingService:
         )
         return plan
 
+    async def _plan_external(
+        self, actor: Actor, publication: Publication, endpoint: ModelEndpoint
+    ) -> PublishPlan:
+        """Review saved intent without probing providers, secrets, directory or gateway state."""
+        from mosaic_api.integrations.generative_protocols import (
+            CONTRACT_VERSION,
+            custom_operation_url,
+            publication_blockers,
+            vertex_operation_url,
+        )
+
+        gateway = await self._load_gateway(actor, publication.gateway_id)
+        self._require_external_environment(endpoint, gateway)
+        deployment = await self._require_known_deployment(
+            actor, endpoint, publication.deployment_name
+        )
+        if not isinstance(deployment, DeclaredDeployment) or (
+            deployment.api_shape != publication.api_shape
+        ):
+            raise ValidationError("The draft no longer matches its exact declared API contract")
+        catalog = await load_environment_catalog(self._environments, actor.tenant_id)
+        verdict = permits(catalog, gateway.environment, endpoint.environment)
+        refuse_blocked_pairing(verdict)
+        credential = (
+            await self._endpoints.get_credential(
+                actor.tenant_id, endpoint.credential_reference_id
+            ) if endpoint.credential_reference_id else None
+        )
+        blockers = list(publication_blockers(
+            endpoint.provider, endpoint.vertex.auth_mode if endpoint.vertex else None
+        ))
+        if endpoint.vertex is not None:
+            routes = [
+                vertex_operation_url(
+                    endpoint.vertex.project_id, publication.deployment_name, streaming=stream
+                ) for stream in (False, True)
+            ]
+            authentication = endpoint.vertex.auth_mode
+            configuration = endpoint.vertex.model_dump(mode="json")
+        elif endpoint.compatible_chat:
+            routes = [custom_operation_url(str(endpoint.endpoint))]
+            authentication = "apiKey"
+            configuration = {"compatibleChat": True}
+        else:
+            raise ValidationError("Native Vertex configuration is missing")
+        if endpoint.uses_backend_key() and credential is None:
+            blockers.append("The saved credential reference is missing; no secret was read.")
+        fingerprint = compatibility_fingerprint(
+            catalog, gateway.environment, endpoint.environment
+        )
+        intent = {
+            "contractVersion": CONTRACT_VERSION,
+            "publication": publication.model_dump(mode="json", exclude={
+                "etag", "updated_at", "status", "last_plan_id", "last_plan_digest",
+            }),
+            "routes": routes,
+            "configuration": configuration,
+            "credentialSecretUri": str(credential.secret_uri) if credential else None,
+            "gateway": gateway.id,
+            "gatewayResource": gateway.azure_resource_id,
+            "environmentFingerprint": fingerprint,
+            "blockers": blockers,
+        }
+        digest = hashlib.sha256(json.dumps(intent, sort_keys=True).encode()).hexdigest()
+        review = review_snapshot(publication, None)
+        review.fields.extend([
+            ReviewField(key="external/contractVersion", category="Routing",
+                        label="Offline protocol contract", value=CONTRACT_VERSION),
+            ReviewField(key="external/gateway", category="Routing",
+                        label="Gateway record (not checked)", value=gateway.id),
+            ReviewField(key="external/environment", category="Routing",
+                        label="Exact endpoint environment",
+                        value=endpoint.environment or "Unassigned"),
+            ReviewField(key="external/authMode", category="Authentication",
+                        label="Selected backend authentication (unproved)", value=authentication),
+            ReviewField(key="external/credential", category="Authentication",
+                        label="Credential reference (not read)",
+                        value=endpoint.credential_reference_id or "No secret: explicit WIF"),
+        ])
+        for key, value in configuration.items():
+            review.fields.append(ReviewField(
+                key=f"external/configuration/{key}", category="Authentication",
+                label=f"Declared backend {key}", value=str(value),
+            ))
+        for index, route in enumerate(routes):
+            review.fields.append(ReviewField(
+                key=f"external/routes/{index}", category="Routing",
+                label="Exact proposed upstream operation", value="POST " + route,
+            ))
+        settings = publication.governed_access
+        if settings is not None:
+            review.fields.extend([
+                ReviewField(key="external/callerKeys", category="Authentication",
+                            label="Desired caller keys", value=str(settings.keys_enabled)),
+                ReviewField(key="external/callerEntra", category="Authentication",
+                            label="Desired caller Entra", value=str(settings.entra_enabled)),
+            ])
+        plan = PublishPlan(
+            id=new_id("publishplan"), tenant_id=actor.tenant_id,
+            publication_id=publication.id, gateway_id=gateway.id, digest=digest,
+            executable=False, execution_blocked_reasons=blockers, steps=[],
+            actor_object_id=actor.object_id,
+            warnings=[
+                "Offline review only. No live collisions, credentials, permissions, availability, "
+                "network reachability, policy compilation or inference were checked.",
+                *blockers,
+            ],
+            review=PlanReview(
+                baseline="new" if not publication.applied_access else "partial",
+                target=review,
+                impact=[
+                    "Save and Review change MOSAIC records only. No APIM resources, grants, "
+                    "credentials, subscriptions or caller access are created or changed.",
+                    "Desired grants and caller methods do not authorize any caller until a "
+                    "separately supported governed apply succeeds. Existing applied access "
+                    "is unchanged; this blocked review is not an applied grant snapshot.",
+                    "Apply is refused server-side while execution blockers remain. Required "
+                    "enforcement is not silently removed.",
+                ],
+            ),
+        )
+        await self._repository.save_publish_plan(plan)
+        await self._repository.record_publication_state(publication.model_copy(update={
+            "status": (
+                publication.status if publication.status == PublicationStatus.PUBLISHED
+                else PublicationStatus.PLANNED
+            ),
+            "last_plan_id": plan.id, "last_plan_digest": plan.digest, "updated_at": utc_now(),
+        }))
+        return plan
+
     @staticmethod
     def _policy(
         publication: Publication, snapshot: ModelAccessSnapshot | None
@@ -1195,6 +1385,8 @@ class PublishingService:
         its own because the digest covers it.
         """
 
+        if endpoint.is_governed_external():
+            self._require_external_execution(endpoint)
         if gateway.azure_cloud != endpoint.azure_cloud:
             raise ValidationError(
                 "A gateway and its model backend must be in the same Azure cloud."
@@ -1850,6 +2042,9 @@ class PublishingService:
         self, actor: Actor, target_id: str, plan_id: str | None, owner: str
     ) -> PublishRun:
         publication = await self.get_publication(actor, target_id)
+        endpoint = await self._load_endpoint(actor, publication.model_endpoint_id)
+        if endpoint.is_governed_external():
+            self._require_external_execution(endpoint)
         if publication.access_state == "unknown":
             raise ConflictError("Recover this publication's interrupted apply before applying")
         gateway = await self._load_gateway(actor, publication.gateway_id)
@@ -1864,7 +2059,6 @@ class PublishingService:
                     await publication_policy_capabilities(self._endpoints, publication, gateway),
                     boundary="apply",
                 )
-        endpoint = await self._load_endpoint(actor, publication.model_endpoint_id)
         inherited = await self._bedrock_review(client, publication, endpoint, gateway)
 
         resolved = plan_id or publication.last_plan_id
@@ -1876,6 +2070,11 @@ class PublishingService:
         plan = await self._repository.get_publish_plan(actor.tenant_id, resolved)
         if plan is None or plan.target != "model" or plan.publication_id != publication.id:
             raise NotFoundError("Publish plan was not found", details={"id": resolved})
+        if plan.executable is False or plan.execution_blocked_reasons:
+            raise ValidationError(
+                "This offline review cannot be applied.",
+                details={"executionBlockedReasons": plan.execution_blocked_reasons},
+            )
         if plan.operation != "publish" or any(
             step.action == PublishAction.DELETE
             # A publish plan deletes only a revoked grant's key, before it applies anything else.

@@ -185,10 +185,12 @@ class TestRequiredDataActions:
     def test_both_messages_routes_need_only_the_provider_model_action(self) -> None:
         assert MESSAGES_ACTIONS == (PROVIDER_MODEL,)
 
-    def test_unknown_kind_needs_every_curated_shape(self) -> None:
+    def test_unknown_azure_kind_needs_every_azure_shape(self) -> None:
         # Whatever MOSAIC accepts before it can read the resource must still hold once it can.
         assert set(required_runtime_data_actions(None)) == {*AOAI_ACTIONS, *FOUNDRY_ACTIONS}
-        assert published_shapes(None) == tuple(ApiShape)
+        assert published_shapes(None) == (
+            ApiShape.AZURE_OPENAI, ApiShape.FOUNDRY_MODELS, ApiShape.ANTHROPIC_MESSAGES
+        )
 
     @pytest.mark.parametrize(
         ("kind", "provider", "shapes"),
@@ -335,7 +337,7 @@ class TestBuiltInRoles:
         assert covers(MESSAGES_ACTIONS) is covers_messages
         assert covers(FOUNDRY_ACTIONS) is (covers_foundry_models and covers_messages)
 
-    @pytest.mark.parametrize("shape", list(ApiShape))
+    @pytest.mark.parametrize("shape", list(KNOWN_SUFFICIENT_ROLES))
     def test_fallback_list_is_exactly_the_sufficient_built_ins(self, shape: ApiShape) -> None:
         # The list is only consulted when a definition cannot be read, so it must say exactly what
         # reading the definition would have said.

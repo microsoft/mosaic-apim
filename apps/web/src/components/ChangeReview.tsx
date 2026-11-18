@@ -43,6 +43,20 @@ export function ChangeReview({ plan, context }: { plan: PublishPlan; context?: E
     This older plan has no before/after comparison. Its complete target and execution steps remain
     below. Request a fresh plan for a change summary; previous values may still be unavailable.
   </MessageBarBody></MessageBar>
+  if (plan.executable === false) return <section className={styles.section} aria-label="Offline publication review">
+    <Title3 as="h3">Saved publication intent</Title3>
+    <Text block>These are the exact saved targets and authentication choices, not verified
+      provider availability, an executable gateway change or an applied grant snapshot.</Text>
+    <dl className={styles.offlineFields}>
+      {review.target.fields.map(field => <div key={field.key}>
+        <dt>{field.label}</dt><dd>{field.value}</dd>
+      </div>)}
+    </dl>
+    <Title3 as="h3">Access consequences</Title3>
+    <ul className={styles.impactList}>
+      {review.impact.map(impact => <li key={impact}>{impact}</li>)}
+    </ul>
+  </section>
   const trustedContext = context?.targetId === plan.publicationId ? context : undefined
   const { yours, pending, unattributed, replaced } = classifyChanges(review.changes, trustedContext)
   const unpublish = plan.operation === 'unpublish'

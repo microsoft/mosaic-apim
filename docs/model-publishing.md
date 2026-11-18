@@ -45,7 +45,16 @@ grant override or cost-center defaults; shared quotas and publication safeguards
 In the Published models detail, **Review changes** makes a fresh plan and opens that review; it is
 also how a failed or rolled-back publication is retried.
 If MOSAIC refuses the reviewed plan, for example because the publication changed after it was
-planned, the review says why and shows a fresh plan in its place.
+planned, the review says why. Guided provider releases return to explicit **Review publication**;
+they never silently regenerate and apply a different plan.
+
+Native Vertex and explicitly opted-in custom chat use the same Guided release shell as Bedrock,
+not a provider-specific wizard. Their offline Review must distinguish a saved intention from an
+executable plan: exact route/authentication, gateway evidence blockers and access consequences
+remain visible, while unresolved execution support blocks Apply server-side. Synthetic protocol
+fixtures and valid-looking public URLs do not unlock deployment. These registrations do not
+create a new grant framework, grant access, or make caller connections ready; see
+[their bounded contracts](model-endpoints.md#native-google-vertex-ai-and-custom-chat).
 
 For a custom [cost center](cost-centers.md), access modes belong to the exact published offering:
 Automatic creates one stable group JWT grant, Request-only approvals create individual grants,

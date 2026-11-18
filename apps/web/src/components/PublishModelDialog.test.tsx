@@ -275,6 +275,48 @@ describe('PublishModelDialog', () => {
     expect(api.applyPublishPlan).toHaveBeenCalledTimes(1)
   })
 
+  it.each([
+    ['googleVertex', 'gemini-3.8-flash', 'vertexGemini'],
+    ['openAiCompatible', 'fictional/Exact-Model', 'openAiChat'],
+  ] as const)('reviews %s intent offline without enabling Apply', async (provider, deploymentName, apiShape) => {
+    const user = userEvent.setup()
+    api.listPublishableModels.mockResolvedValue([{
+      ...publishableModel, provider, deploymentName, apiShape,
+      publishable: false, reviewable: true, tokenLimitsSupported: false, policyCapabilities: null,
+      unpublishableReason: 'Controlled gateway execution evidence is missing.',
+    }])
+    api.createPublication.mockResolvedValue({ ...modelPublication, provider, apiShape })
+    api.createPublishPlan.mockResolvedValue({
+      ...accessPlan, steps: [], executable: false,
+      executionBlockedReasons: ['Controlled gateway execution evidence is missing.'],
+      accessSnapshot: null,
+      review: {
+        version: 1, baseline: 'new', appliedAt: null, changes: [],
+        target: { version: 1, fields: [{
+          key: 'external/route', category: 'Routing', label: 'Exact proposed upstream operation',
+          value: 'POST https://fictional.example.com/exact-reviewed-route',
+        }] },
+        impact: ['Existing applied access remains unchanged.'],
+      },
+    })
+    renderDialog()
+    await user.click(await screen.findByRole('checkbox', { name: `Publish ${deploymentName}` }))
+    expect(screen.getByText('Review only')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Configure' }))
+    await user.click(screen.getByRole('button', { name: 'Save publication draft' }))
+    await screen.findByText('Publication draft saved')
+    expect(api.createPublishPlan).not.toHaveBeenCalled()
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Review publication' }))
+    await screen.findByText('Offline review only - Apply is blocked')
+    expect(screen.getByRole('button', { name: 'Apply reviewed plan' })).toBeDisabled()
+    expect(screen.getByText('POST https://fictional.example.com/exact-reviewed-route')).toBeVisible()
+    expect(screen.getByText('Existing applied access remains unchanged.')).toBeVisible()
+    expect(screen.queryByText(/The governed-access snapshot is missing/)).not.toBeInTheDocument()
+    expect(api.createPublishPlan).toHaveBeenCalledOnce()
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+  })
+
   it('marks a deployment an administrator declared rather than MOSAIC discovered', async () => {
     api.listPublishableModels.mockResolvedValue([
       {
