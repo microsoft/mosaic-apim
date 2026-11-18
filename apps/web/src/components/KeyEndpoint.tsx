@@ -88,10 +88,10 @@ export function DeclarationFields({
 
   return (
     <fieldset className={styles.declarations}>
-      <legend>{bedrock ? 'Models to pool' : 'Deployments to publish'}</legend>
+      <legend>{bedrock ? 'Models to serve' : 'Deployments to publish'}</legend>
       {bedrock ? (
         <Text size={200} className={styles.muted}>
-          A Bedrock API key can&apos;t list models, so name the model IDs to pool. Give each the
+          A Bedrock API key can&apos;t list models, so name the model IDs to serve. Give each the
           model it serves as Azure names it, such as claude-sonnet-4-5, so it pools beside the same
           model on Azure. You can declare more later.
         </Text>
@@ -293,7 +293,7 @@ function DeclareDeploymentDialog({
                   <Text size={200} className={styles.muted}>
                     Use the model ID or inference profile ID exactly as AWS names it. MOSAIC
                     can&apos;t check it with AWS, so a wrong ID shows up when a request through a
-                    model pool reaches it.
+                    governed publication or model pool reaches it.
                   </Text>
                   <Field label="Model ID" required>
                     <Input
@@ -424,7 +424,7 @@ function ReplaceKeyDialog({
         bedrock
           ? updated.status === 'pending' && updated.access.evaluation === 'notEvaluated'
             ? `Stored the new key for ${endpoint.name}. MOSAIC doesn't check keys with AWS, so ` +
-              'the next request through a model pool tells whether AWS accepts it. API ' +
+              'the next authorized request through a publication or model pool tells whether AWS accepts it. API ' +
               'Management picks it up within four hours.'
             : `Stored the new key for ${endpoint.name}, but MOSAIC found a problem with it. Its ` +
               'Access card says what.'
@@ -588,9 +588,9 @@ export function DeclaredDeploymentsCard({
           </Title3>
           {bedrock ? (
             <Text size={200} className={styles.muted}>
-              You declared these: a Bedrock API key can&apos;t list models. MOSAIC serves them only
-              as members of a model pool, through the Anthropic Messages API, and never checks them
-              with AWS.
+              You declared these: a Bedrock API key can&apos;t list models. Model pools remain supported.
+              Sonnet 5 on Mantle in us-east-1 also supports standalone governed publication.
+              Registration does not check model availability with AWS or grant caller access.
             </Text>
           ) : (
             <Text size={200} className={styles.muted}>
@@ -627,7 +627,7 @@ export function DeclaredDeploymentsCard({
       {declared.length === 0 ? (
         bedrock ? (
           <EmptyState title="No models declared">
-            Declare the Bedrock model IDs you want to serve through a model pool.
+            Declare the Bedrock model IDs you want to serve.
           </EmptyState>
         ) : (
           <EmptyState title="No deployments declared">

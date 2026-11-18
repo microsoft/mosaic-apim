@@ -1,0 +1,91 @@
+.guided-release {
+  min-width: 0;
+}
+
+.guided-release-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin: 0 0 28px;
+  padding: 0 0 20px;
+  list-style: none;
+  border-bottom: 1px solid var(--colorNeutralStroke2);
+}
+
+.guided-release-steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.guided-release-steps strong,
+.guided-release-steps li > span > span {
+  display: block;
+}
+
+.guided-release-steps li > span > span {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.guided-release-number {
+  display: grid;
+  place-items: center;
+  flex: 0 0 28px;
+  height: 28px;
+  border: 1px solid var(--colorNeutralStroke1);
+  border-radius: 50%;
+}
+
+.guided-release-steps [aria-current='step'] .guided-release-number {
+  color: var(--colorNeutralForegroundOnBrand);
+  background: var(--colorBrandBackground);
+  border-color: var(--colorBrandBackground);
+}
+
+.guided-release-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(250px, 310px);
+  align-items: start;
+  gap: 32px;
+}
+
+.guided-release-task {
+  min-width: 0;
+}
+
+.guided-release-consequences {
+  padding: 0 0 0 24px;
+  border-left: 1px solid var(--colorNeutralStroke2);
+  line-height: 1.6;
+}
+
+.guided-release-consequences h3 {
+  margin: 24px 0 8px;
+  font-size: 16px;
+}
+
+.guided-release-consequences h3:first-child {
+  margin-top: 0;
+}
+
+.guided-release-consequences p {
+  margin: 0 0 16px;
+}
+
+@media (max-width: 800px) {
+  .guided-release-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .guided-release-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .guided-release-consequences {
+    padding: 20px 0 0;
+    border-left: 0;
+    border-top: 1px solid var(--colorNeutralStroke2);
+  }
+}

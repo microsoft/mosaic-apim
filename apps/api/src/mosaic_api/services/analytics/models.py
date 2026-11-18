@@ -231,6 +231,7 @@ class AnalyticsSpend(MosaicModel):
     projected: bool = True
     unpriced_tokens: int = 0
     unpriced_items: int = 0
+    incomplete_usage: bool = False
 
 
 @dataclass

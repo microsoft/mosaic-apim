@@ -223,6 +223,58 @@ describe('PublishModelDialog', () => {
     expect(within(table).queryByText('Declared')).not.toBeInTheDocument()
   })
 
+  it('saves a Bedrock draft before explicit review, then requires explicit re-review after drift', async () => {
+    const user = userEvent.setup()
+    const bedrockPublication = { ...modelPublication, provider: 'awsBedrock' as const }
+    const bedrockPlan = { ...accessPlan, accessSnapshot: { ...accessSnapshot, grants: [] } }
+    api.listPublishableModels.mockResolvedValue([{
+      ...publishableModel, provider: 'awsBedrock', deploymentName: 'anthropic.claude-sonnet-5',
+    }])
+    api.createPublication.mockResolvedValue(bedrockPublication)
+    api.createPublishPlan.mockResolvedValue(bedrockPlan)
+    api.applyPublishPlan.mockRejectedValue(Object.assign(new Error('Reviewed policy changed.'), { status: 409 }))
+    renderDialog()
+    await user.click(await screen.findByRole('checkbox', { name: 'Publish anthropic.claude-sonnet-5' }))
+    await user.click(screen.getByRole('button', { name: 'Configure' }))
+    await user.click(screen.getByRole('button', { name: 'Save publication draft' }))
+    await screen.findByText('Publication draft saved')
+    expect(api.createPublishPlan).not.toHaveBeenCalled()
+    expect(api.applyPublishPlan).not.toHaveBeenCalled()
+    expect(api.createPublication.mock.calls[0][0].governedAccess).toEqual({ keysEnabled: true, entraEnabled: true })
+    await user.click(screen.getByRole('button', { name: 'Review publication' }))
+    await screen.findByRole('button', { name: 'Apply reviewed plan' })
+    focused()
+    await user.click(screen.getByRole('button', { name: 'Apply reviewed plan' }))
+    await screen.findByText('Review required again')
+    expect(api.createPublishPlan).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('button', { name: 'Apply reviewed plan' })).not.toBeInTheDocument()
+    api.createPublishPlan.mockResolvedValue({ ...bedrockPlan, id: 'fresh-plan' })
+    await user.click(screen.getByRole('button', { name: 'Review publication' }))
+    await screen.findByRole('button', { name: 'Apply reviewed plan' })
+    focused()
+    expect(api.applyPublishPlan).toHaveBeenCalledTimes(1)
+    api.applyPublishPlan.mockRejectedValue(new Error('Gateway is unavailable.'))
+    await user.click(screen.getByRole('button', { name: 'Apply reviewed plan' }))
+    await screen.findByText('Unable to apply publication')
+    expect(focused()).toHaveTextContent('Unable to apply publication')
+  })
+
+  it('keeps a failed explicit Bedrock review visible and focused', async () => {
+    const user = userEvent.setup()
+    renderDialog({
+      publication: { ...modelPublication, provider: 'awsBedrock' },
+      plan: accessPlan,
+    })
+    api.applyPublishPlan.mockRejectedValue(Object.assign(new Error('Policy changed.'), { status: 409 }))
+    await user.click(screen.getByRole('button', { name: 'Apply reviewed plan' }))
+    await screen.findByText('Review required again')
+    api.createPublishPlan.mockRejectedValue(new Error('Policy evidence unavailable.'))
+    await user.click(screen.getByRole('button', { name: 'Review publication' }))
+    await screen.findByText('Unable to review publication')
+    expect(focused()).toHaveTextContent('Unable to review publication')
+    expect(api.applyPublishPlan).toHaveBeenCalledTimes(1)
+  })
+
   it('marks a deployment an administrator declared rather than MOSAIC discovered', async () => {
     api.listPublishableModels.mockResolvedValue([
       {

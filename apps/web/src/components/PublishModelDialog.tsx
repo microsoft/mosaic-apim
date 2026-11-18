@@ -9,6 +9,7 @@ import {
   DialogTitle,
   Field,
   Input,
+  Link,
   MessageBar,
   MessageBarBody,
   MessageBarTitle,
@@ -54,6 +55,7 @@ import { EnvironmentBadge } from './EnvironmentBadge'
 import { PolicyFacetItem } from './PolicyFacets'
 import { ModelAccessReview } from './ModelAccessReview'
 import { ModelAccessRecovery } from './ModelAccessRecovery'
+import { GuidedRelease } from './GuidedRelease'
 import { WorkspaceDialog, WorkspaceDialogActions, WorkspaceDialogContent } from './WorkspaceDialog'
 import styles from './ImportFromGatewayDialog.module.css'
 
@@ -417,6 +419,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
   const selectedModel = models.find(
     (model) => `${model.modelEndpointId}:${model.deploymentName}` === modelKey,
   ) ?? null
+  const bedrock = (publication?.provider ?? selectedModel?.provider) === 'awsBedrock'
 
   const createAndPlan = useMutation({
     mutationKey,
@@ -436,17 +439,31 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
         productName: form.productName.trim() || undefined,
         subscriptionRequired: form.subscriptionRequired,
         enforcement: form.tokenLimits ? buildEnforcement(form) : null,
+        ...(bedrock ? { governedAccess: { keysEnabled: true, entraEnabled: true } } : {}),
       })
-      const createdPlan = await api.createPublishPlan(created.id)
+      const createdPlan = bedrock ? null : await api.createPublishPlan(created.id)
       return { created, createdPlan }
     },
     onSuccess: ({ created, createdPlan }) => {
-      setEditContext(creationContext(createdPlan))
+      if (createdPlan) setEditContext(creationContext(createdPlan))
       setPublication(created)
       setPlan(createdPlan)
       setReviewMessage('')
       setStep('review')
       void queryClient.invalidateQueries({ queryKey: ['publications'] })
+    },
+  })
+  const reviewSaved = useMutation({
+    onMutate: () => { apply.reset() },
+    mutationFn: async () => {
+      if (!publication) throw new Error('Save the publication draft before reviewing.')
+      return api.createPublishPlan(publication.id)
+    },
+    onSuccess: (freshPlan) => {
+      setPlan(freshPlan)
+      setInvalidPlan(false)
+      setReviewMessage('')
+      setStep('review')
     },
   })
 
@@ -467,6 +484,10 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
       setInvalidPlan(true)
       setRefreshError(null)
       setReviewMessage(error instanceof Error ? error.message : 'The publish plan is stale.')
+      if (publication.provider === 'awsBedrock') {
+        setStep('review')
+        return
+      }
       try {
         const freshPlan = await api.createPublishPlan(publication.id)
         setPlan(freshPlan)
@@ -521,7 +542,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
   const outcome = {
     choose: null,
     configure: createAndPlan.error,
-    review: apply.error,
+    review: apply.error ?? reviewSaved.error ?? reviewSaved.data ?? null,
     apply: finishedRun?.id ?? null,
   }[step]
   const shownRef = useRef({ step, outcome })
@@ -553,27 +574,48 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
   )
 
   const title = initialReview?.plan.accessSnapshot ? 'Review model access' : initialReview ? 'Review model changes' : 'Publish a model'
-  const pending = createAndPlan.isPending || apply.isPending || Boolean(runId && (!currentRun || currentRun.status === 'running'))
+  const pending = createAndPlan.isPending || reviewSaved.isPending || apply.isPending || Boolean(runId && (!currentRun || currentRun.status === 'running'))
   const actions = (requestClose: () => void) => <WorkspaceDialogActions>
     <Button appearance="secondary" disabled={pending} onClick={requestClose}>Close</Button>
     {step === 'configure' && <Button onClick={() => setStep('choose')}>Previous step</Button>}
-    {step === 'review' && !reviewingExistingPlan && <Button onClick={() => setStep('configure')}>Previous step</Button>}
+    {step === 'review' && !reviewingExistingPlan && !bedrock && <Button onClick={() => setStep('configure')}>Previous step</Button>}
     {step === 'choose' && <Button appearance="primary" disabled={!canConfigure} onClick={() => setStep('configure')}>Configure</Button>}
     {step === 'configure' && <Button appearance="primary" disabled={!canReview} disabledFocusable={createAndPlan.isPending}
-      onClick={() => createAndPlan.mutate()}>{createAndPlan.isPending ? 'Creating plan…' : 'Review plan'}</Button>}
-    {step === 'review' && <Button appearance="primary" disabled={invalidPlan || missingAccessReview || nothingToApply} disabledFocusable={apply.isPending}
-      onClick={() => apply.mutate()}>{apply.isPending ? 'Applying…' : 'Apply all pending changes'}</Button>}
+      onClick={() => createAndPlan.mutate()}>{createAndPlan.isPending ? (bedrock ? 'Saving draft…' : 'Creating plan…') : bedrock ? 'Save publication draft' : 'Review plan'}</Button>}
+    {step === 'review' && bedrock && (!plan || invalidPlan) && <Button appearance="primary"
+      disabledFocusable={reviewSaved.isPending} onClick={() => reviewSaved.mutate()}>
+      {reviewSaved.isPending ? 'Reviewing…' : 'Review publication'}
+    </Button>}
+    {step === 'review' && (!bedrock || (plan && !invalidPlan)) && <Button appearance="primary" disabled={invalidPlan || missingAccessReview || nothingToApply} disabledFocusable={apply.isPending}
+      onClick={() => apply.mutate()}>{apply.isPending ? 'Applying…' : bedrock ? 'Apply reviewed plan' : 'Apply all pending changes'}</Button>}
   </WorkspaceDialogActions>
   const content = (requestClose: () => void) => (
         <>
           <WorkspaceDialogContent>
+            <GuidedRelease enabled={bedrock} stage={step === 'apply'
+              ? currentRun?.status === 'succeeded' ? 'connect' : 'apply' : 'review'}
+              guidance={<>
+                <h3>What changes access</h3>
+                <p>Saving registers configuration or publication intent. It does not call AWS,
+                  change the gateway or grant access.</p>
+                <p>Review shows the exact changes and affected grants. Only Apply reviewed plan
+                  changes API Management.</p>
+                <p>A connection is usable only with an applied grant, an allowed authentication
+                  method and working upstream credentials. Approval alone is not runtime access.</p>
+                <h3>Native Messages</h3>
+                <p>Client-side tools, images, adaptive thinking and prompt caching use native JSON
+                  and SSE. Your application executes tools. Thinking consumes output tokens.</p>
+                <p>Aggregate call and token limits are safeguards, not a per-request generation cap.
+                  Cache cost is unknown without separate read and write counts.</p>
+              </>}>
             <div className={styles.intro}>
               <Text>Preview the changes MOSAIC would apply. Nothing changes until you apply all pending changes.</Text>
               {runtimeConfig.authMode === 'local' && (
                 <Text>Local development mode: responses may be simulated and do not prove a live APIM change.</Text>
               )}
               <Text ref={stepRef} tabIndex={-1} size={200}>
-                Step {['choose', 'configure', 'review', 'apply'].indexOf(step) + 1} of 4
+                {bedrock ? 'Endpoint registration is saved. Publication and access are separate.'
+                  : `Step ${['choose', 'configure', 'review', 'apply'].indexOf(step) + 1} of 4`}
               </Text>
             </div>
 
@@ -789,15 +831,25 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
               </div>
             )}
 
-            {step === 'review' && plan && (
-              <div className={styles.nameCell}>
+            {step === 'review' && bedrock && (!plan || invalidPlan) && <div role="status"
+              ref={outcomeRef} tabIndex={-1}>
+              <Title3 as="h3">{invalidPlan ? 'Review required again' : 'Publication draft saved'}</Title3>
+              <Text block>{invalidPlan ? reviewMessage : 'No gateway changes or access grants have been applied. Review publication to inspect the exact proposed changes.'}</Text>
+            </div>}
+            {reviewSaved.isError && <div ref={outcomeRef} tabIndex={-1}>
+              <ErrorState context="action" title="Unable to review publication"
+                error={reviewSaved.error} announcementKey={reviewSaved.submittedAt} />
+            </div>}
+            {step === 'review' && plan && (!bedrock || !invalidPlan) && (
+              <div className={styles.nameCell} ref={bedrock ? outcomeRef : undefined}
+                tabIndex={bedrock ? -1 : undefined}>
                 {reviewMessage && (
                   <AnnounceProvider value={announcement}><div ref={applyError ? undefined : outcomeRef} tabIndex={-1}>
                     <MessageBar intent="warning">
                       <MessageBarBody>
                         <MessageBarTitle>MOSAIC didn't apply the plan you reviewed</MessageBarTitle>
                         {reviewMessage}
-                        {!invalidPlan && (
+                        {!invalidPlan && !bedrock && (
                           <Text block>MOSAIC has already re-planned. Review the fresh plan below before you apply it.</Text>
                         )}
                       </MessageBarBody>
@@ -885,8 +937,17 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                     <RunResult run={currentRun} />
                   </div></AnnounceProvider>
                 )}
+                {bedrock && currentRun?.status === 'succeeded' && <section>
+                  <Title3 as="h3">Grant and connect</Title3>
+                  <Text block>Publication apply is complete. Review the applied grant snapshot above;
+                    it determines who has access. Saving or approving another grant does not apply it.</Text>
+                  <Text block>Create or select a grant, then review and apply its model access changes.
+                    Callers get connection details through their existing portal access.</Text>
+                  <Link href="/entitlements">Manage access grants</Link>
+                </section>}
               </div>
             )}
+            </GuidedRelease>
           </WorkspaceDialogContent>
           {surface === 'dialog' && actions(requestClose)}
         </>

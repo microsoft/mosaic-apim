@@ -27,6 +27,7 @@ from mosaic_api.domain import (
     EntitlementSubject,
     Entity,
     MosaicModel,
+    _unset,
     deterministic_id,
 )
 
@@ -521,6 +522,7 @@ class RolledUpApi(MosaicModel):
     # A model publication's own subscription. Everyone given its key calls as the publication, so
     # its calls can't be told apart by caller.
     subscription_name: str | None = None
+    cost_telemetry: Literal["aggregateOnly"] | None = Field(default=None, exclude_if=_unset)
     # A model pool's member deployments, every model's, including members since removed, so calls
     # can still be priced at the deployment that served them.
     members: list[RolledUpMember] = Field(default_factory=list, exclude_if=_no_members)

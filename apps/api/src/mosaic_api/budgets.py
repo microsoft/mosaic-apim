@@ -528,12 +528,16 @@ def evaluate(
     unpriced_tokens: int,
     now: datetime,
     error: str | None = None,
+    spend_is_lower_bound: bool = False,
 ) -> Evaluation:
     """Judge a budget against this month's spend so far. Pure, so a conditional write can retry it.
 
     ``spent`` is None when MOSAIC can't price this month's usage. Nothing then changes on its
     account: no threshold is reached and no block is lifted, except by the month ending or by an
     administrator's change that lifts it whatever the spend.
+
+    An incomplete priced subtotal can prove that a threshold is reached, but never prove
+    headroom, clear a block or re-arm thresholds after an amount change.
     """
 
     month = month_of(now)
@@ -556,7 +560,7 @@ def evaluate(
     changed = state.amount is not None and state.amount != budget.amount
     # Thresholds stay reached for the month even if the budget stops warning at one, so adding it
     # back doesn't email it a second time.
-    if changed and spent is not None:
+    if changed and spent is not None and not spend_is_lower_bound:
         # A new amount re-arms the thresholds the spend no longer reaches, and lifts a block the
         # spend no longer reaches either. Only a change of amount does: spend that drops with a
         # corrected price doesn't, so a threshold is never emailed twice for the same budget.
@@ -604,16 +608,20 @@ def evaluate(
                 BudgetNotification(kind="blocked", reason="budgetUsed", created_at=now)
             )
         state.month_to_date = spent
-        state.forecast = forecast
+        state.forecast = None if spend_is_lower_bound else forecast
         state.through = through
         state.unpriced_tokens = unpriced_tokens
     state.crossed = sorted(state.crossed)
-    if spent is not None or not changed:
+    if (spent is not None and not spend_is_lower_bound) or not changed:
         # A new amount judged without figures stays pending, so the next check that can price the
         # month still lifts the block, or re-arms the thresholds, the new amount allows.
         state.amount = budget.amount
     state.evaluated_at = now
-    state.error = error
+    state.error = error or (
+        "Reported spend is an incomplete lower bound. It can reach a budget threshold, "
+        "but cannot prove remaining headroom or justify lifting a block."
+        if spend_is_lower_bound else None
+    )
     for notice in state.notifications:
         if notice.delivery_owner == "notificationPipeline":
             continue

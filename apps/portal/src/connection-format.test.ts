@@ -14,6 +14,22 @@ describe('Government connections', () => {
     expect(governmentReadiness({ ...government, runtime: { ...connection.runtime!, keyState: 'failed' } }).label).toBe('Key setup failed')
   })
 
+  describe('standalone native Messages connections', () => {
+    it('keeps the existing gateway-only caller contract for the Bedrock tuple', () => {
+      const samples = buildSamples({
+        ...connection,
+        endpoint: 'https://gateway.example.test/models/sonnet',
+        deploymentName: 'anthropic.claude-sonnet-5',
+        operations: [{ name: 'messages', method: 'POST', path: '/anthropic/v1/messages' }],
+      })
+      expect(samples?.kind).toBe('messages')
+      expect(samples?.curl).toContain('https://gateway.example.test/models/sonnet/anthropic/v1/messages')
+      expect(samples?.curl).toContain('Ocp-Apim-Subscription-Key: $MOSAIC_API_KEY')
+      expect(samples?.python).toContain('"model": "anthropic.claude-sonnet-5"')
+      expect(JSON.stringify(samples)).not.toMatch(/api-version|amazonaws\.com|api\.aws|x-api-key|SigV4/)
+    })
+  })
+
   it('does not manufacture OAuth samples or fall back to a commercial token', () => {
     expect(buildTokenSample(government)).toBeNull()
     expect(buildSamples(government, { credential: 'token' })).toBeNull()

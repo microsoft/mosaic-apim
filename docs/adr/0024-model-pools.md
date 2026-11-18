@@ -764,11 +764,15 @@ So a Claude pool can take Bedrock members, like this:
   - MOSAIC reads the secret only to check that it's there and has no stray whitespace. It never
     sends the key to AWS, so a Bedrock member's readiness stays *not confirmed*. The first request
     through the pool tells whether AWS accepts the key.
-  - The console asks for a long-term key, because a short-term one expires within 12 hours.
+  - Key expiry and rotation are operator-managed. AWS recommends short-term keys for production;
+    long-term keys are for exploration. MOSAIC does not renew them.
   - Replacing a key MOSAIC stores writes a new version of the same secret. MOSAIC reads it at
     once, and API Management within four hours.
-- **Only through pools.** Publishing refuses a Bedrock endpoint, and the list of deployments to
-  publish leaves it out.
+- **Standalone amendment (#131).** The existing pool route remains unchanged. A separately
+  reviewed governed standalone route admits only Sonnet 5 on Mantle in us-east-1, with an
+  operator-managed key, native Messages and an APIM v2 gateway.
+  [Standalone Bedrock publication](../model-publishing.md#standalone-bedrock) records its
+  stricter inheritance/streaming contract, cost uncertainty and separate live-proof gate.
 - **Routing.** A key member, on Azure or on Bedrock, is always a target on its own.
   - The inbound policy puts the gateway's managed identity token in a variable, and acquires it
     only when some member is reached with it.

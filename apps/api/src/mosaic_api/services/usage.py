@@ -26,6 +26,7 @@ from mosaic_api.environments import EnvironmentCatalog, is_production
 from mosaic_api.model_pools import PoolModel
 from mosaic_api.observed import ObservedModelDeployment
 from mosaic_api.pricing import (
+    BEDROCK_COST_NOTE,
     PriceOrigin,
     Pricer,
     PricingBasis,
@@ -615,6 +616,7 @@ class _MeasuredPricing:
     # Each pool model grant's deployments, current and past, keyed as rollups key them.
     members: dict[str, list[str]] = field(default_factory=dict)
     origins: set[PriceOrigin] = field(default_factory=set)
+    unobservable_grants: set[str] = field(default_factory=set)
 
     def _provisioned(self, key: str) -> bool:
         facts = self.pricer.facts_for(key)
@@ -672,6 +674,8 @@ class _MeasuredPricing:
         """Why a grant can't be priced at all, whatever its usage, or None when it might be."""
 
         kind = entitlement.resource.kind
+        if entitlement.id in self.unobservable_grants:
+            return BEDROCK_COST_NOTE
         if kind == EntitlementResourceKind.MCP_SERVER:
             return MCP_COST_NOTE
         if kind == EntitlementResourceKind.PRODUCT:
@@ -1336,10 +1340,13 @@ class UsageService:
             return None
         deployments: dict[str, tuple[str | None, str | None]] = {}
         members: dict[str, list[str]] = {}
+        unobservable: set[str] = set()
         keys: set[str] = set()
         for resolved in entitlements:
             entitlement = resolved.entitlement
             if entitlement.resource.kind != EntitlementResourceKind.POOL_MODEL:
+                if await self._unobservable_cost(actor.tenant_id, entitlement.resource):
+                    unobservable.add(entitlement.id)
                 found = await self._deployment_for(actor.tenant_id, entitlement)
                 deployments[entitlement.id] = found
                 if found[0]:
@@ -1376,7 +1383,8 @@ class UsageService:
             else {}
         )
         return _MeasuredPricing(
-            pricer=pricer, deployments=deployments, tokens=tokens, today=end, members=members
+            pricer=pricer, deployments=deployments, tokens=tokens, today=end, members=members,
+            unobservable_grants=unobservable,
         )
 
     async def my_usage(self, actor: Actor, period: UsagePeriod = "30d") -> MyUsageReport:
@@ -1687,6 +1695,9 @@ class UsageService:
                     (day, (series.get(grant.id) or {}).get(day)) for day in _days(start, end)
                 ]
                 key, _ = pricing.deployments.get(grant.id, (None, None))
+                if grant.id in pricing.unobservable_grants:
+                    costs[grant.id] = {day: None for day, _ in figures}
+                    continue
                 members = pricing.members.get(grant.id)
                 if members is not None:
                     _, points, note = pricing.price_pool_days(members, figures, end)
@@ -1840,6 +1851,10 @@ class UsageService:
                 note = "No price list yet."
             elif group.resource.kind == EntitlementResourceKind.PRODUCT:
                 note = PRODUCT_COST_NOTE
+            elif (
+                use.model_api is not None and use.model_api.cost_telemetry == "aggregateOnly"
+            ) or await self._unobservable_cost(tenant_id, group.resource):
+                note = BEDROCK_COST_NOTE
             elif known.members is not None:
                 cost, _, note = pricing.price_pool_days(known.members, figures, end)
             elif known.key is None:
@@ -2055,6 +2070,15 @@ class UsageService:
         """The deployment a grant's calls reach, keyed as rollups key it, and its model."""
 
         return await self._deployment_for_resource(tenant_id, entitlement.resource)
+
+    async def _unobservable_cost(self, tenant_id: str, resource: EntitlementResource) -> bool:
+        if resource.kind != EntitlementResourceKind.MODEL_API:
+            return False
+        api = await self._gateways.get_model_api(tenant_id, resource.id)
+        if api is None or api.publication_id is None:
+            return False
+        publication = await self._gateways.get_publication(tenant_id, api.publication_id)
+        return publication is not None and publication.provider == "awsBedrock"
 
     async def _deployment_for_resource(
         self, tenant_id: str, resource: EntitlementResource

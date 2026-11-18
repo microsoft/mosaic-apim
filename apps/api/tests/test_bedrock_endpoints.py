@@ -10,6 +10,7 @@ Services and API Management doubles.
 """
 
 import re
+import xml.etree.ElementTree as ET
 
 import pytest
 from aoai_double import AI_RESOURCE_ID
@@ -23,6 +24,7 @@ from mosaic_api.domain import (
     DeclaredDeploymentCreate,
     EndpointAuthMode,
     GatewayRuntimeAccess,
+    ModelAccessSettings,
     ModelEndpoint,
     ModelEndpointCapabilities,
     ModelEndpointCreate,
@@ -50,9 +52,10 @@ from mosaic_api.integrations.key_vault import (
     STORED_KEY_PREFIX,
 )
 from mosaic_api.services.model_endpoints import BEDROCK_ENDPOINT_NOTES
+from mosaic_api.services.telemetry import governed_apis
 from pydantic import ValidationError as SchemaError
 from test_key_endpoints import ACTOR, KEY, PROJECT_URL, KeyWorld, keyed
-from test_key_publishing import KeyHarness
+from test_key_publishing import TOKENS, KeyHarness
 from test_model_pools import ACTOR as POOL_ACTOR
 from test_model_pools import (
     TENANT,
@@ -403,7 +406,7 @@ class TestRegistration:
         assert endpoint.access.evaluation == AccessEvaluation.NOT_EVALUATED
         assert endpoint.access.message == (
             "MOSAIC read the Bedrock API key from Key Vault. It doesn't send keys to AWS to check "
-            "them, so the first request through a pool is what tells whether AWS accepts it."
+            "them, so an authorized gateway request is what tells whether AWS accepts it."
         )
 
     async def test_a_host_is_registered_once(self, world: KeyWorld) -> None:
@@ -518,7 +521,7 @@ class TestRegistration:
     async def test_a_bedrock_api_key_cant_list_models(self, world: KeyWorld) -> None:
         endpoint = await world.register(**_bedrock_overrides())
 
-        with pytest.raises(ConflictError, match="Declare the model IDs to pool instead"):
+        with pytest.raises(ConflictError, match="Declare the model IDs to serve instead"):
             await world.service.start_sync(ACTOR, endpoint.id)
 
     async def test_more_model_ids_are_declared_with_the_anthropic_api(
@@ -568,14 +571,122 @@ def _bedrock_overrides(**overrides: object) -> dict[str, object]:
 # -- serving it --------------------------------------------------------------------------------
 
 
-async def test_a_bedrock_model_is_served_only_through_a_pool() -> None:
+async def test_other_bedrock_tuples_remain_pool_only() -> None:
     harness = KeyHarness()
     await harness.setup(**_bedrock_overrides())
 
     offered = await harness.service.publishable_models(ACTOR, harness.gateway_id)
-    assert all(item.model_endpoint_id != harness.endpoint_id for item in offered)
-    with pytest.raises(ValidationError, match="only through a model pool"):
+    assert len(offered) == 1 and not offered[0].publishable
+    with pytest.raises(ValidationError, match="Standalone Bedrock publication currently supports"):
         await harness.publish(BEDROCK_ID)
+
+
+async def _standalone() -> tuple[KeyHarness, str]:
+    harness = KeyHarness(governed=True)
+    harness.apim.sku_name = "StandardV2"
+    await harness.setup(**_bedrock_overrides(
+        endpoint=MANTLE_URL,
+        deployments=[DeclaredDeploymentCreate(
+            deployment_name="anthropic.claude-sonnet-5",
+            model_name="claude-sonnet-5",
+            api_shape=ApiShape.ANTHROPIC_MESSAGES,
+        )],
+    ))
+    publication_id = await harness.publish(
+        "anthropic.claude-sonnet-5", enforcement=TOKENS,
+        governed_access=ModelAccessSettings(keys_enabled=True, entra_enabled=False),
+    )
+    return harness, publication_id
+
+
+async def test_standalone_bedrock_uses_existing_reviewed_governed_apply() -> None:
+    harness, publication_id = await _standalone()
+    offered = await harness.service.publishable_models(ACTOR, harness.gateway_id)
+    assert len(offered) == 1 and offered[0].publishable
+    plan = await harness.service.plan(ACTOR, publication_id)
+    assert any("Cache reads and writes" in warning for warning in plan.warnings)
+    assert plan.access_snapshot is not None and not plan.access_snapshot.grants
+    run = await harness.apply(publication_id)
+    assert run.status == PublishRunStatus.SUCCEEDED, run.errors
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    xml = str(harness.apim.written[
+        f"apis/{publication.api_name}/policies/policy"
+    ]["properties"]["value"])
+    root = ET.fromstring(xml)
+    assert [element.tag for element in root.find("backend")] == ["forward-request"]
+    assert root.find("backend/forward-request").attrib == {
+        "buffer-response": "false", "follow-redirects": "false",
+    }
+    fragment = ET.fromstring(harness.fragment(publication.fragment_name))
+    assert not list(fragment.iter("retry"))
+    assert fragment.find("rewrite-uri").get("copy-unmatched-params") == "false"
+    # There is no grant, hence the standard governed authentication path denies all callers.
+    assert list(fragment.iter("return-response"))
+    # A later review recognizes the writer's own policy, rather than calling it custom drift.
+    await harness.service.plan(ACTOR, publication_id)
+    tracked = await governed_apis(harness.world.gateway_repository, ACTOR.tenant_id)
+    [lineage] = tracked[harness.gateway_id]
+    assert lineage.publication_id == publication.id
+    assert lineage.cost_telemetry == "aggregateOnly"
+
+
+async def test_standalone_refuses_custom_inheritance_and_plan_drift() -> None:
+    harness, publication_id = await _standalone()
+    plan = await harness.service.plan(ACTOR, publication_id)
+    harness.apim.written["policies/policy"] = {"properties": {"value": (
+        '<policies><inbound><rate-limit calls="100" renewal-period="60" /></inbound>'
+        '<backend><forward-request /></backend><outbound/><on-error/></policies>'
+    )}}
+    with pytest.raises(ConflictError):
+        await harness.service.apply(ACTOR, publication_id, plan.id)
+    harness.apim.written["policies/policy"]["properties"]["value"] = (
+        '<policies><backend><retry count="1" interval="1">'
+        '<forward-request/></retry></backend></policies>'
+    )
+    with pytest.raises(ValidationError, match="custom or unrecognized"):
+        await harness.service.plan(ACTOR, publication_id)
+
+
+@pytest.mark.parametrize(
+    "scope", ["service", "api", "product", "operation", "products", "operations"],
+)
+async def test_malformed_successful_evidence_is_not_absence(scope: str) -> None:
+    harness, publication_id = await _standalone()
+    plan = await harness.service.plan(ACTOR, publication_id)
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    api = f"apis/{publication.api_name}"
+    paths = {
+        "service": "policies/policy",
+        "api": f"{api}/policies/policy",
+        "product": f"products/{publication.product_name}/policies/policy",
+        "operation": f"{api}/operations/messages/policies/policy",
+        "products": f"{api}/products",
+        "operations": f"{api}/operations",
+    }
+    if scope == "operation":
+        harness.apim.written[api] = {"properties": {}}
+        harness.apim.written[f"{api}/operations/messages"] = {"properties": {}}
+    harness.apim.written[paths[scope]] = {"properties": {}}
+    before = list(harness.apim.writes)
+    with pytest.raises(UpstreamError, match=r"unreadable policy|invalid collection"):
+        await harness.service.apply(ACTOR, publication_id, plan.id)
+    assert harness.apim.writes == before
+
+
+async def test_an_operation_cannot_skip_the_governed_inbound_policy() -> None:
+    harness, publication_id = await _standalone()
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    api = f"apis/{publication.api_name}"
+    harness.apim.written[api] = {"properties": {}}
+    harness.apim.written[f"{api}/operations/messages"] = {"properties": {}}
+    harness.apim.written[f"{api}/operations/messages/policies/policy"] = {
+        "properties": {"value": (
+            "<policies><inbound/><backend><base/></backend>"
+            "<outbound><base/></outbound><on-error><base/></on-error></policies>"
+        )}
+    }
+    with pytest.raises(ValidationError, match="must inherit"):
+        await harness.service.plan(ACTOR, publication_id)
 
 
 async def test_a_bedrock_model_joins_the_models_it_shares_a_name_with(estate: Estate) -> None:

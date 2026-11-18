@@ -68,8 +68,9 @@ def spend_report(
     start = datetime(first.year, first.month, first.day, tzinfo=UTC)
     elapsed = max(0.0, (through - start).total_seconds() / 86_400) if through else 0.0
     so_far = tally.total
+    incomplete = any(item.unpriced.reason == "incompleteUsage" for item in tally.left.values())
     forecast: float | None = None
-    if so_far is not None and elapsed >= 1:
+    if so_far is not None and elapsed >= 1 and not incomplete:
         metered = so_far - tally.reserved
         reserved = 0.0
         for key, amount in tally.reserved_by_key.items():
@@ -87,6 +88,7 @@ def spend_report(
         forecast=round_cost(forecast),
         unpriced_tokens=tally.unpriced_tokens,
         unpriced_items=len(tally.left),
+        incomplete_usage=incomplete,
     )
 
 

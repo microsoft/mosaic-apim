@@ -102,6 +102,12 @@ from mosaic_api.integrations.apim.policy_capabilities import (
 )
 from mosaic_api.integrations.apim.writer import DEFAULT_SUBSCRIPTION_KEY_NAMES, ApimWriter
 from mosaic_api.integrations.backend_keys import backend_key_name
+from mosaic_api.integrations.bedrock import (
+    BEDROCK_NOTES,
+    inherited_policy_digest,
+    is_standalone,
+    standalone_reason,
+)
 from mosaic_api.integrations.policy import PublicationPolicy, render_publication_policy
 from mosaic_api.observed import ObservedApi, ObservedModelDeployment
 from mosaic_api.repositories import (
@@ -309,6 +315,7 @@ def publication_digest(
     snapshot: ModelAccessSnapshot | None = None,
     environment_fingerprint: str | None = None,
     key_secret: str | None = None,
+    inherited_policies: str | None = None,
 ) -> str:
     """A digest over the *intent*, not the observation.
 
@@ -366,6 +373,8 @@ def publication_digest(
     }
     if publication.backend_key_name is not None:
         intent["backendKey"] = {"namedValue": publication.backend_key_name, "secret": key_secret}
+    if inherited_policies is not None:
+        intent["inheritedPolicies"] = inherited_policies
     payload = json.dumps(intent, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode()).hexdigest()
 
@@ -615,11 +624,11 @@ class PublishingService:
                 details={"modelEndpointId": endpoint.id, "provider": str(endpoint.provider)},
             )
         if endpoint.is_bedrock():
-            raise ValidationError(
-                "MOSAIC serves AWS Bedrock models only through a model pool. Add this model to a "
-                "pool on the gateway instead.",
-                details={"modelEndpointId": endpoint.id, "provider": str(endpoint.provider)},
-            )
+            reason = standalone_reason(endpoint, request.deployment_name, gateway)
+            if reason:
+                raise ValidationError(reason)
+            if request.governed_access is None:
+                raise ValidationError("Standalone Bedrock publication requires governed access.")
         deployment = await self._require_known_deployment(actor, endpoint, request.deployment_name)
         fit = self._fit(endpoint, deployment, gateway)
         if not fit.publishable:
@@ -952,8 +961,7 @@ class PublishingService:
         catalog = await load_environment_catalog(self._environments, actor.tenant_id)
         candidates: list[PublishableModel] = []
         for endpoint in endpoints:
-            # A Bedrock model is served only through a pool, which is where it's offered.
-            if endpoint.provider == ModelProvider.OPENAI_COMPATIBLE or endpoint.is_bedrock():
+            if endpoint.provider == ModelProvider.OPENAI_COMPATIBLE:
                 continue
             deployments: list[ObservedModelDeployment | DeclaredDeployment]
             if endpoint.uses_backend_key():
@@ -974,6 +982,10 @@ class PublishingService:
                 existing = publications.get(f"{endpoint.id}|{deployment.deployment_name}")
                 api_name, api_path = suggested_names(endpoint.name, deployment.deployment_name)
                 fit = self._fit(endpoint, deployment, gateway)
+                bedrock_reason = (
+                    standalone_reason(endpoint, deployment.deployment_name, gateway)
+                    if endpoint.is_bedrock() else None
+                )
                 capabilities = deployment_policy_capabilities(gateway, endpoint, deployment)
                 token_capability = capabilities.policies["llm-token-limit"]
                 unmetered = (
@@ -996,8 +1008,8 @@ class PublishingService:
                         model_publisher=observed.model_publisher if observed else None,
                         capability=fit.capability,
                         api_shape=fit.api_shape,
-                        publishable=fit.publishable and policy_fit,
-                        unpublishable_reason=fit.unpublishable_reason or (
+                        publishable=fit.publishable and policy_fit and bedrock_reason is None,
+                        unpublishable_reason=bedrock_reason or fit.unpublishable_reason or (
                             token_capability.message if not policy_fit else None
                         ),
                         token_limits_supported=(
@@ -1044,6 +1056,7 @@ class PublishingService:
                     boundary="plan",
                 )
         endpoint = await self._load_endpoint(actor, publication.model_endpoint_id)
+        inherited = await self._bedrock_review(client, publication, endpoint, gateway)
         catalog = await load_environment_catalog(self._environments, actor.tenant_id)
         verdict = permits(catalog, gateway.environment, endpoint.environment)
         refuse_blocked_pairing(verdict)
@@ -1112,6 +1125,7 @@ class PublishingService:
                 snapshot,
                 environment_fingerprint=environment_fingerprint,
                 key_secret=backend.key_secret,
+                inherited_policies=inherited,
             ),
             warnings=[
                 *self._warnings(publication, gateway, endpoint),
@@ -1222,6 +1236,26 @@ class PublishingService:
                 details={"publicationId": publication.id, "modelEndpointId": endpoint.id},
             ) from None
         return _Backend(origin, secret.versionless)
+
+    async def _bedrock_review(
+        self, client: ApimClient, publication: Publication,
+        endpoint: ModelEndpoint, gateway: Gateway,
+    ) -> str | None:
+        if not is_standalone(publication):
+            return None
+        reason = standalone_reason(endpoint, publication.deployment_name, gateway)
+        if reason:
+            raise ValidationError(reason)
+        if publication.governed_access is None:
+            raise ValidationError("Standalone Bedrock publication requires governed access.")
+        declared = endpoint.declared(publication.deployment_name)
+        if declared is None or declared.api_shape != ApiShape.ANTHROPIC_MESSAGES:
+            raise ValidationError("Declare the Bedrock model with the Anthropic Messages shape.")
+        expected = (
+            self._policy(publication, publication.applied_access).api_policy_xml
+            if publication.applied_access else DENY_ALL_POLICY
+        )
+        return await inherited_policy_digest(client, publication, expected_api_policy=expected)
 
     async def _access_snapshot(
         self, publication: Publication, gateway: Gateway, *,
@@ -1680,6 +1714,8 @@ class PublishingService:
         """
 
         warnings: list[str] = []
+        if endpoint.is_bedrock():
+            warnings.extend(BEDROCK_NOTES)
         runtime = next(
             (item for item in endpoint.runtime_access if item.gateway_id == gateway.id), None
         )
@@ -1829,6 +1865,7 @@ class PublishingService:
                     boundary="apply",
                 )
         endpoint = await self._load_endpoint(actor, publication.model_endpoint_id)
+        inherited = await self._bedrock_review(client, publication, endpoint, gateway)
 
         resolved = plan_id or publication.last_plan_id
         if not resolved:
@@ -1874,6 +1911,7 @@ class PublishingService:
                 snapshot,
                 environment_fingerprint=environment_fingerprint,
                 key_secret=backend.key_secret,
+                inherited_policies=inherited,
             )
             != plan.digest
         ):

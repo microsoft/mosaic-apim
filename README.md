@@ -97,6 +97,11 @@ The console gives administrators the estate view; the portal gives people their 
 access, and usage. These images show only the script-seeded fictional Contoso estate, with
 identifiers and secrets blurred. Directory data and checks are simulated, not live Entra evidence.
 
+<img src="docs/images/screenshots/console-bedrock-release.png" width="720" alt="A fictional Bedrock publication in the Guided release review workspace">
+
+**Guided Bedrock release.** Review pending gateway changes before an explicit apply, with
+registration, publication and usable caller access kept separate.
+
 <a id="light-and-dark"></a>
 <a id="administrator-console"></a>
 <a id="end-user-portal"></a>

@@ -42,7 +42,7 @@ async def test_collection_completeness_is_explicit_and_truncation_never_passes_w
 
 
 @pytest.mark.parametrize("payload", [
-    {}, {"value": None}, {"value": ["invalid"]}, {"value": [], "nextLink": 42},
+    [], {}, {"value": None}, {"value": ["invalid"]}, {"value": [], "nextLink": 42},
 ])
 async def test_required_collections_reject_invalid_response_shapes(payload: object) -> None:
     arm, _ = _recording_arm(lambda request: httpx.Response(200, json=payload))

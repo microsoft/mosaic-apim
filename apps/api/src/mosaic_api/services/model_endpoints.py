@@ -265,10 +265,10 @@ BEDROCK_ENDPOINT_NOTES: tuple[str, ...] = (
     "MOSAIC reaches AWS Bedrock with a Bedrock API key from Key Vault. It stores only the "
     "secret's identifier, and reads the key only to confirm it's there. API Management reads the "
     "key from Key Vault itself.",
-    "MOSAIC doesn't send the key to AWS to check it, so the first request through a pool is what "
+    "MOSAIC doesn't send the key to AWS to check it, so an authorized gateway request is what "
     "tells whether AWS accepts it.",
-    "A Bedrock API key can't list models, so the model IDs to pool are declared. MOSAIC serves "
-    "them only as members of a model pool.",
+    "A Bedrock API key can't list models, so model IDs are declared. Model pools remain supported; "
+    "standalone governed publication is limited to Sonnet 5 on Mantle in us-east-1.",
 )
 
 
@@ -1657,7 +1657,7 @@ class ModelEndpointService:
                         evaluation=AccessEvaluation.NOT_EVALUATED,
                         message=(
                             "MOSAIC read the Bedrock API key from Key Vault. It doesn't send keys "
-                            "to AWS to check them, so the first request through a pool is what "
+                            "to AWS to check them, so an authorized gateway request is what "
                             "tells whether AWS accepts it."
                         ),
                     ),
@@ -1824,7 +1824,7 @@ class ModelEndpointService:
         if endpoint.is_bedrock():
             raise ConflictError(
                 "MOSAIC can't list AWS Bedrock's models with a Bedrock API key. Declare the model "
-                "IDs to pool instead, and check access again to re-read the key.",
+                "IDs to serve instead, and check access again to re-read the key.",
                 details={"authMode": str(endpoint.auth_mode)},
             )
         if endpoint.uses_backend_key():

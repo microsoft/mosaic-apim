@@ -338,14 +338,16 @@ deployments. MOSAIC reaches Bedrock through its Anthropic Messages API, with a B
 in Key Vault. Requests to these models, prompts included, leave Azure, and AWS processes them.
 [ADR 0024](adr/0024-model-pools.md) records the design.
 
-1. **Create a long-term Bedrock API key in AWS.** A short-term key expires within 12 hours.
+1. **Provide an operator-managed Bedrock API key.** AWS recommends short-term keys for production
+   (at most 12 hours); long-term keys are for exploration. You own expiry and rotation; MOSAIC
+   does not renew keys. Allow for API Management's Key Vault refresh delay of up to four hours.
 2. **Register the host.** On the Models page, **Register endpoint** > **AWS Bedrock**. Give the
    Bedrock host for one AWS region: `https://bedrock-runtime.<region>.amazonaws.com`, which AWS
    recommends, or `https://bedrock-mantle.<region>.api.aws`. Then paste the key, which MOSAIC keeps
    as it does an Azure key, or give the URI of the Key Vault secret that holds it. The same request
    is `POST /api/v1/model-endpoints` with `provider` set to `awsBedrock`. MOSAIC also infers that
    provider from a Bedrock host given with a key or with model IDs.
-3. **Declare the model IDs to pool**, up to 50, each with the Anthropic Messages API. A model ID
+3. **Declare the model IDs to serve**, up to 50, each with the Anthropic Messages API. A model ID
    is `anthropic.<model>`, or an inference profile such as `us.anthropic.<model>` or
    `global.anthropic.<model>`. A Bedrock API key can't list models, so **Sync models** doesn't
    apply.
@@ -355,10 +357,13 @@ What MOSAIC does with it:
 - **It registers a host once.** Every AWS account in a region shares the region's hosts. To use
   another key, replace the endpoint's key. The region comes from the host. FIPS, China, and
   control-plane hosts are refused, and so is a model ARN, which provisioned throughput needs.
-- **It serves these models only through pools.** Publishing refuses a Bedrock endpoint.
-- **It never sends the key to AWS.** AWS has no unbilled request a Bedrock API key can make, so
+- **Pools remain supported.** Standalone governed publication is also available for the exact
+  `anthropic.claude-sonnet-5` declaration on `https://bedrock-mantle.us-east-1.api.aws`,
+  on an APIM v2 gateway. Other model/origin tuples are shown as not publishable with a reason.
+  See [standalone Bedrock publication](model-publishing.md#standalone-bedrock).
+- **Registration never sends the key to AWS.** AWS has no unbilled request a Bedrock API key can make, so
   registration and **Check access** only read the key from Key Vault, and say so. A pool member on
-  the endpoint is never more than *not confirmed*, and the first request through a pool is the
+  the endpoint is never more than *not confirmed*, and the first authorized runtime request is the
   key's first test. Each gateway's verdict is whether its managed identity can read the key from
   Key Vault, as for an Azure key.
 - **It reads capacity from the model ID.** Every ID MOSAIC accepts is pay-as-you-go. An
@@ -366,7 +371,9 @@ What MOSAIC does with it:
   such as `us.` or `eu.`, is a data zone. Any other ID's scope is unknown.
 - **It leaves the price to an administrator.** MOSAIC can't tell which cloud an AWS host is in, so
   calls to these models are unpriced until an administrator names the endpoint's cloud and adds a
-  [price](analytics-reference.md#pricing).
+  [price](analytics-reference.md#pricing). Standalone cost remains incomplete even with a price:
+  aggregate gateway usage cannot distinguish cache reads and writes. This does not change the
+  price of an eligible neighboring pool using the same endpoint and deployment.
 - **It warns that token counting may fail on `bedrock-runtime`.** AWS documents the Anthropic
   API's token counting only on `bedrock-mantle` hosts, so a pool's plan says a token count sent to
   a `bedrock-runtime` member may fail. A governed pool doesn't offer token counting.
