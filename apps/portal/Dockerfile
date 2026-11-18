@@ -1,4 +1,4 @@
-FROM node:24-alpine AS builder
+FROM node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS builder
 WORKDIR /workspace/apps/portal
 COPY apps/portal/package.json apps/portal/package-lock.json ./
 RUN npm ci
@@ -14,7 +14,8 @@ USER root
 # The base image's html directory is owned by root, and COPY --chown only sets ownership on the
 # entries it copies, not on a destination that already exists. The entrypoint writes config.js
 # there at start-up as uid 101, so the directory itself has to be handed over explicitly.
-RUN sed -i 's/\r$//' /docker-entrypoint.d/40-runtime-config.sh \
+RUN apk add --no-cache --upgrade 'brotli-libs>=1.2.1-r0' \
+    && sed -i 's/\r$//' /docker-entrypoint.d/40-runtime-config.sh \
     && chmod +x /docker-entrypoint.d/40-runtime-config.sh \
     && chown 101:101 /usr/share/nginx/html
 USER 101
