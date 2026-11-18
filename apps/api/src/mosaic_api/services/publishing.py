@@ -971,6 +971,8 @@ class PublishingService:
             ),
             "updated_at": utc_now(),
         }
+        if publication.provider == ModelProvider.AWS_BEDROCK:
+            changes["cost_telemetry"] = "aggregateOnly"
         if existing:
             record = existing.model_copy(update=changes)
         else:
@@ -1447,7 +1449,19 @@ class PublishingService:
             self._policy(publication, publication.applied_access).api_policy_xml
             if publication.applied_access else DENY_ALL_POLICY
         )
-        return await inherited_policy_digest(client, publication, expected_api_policy=expected)
+        snapshot = publication.applied_access
+        denied_recovery = (
+            publication.access_state == "failed"
+            and snapshot is not None
+            and not snapshot.settings.keys_enabled
+            and not snapshot.settings.entra_enabled
+            and not any(grant.enabled for grant in snapshot.grants)
+            and self._owns(publication, PublishedResourceKind.API, publication.api_name)
+        )
+        return await inherited_policy_digest(
+            client, publication, expected_api_policy=expected,
+            recovery_api_policy=DENY_ALL_POLICY if denied_recovery else None,
+        )
 
     async def _access_snapshot(
         self, publication: Publication, gateway: Gateway, *,

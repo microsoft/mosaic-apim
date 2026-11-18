@@ -1555,6 +1555,7 @@ class ModelApi(Entity):
     selection: ImportSelection = ImportSelection.DETECTED
     imported_from_snapshot_id: str | None = None
     publication_id: str | None = None
+    cost_telemetry: Literal["aggregateOnly"] | None = Field(default=None, exclude_if=_unset)
     imported_at: datetime = Field(default_factory=utc_now)
     imported_by: str | None = None
 

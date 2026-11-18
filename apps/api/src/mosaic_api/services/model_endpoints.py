@@ -457,6 +457,8 @@ class ModelEndpointService:
         )
         project = request.vertex.project_id if request.vertex else ""
         identity = f"{request.provider}:{url}:{project}:{request.environment}"
+        endpoint_id = deterministic_id("endpoint", actor.tenant_id, identity)
+        credential_id = deterministic_id("credential", actor.tenant_id, identity)
         async with scope_lease(self._gateways, actor.tenant_id, ENVIRONMENTS_SCOPE):
             catalog = await load_environment_catalog(self._environments, actor.tenant_id)
             _validate_environment_key(
@@ -476,9 +478,22 @@ class ModelEndpointService:
                         "This endpoint URL is already registered in this exact environment",
                         details={"id": existing.id, "name": existing.name},
                     )
+            existing_identity = await self._repository.get_endpoint(actor.tenant_id, endpoint_id)
+            if existing_identity is not None:
+                raise ConflictError(
+                    "This registration identity is already in use. Update the existing endpoint "
+                    "rather than replacing its environment-scoped identity.",
+                    details={"id": existing_identity.id, "name": existing_identity.name},
+                )
+            if await self._repository.get_credential(actor.tenant_id, credential_id) is not None:
+                raise ConflictError(
+                    "This registration's credential identity already exists. Reconcile the "
+                    "existing reference before registering this route again.",
+                    details={"id": credential_id},
+                )
             credential = (
                 CredentialReference(
-                    id=deterministic_id("credential", actor.tenant_id, identity),
+                    id=credential_id,
                     tenant_id=actor.tenant_id,
                     name=f"{request.name or request.provider} credential reference",
                     secret_uri=request.credential_secret_uri,
@@ -486,7 +501,7 @@ class ModelEndpointService:
                 if request.credential_secret_uri is not None else None
             )
             endpoint = ModelEndpoint(
-                id=deterministic_id("endpoint", actor.tenant_id, identity),
+                id=endpoint_id,
                 tenant_id=actor.tenant_id,
                 name=(request.name or urlparse(url).hostname or url).strip(),
                 provider=request.provider,

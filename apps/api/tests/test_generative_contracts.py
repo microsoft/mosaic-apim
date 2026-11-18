@@ -252,6 +252,40 @@ async def test_custom_environment_credentials_and_rotation_are_isolated() -> Non
         )
 
 
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("collision", ["moved-endpoint", "retained-credential"])
+async def test_registration_id_collision_never_overwrites_a_credential(
+    native: bool, collision: str,
+) -> None:
+    endpoints = InMemoryModelEndpointRepository()
+    service = ModelEndpointService(
+        endpoints, gateway_repository=InMemoryGatewayRepository(), client_factory=_forbidden,
+    )
+    payload = vertex_payload("serviceAccountKey") if native else custom_payload()
+    saved = await service.register(ACTOR, ModelEndpointCreate.model_validate(payload))
+    assert saved.credential_reference_id is not None
+    before = await endpoints.get_credential(ACTOR.tenant_id, saved.credential_reference_id)
+    audit = AuditEvent(
+        id="move-or-remove", tenant_id=ACTOR.tenant_id, action="test",
+        resource_type="modelEndpoint", resource_id=saved.id, actor_object_id=ACTOR.object_id,
+    )
+    if collision == "moved-endpoint":
+        await endpoints.save_endpoint(saved.model_copy(update={"environment": "production"}), audit)
+    else:
+        await endpoints.delete_endpoint(saved, audit)
+    events = dict(endpoints.audit_events)
+    with pytest.raises(ConflictError):
+        await service.register(ACTOR, ModelEndpointCreate.model_validate({
+            **payload, "credentialSecretUri": SECRET + "-replacement",
+        }))
+    assert await endpoints.get_credential(ACTOR.tenant_id, saved.credential_reference_id) == before
+    assert endpoints.audit_events == events
+    if collision == "moved-endpoint":
+        assert (await service.get_endpoint(ACTOR, saved.id)).environment == "production"
+    else:
+        assert await endpoints.get_endpoint(ACTOR.tenant_id, saved.id) is None
+
+
 @pytest.mark.parametrize(
     "payload",
     [

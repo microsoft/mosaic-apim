@@ -11,6 +11,7 @@ from mosaic_api.services.analytics.models import AnalyticsFilters, AnalyticsSpen
 from mosaic_api.services.analytics.scope import Scope
 from mosaic_api.services.budgets import _spent
 from mosaic_api.services.usage import DailyUsage, _MeasuredPricing
+from mosaic_api.services.usage_rollup import merge_apis
 from mosaic_api.usage_telemetry import MemberUsage, RolledUpApi, UsageMetrics
 from test_pricing import _entry, _facts
 
@@ -117,6 +118,20 @@ def test_success_without_token_counts_remains_unknown_only_for_standalone() -> N
     assert tally.total is None
     assert tally.summary().unpriced_items == 1
     assert tally.summary().unpriced_requests == 1
+
+
+def test_refreshed_inventory_cannot_erase_remembered_aggregate_cost_lineage() -> None:
+    remembered = RolledUpApi(
+        api_name="bedrock", resource_id="model-1", kind="model", display_name="Claude",
+        cost_telemetry="aggregateOnly", first_seen_at=NOW,
+    )
+    [merged] = merge_apis(
+        [remembered], [remembered.model_copy(update={"cost_telemetry": None})], NOW,
+    )
+    book = CostBook(Pricer(PriceBook([]), {}), _scope(), DAY, {})
+    [(_, _, priced)] = book.priced_parts(merged, "day", DAY, UsageMetrics(requests=1, ok=1))
+    assert merged.cost_telemetry == "aggregateOnly"
+    assert priced.amount is None and priced.unpriced.reason == "incompleteUsage"
 
 
 @pytest.mark.parametrize("subtotal", [1000.0, 1100.0])

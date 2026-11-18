@@ -52,6 +52,7 @@ from mosaic_api.integrations.key_vault import (
     STORED_KEY_PREFIX,
 )
 from mosaic_api.services.model_endpoints import BEDROCK_ENDPOINT_NOTES
+from mosaic_api.services.publishing import DENY_ALL_POLICY
 from mosaic_api.services.telemetry import governed_apis
 from pydantic import ValidationError as SchemaError
 from test_key_endpoints import ACTOR, KEY, PROJECT_URL, KeyWorld, keyed
@@ -644,6 +645,60 @@ async def test_standalone_refuses_custom_inheritance_and_plan_drift() -> None:
         '<forward-request/></retry></backend></policies>'
     )
     with pytest.raises(ValidationError, match="custom or unrecognized"):
+        await harness.service.plan(ACTOR, publication_id)
+
+
+async def test_standalone_cost_lineage_survives_unpublish_and_publication_deletion() -> None:
+    harness, publication_id = await _standalone()
+    assert (await harness.apply(publication_id)).status == PublishRunStatus.SUCCEEDED
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    plan = await harness.service.plan_unpublish(ACTOR, publication_id)
+    run = await harness.service.unpublish(ACTOR, publication_id, plan.id)
+    await harness.service.wait_for_idle()
+    assert (await harness.service.get_run(ACTOR, run.id)).status == PublishRunStatus.SUCCEEDED
+    await harness.service.delete(ACTOR, publication_id)
+    assert publication.model_api_id is not None
+    retained = await harness.world.gateway_repository.get_model_api(
+        ACTOR.tenant_id, publication.model_api_id,
+    )
+    assert retained is not None
+    [lineage] = (await governed_apis(
+        harness.world.gateway_repository, ACTOR.tenant_id,
+    ))[harness.gateway_id]
+    assert lineage.cost_telemetry == "aggregateOnly"
+
+
+async def test_standalone_review_retries_owned_deny_all_after_failed_recovery() -> None:
+    harness, publication_id = await _standalone()
+    assert (await harness.apply(publication_id)).status == PublishRunStatus.SUCCEEDED
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    fragment = f"policyFragments/{publication.fragment_name}"
+    policy_path = f"apis/{publication.api_name}/policies/policy"
+    harness.apim.fail_write(fragment, 403)
+    failed = await harness.apply(publication_id)
+    assert failed.status == PublishRunStatus.FAILED
+    assert any("Restoring the last safe access snapshot failed" in error for error in failed.errors)
+    denied = await harness.service.get_publication(ACTOR, publication_id)
+    assert denied.access_state == "failed"
+    assert denied.applied_access is not None
+    assert not denied.applied_access.settings.keys_enabled
+    assert not denied.applied_access.settings.entra_enabled
+    assert harness.apim.written[policy_path]["properties"]["value"] == DENY_ALL_POLICY
+    harness.apim.write_failures.pop(fragment)
+    harness.apim.written[policy_path]["properties"]["value"] = (
+        "<policies><inbound/><backend/><outbound/><on-error/></policies>"
+    )
+    with pytest.raises(ValidationError, match="custom or changed policy"):
+        await harness.service.plan(ACTOR, publication_id)
+    harness.apim.written[policy_path]["properties"]["value"] = DENY_ALL_POLICY
+    writes = list(harness.apim.writes)
+    plan = await harness.service.plan(ACTOR, publication_id)
+    assert harness.apim.writes == writes
+    retry = await harness.service.apply(ACTOR, publication_id, plan.id)
+    await harness.service.wait_for_idle()
+    assert (await harness.service.get_run(ACTOR, retry.id)).status == PublishRunStatus.SUCCEEDED
+    harness.apim.written[policy_path]["properties"]["value"] = DENY_ALL_POLICY
+    with pytest.raises(ValidationError, match="custom or changed policy"):
         await harness.service.plan(ACTOR, publication_id)
 
 
