@@ -11,6 +11,7 @@ from mosaic_api.domain import (
     AccessRequestCreate,
     AccessRequestDecision,
     AccessRequestState,
+    AdminAccessRequestDetail,
     AdminAccessRequestListItem,
     CatalogEntry,
     CatalogEntryUpdate,
@@ -57,6 +58,7 @@ from mosaic_api.domain import (
     PolicyPreview,
     PolicyPreviewRequest,
     PortalAccessRequest,
+    PortalAccessRequestDetail,
     PortalEntitlementView,
     PortalMcpConnection,
     PortalModelConnection,
@@ -73,6 +75,12 @@ from mosaic_api.domain import (
     PublishPlan,
     PublishRecoveryRequest,
     PublishRun,
+    RequestFormConfiguration,
+    RequestFormContextInput,
+    RequestFormPreviewInput,
+    RequestFormPublishInput,
+    RequestFormResolution,
+    RequestFormRevision,
     ResolvedEntitlement,
 )
 from mosaic_api.environments import (
@@ -1021,6 +1029,38 @@ async def list_access_requests(
 ) -> list[AdminAccessRequestListItem]:
     return await _entitlements(request).list_access_request_items(_actor(auth), state=state)
 
+@router.get("/request-form", response_model=RequestFormConfiguration)
+async def get_request_form(request: Request, auth: Admin) -> RequestFormConfiguration:
+    return (await _entitlements(request).request_forms.current(auth.tenant_id))[1]
+
+
+@router.put("/request-form", response_model=RequestFormConfiguration)
+async def publish_request_form(
+    request: Request, auth: Admin, payload: RequestFormPublishInput,
+) -> RequestFormConfiguration:
+    return await _entitlements(request).publish_request_form(_actor(auth), payload)
+
+
+@router.get("/request-form/revisions/{revision}", response_model=RequestFormRevision)
+async def get_request_form_revision(
+    request: Request, auth: Admin, revision: int,
+) -> RequestFormRevision:
+    return await _entitlements(request).request_forms.revision(_actor(auth), revision)
+
+
+@router.post("/request-form/preview", response_model=RequestFormResolution)
+async def preview_request_form(
+    request: Request, auth: Admin, payload: RequestFormPreviewInput,
+) -> RequestFormResolution:
+    return await _entitlements(request).preview_request_form(_actor(auth), payload)
+
+
+@router.get("/access-requests/{request_id}", response_model=AdminAccessRequestDetail)
+async def access_request_detail(
+    request: Request, auth: Admin, request_id: str,
+) -> AdminAccessRequestDetail:
+    return await _entitlements(request).access_request_detail(_actor(auth), request_id)
+
 
 @router.post("/access-requests/{request_id}/approve", response_model=AccessRequest)
 async def approve_access_request(
@@ -1200,6 +1240,25 @@ async def portal_environments(request: Request, auth: PortalUser) -> list[Portal
 @router.get("/portal/access-requests", response_model=list[PortalAccessRequest], tags=["portal"])
 async def portal_access_requests(request: Request, auth: PortalUser) -> list[PortalAccessRequest]:
     return await _portal(request).my_access_requests(_actor(auth))
+
+@router.post(
+    "/portal/access-requests/form", response_model=RequestFormResolution, tags=["portal"],
+)
+async def portal_request_form(
+    request: Request, auth: PortalUser, payload: RequestFormContextInput,
+) -> RequestFormResolution:
+    return await _entitlements(request).resolve_request_form(_actor(auth), payload)
+
+
+@router.get(
+    "/portal/access-requests/{request_id}",
+    response_model=PortalAccessRequestDetail,
+    tags=["portal"],
+)
+async def portal_access_request_detail(
+    request: Request, auth: PortalUser, request_id: str,
+) -> PortalAccessRequestDetail:
+    return await _portal(request).access_request_detail(_actor(auth), request_id)
 
 
 @router.post(

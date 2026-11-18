@@ -12,6 +12,17 @@ verified Entra group; tenant/personal defaults and the cost-center header do not
 membership. Approval rechecks setup, current eligibility, mode, publication availability, and
 limits. Not available is enforced server-side, not merely hidden in the portal.
 
+An administrator can publish a bounded [governance request form](access.md#governance-questions-on-access-requests).
+The selected exact offering and environment resolve its applicable questions. The requester uses
+Offering, Questions, and Review; server validation and an atomic schema-revision guard determine
+what can be recorded. Existing optional justification and eligible cost-center selection remain
+separate. A typed charge reference or self-reported acknowledgment is not authorization.
+
+Selected detail and **My requests** display an immutable submitted schema/answer snapshot, not
+today's active form. Single/bulk review of form-bearing requests uses Evidence, Grant, and Confirm;
+Next and Back never create a grant or reset edited limits. Only final approval mutates intent.
+Request lists and notifications contain no new answer text.
+
 A cost-center creation request collects a proposed name, purpose/justification, and optional
 existing group object ID, without granting the requester directory-wide search/write permissions.
 It has its own queue/count/status/notification links rather than a fabricated model entitlement.
@@ -77,6 +88,12 @@ converges on its existing winning grant; it must not create another grant or dec
 An environment move needs explicit human confirmation. Requests that were withdrawn, denied,
 changed, or made ineligible must be reviewed, not silently replaced with a different scope.
 
+For a batch containing recorded governance forms, Evidence shows each request's original answers,
+Grant retains the existing shared/per-request controls, and Confirm summarizes each independent
+grant. The request's snapshot is part of the existing approval-context fingerprint; publishing a
+new form does not stale the unchanged historical request. Successful items, explicit limits,
+and unchanged-input retries retain their existing semantics.
+
 ## Approval policies
 
 Policies are explicit administrator-authored rules, disabled by default. They combine structured
@@ -98,6 +115,16 @@ use the configured local time zone; a Weekly call quota instead starts Monday at
   older evaluations. Pausing the evaluator stops future evaluations, not already committed grants.
 - The decision records the policy and revision and attributes the system evaluator. It never
   impersonates the rule's author or applies a gateway plan.
+- Phase 1 form-bearing requests return `manualGovernanceReviewRequired` in automation preview,
+  dry-run, and policy execution. Their answers were not evaluated; they remain pending for a
+  person. A later form disable does not remove that recorded-evidence boundary. Existing
+  no-form/legacy requests and policy revisions remain unchanged.
+
+Answer-based deterministic conditions, their policy revision/preview semantics, and delegated
+cost-center POC authority are later explicit phases, not implicit extensions of form publication.
+Before enabling a required form, deploy compatible API/worker readers and admission writers;
+an old writer that ignores the form is unsafe even before any populated snapshot exists.
+See the [upgrade boundary](access.md#governance-questions-on-access-requests).
 
 ## AI approval assistance
 
@@ -115,6 +142,11 @@ Recommendations show their model, generation time, evidence, uncertainty, and de
 blockers. Request justification is untrusted input. A recommendation cannot invoke tools, change
 limits, send messages, create a policy, or mutate a decision. Changed request/context/settings
 invalidate older recommendations.
+
+Structured governance question text and answers are not added to AI evidence in this phase.
+The reviewer sees that exclusion and must inspect the recorded answers themselves. Existing
+advisory evidence, including optional justification, retains its current allowlist. No question
+or answer is copied into notification delivery, audit/log payloads, or a new answer export.
 
 ## Choose personal notifications
 

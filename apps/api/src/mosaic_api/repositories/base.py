@@ -38,6 +38,8 @@ from mosaic_api.domain import (
     Publication,
     PublishPlan,
     PublishRun,
+    RequestFormHead,
+    RequestFormRevision,
 )
 from mosaic_api.environments import EnvironmentCatalog, EnvironmentUsage
 from mosaic_api.model_deployments import ModelDeploymentPlan, ModelDeploymentRun
@@ -553,11 +555,24 @@ class EntitlementRepository(Protocol):
         state: str | None = None,
     ) -> list[AccessRequest]: ...
 
-    async def get_access_request(self, tenant_id: str, request_id: str) -> AccessRequest | None: ...
+    async def get_access_request(
+        self, tenant_id: str, request_id: str, *, requester_object_id: str | None = None,
+    ) -> AccessRequest | None: ...
 
     async def create_access_request(
-        self, access_request: AccessRequest, audit_event: AuditEvent
+        self, access_request: AccessRequest, audit_event: AuditEvent,
+        *, form_guard: RequestFormHead | None = None,
     ) -> AccessRequest: ...
+
+    async def get_request_form_head(self, tenant_id: str) -> RequestFormHead | None: ...
+
+    async def get_request_form_revision(
+        self, tenant_id: str, revision: int,
+    ) -> RequestFormRevision | None: ...
+
+    async def publish_request_form(
+        self, head: RequestFormHead, revision: RequestFormRevision, audit: AuditEvent,
+    ) -> RequestFormRevision: ...
 
     async def save_access_request(
         self, access_request: AccessRequest, audit_event: AuditEvent

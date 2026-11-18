@@ -95,6 +95,19 @@ function renderPage(requests: AccessRequest[], withdrawAccessRequest = vi.fn(), 
 }
 
 describe('MyRequestsPage', () => {
+  it('shows the original acknowledgment conditions with the selected request answers', async () => {
+    const record = accessRequest({ requestFormSummary: { revision: 3, questionCount: 1, answerCount: 1 } })
+    renderPage([record])
+    mocks.api.getAccessRequest = vi.fn().mockResolvedValue({ ...record, recordedForm: {
+      formatVersion: 1, revision: 3,
+      questions: [{ id: 'ack', kind: 'acknowledgment', label: 'Original data policy', helpText: 'Only fictional synthetic records were permitted.', required: true, maxLength: null, options: [] }],
+      answers: [{ questionId: 'ack', value: true }],
+    } })
+    await userEvent.click(await screen.findByRole('button', { name: 'View submitted answers (form v3)' }))
+    expect(await screen.findByText('Only fictional synthetic records were permitted.')).toBeVisible()
+    expect(screen.getByText('Acknowledged (self-reported)')).toBeVisible()
+    expect(mocks.api.getAccessRequest).toHaveBeenCalledWith(record.id)
+  })
   it('combines distinct request kinds and counts without treating a center as a resource', async () => {
     renderPage([accessRequest({ id: 'same-id' })], vi.fn(), '/requests', [costCenterRequest({ id: 'same-id' })])
     expect(await screen.findByRole('heading', { name: 'Research team' })).toBeVisible()

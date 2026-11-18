@@ -7,6 +7,10 @@ import { isGatewayPolicyCapabilities } from './policy-capabilities'
 import type {
   AccessRequest,
   AccessRequestApproval,
+  RequestFormConfiguration,
+  RequestFormPublishInput,
+  RequestFormDefinition,
+  RequestFormResolution,
   AzureCloud,
   AzureConnection,
   AnalyticsConsumers,
@@ -494,6 +498,10 @@ export interface MosaicApi extends AdminApi {
   resolveEntitlements(principalId: string): Promise<ResolvedEntitlement[]>
   getGrantOverlaps(filters?: { resource?: string }): Promise<GrantOverlapReport>
   listAccessRequests(state?: string): Promise<AccessRequest[]>
+  getAccessRequest(id: string): Promise<AccessRequest>
+  getRequestForm(): Promise<RequestFormConfiguration>
+  publishRequestForm(body: RequestFormPublishInput): Promise<RequestFormConfiguration>
+  previewRequestForm(definition: RequestFormDefinition, resource: EntitlementResource): Promise<RequestFormResolution>
   getRequestCounts(): Promise<RequestCounts>
   listCostCenterRequests(state?: string): Promise<AdminCostCenterRequest[]>
   getCostCenterRequest(requestId: string): Promise<AdminCostCenterRequest>
@@ -1336,6 +1344,12 @@ export function useMosaicApi(): MosaicApi {
         request<AccessRequest[]>(
           `/api/v1/access-requests${state ? `?state=${encodeURIComponent(state)}` : ''}`,
         ),
+      getAccessRequest: (id) => request<AccessRequest>(`/api/v1/access-requests/${encodeURIComponent(id)}`),
+      getRequestForm: () => request<RequestFormConfiguration>('/api/v1/request-form'),
+      publishRequestForm: (body) => request<RequestFormConfiguration>('/api/v1/request-form', { method: 'PUT', body }),
+      previewRequestForm: (definition, resource) => request<RequestFormResolution>(
+        '/api/v1/request-form/preview', { method: 'POST', body: { definition, resource } },
+      ),
       approveAccessRequest: (id, approval) =>
         request<AccessRequest>(`/api/v1/access-requests/${id}/approve`, {
           method: 'POST',

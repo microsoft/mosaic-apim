@@ -36,6 +36,8 @@ import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PrincipalKindBadge } from '../components/PrincipalKindBadge'
 import { IdentityAvatar } from '../components/IdentityAvatar'
 import { AccessRequestRequester } from '../components/AccessRequestRequester'
+import { RecordedRequestForm } from '../components/RequestFormAnswers'
+import { RequestFormEditor } from '../components/RequestFormEditor'
 import { ModelAccessSettingsPanel } from '../components/ModelAccessSettingsPanel'
 import { ApprovalPolicies } from '../components/ApprovalPolicies'
 import { BulkApprovalWorkspace } from '../components/BulkApprovalWorkspace'
@@ -230,6 +232,7 @@ const ACCESS_SECTIONS = [
   { value: 'effective', label: 'Effective access & overlaps', icon: <ShieldCheckmarkRegular />, description: 'Inspect recorded access paths and precedence. This is desired state, not a live runtime authorization test.' },
   { value: 'requests', label: 'Requests', icon: <PersonClockRegular />, description: 'Review resource-access and cost-center creation requests as distinct kinds. Directory setup and reviewed gateway apply remain separate.' },
   { value: 'approvalPolicies', label: 'Approval policies', icon: <ShieldCheckmarkRegular />, description: 'Explicit, scheduled automatic approvals create bounded grant intent. Gateway plan review and apply remain separate.' },
+  { value: 'requestForm', label: 'Request form', icon: <PersonClockRegular />, description: 'Versioned questions for individual portal resource requests. Answers are review context, never authority.' },
   { value: 'settings', label: 'Model access settings', icon: <SettingsRegular />, description: 'Choose a published model to configure its authentication methods and review all saved grants and settings together.' },
 ] as const
 
@@ -1010,6 +1013,10 @@ export function EntitlementsPage() {
       )}
 
       <SectionLayout label="Entitlements" sections={ACCESS_SECTIONS} active={activeSection} onSelect={selectSection}>
+      {activeSection === 'requestForm' && <RequestFormEditor environments={environmentCatalog.data}
+        resources={resourceOptions.map(option => ({ label: option.label, resource: {
+          kind: option.kind, id: option.id, scopeId: option.scopeId ?? null,
+        } }))} />}
       {activeSection === 'approvalPolicies' && <ApprovalPolicies />}
       {activeSection === 'settings' && <Card className={styles.detailCard} id="governed-model-access">
         <Title3 as="h2">Model access settings</Title3>
@@ -1525,6 +1532,7 @@ export function EntitlementsPage() {
               {accessRequest.decidedByObjectId && <div><dt>Decided by</dt><dd>{accessRequest.decidedByObjectId}</dd></div>}
               {accessRequest.decisionNote && <div><dt>Decision note</dt><dd>{accessRequest.decisionNote}</dd></div>}
             </dl>
+            <RecordedRequestForm request={accessRequest} />
             {accessRequest.resourceSummary?.available === false && <Text>No longer available</Text>}
             {accessRequest.grantedEntitlementId && <Button onClick={() => showGrant(accessRequest.grantedEntitlementId!)}>Go to grant</Button>}
                           <RowActions
