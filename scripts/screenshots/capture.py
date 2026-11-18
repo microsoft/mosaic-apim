@@ -1890,7 +1890,20 @@ SHOTS: list[Shot] = [
     Shot(
         "portal-budget-banner", "portal", "/access", "light", "near its monthly budget", height=720
     ),
-    # This saves an unapplied key-setting change; keep it after all connection screenshots.
+    Shot(
+        "console-register-bedrock", "console", "/models?register=1", "light",
+        "Register model endpoint",
+        actions=(click_tab("AWS Bedrock"),), height=1500,
+    ),
+    # These save shared API drafts; keep the mutation block last, with the legacy review final.
+    Shot(
+        "console-bedrock-release", "console", "/models", "light", "Publish a model",
+        actions=(review_bedrock_release,), height=1700,
+    ),
+    Shot(
+        "console-bedrock-release-mobile", "console", "/models", "dark", "Publish a model",
+        actions=(review_bedrock_release,), width=390, height=1600,
+    ),
     Shot(
         "console-model-change-review",
         "console",
@@ -1899,19 +1912,6 @@ SHOTS: list[Shot] = [
         "Published model",
         actions=(review_demo_changes,),
         height=2600,
-    ),
-    Shot(
-        "console-register-bedrock", "console", "/models?register=1", "light",
-        "Register model endpoint",
-        actions=(click_tab("AWS Bedrock"),), height=1500,
-    ),
-    Shot(
-        "console-bedrock-release", "console", "/models", "light", "Publish a model",
-        actions=(review_bedrock_release,), height=1700,
-    ),
-    Shot(
-        "console-bedrock-release-mobile", "console", "/models", "dark", "Publish a model",
-        actions=(review_bedrock_release,), width=390, height=1600,
     ),
 ]
 
