@@ -1510,7 +1510,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
               <div><dt>Last synced</dt><dd>{usesBackendKey(endpoint) ? 'Not applicable — declared models' : formatTimestamp(endpoint.lastSyncedAt)}</dd></div>
               {endpoint.environmentLabel && <div><dt>Legacy label</dt><dd>{endpoint.environmentLabel}</dd></div>}
             </dl>
-            <RowActions label={`More actions for ${endpoint.name}`}
+            <RowActions label={`More actions for ${endpoint.name}`} wrap
               primary={<>
                 {supportsModelDeployment(endpoint) && <Button appearance="primary" onClick={() => setDeploying(endpoint)}>Deploy model</Button>}
                 <Button id="open-model-discovery" onClick={() => showDiscovery(endpoint.id)}>Model discovery</Button>
