@@ -31,6 +31,7 @@ from mosaic_api.cost_centers import (
     CostCenterResourceAccessMode,
     PendingRecheck,
     RecheckReason,
+    delegated_audit,
     exact_resource_key,
     may_charge,
 )
@@ -2852,6 +2853,8 @@ class EntitlementService:
         *,
         state: AccessRequestState,
         note: str | None = None,
+        center_guard: CostCenter | None = None,
+        reviewed_etag: str | None = None,
     ) -> AccessRequest:
         """Close a pending request without granting anything: deny or withdraw it.
 
@@ -2863,6 +2866,8 @@ class EntitlementService:
         if state not in {AccessRequestState.DENIED, AccessRequestState.WITHDRAWN}:
             raise ValueError("Only a denial or withdrawal closes a request without a grant")
         access_request = await self.get_access_request(actor, request_id)
+        if center_guard is not None and access_request.etag != reviewed_etag:
+            raise ConflictError("The access request changed; reload the approval")
         if access_request.state != AccessRequestState.PENDING:
             raise ConflictError(
                 f"This request was already {access_request.state}",
@@ -2879,10 +2884,15 @@ class EntitlementService:
                 "updated_at": utc_now(),
             }
         )
-        return await self._repository.save_access_request(
-            updated,
-            self._audit(actor, f"accessRequest.{state}", "accessRequest", request_id),
+        audit = self._audit(
+            actor, f"accessRequest.{state}", "accessRequest", request_id,
+            delegated_audit(center_guard, actor.object_id, note) if center_guard else None,
         )
+        if center_guard is not None:
+            return await self._repository.save_access_request(
+                updated, audit, center_guard=center_guard,
+            )
+        return await self._repository.save_access_request(updated, audit)
 
     async def approve_access_request(
         self,
@@ -2893,6 +2903,7 @@ class EntitlementService:
         expected_context: ApprovalContextRevision | None = None,
         provenance: ApprovalDecisionProvenance | None = None,
         decision_guard: Callable[[], Awaitable[ApprovalPolicy | None]] | None = None,
+        center_guard: CostCenter | None = None,
     ) -> AccessRequest:
         """Approve a pending request by creating the requester's grant and linking it.
 
@@ -3028,6 +3039,10 @@ class EntitlementService:
                     "costCenterId": entitlement.cost_center_id,
                     "requestedCostCenterId": access_request.cost_center_id,
                     "approvalProvenance": approved.approval_provenance,
+                    **(
+                        delegated_audit(center_guard, actor.object_id, approval.note)
+                        if center_guard else {}
+                    ),
                 },
             ),
         ]
@@ -3070,6 +3085,10 @@ class EntitlementService:
                         ],
                         provenance=decision_provenance,
                         policy_guard=policy_guard,
+                    )
+                elif center_guard is not None:
+                    saved = await self._repository.approve_access_request(
+                        approved, entitlement, audit_events, center_guard=center_guard,
                     )
                 else:
                     saved = await self._repository.approve_access_request(

@@ -15,6 +15,7 @@ _REQUEST_FIELDS = (
     "code",
     "description",
     "justification",
+    "proposed_pocs",
     "suggested_group_object_id",
 )
 

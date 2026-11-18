@@ -17,7 +17,13 @@ from mosaic_api.cost_center_requests import (
     CostCenterRequestDecision,
     requested_cost_center_id,
 )
-from mosaic_api.cost_centers import CostCenter, CostCenterCreate, CostCenterUpdate
+from mosaic_api.cost_centers import (
+    CostCenter,
+    CostCenterCreate,
+    CostCenterPoc,
+    CostCenterUpdate,
+    PocSelection,
+)
 from mosaic_api.domain import (
     AccessRequest,
     AuditEvent,
@@ -80,12 +86,24 @@ class CenterActions:
         self.before_create: Callable[[], Awaitable[None]] | None = None
         self.request_id: str | None = None
 
+    async def verify_poc_selections(
+        self, actor: Actor, selections: list[PocSelection], approved_by: str | None = None,
+    ) -> list[CostCenterPoc]:
+        return [
+            CostCenterPoc(
+                role=p.role, object_id=p.object_id, display_name="Fictional POC",
+                approved_by=approved_by or actor.object_id,
+            )
+            for p in selections
+        ]
+
     async def validate(self, _actor: Actor, _center: CostCenter) -> None:
         if self.validation_error is not None:
             raise self.validation_error
 
     async def create(
-        self, actor: Actor, payload: CostCenterCreate, *, cost_center_id: str | None = None
+        self, actor: Actor, payload: CostCenterCreate, *, cost_center_id: str | None = None,
+        poc_creation_request_id: str | None = None, poc_approved_by: str | None = None,
     ) -> object:
         assert cost_center_id is not None
         assert payload.group_setup is None
@@ -107,6 +125,10 @@ class CenterActions:
                 name=payload.name,
                 code=payload.code,
                 resource_access=payload.resource_access,
+                pocs=await self.verify_poc_selections(
+                    actor, payload.poc_selections, poc_approved_by
+                ),
+                poc_creation_request_id=poc_creation_request_id,
             ),
             event(actor, cost_center_id),
         )

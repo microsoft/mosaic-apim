@@ -17,9 +17,15 @@ from mosaic_api.domain import (
     CostCenterRef,
     Entity,
     MosaicModel,
+    _unset,
     deterministic_id,
     utc_now,
 )
+
+
+class ProposedPocs(MosaicModel):
+    technical: str | None = Field(default=None, min_length=1, max_length=254)
+    billing: str | None = Field(default=None, min_length=1, max_length=254)
 
 
 def requested_cost_center_id(tenant_id: str, request_id: str) -> str:
@@ -39,6 +45,7 @@ class CostCenterRequestCreate(MosaicModel):
     code: str | None = Field(default=None, min_length=1, max_length=64)
     description: str | None = Field(default=None, max_length=1000)
     justification: str = Field(min_length=1, max_length=4000)
+    proposed_pocs: ProposedPocs | None = Field(default=None, exclude_if=_unset)
     suggested_group_object_id: str | None = None
     idempotency_key: UUID | None = None
 
@@ -76,6 +83,7 @@ class CostCenterRequest(Entity):
     code: str | None = Field(default=None, max_length=64)
     description: str | None = Field(default=None, max_length=1000)
     justification: str = Field(min_length=1, max_length=4000)
+    proposed_pocs: ProposedPocs | None = Field(default=None, exclude_if=_unset)
     suggested_group_object_id: str | None = None
     state: AccessRequestState = AccessRequestState.PENDING
     approval: CostCenterRequestApprovalIntent | None = None
@@ -135,6 +143,7 @@ class PortalCostCenterRequest(MosaicModel):
     code: str | None = None
     description: str | None = None
     justification: str
+    proposed_pocs: ProposedPocs | None = Field(default=None, exclude_if=_unset)
     suggested_group_object_id: str | None = None
     state: AccessRequestState
     created_at: datetime

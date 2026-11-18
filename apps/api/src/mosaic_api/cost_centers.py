@@ -22,6 +22,7 @@ from mosaic_api.cost_center_directory import (
     CostCenterGroupSetup,
     CostCenterSetupState,
     EntraGroupBinding,
+    directory_object_id,
 )
 from mosaic_api.domain import (
     COST_CENTER_CODE_PATTERN,
@@ -38,6 +39,7 @@ from mosaic_api.domain import (
     QuotaPeriod,
     RequestEnforcement,
     TokenEnforcement,
+    _unset,
     deterministic_id,
     general_cost_center_id,
     new_id,
@@ -288,6 +290,47 @@ def _unique_resource_access(
     return values
 
 
+PocRole = Literal["technical", "billing"]
+
+
+class PocSelection(MosaicModel):
+    role: PocRole
+    object_id: str
+
+    _canonical_id = field_validator("object_id")(directory_object_id)
+
+
+class CostCenterPoc(PocSelection):
+    display_name: str = Field(min_length=1, max_length=256)
+    approved_by: str
+    approved_at: datetime = Field(default_factory=utc_now)
+
+
+def delegated_audit(
+    center: "CostCenter", actor_id: str, reason: str | None,
+) -> dict[str, object]:
+    return {
+        "capability": "costCenter.reviewRequests",
+        "costCenterId": center.id,
+        "assignmentRevision": center.etag,
+        "pocRoles": [p.role for p in center.pocs if p.object_id == actor_id.casefold()],
+        "reason": reason,
+    }
+
+
+class PocAssignmentsUpdate(MosaicModel):
+    assignments: list[PocSelection] = Field(max_length=20)
+    revision: str = Field(min_length=1, max_length=256)
+    reason: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("reason")
+    @classmethod
+    def require_reason(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("An assignment change requires a reason")
+        return value.strip()
+
+
 class CostCenter(Entity):
     """Who calls are charged to. Desired state in ``desired-state``, saved with an audit event."""
 
@@ -298,6 +341,8 @@ class CostCenter(Entity):
     discoverable: bool = False
     public_purpose: str | None = Field(default=None, max_length=1000)
     owners: list[str] = Field(default_factory=list)
+    pocs: list[CostCenterPoc] = Field(default_factory=list, max_length=20, exclude_if=_unset)
+    poc_creation_request_id: str | None = Field(default=None, exclude_if=_unset)
     entra_binding: EntraGroupBinding | None = None
     setup_state: CostCenterSetupState = CostCenterSetupState.SETUP_REQUIRED
     resource_access: list[CostCenterResourceAccess] = Field(
@@ -419,6 +464,9 @@ class CostCenterCreate(MosaicModel):
     code: str = Field(min_length=1, max_length=64)
     description: str | None = Field(default=None, max_length=1000)
     owners: list[str] = Field(default_factory=list)
+    poc_selections: list[PocSelection] = Field(
+        default_factory=list, max_length=20, exclude_if=_unset,
+    )
     keys_allowed: bool = True
     group_setup: CostCenterGroupSetup | None = None
     resource_access: list[CostCenterResourceAccess] = Field(

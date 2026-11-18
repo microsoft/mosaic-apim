@@ -4,12 +4,19 @@ from typing import Any, TypeVar
 from azure.cosmos import exceptions
 
 from mosaic_api.approvals import ApprovalDecisionProvenance, ApprovalPolicy
+from mosaic_api.cost_center_delegation import (
+    ReviewItem,
+    ReviewKind,
+    ReviewPosition,
+    review_time_key,
+)
 from mosaic_api.cost_center_membership_requests import (
     MembershipRequest,
     MembershipRequestGuard,
     membership_guard_id,
 )
 from mosaic_api.cost_center_requests import CostCenterRequest
+from mosaic_api.cost_centers import CostCenter
 from mosaic_api.domain import (
     AccessRequest,
     AccessRequestState,
@@ -27,7 +34,7 @@ from mosaic_api.repositories.access_request_writes import (
     require_human_form_review,
     require_unchanged_form,
 )
-from mosaic_api.repositories.cosmos import CosmosRepositoryBase
+from mosaic_api.repositories.cosmos import BatchOperation, CosmosRepositoryBase
 from mosaic_api.repositories.cost_center_request_writes import (
     REQUEST_CHANGED,
     require_request_change,
@@ -49,6 +56,80 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
     Entitlement IDs are deterministic on subject and resource, so ``create`` conflicts are how
     a duplicate grant is detected rather than a separate uniqueness query.
     """
+
+    def _center_guard(
+        self, center: CostCenter | None, tenant_id: str, center_id: str | None,
+    ) -> list[BatchOperation]:
+        if center is None:
+            return []
+        if center.tenant_id != tenant_id or center.id != center_id or not center.etag:
+            raise ValueError("The delegated decision requires its exact center version")
+        return [self._replace_operation(center)]
+
+    async def list_review_items(
+        self, tenant_id: str, center_id: str, reviewer_id: str, state: str, kind: ReviewKind,
+        *, before: ReviewPosition | None, limit: int,
+    ) -> list[ReviewItem]:
+        resource = kind == "resourceAccess"
+        center = "c.costCenterId" if resource else "c.costCenter.id"
+        fields = "c.id, c.state, c.createdAt, c.requesterName"
+        if resource:
+            fields += ", c.requesterUsername, c.resourceSnapshot.displayName AS resourceName"
+        common = (
+            f"{fields} FROM c WHERE c.tenantId = @tenant AND c.entityType = @type "
+            f"AND {center} = @center AND c.state = @state "
+            "AND NOT STRINGEQUALS(c.requesterObjectId, @reviewer, true)"
+        )
+        scope: dict[str, Any] = {
+            "@tenant": tenant_id, "@type": "accessRequest" if resource
+            else "costCenterMembershipRequest",
+            "@center": center_id, "@state": state, "@reviewer": reviewer_id,
+        }
+
+        async def read(
+            count: int, condition: str, order: str, **bounds: str,
+        ) -> list[dict[str, Any]]:
+            parameters = {**scope, "@limit": count, **{f"@{k}": v for k, v in bounds.items()}}
+            return [row async for row in self._desired.query_items(
+                query=f"SELECT TOP @limit {common}{condition} ORDER BY c.{order} DESC",
+                parameters=[{"name": name, "value": value} for name, value in parameters.items()],
+                partition_key=tenant_id,
+            )]
+
+        # Use the existing single-field indexes. Limit timestamp ties separately by id so
+        # boundary rows are deterministic without requiring a new composite index.
+        rows: list[dict[str, Any]] = []
+        prior: dict[str, str] = {}
+        if before is not None:
+            moment = review_time_key(before.created_at)
+            if kind < before.kind:
+                rows = await read(limit, " AND c.createdAt = @at", "id", at=moment)
+            elif kind == before.kind:
+                rows = await read(
+                    limit, " AND c.createdAt = @at AND c.id < @id", "id", at=moment, id=before.id,
+                )
+            prior["at"] = moment
+        remaining = limit - len(rows)
+        if remaining:
+            older = await read(
+                remaining, " AND c.createdAt < @at" if prior else "", "createdAt", **prior,
+            )
+            if len(older) == remaining:
+                boundary = older[-1]["createdAt"]
+                prefix = [row for row in older if row["createdAt"] != boundary]
+                older = prefix + await read(
+                    remaining - len(prefix), " AND c.createdAt = @at", "id", at=boundary,
+                )
+            rows.extend(older)
+        return [
+            ReviewItem(
+                id=row["id"], kind=kind, state=row["state"], created_at=row["createdAt"],
+                title=(row.get("resourceName") or "Resource access")
+                if resource else "Cost center membership",
+                requester=row.get("requesterName") or row.get("requesterUsername"),
+            )
+            for row in rows
+        ]
 
     async def list_entitlements(
         self,
@@ -133,6 +214,7 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
         *,
         requester_object_id: str | None = None,
         state: str | None = None,
+        cost_center_id: str | None = None,
     ) -> list[AccessRequest]:
         extra = ""
         parameters: list[dict[str, Any]] = []
@@ -142,14 +224,19 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
         if state:
             extra += " AND c.state = @state"
             parameters.append({"name": "@state", "value": state})
+        if cost_center_id is not None:
+            extra += " AND c.costCenterId = @center"
+            parameters.append({"name": "@center", "value": cost_center_id})
         items = await self._query(AccessRequest, tenant_id, "accessRequest", extra, parameters)
         return sorted(items, key=lambda item: item.created_at, reverse=True)
 
     async def get_access_request(
         self, tenant_id: str, request_id: str, *, requester_object_id: str | None = None,
+        review_center_ids: frozenset[str] | None = None,
     ) -> AccessRequest | None:
         return await self._read_request(
-            AccessRequest, tenant_id, request_id, requester_object_id=requester_object_id
+            AccessRequest, tenant_id, request_id, requester_object_id=requester_object_id,
+            review_center_ids=review_center_ids,
         )
 
     async def create_access_request(
@@ -192,8 +279,16 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
         return revision
 
     async def save_access_request(
-        self, access_request: AccessRequest, audit_event: AuditEvent
+        self, access_request: AccessRequest, audit_event: AuditEvent, *,
+        center_guard: CostCenter | None = None,
     ) -> AccessRequest:
+        if center_guard is not None:
+            if not access_request.etag:
+                raise ValueError("A request decision requires the etag it was read with")
+            return await self._request_events(
+                access_request, audit_event, [access_request_event(access_request)],
+                create=False, center_guard=center_guard,
+            )
         return await self.save_access_request_with_events(
             access_request, audit_event, [access_request_event(access_request)]
         )
@@ -206,6 +301,7 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
         *,
         create: bool,
         form_guard: RequestFormHead | None = None,
+        center_guard: CostCenter | None = None,
     ) -> AccessRequest:
         if any(event.tenant_id != request.tenant_id for event in events):
             raise ValueError("Notification events must belong to the source tenant")
@@ -225,6 +321,7 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
             await self._execute_batch(
                 [
                     *guard,
+                    *self._center_guard(center_guard, request.tenant_id, request.cost_center_id),
                 ("create", (self._document(request),))
                 if create
                 else self._replace_operation(request),
@@ -266,9 +363,12 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
         access_request: AccessRequest,
         entitlement: Entitlement,
         audit_events: Sequence[AuditEvent],
+        *,
+        center_guard: CostCenter | None = None,
     ) -> AccessRequest:
         return await self.approve_access_request_with_events(
-            access_request, entitlement, audit_events, [access_request_event(access_request)]
+            access_request, entitlement, audit_events, [access_request_event(access_request)],
+            center_guard=center_guard,
         )
 
     async def list_cost_center_requests(
@@ -297,6 +397,7 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
         *,
         requester_object_id: str | None = None,
         state: str | None = None,
+        cost_center_id: str | None = None,
     ) -> list[MembershipRequest]:
         extra = ""
         parameters: list[dict[str, Any]] = []
@@ -306,6 +407,9 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
         if state is not None:
             extra += " AND c.state = @state"
             parameters.append({"name": "@state", "value": state})
+        if cost_center_id is not None:
+            extra += " AND c.costCenter.id = @center"
+            parameters.append({"name": "@center", "value": cost_center_id})
         items = await self._query(
             MembershipRequest, tenant_id, "costCenterMembershipRequest", extra, parameters
         )
@@ -315,8 +419,12 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
         self,
         tenant_id: str,
         request_id: str,
+        *,
+        review_center_ids: frozenset[str] | None = None,
     ) -> MembershipRequest | None:
-        return await self._read_request(MembershipRequest, tenant_id, request_id)
+        return await self._read_request(
+            MembershipRequest, tenant_id, request_id, review_center_ids=review_center_ids,
+        )
 
     async def create_membership_request(
         self,
@@ -347,12 +455,15 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
         request: MembershipRequest,
         audit: AuditEvent,
         events: Sequence[NotificationEvent],
+        *,
+        center_guard: CostCenter | None = None,
     ) -> MembershipRequest:
         previous = await self.get_membership_request(request.tenant_id, request.id)
         if not request.etag or previous is None or previous.etag != request.etag:
             raise ConflictError(MEMBERSHIP_CHANGED)
         validated = validate_membership_write(request, audit, events, previous)
         operations = [
+            *self._center_guard(center_guard, request.tenant_id, request.cost_center.id),
             self._replace_operation(validated),
             ("create", (self._document(audit),)),
             *(("create", (self._document(event),)) for event in events),
@@ -386,6 +497,7 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
     async def _read_request(
         self, model_type: type[RequestT], tenant_id: str, request_id: str,
         *, requester_object_id: str | None = None,
+        review_center_ids: frozenset[str] | None = None,
     ) -> RequestT | None:
         try:
             document = await self._desired.read_item(item=request_id, partition_key=tenant_id)
@@ -398,6 +510,19 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
             and document.get("requesterObjectId") != requester_object_id
         ):
             return None
+        if review_center_ids is not None:
+            if model_type is MembershipRequest:
+                scope = document.get("costCenter")
+                center_id = scope.get("id") if isinstance(scope, dict) else None
+            else:
+                center_id = document.get("costCenterId")
+            # A malformed foreign request must never reach typed evidence decoding.
+            if (
+                document.get("tenantId") != tenant_id
+                or not isinstance(center_id, str)
+                or center_id not in review_center_ids
+            ):
+                return None
         model = self._model(model_type, document)
         return model if model.tenant_id == tenant_id else None
 
@@ -463,6 +588,7 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
         *,
         provenance: ApprovalDecisionProvenance | None = None,
         policy_guard: ApprovalPolicy | None = None,
+        center_guard: CostCenter | None = None,
     ) -> AccessRequest:
         require_human_form_review(
             request, policy=bool(policy_guard or (provenance and provenance.origin == "policy"))
@@ -504,6 +630,7 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
                     ),
                 ),
                 *([self._replace_operation(policy_guard)] if policy_guard else []),
+                *self._center_guard(center_guard, request.tenant_id, request.cost_center_id),
             ],
             audit_events,
             conflict_message=(

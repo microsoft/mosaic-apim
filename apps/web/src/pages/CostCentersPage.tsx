@@ -32,6 +32,7 @@ import { PageHeader } from '../components/PageHeader'
 import { SectionLayout, usePageSection } from '../components/SectionLayout'
 import { ResourceWorkbench } from '../components/ResourceWorkbench'
 import { CostCenterEditor } from '../components/CostCenterSetupForm'
+import { CostCenterPocEditor, pocRoles } from '../components/CostCenterPocEditor'
 import { CostCenterDirectoryMembers } from '../components/CostCenterDirectoryMembers'
 import { CostCenterDirectoryOperations } from '../components/CostCenterDirectoryOperations'
 import { CostCenterResourceAccessFields } from '../components/CostCenterResourceAccess'
@@ -334,6 +335,7 @@ function CostCenterWorkspace({ costCenterId, embedded = false, fallbackFocusRef 
   const navigate = useNavigate()
   const location = useLocation()
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const [editingPocs, setEditingPocs] = useState(false)
   const surfaceRef = useRef<HTMLDivElement>(null)
   const outcomeRef = useRef<HTMLDivElement>(null)
   const navigationFallback = useRef<HTMLElement>(null)
@@ -497,6 +499,7 @@ function CostCenterWorkspace({ costCenterId, embedded = false, fallbackFocusRef 
     <CostCenterEditor costCenter={data} onCancel={() => workbench.close()}
       onSaved={() => workbench.close(embedded ? costCenterId : undefined)} />
   )
+  if (editingPocs) return <CostCenterPocEditor key={data.id} center={data} onBack={() => setEditingPocs(false)} />
 
   return (
     <WorkspaceLeaveGuard
@@ -549,6 +552,9 @@ function CostCenterWorkspace({ costCenterId, embedded = false, fallbackFocusRef 
             <div><dt>Status</dt><dd><CostCenterBadges costCenter={data} /></dd></div>
             <div><dt>Grants</dt><dd>{data.enabledGrantCount} enabled of {data.grantCount}</dd></div>
             <div><dt>Contact owners</dt><dd>{ownerText(data)} · Does not assign group ownership or membership</dd></div>
+            {!data.builtIn && (Object.entries(pocRoles) as [keyof typeof pocRoles, string][]).map(([role, label]) => (
+              <div key={role}><dt>{label}</dt><dd>{data.pocs?.filter(p => p.role === role).map(p => p.displayName).join(', ') || 'Not assigned'}</dd></div>
+            ))}
             <div><dt>Defaults</dt><dd>{data.defaultFor} principal{data.defaultFor === 1 ? '' : 's'}</dd></div>
             <div><dt>Membership authority</dt><dd>{data.setupState === 'exempt' ? 'General is exempt from dedicated group setup' : 'Actual Entra membership, read one page at a time in Members. No local shadow roster.'}</dd></div>
             {data.setupState !== 'exempt' && <>
@@ -563,6 +569,7 @@ function CostCenterWorkspace({ costCenterId, embedded = false, fallbackFocusRef 
             <div><dt>Resource access definitions</dt><dd>{data.resourceAccess?.length ?? 0} exact offerings · Saving intent is not gateway apply</dd></div>
             <div><dt>Resource limits</dt><dd>{data.limits.length} configured</dd></div>
           </dl>
+          {!data.builtIn && data.pocRevision && <Button onClick={() => setEditingPocs(true)}>Edit points of contact</Button>}
           {budget.isPending && <Loading label="Loading budget" />}
           {budget.isError && <ErrorState error={budget.error} />}
           {budget.isSuccess && (budget.data ? <BudgetMeter budget={budget.data} label={data.name} /> : <Text className={styles.muted}>No budget set</Text>)}

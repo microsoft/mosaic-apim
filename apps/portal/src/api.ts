@@ -72,6 +72,10 @@ function costCenterSearchPath(path: string, filter: { q?: string; cursor?: strin
 }
 
 export interface PortalApi {
+  listReviewCenters(): Promise<ReviewCenter[]>
+  listApprovals(centerId: string, state: ReviewState, cursor?: string): Promise<ReviewPage>
+  getApproval(kind: ReviewKind, id: string): Promise<ReviewDetail>
+  decideApproval(kind: ReviewKind, id: string, outcome: 'approve' | 'deny', payload: ReviewDecision): Promise<ReviewDetail>
   listNotifications(filter?: NotificationInboxFilter): Promise<NotificationInboxPage>
   setNotificationRead(itemId: string, read: boolean): Promise<NotificationInboxItem>
   getNotificationPreferences(): Promise<NotificationPreferences>
@@ -163,6 +167,16 @@ export function usePortalApi(): PortalApi {
     }
 
     return {
+      listReviewCenters: () => request<ReviewCenter[]>('/api/v1/portal/approvals/centers', { cache: 'no-store' }),
+      listApprovals: (centerId, state, cursor) => {
+        const params = new URLSearchParams({ centerId, state })
+        if (cursor) params.set('cursor', cursor)
+        return request<ReviewPage>(`/api/v1/portal/approvals?${params}`, { cache: 'no-store' })
+      },
+      getApproval: (kind, id) => request<ReviewDetail>(`/api/v1/portal${approvalPath(kind, id)}`, { cache: 'no-store' }),
+      decideApproval: (kind, id, outcome, payload) => request<ReviewDetail>(
+        `/api/v1/portal${approvalPath(kind, id)}/${outcome}`, { method: 'POST', body: payload },
+      ),
       listNotifications: (filter = {}) => {
         const params = new URLSearchParams()
         if (filter.category) params.set('category', filter.category)
@@ -261,3 +275,4 @@ export function usePortalApi(): PortalApi {
     }
   }, [accounts, instance])
 }
+import { approvalPath, type ReviewCenter, type ReviewDecision, type ReviewDetail, type ReviewKind, type ReviewPage, type ReviewState } from './approvals'
