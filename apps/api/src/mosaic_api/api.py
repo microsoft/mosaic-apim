@@ -11,6 +11,7 @@ from mosaic_api.domain import (
     AccessRequestCreate,
     AccessRequestDecision,
     AccessRequestState,
+    AdminAccessRequestDetail,
     AdminAccessRequestListItem,
     CatalogEntry,
     CatalogEntryUpdate,
@@ -24,7 +25,7 @@ from mosaic_api.domain import (
     Gateway,
     GatewayCreate,
     GatewayPolicyCapabilities,
-    GatewayRuntimeAccess,
+    GatewayRuntimeAccessView,
     GatewaySuggestion,
     GatewaySyncRun,
     GatewayUpdate,
@@ -49,14 +50,15 @@ from mosaic_api.domain import (
     ModelApiCandidateList,
     ModelApiCatalogUpdate,
     ModelConnection,
-    ModelEndpoint,
     ModelEndpointCreate,
     ModelEndpointSuggestionView,
     ModelEndpointSyncRun,
     ModelEndpointUpdate,
+    ModelEndpointView,
     PolicyPreview,
     PolicyPreviewRequest,
     PortalAccessRequest,
+    PortalAccessRequestDetail,
     PortalEntitlementView,
     PortalMcpConnection,
     PortalModelConnection,
@@ -73,8 +75,15 @@ from mosaic_api.domain import (
     PublishPlan,
     PublishRecoveryRequest,
     PublishRun,
+    RequestFormConfiguration,
+    RequestFormContextInput,
+    RequestFormPreviewInput,
+    RequestFormPublishInput,
+    RequestFormResolution,
+    RequestFormRevision,
     ResolvedEntitlement,
 )
+from mosaic_api.endpoint_readiness import model_endpoint_view, runtime_access_view
 from mosaic_api.environments import (
     EnvironmentAssignmentRequest,
     EnvironmentAssignmentResult,
@@ -669,18 +678,21 @@ async def get_operation_policy(
     )
 
 
-@router.get("/model-endpoints", response_model=list[ModelEndpoint])
-async def list_model_endpoints(request: Request, auth: Admin) -> list[ModelEndpoint]:
-    return await _endpoints(request).list_endpoints(_actor(auth))
+@router.get("/model-endpoints", response_model=list[ModelEndpointView])
+async def list_model_endpoints(request: Request, auth: Admin) -> list[ModelEndpointView]:
+    return [
+        model_endpoint_view(endpoint)
+        for endpoint in await _endpoints(request).list_endpoints(_actor(auth))
+    ]
 
 
 @router.post(
-    "/model-endpoints", response_model=ModelEndpoint, status_code=status.HTTP_201_CREATED
+    "/model-endpoints", response_model=ModelEndpointView, status_code=status.HTTP_201_CREATED
 )
 async def register_model_endpoint(
     request: Request, auth: Admin, payload: ModelEndpointCreate
-) -> ModelEndpoint:
-    return await _endpoints(request).register(_actor(auth), payload)
+) -> ModelEndpointView:
+    return model_endpoint_view(await _endpoints(request).register(_actor(auth), payload))
 
 
 @router.get("/model-endpoints/suggested", response_model=ModelEndpointSuggestionView)
@@ -694,16 +706,16 @@ async def suggested_model_endpoints(
     )
 
 
-@router.get("/model-endpoints/{endpoint_id}", response_model=ModelEndpoint)
-async def get_model_endpoint(request: Request, auth: Admin, endpoint_id: str) -> ModelEndpoint:
-    return await _endpoints(request).get_endpoint(_actor(auth), endpoint_id)
+@router.get("/model-endpoints/{endpoint_id}", response_model=ModelEndpointView)
+async def get_model_endpoint(request: Request, auth: Admin, endpoint_id: str) -> ModelEndpointView:
+    return model_endpoint_view(await _endpoints(request).get_endpoint(_actor(auth), endpoint_id))
 
 
-@router.patch("/model-endpoints/{endpoint_id}", response_model=ModelEndpoint)
+@router.patch("/model-endpoints/{endpoint_id}", response_model=ModelEndpointView)
 async def update_model_endpoint(
     request: Request, auth: Admin, endpoint_id: str, payload: ModelEndpointUpdate
-) -> ModelEndpoint:
-    return await _endpoints(request).update(_actor(auth), endpoint_id, payload)
+) -> ModelEndpointView:
+    return model_endpoint_view(await _endpoints(request).update(_actor(auth), endpoint_id, payload))
 
 
 @router.delete("/model-endpoints/{endpoint_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -712,11 +724,11 @@ async def delete_model_endpoint(request: Request, auth: Admin, endpoint_id: str)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/model-endpoints/{endpoint_id}/preflight", response_model=ModelEndpoint)
+@router.post("/model-endpoints/{endpoint_id}/preflight", response_model=ModelEndpointView)
 async def preflight_model_endpoint(
     request: Request, auth: Admin, endpoint_id: str
-) -> ModelEndpoint:
-    return await _endpoints(request).preflight(_actor(auth), endpoint_id)
+) -> ModelEndpointView:
+    return model_endpoint_view(await _endpoints(request).preflight(_actor(auth), endpoint_id))
 
 
 @router.post(
@@ -759,24 +771,28 @@ async def list_model_endpoint_deployments(
 
 @router.post(
     "/model-endpoints/{endpoint_id}/declared-deployments",
-    response_model=ModelEndpoint,
+    response_model=ModelEndpointView,
     status_code=status.HTTP_201_CREATED,
 )
 async def declare_model_endpoint_deployment(
     request: Request, auth: Admin, endpoint_id: str, payload: DeclaredDeploymentCreate
-) -> ModelEndpoint:
-    return await _endpoints(request).declare_deployment(_actor(auth), endpoint_id, payload)
+) -> ModelEndpointView:
+    return model_endpoint_view(
+        await _endpoints(request).declare_deployment(_actor(auth), endpoint_id, payload)
+    )
 
 
 @router.delete(
     "/model-endpoints/{endpoint_id}/declared-deployments/{deployment_name}",
-    response_model=ModelEndpoint,
+    response_model=ModelEndpointView,
 )
 async def remove_model_endpoint_declared_deployment(
     request: Request, auth: Admin, endpoint_id: str, deployment_name: str
-) -> ModelEndpoint:
-    return await _endpoints(request).remove_declared_deployment(
-        _actor(auth), endpoint_id, deployment_name
+) -> ModelEndpointView:
+    return model_endpoint_view(
+        await _endpoints(request).remove_declared_deployment(
+            _actor(auth), endpoint_id, deployment_name
+        )
     )
 
 
@@ -791,12 +807,15 @@ async def list_model_endpoint_available_models(
 
 
 @router.get(
-    "/model-endpoints/{endpoint_id}/runtime-access", response_model=list[GatewayRuntimeAccess]
+    "/model-endpoints/{endpoint_id}/runtime-access", response_model=list[GatewayRuntimeAccessView]
 )
 async def get_model_endpoint_runtime_access(
     request: Request, auth: Admin, endpoint_id: str
-) -> list[GatewayRuntimeAccess]:
-    return await _endpoints(request).runtime_access(_actor(auth), endpoint_id)
+) -> list[GatewayRuntimeAccessView]:
+    return [
+        runtime_access_view(row)
+        for row in await _endpoints(request).runtime_access(_actor(auth), endpoint_id)
+    ]
 
 
 @router.get("/mcp-endpoints", response_model=list[McpEndpoint])
@@ -1021,6 +1040,38 @@ async def list_access_requests(
 ) -> list[AdminAccessRequestListItem]:
     return await _entitlements(request).list_access_request_items(_actor(auth), state=state)
 
+@router.get("/request-form", response_model=RequestFormConfiguration)
+async def get_request_form(request: Request, auth: Admin) -> RequestFormConfiguration:
+    return (await _entitlements(request).request_forms.current(auth.tenant_id))[1]
+
+
+@router.put("/request-form", response_model=RequestFormConfiguration)
+async def publish_request_form(
+    request: Request, auth: Admin, payload: RequestFormPublishInput,
+) -> RequestFormConfiguration:
+    return await _entitlements(request).publish_request_form(_actor(auth), payload)
+
+
+@router.get("/request-form/revisions/{revision}", response_model=RequestFormRevision)
+async def get_request_form_revision(
+    request: Request, auth: Admin, revision: int,
+) -> RequestFormRevision:
+    return await _entitlements(request).request_forms.revision(_actor(auth), revision)
+
+
+@router.post("/request-form/preview", response_model=RequestFormResolution)
+async def preview_request_form(
+    request: Request, auth: Admin, payload: RequestFormPreviewInput,
+) -> RequestFormResolution:
+    return await _entitlements(request).preview_request_form(_actor(auth), payload)
+
+
+@router.get("/access-requests/{request_id}", response_model=AdminAccessRequestDetail)
+async def access_request_detail(
+    request: Request, auth: Admin, request_id: str,
+) -> AdminAccessRequestDetail:
+    return await _entitlements(request).access_request_detail(_actor(auth), request_id)
+
 
 @router.post("/access-requests/{request_id}/approve", response_model=AccessRequest)
 async def approve_access_request(
@@ -1200,6 +1251,25 @@ async def portal_environments(request: Request, auth: PortalUser) -> list[Portal
 @router.get("/portal/access-requests", response_model=list[PortalAccessRequest], tags=["portal"])
 async def portal_access_requests(request: Request, auth: PortalUser) -> list[PortalAccessRequest]:
     return await _portal(request).my_access_requests(_actor(auth))
+
+@router.post(
+    "/portal/access-requests/form", response_model=RequestFormResolution, tags=["portal"],
+)
+async def portal_request_form(
+    request: Request, auth: PortalUser, payload: RequestFormContextInput,
+) -> RequestFormResolution:
+    return await _entitlements(request).resolve_request_form(_actor(auth), payload)
+
+
+@router.get(
+    "/portal/access-requests/{request_id}",
+    response_model=PortalAccessRequestDetail,
+    tags=["portal"],
+)
+async def portal_access_request_detail(
+    request: Request, auth: PortalUser, request_id: str,
+) -> PortalAccessRequestDetail:
+    return await _portal(request).access_request_detail(_actor(auth), request_id)
 
 
 @router.post(

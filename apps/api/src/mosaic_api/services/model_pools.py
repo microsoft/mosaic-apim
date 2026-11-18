@@ -57,6 +57,7 @@ from mosaic_api.domain import (
     PublishRunStatus,
     PublishStepResult,
     PublishStepStatus,
+    ReadinessFreshness,
     RuntimeAccessEvaluation,
     RuntimeAccessReason,
     VerdictLevel,
@@ -66,6 +67,7 @@ from mosaic_api.domain import (
     subject_kind_for,
     utc_now,
 )
+from mosaic_api.endpoint_readiness import readiness_freshness
 from mosaic_api.environments import EnvironmentCatalog, compatibility_fingerprint, permits
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
 from mosaic_api.integrations.access_policy import validate_cloud_access
@@ -462,6 +464,11 @@ def _gateway_readiness(endpoint: ModelEndpoint, gateway_id: str) -> tuple[Readin
     entry = next((item for item in endpoint.runtime_access if item.gateway_id == gateway_id), None)
     if entry is None:
         return "notConfirmed", unconfirmed
+    if readiness_freshness(entry) != ReadinessFreshness.CURRENT:
+        return "notConfirmed", (
+            "The saved gateway access check is not current. Run Check access on the endpoint "
+            "before relying on its recorded result."
+        )
     unevaluated = entry.evaluation == RuntimeAccessEvaluation.NOT_EVALUATED
     if entry.reason is None:
         if unevaluated:

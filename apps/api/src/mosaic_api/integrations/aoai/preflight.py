@@ -9,6 +9,7 @@ itself a role, so when access is missing it reports the exact role, scope, and c
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from mosaic_api.clouds import management_identity_label
@@ -23,6 +24,7 @@ from mosaic_api.domain import (
     ModelEndpointStatus,
     utc_now,
 )
+from mosaic_api.endpoint_readiness import ENDPOINT_READINESS_RULES_REVISION
 from mosaic_api.errors import UpstreamAuthorizationError, UpstreamError, UpstreamNotFoundError
 from mosaic_api.integrations.aoai.client import CognitiveServicesClient
 from mosaic_api.integrations.apim.client import JsonObject
@@ -54,6 +56,7 @@ class EndpointPreflightResult:
     account_name: str | None = None
     endpoint_url: str | None = None
     tags: dict[str, str] | None = None
+    account_read_at: datetime | None = None
 
 
 def least_privilege_role_definition(scope: str) -> dict[str, Any]:
@@ -263,6 +266,7 @@ async def run_endpoint_preflight(
                 can_read=False,
                 evaluation=AccessEvaluation.PROBE,
                 checked_at=checked_at,
+                rules_revision=ENDPOINT_READINESS_RULES_REVISION,
                 missing_actions=list(MODEL_READ_ACTIONS),
                 remediation=build_endpoint_remediation(resource, principal_id=principal_id),
                 message=(
@@ -279,6 +283,7 @@ async def run_endpoint_preflight(
                 can_read=False,
                 evaluation=AccessEvaluation.PROBE,
                 checked_at=checked_at,
+                rules_revision=ENDPOINT_READINESS_RULES_REVISION,
                 message=str(error.message),
             ),
             capabilities=ModelEndpointCapabilities(notes=[str(error.message)]),
@@ -291,6 +296,7 @@ async def run_endpoint_preflight(
                 can_read=False,
                 evaluation=AccessEvaluation.PROBE,
                 checked_at=checked_at,
+                rules_revision=ENDPOINT_READINESS_RULES_REVISION,
                 message=(
                     "No Azure AI resource exists at this resource ID, or it is not visible to "
                     f"{identity_label}."
@@ -312,6 +318,7 @@ async def run_endpoint_preflight(
                 can_read=True,
                 evaluation=AccessEvaluation.PROBE,
                 checked_at=checked_at,
+                rules_revision=ENDPOINT_READINESS_RULES_REVISION,
                 message=(
                     "MOSAIC can read this endpoint. It could not evaluate role assignments, so "
                     "the exact permissions it holds are unconfirmed."
@@ -322,6 +329,7 @@ async def run_endpoint_preflight(
             account_name=resource.account_name,
             endpoint_url=endpoint_url,
             tags=_tags(account),
+            account_read_at=checked_at,
         )
 
     missing = [action for action in MODEL_READ_ACTIONS if not permits(permissions, action)]
@@ -331,6 +339,7 @@ async def run_endpoint_preflight(
                 can_read=False,
                 evaluation=AccessEvaluation.EFFECTIVE_PERMISSIONS,
                 checked_at=checked_at,
+                rules_revision=ENDPOINT_READINESS_RULES_REVISION,
                 missing_actions=missing,
                 remediation=build_endpoint_remediation(resource, principal_id=principal_id),
                 message=(
@@ -343,6 +352,7 @@ async def run_endpoint_preflight(
             account_name=resource.account_name,
             endpoint_url=endpoint_url,
             tags=_tags(account),
+            account_read_at=checked_at,
         )
 
     return EndpointPreflightResult(
@@ -350,6 +360,7 @@ async def run_endpoint_preflight(
             can_read=True,
             evaluation=AccessEvaluation.EFFECTIVE_PERMISSIONS,
             checked_at=checked_at,
+            rules_revision=ENDPOINT_READINESS_RULES_REVISION,
             message="MOSAIC can enumerate models on this endpoint.",
         ),
         capabilities=capabilities,
@@ -357,4 +368,5 @@ async def run_endpoint_preflight(
         account_name=resource.account_name,
         endpoint_url=endpoint_url,
         tags=_tags(account),
+        account_read_at=checked_at,
     )

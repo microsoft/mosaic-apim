@@ -4,7 +4,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { PortalApi } from '../api'
+import { ApiError, type PortalApi } from '../api'
 import type { AccessRequest, CatalogEntry, PortalCostCenter, PortalProfile, ResolvedEntitlement } from '../types'
 import { CatalogPage } from './CatalogPage'
 import { resourceFromCatalog } from '../entitlement-format'
@@ -18,10 +18,8 @@ const mocks = vi.hoisted(() => ({
 
 afterEach(() => vi.restoreAllMocks())
 
-vi.mock('../api', () => ({
-  ApiError: class ApiError extends Error {
-    status = 500
-  },
+vi.mock('../api', async importOriginal => ({
+  ...await importOriginal<typeof import('../api')>(),
   usePortalApi: () => mocks.api,
 }))
 
@@ -169,6 +167,7 @@ function renderPage(entries: CatalogEntry[], requests: AccessRequest[], centers:
       },
     ],
     listAccessRequests: async () => currentRequests,
+    resolveRequestForm: async () => ({ status: 'notRequired', revision: 0, contextRevision: '0'.repeat(64), questions: [] }),
     createAccessRequest,
     withdrawAccessRequest,
     ...overrides,
@@ -193,6 +192,24 @@ async function openAccessOptions(name = 'Weather tools') {
 }
 
 describe('CatalogPage', () => {
+  it('does not reuse cached no-form data after a failed explicit stale-schema reload', async () => {
+    const resolveRequestForm = vi.fn().mockResolvedValue({
+      status: 'notRequired', revision: 0, contextRevision: '0'.repeat(64), questions: [],
+    })
+    const createAccessRequest = vi.fn().mockRejectedValue(new ApiError('A request form is now required.', 409, {
+      details: { reason: 'requestFormRequired' },
+    }))
+    renderPage([catalogEntry], [], costCenters, {}, [], { resolveRequestForm, createAccessRequest })
+    await openAccessOptions()
+    await userEvent.type(await screen.findByRole('textbox', { name: /Justification for/ }), 'Retain this optional note.')
+    await userEvent.click(screen.getByRole('button', { name: 'Request access' }))
+    await screen.findByText('A request form is now required.')
+    resolveRequestForm.mockRejectedValueOnce(new Error('Form lookup unavailable.'))
+    await userEvent.click(screen.getByRole('button', { name: 'Reload current request questions' }))
+    await screen.findByText('Form lookup unavailable.')
+    expect(screen.queryByRole('button', { name: 'Request access' })).not.toBeInTheDocument()
+    expect(createAccessRequest).toHaveBeenCalledOnce()
+  })
   it('shows only the selected offering summary as plain text and can find it through search', async () => {
     const user = userEvent.setup()
     const first: CatalogEntry = { ...servedModelEntry,
@@ -262,6 +279,7 @@ describe('CatalogPage', () => {
     await waitFor(() => expect(createAccessRequest).toHaveBeenCalledWith({
       resource: { kind: 'poolModel', id: second.id, scopeId: 'other-pool' },
       costCenterId: 'cc-general', justification: undefined,
+      requestForm: { revision: 0, contextRevision: '0'.repeat(64), answers: [] },
     }))
   })
 
@@ -305,6 +323,7 @@ describe('CatalogPage', () => {
       resource: { kind: 'mcpServer', id: 'mcp-weather', scopeId: null },
       costCenterId: 'cc-research',
       justification: undefined,
+      requestForm: { revision: 0, contextRevision: '0'.repeat(64), answers: [] },
     })
   })
 
@@ -403,6 +422,7 @@ describe('CatalogPage', () => {
       resource: { kind: 'mcpServer', id: 'mcp-weather', scopeId: null },
       costCenterId: 'cc-general',
       justification: undefined,
+      requestForm: { revision: 0, contextRevision: '0'.repeat(64), answers: [] },
     }))
   })
 
@@ -520,6 +540,7 @@ describe('CatalogPage', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Request access' }))
     await waitFor(() => expect(createAccessRequest).toHaveBeenCalledWith({
       resource: { kind: 'poolModel', id: first.id, scopeId: 'other-pool' }, costCenterId: 'cc-general', justification: undefined,
+      requestForm: { revision: 0, contextRevision: '0'.repeat(64), answers: [] },
     }))
   })
 
@@ -634,6 +655,7 @@ describe('CatalogPage', () => {
       resource: { kind: 'poolModel', id: 'pool_model_opus', scopeId: 'pool_anthropic' },
       costCenterId: 'cc-general',
       justification: undefined,
+      requestForm: { revision: 0, contextRevision: '0'.repeat(64), answers: [] },
     }))
   })
 

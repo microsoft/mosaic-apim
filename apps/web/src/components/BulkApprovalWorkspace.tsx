@@ -1,13 +1,14 @@
 import { Badge, Button, Checkbox, Field, Input, MessageBar, MessageBarBody, Select, Text, Title3 } from '@fluentui/react-components'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { useMemo, useRef, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link as RouterLink } from 'react-router-dom'
 import { useMosaicApi } from '../api'
 import type { AiApprovalRecommendation, ApprovalPreview, BulkApprovalInput, BulkApprovalItemResult } from '../admin-types'
 import type { CostCenter, Principal } from '../types'
 import { requesterDisplay } from '../requester-display'
 import { AccessRequestRequester } from './AccessRequestRequester'
-import { buildEnforcement, callOnlyLimitForm, copyLimitForm, describeLimits, emptyLimitForm, hasLimitValues, type LimitForm } from '../entitlement-limits'
+import { RequestFormAnswers } from './RequestFormAnswers'
+import { buildEnforcement, callOnlyLimitForm, copyLimitForm, describeLimits, emptyLimitForm, hasLimitValues, limitFormFromPerson, personLimitsFor, type LimitForm } from '../entitlement-limits'
 import { ErrorState, Loading } from './AsyncState'
 import { PolicyCapabilityFeedback } from './PolicyCapabilityFeedback'
 import { LimitFields } from './GovernanceFields'
@@ -20,6 +21,21 @@ function initialDraft(item: ApprovalPreview): ItemDraft {
   return { included: item.blockers.length === 0 && !item.mutationLocked, explicitLimits: false, limits: { ...emptyLimitForm }, costCenterId: item.effectiveCostCenterId ?? '', note: '', confirmedMove: false }
 }
 function moved(item: ApprovalPreview) { return (item.request.requestedEnvironment ?? null) !== (item.currentEnvironment ?? null) }
+function targetCenterId(item: ApprovalPreview, draft: ItemDraft) {
+  return draft.costCenterId || item.request.costCenterId || item.effectiveCostCenterId
+}
+function inheritedLimits(item: ApprovalPreview, draft: ItemDraft, costCenters: CostCenter[]) {
+  const centerId = targetCenterId(item, draft)
+  if (centerId === (item.effectiveCostCenterId ?? item.request.costCenterId)) {
+    return item.effectiveEnforcement ?? null
+  }
+  const center = costCenters.find(value => value.id === centerId)
+  if (center) {
+    const person = personLimitsFor(center, item.request.resource)
+    return person ? buildEnforcement(limitFormFromPerson(person), true) : null
+  }
+  return undefined
+}
 export function RecommendationEvidence({ value, contextRevision }: { value: AiApprovalRecommendation; contextRevision: string }) {
   const stale = value.context.contextRevision !== contextRevision || new Date(value.expiresAt).getTime() <= Date.now()
   return <section className={styles.evidenceSection} aria-label="AI advisory evidence">
@@ -51,6 +67,8 @@ export function BulkApprovalWorkspace({ requestIds, principals, principalsPendin
 }) {
   const api = useMosaicApi()
   const [ids, setIds] = useState(requestIds)
+  const [step, setStep] = useState(0)
+  const stepHeading = useRef<HTMLHeadingElement>(null)
   const preview = useQuery({ queryKey: ['bulk-approval-preview', ids], queryFn: () => api.previewBulkApprovals(ids), retry: false, staleTime: 0, refetchOnWindowFocus: false, refetchOnReconnect: false })
   const [drafts, setDrafts] = useState<Record<string, ItemDraft>>({})
   const [shared, setShared] = useState<LimitForm>({ ...emptyLimitForm })
@@ -63,6 +81,8 @@ export function BulkApprovalWorkspace({ requestIds, principals, principalsPendin
   })
   const execute = useMutation({ mutationFn: (body: BulkApprovalInput) => api.approveBulkRequests(body), onSuccess: value => { setResults(value.items); retryPayload.current = null; onComplete() } })
   const items = preview.data?.items ?? []
+  const guided = items.some(item => Boolean(item.request.requestForm))
+  useLayoutEffect(() => { if (guided) stepHeading.current?.focus() }, [step, guided])
   const draftFor = (item: ApprovalPreview) => drafts[item.request.id] ?? initialDraft(item)
   const update = (item: ApprovalPreview, change: Partial<ItemDraft>) => {
     retryPayload.current = null
@@ -74,13 +94,16 @@ export function BulkApprovalWorkspace({ requestIds, principals, principalsPendin
   const compatible = selected.length > 0 && new Set(selected.map(item => item.request.resource.kind === 'mcpServer' ? 'mcp' : 'model')).size === 1
   const invalid = selected.some(item => {
     const draft = draftFor(item)
-    return item.blockers.length > 0 || item.mutationLocked || (moved(item) && !draft.confirmedMove) || (draft.explicitLimits && (limitInputError(draft.limits) || !hasLimitValues(draft.limits)))
+    return item.blockers.length > 0 || item.mutationLocked || (moved(item) && !draft.confirmedMove) ||
+      (guided && !draft.explicitLimits && inheritedLimits(item, draft, costCenters) === undefined) ||
+      (draft.explicitLimits && (limitInputError(draft.limits) || !hasLimitValues(draft.limits)))
   })
   const outcomes = useMemo(() => results ? {
     approved: results.filter(i => i.status === 'approved').length, existing: results.filter(i => i.status === 'alreadyApproved').length, unresolved: unresolvedRequestIds(results),
   } : null, [results])
   function approve() {
     if (!selected.length || invalid) return
+    if (guided && step !== 2) return
     const body = retryPayload.current ?? {
       idempotencyKey: crypto.randomUUID(),
       items: selected.map(item => {
@@ -99,7 +122,7 @@ export function BulkApprovalWorkspace({ requestIds, principals, principalsPendin
   function reviewUnresolved() {
     const unresolved = outcomes?.unresolved ?? []
     if (!unresolved.length) return
-    setIds(unresolved); setResults(null); setDrafts({}); setRecommendations({}); execute.reset()
+    setIds(unresolved); setResults(null); setDrafts({}); setRecommendations({}); setStep(0); execute.reset()
     if (JSON.stringify(unresolved) === JSON.stringify(ids)) void preview.refetch()
   }
   return <WorkspaceEditorFrame title={results ? 'Bulk approval results' : 'Review bulk approvals'} onBack={onBack}
@@ -108,7 +131,11 @@ export function BulkApprovalWorkspace({ requestIds, principals, principalsPendin
     pendingLabel="Approving independently — successful items will not be rolled back"
     errorKey={execute.submittedAt}
     error={execute.error ? <PolicyCapabilityFeedback title="Unable to approve selected requests" error={execute.error} /> : undefined}
-    primaryAction={!results ? { label: `Approve ${selected.length} selected`, onClick: approve, disabled: !preview.isSuccess || !selected.length || Boolean(invalid) } : undefined}>
+    primaryAction={!results ? {
+      label: guided && step < 2 ? step === 0 ? 'Next: Grant settings' : 'Next: Confirm' : `Approve ${selected.length} selected`,
+      onClick: guided && step < 2 ? () => setStep(step + 1) : approve,
+      disabled: !preview.isSuccess || !selected.length || (guided && step === 0 ? false : Boolean(invalid)),
+    } : undefined}>
     <div className={styles.stack}>
       {preview.isPending && <Loading label="Checking current request context and inherited limits" />}
       {preview.isError && <><ErrorState error={preview.error} /><Button onClick={() => void preview.refetch()}>Retry preview</Button></>}
@@ -125,9 +152,16 @@ export function BulkApprovalWorkspace({ requestIds, principals, principalsPendin
         </section>)}
         {outcomes.unresolved.length > 0 && <Button appearance="primary" onClick={reviewUnresolved}>Review unresolved requests only</Button>}
       </> : <>
+        {guided && <>
+          <ol className="governance-steps" aria-label="Bulk approval steps">
+            {['Evidence', 'Grant', 'Confirm'].map((label, index) => <li key={label} aria-current={step === index ? 'step' : undefined}>{index + 1}. {label}</li>)}
+          </ol>
+          <h3 ref={stepHeading} tabIndex={-1}>{['Review recorded evidence', 'Review grant settings', 'Confirm independent grant intents'][step]}</h3>
+          {step > 0 && <Button onClick={() => setStep(step - 1)}>Previous step</Button>}
+        </>}
         {execute.isError && <Text>Outcome unknown after a network failure? Retry unchanged to reuse the same idempotency key. Do not resubmit successful items as a new batch.</Text>}
         <Text>AI evidence is advisory only. Generating a recommendation makes a governed model call charged to its dedicated grant and cost center; it never makes the approval decision.</Text>
-        <section className={styles.section}>
+        <section className={styles.section} hidden={guided && step !== 1}>
           <Title3 as="h3">Compatible shared limits</Title3>
           <Text>Shared limits are explicit overrides for included requests only. Heterogeneous model and MCP selections cannot share token settings.</Text>
           <LimitFields value={sharedLimits} onChange={setShared} mcp={sharedMcp}
@@ -139,13 +173,18 @@ export function BulkApprovalWorkspace({ requestIds, principals, principalsPendin
         {items.map(item => {
           const draft = draftFor(item)
           const requester = requesterDisplay(item.request, principals)
+          const centerId = targetCenterId(item, draft)
+          const defaultsUnavailable = guided && !draft.explicitLimits &&
+            inheritedLimits(item, draft, costCenters) === undefined
           return <section key={item.request.id} className={styles.section} aria-label={`Review ${item.resourceSummary?.displayName ?? 'request'}`}>
             <div className={styles.toolbar}>
-              <Checkbox label={`Include ${item.resourceSummary?.displayName ?? 'request'}`} checked={draft.included} disabled={item.blockers.length > 0 || item.mutationLocked} onChange={(_, d) => update(item, { included: Boolean(d.checked) })} />
+              <Checkbox label={`Include ${item.resourceSummary?.displayName ?? 'request'}`} checked={draft.included} disabled={item.blockers.length > 0 || item.mutationLocked || guided && step === 2} onChange={(_, d) => update(item, { included: Boolean(d.checked) })} />
               <Badge appearance="outline">{item.production ? 'Production' : item.currentEnvironment ?? 'Unclassified'}</Badge>
             </div>
             <dl className={styles.facts}>
               <div><dt>Requester</dt><dd><AccessRequestRequester requester={requester} showRegistrationEffect registrationPending={principalsPending} /></dd></div>
+            </dl>
+            <div hidden={guided && step !== 0}><dl className={styles.facts}>
               <div><dt>Resource</dt><dd>{item.resourceSummary?.displayName ?? item.request.resourceSnapshot?.displayName ?? 'Resource unavailable'}</dd></div>
               <div><dt>Environment</dt><dd>Requested: {item.request.requestedEnvironment ?? 'Unclassified'} · current: {item.currentEnvironment ?? 'Unclassified'}</dd></div>
               <div><dt>Justification</dt><dd>{item.request.justification ?? 'None supplied'}</dd></div>
@@ -153,7 +192,11 @@ export function BulkApprovalWorkspace({ requestIds, principals, principalsPendin
               <div><dt>Existing grant</dt><dd>{item.existingEntitlementId ?? 'No existing grant reported'}</dd></div>
               <div><dt>Mutation lock</dt><dd>{item.mutationLocked ? 'Locked — recover or finish the current apply first' : 'Not locked at preview'}</dd></div>
             </dl>
+            {item.request.requestForm && <RequestFormAnswers form={item.request.requestForm} />}
+            </div>
             {item.blockers.map((b, i) => <MessageBar key={`${b.code}-${i}`} intent="error"><MessageBarBody>{b.message} {b.nextAction}</MessageBarBody></MessageBar>)}
+            {defaultsUnavailable && <Text role="alert">The selected cost-center defaults are unavailable. Choose a loaded center in Grant settings, or return to the request list and reload before approving.</Text>}
+            <div className={styles.stack} hidden={guided && step !== 1}>
             <div className={styles.form}>
               <Field label="Charged cost center" hint="Changing the cost center revalidates eligibility and inherited limits during execution.">
                 <Select value={draft.costCenterId} onChange={(_, d) => update(item, { costCenterId: d.value })}><option value="">Requester default</option>{costCenters.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</Select>
@@ -166,9 +209,22 @@ export function BulkApprovalWorkspace({ requestIds, principals, principalsPendin
               showSourceChoice={false} requireLimit reviewLimits={item.effectiveEnforcement}
               reviewLabel={item.limitsSource === 'costCenter' ? 'Inherited cost-center per-person limits' : item.limitsSource === 'unrestricted' ? 'No grant-specific restriction' : 'Current explicit limits'} />}
             {draft.explicitLimits && !hasLimitValues(draft.limits) && <Text>Enter a positive limit, or turn off the override to retain inherited defaults.</Text>}
+            </div>
+            {guided && step === 2 && <dl className={styles.facts}>
+              <div><dt>Resource</dt><dd>{item.resourceSummary?.displayName ?? 'Recorded resource'}</dd></div>
+              <div><dt>Charged cost center</dt><dd>{costCenters.find(center => center.id === centerId)?.name ?? centerId ?? 'Requester default (revalidated)'}</dd></div>
+              <div><dt>Effective grant limits</dt><dd>{defaultsUnavailable ? 'Cost-center defaults unavailable.' : describeLimits({ enforcement: draft.explicitLimits
+                ? buildEnforcement(item.request.resource.kind === 'mcpServer' ? callOnlyLimitForm(draft.limits) : draft.limits, true)
+                : inheritedLimits(item, draft, costCenters) }).join(' ')}</dd></div>
+              <div><dt>Effect</dt><dd>Independent grant intent only. Shared safeguards and separate gateway review/apply remain.</dd></div>
+              {draft.note && <div><dt>Approval note</dt><dd>{draft.note}</dd></div>}
+            </dl>}
+            <div className={styles.stack} hidden={guided && step !== 0}>
+            {item.request.requestForm && <Text block>Structured answers are not included in AI evidence. Review them yourself; AI is advisory only.</Text>}
             <Button disabled={ai.isPending} onClick={() => ai.mutate(item.request.id)}>Generate advisory recommendation</Button>
             {ai.data?.filter(r => r.requestId === item.request.id && r.blocker).map(r => <Text key={r.requestId}>{r.blocker!.message} {r.blocker!.nextAction}</Text>)}
             <RequestRecommendation requestId={item.request.id} contextRevision={item.revision.contextRevision} generated={recommendations[item.request.id]} />
+            </div>
           </section>
         })}
         {ai.isError && <ErrorState error={ai.error} />}

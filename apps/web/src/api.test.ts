@@ -17,6 +17,23 @@ describe('useMosaicApi', () => {
     vi.unstubAllGlobals()
   })
 
+  it('keeps saved endpoint runtime GET separate from an explicit POST access check', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('[]', { status: 200 }))
+      .mockResolvedValueOnce(new Response('{"id":"endpoint_1"}', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useMosaicApi())
+
+    await result.current.getModelEndpointRuntimeAccess('endpoint_1')
+    await result.current.preflightModelEndpoint('endpoint_1')
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/model-endpoints/endpoint_1/runtime-access')
+    expect(fetchMock.mock.calls[0][1].method).toBe('GET')
+    expect(String(fetchMock.mock.calls[1][0])).toContain('/model-endpoints/endpoint_1/preflight')
+    expect(fetchMock.mock.calls[1][1].method).toBe('POST')
+  })
+
   it('reads policy support for the exact encoded pool scope without a caller shape hint', async () => {
     const body = {
       gatewayId: 'gateway/one', skuName: null, tier: 'unknown', apiShape: null,

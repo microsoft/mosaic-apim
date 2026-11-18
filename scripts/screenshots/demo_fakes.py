@@ -71,6 +71,7 @@ __all__ = [
     "KEY_VAULT_ID",
     "LOG_WORKSPACE_ID",
     "PARTNER_GATEWAY_RESOURCE_ID",
+    "UNCONFIRMED_AI_RESOURCE_ID",
     "DemoApim",
     "DemoBotTokens",
     "DemoCognitiveAccount",
@@ -214,6 +215,10 @@ FOUNDRY_NORTH_CENTRAL_RESOURCE_ID = (
 FOUNDRY_WEST_RESOURCE_ID = (
     f"/subscriptions/{AI_SUBSCRIPTION_ID}/resourceGroups/rg-contoso-ai"
     "/providers/Microsoft.CognitiveServices/accounts/contoso-foundry-west"
+)
+UNCONFIRMED_AI_RESOURCE_ID = (
+    f"/subscriptions/{AI_SUBSCRIPTION_ID}/resourceGroups/rg-contoso-ai"
+    "/providers/Microsoft.CognitiveServices/accounts/contoso-evidence-lab"
 )
 
 _POLICY_TAIL = """
@@ -1108,6 +1113,7 @@ class DemoCognitiveAccount(FakeDeploymentServices):
         models: list[dict[str, Any]],
         runtime_role_id: str,
         location: str = "eastus2",
+        account_status: int = 200,
     ) -> None:
         super().__init__()
         self.kind = kind
@@ -1115,6 +1121,7 @@ class DemoCognitiveAccount(FakeDeploymentServices):
         self.account_name = resource_id.rsplit("/", 1)[-1]
         self.endpoint = endpoint
         self.location = location
+        self.account_status = account_status
         self.deployments = deployments
         self.models = models
         for usage in self.usages:
@@ -1214,6 +1221,15 @@ def build_cognitive_accounts() -> list[DemoCognitiveAccount]:
             models=FOUNDRY_MODELS,
             runtime_role_id=COGNITIVE_SERVICES_USER_ROLE_ID,
             location="westus3",
+        ),
+        DemoCognitiveAccount(
+            resource_id=UNCONFIRMED_AI_RESOURCE_ID,
+            kind="OpenAI",
+            endpoint="https://contoso-evidence-lab.openai.azure.com/",
+            deployments=[],
+            models=[],
+            runtime_role_id=AZURE_OPENAI_USER_ROLE_ID,
+            account_status=403,
         ),
         # Last: requests no account owns, such as a subscription scan, fall back to it.
         DemoCognitiveAccount(

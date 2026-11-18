@@ -10,7 +10,15 @@ from typing import Any
 import pytest
 from aoai_double import AI_RESOURCE_ID, OMITTED, FakeCognitiveServices
 from conftest import build_aoai_arm_client
-from mosaic_api.domain import CognitiveServicesResourceId, ModelEndpointCapabilities
+from mosaic_api.domain import (
+    CognitiveServicesResourceId,
+    EndpointAccess,
+    ModelEndpointCapabilities,
+)
+from mosaic_api.endpoint_readiness import (
+    ENDPOINT_READINESS_RULES_REVISION,
+    endpoint_access_view,
+)
 from mosaic_api.integrations.aoai import CognitiveServicesClient, run_endpoint_preflight
 from mosaic_api.integrations.aoai.preflight import _capabilities
 
@@ -91,3 +99,37 @@ def test_an_empty_properties_object_means_keys_are_enabled() -> None:
 
     assert capabilities.local_auth_disabled is False
     assert KEY_AUTH_NOTE in capabilities.notes
+
+
+@pytest.mark.parametrize(
+    ("fields", "expected"),
+    [
+        ({}, "neverChecked"),
+        ({"message": "A legacy attempted check has no timestamp"}, "stale"),
+        ({"evaluation": "probe", "canRead": True}, "stale"),
+        ({"checkedAt": "2026-01-01T00:00:00Z"}, "stale"),
+        ({"checkedAt": "2026-01-01T00:00:00Z", "rulesRevision": "previous"}, "stale"),
+        ({"checkedAt": "2026-01-01T00:00:00Z", "rulesRevision": "future/99"}, "stale"),
+        (
+            {
+                "checkedAt": "2026-01-01T00:00:00Z",
+                "rulesRevision": ENDPOINT_READINESS_RULES_REVISION,
+            },
+            "current",
+        ),
+    ],
+)
+def test_readiness_projection_never_upgrades_legacy_evidence(
+    fields: dict[str, Any], expected: str
+) -> None:
+    access = EndpointAccess.model_validate(fields)
+    before = access.model_dump()
+
+    view = endpoint_access_view(access)
+
+    assert view.freshness == expected
+    assert view.current_rules_revision == ENDPOINT_READINESS_RULES_REVISION
+    assert access.model_dump() == before
+    assert "freshness" not in before
+    if "rulesRevision" not in fields:
+        assert "rulesRevision" not in before

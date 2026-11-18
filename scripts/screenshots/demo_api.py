@@ -99,6 +99,10 @@ from mosaic_api.domain import (
     PublicationStatus,
     PublishRunStatus,
     RequestEnforcement,
+    RequestFormContextInput,
+    RequestFormDefinition,
+    RequestFormPublishInput,
+    RequestFormSubmission,
     TokenEnforcement,
     deterministic_id,
     entitlement_id,
@@ -159,7 +163,11 @@ from mosaic_api.pricing import (
     PriceCreate,
     PriceMatch,
 )
-from mosaic_api.repositories import GatewayRepository, InMemoryEntitlementRepository
+from mosaic_api.repositories import (
+    GatewayRepository,
+    InMemoryEntitlementRepository,
+    ModelEndpointRepository,
+)
 from mosaic_api.services import (
     DirectoryService,
     EntitlementService,
@@ -206,6 +214,7 @@ from scripts.screenshots.demo_fakes import (
     GOV_GATEWAY_RESOURCE_ID,
     KEY_VAULT_ID,
     PARTNER_GATEWAY_RESOURCE_ID,
+    UNCONFIRMED_AI_RESOURCE_ID,
     DemoApim,
     DemoBotTokens,
     DemoLogs,
@@ -717,6 +726,7 @@ class DemoServices:
     # The seed dates its grants in the past, which only the in-memory store lets it do.
     entitlement_repository: InMemoryEntitlementRepository
     gateway_repository: GatewayRepository
+    endpoint_repository: ModelEndpointRepository
     logs: DemoLogs
     telemetry: TelemetryService
     usage_rollups: UsageRollupService
@@ -1073,6 +1083,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         entitlement_repository=entitlement_repository,
         gateway_repository=state.gateway_repository,
         logs=logs,
+        endpoint_repository=state.model_endpoint_repository,
         telemetry=telemetry,
         usage_rollups=usage_rollups,
         pricing=pricing,
@@ -1696,6 +1707,33 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     for endpoint in (aoai, foundry, foundry_north_central, foundry_west):
         _require_synced(await services.endpoints.sync_now(admin, endpoint.id), endpoint.name)
 
+    unconfirmed = await services.endpoints.register(
+        admin,
+        ModelEndpointCreate(
+            azure_resource_id=UNCONFIRMED_AI_RESOURCE_ID,
+            name="Contoso AI Lab",
+            environment="development",
+        ),
+    )
+    # A fictional persisted result from an earlier ruleset, not a current evaluator output.
+    historical_stamp = {
+        "rules_revision": "model-endpoint-readiness/0",
+        "checked_at": utc_now() - timedelta(days=30),
+    }
+    await services.endpoint_repository.save_endpoint(
+        unconfirmed.model_copy(update={
+            "access": unconfirmed.access.model_copy(update=historical_stamp),
+            "runtime_access": [
+                row.model_copy(update=historical_stamp) for row in unconfirmed.runtime_access
+            ],
+        }),
+        AuditEvent(
+            id=deterministic_id("audit", tenant_id, "endpoint-evidence"), tenant_id=tenant_id,
+            action="demo.historicalEndpointEvidence", resource_type="modelEndpoint",
+            resource_id=unconfirmed.id, actor_object_id=admin.object_id,
+        ),
+    )
+
     # A partner's Foundry resource in its own Microsoft Entra tenant, which MOSAIC's managed
     # identity can't reach. It is registered by URL with its API key, which MOSAIC keeps in the
     # demo's Key Vault (ADR 0021), and its deployments are declared, because a key can't list them
@@ -2289,6 +2327,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         cost_center: str | None = None,
         capture_identity: bool = True,
         captured_name: str | None = None,
+        form_submission: RequestFormSubmission | None = None,
     ) -> str:
         group_ids = {
             group_id
@@ -2315,6 +2354,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
                 ),
                 justification=justification,
                 cost_center_id=estate.cost_centers[cost_center] if cost_center else None,
+                request_form=form_submission,
             ),
         )
         return created.id
@@ -2365,20 +2405,6 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
                 requests=_calls(per_window=30, window_seconds=60)
             ),
         ),
-    )
-    await request_access(
-        PORTAL_USER,
-        "modelApi",
-        estate.model_apis["foundry-inference"],
-        "Taking the claims summarization prototype to production.",
-        cost_center="general",
-    )
-    await request_access(
-        ISAIAH,
-        "modelApi",
-        gpt4o_mini,
-        "Prototype for customer email triage.",
-        cost_center="general",
     )
     await request_access(
         LIDIA,
@@ -2592,6 +2618,80 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
             source_url="https://contoso.example/agreements/government-demo",
             note="Fictional demo-only Government contract rate, not an Azure price quote.",
         ),
+    )
+    # Create all legacy estate requests before enabling questions, then use real admission for
+    # these two explicitly configured examples. No global required form or synthesized answers.
+    form_scope = {
+        "resourceKinds": ["modelApi"],
+        "resources": [
+            {"kind": "modelApi", "id": estate.model_apis["foundry-inference"]},
+            {"kind": "modelApi", "id": gpt4o_mini},
+        ],
+        "environments": ["production"],
+    }
+    form = RequestFormDefinition.model_validate({
+        "questions": [
+            {"id": "intended-use", "kind": "paragraph", "label": "Intended use",
+             "helpText": "Describe the application without code, secrets or datasets.",
+             "required": True, "scope": form_scope},
+            {"id": "data-class", "kind": "singleChoice", "label": "Data class",
+             "required": True, "scope": form_scope, "options": [
+                 {"id": "synthetic", "label": "Public / synthetic"},
+                 {"id": "internal", "label": "Internal"},
+                 {"id": "unsure", "label": "Unsure - needs review"},
+             ]},
+            {"id": "charge-reference", "kind": "shortText", "label": "Charge reference",
+             "helpText": "Informational only. The selected cost center remains authoritative.",
+             "maxLength": 128, "scope": form_scope},
+            {"id": "data-policy", "kind": "acknowledgment",
+             "label": "I will follow the organization's data policy.",
+             "required": True, "scope": form_scope},
+        ],
+    })
+    await services.entitlements.publish_request_form(
+        admin, RequestFormPublishInput(expected_revision=0, definition=form)
+    )
+    form.questions[0].help_text = "Describe intended usage at a high level. No sensitive code."
+    await services.entitlements.publish_request_form(
+        admin, RequestFormPublishInput(expected_revision=1, definition=form)
+    )
+    form = form.model_copy(update={"enabled": True}, deep=True)
+    await services.entitlements.publish_request_form(
+        admin, RequestFormPublishInput(
+            expected_revision=2, definition=form, enable_confirmed=True
+        )
+    )
+    for person, resource_id, purpose, justification in (
+        (PORTAL_USER, estate.model_apis["foundry-inference"],
+         "Summarize synthetic claims for a fictional demonstration assistant.",
+         "Taking the claims summarization prototype to production."),
+        (ISAIAH, gpt4o_mini,
+         "Evaluate email triage using only generated fictional messages.",
+         "Prototype for customer email triage."),
+    ):
+        resolved = await services.entitlements.resolve_request_form(
+            Actor(person.object_id, tenant_id),
+            RequestFormContextInput(
+                resource=EntitlementResource(kind="modelApi", id=resource_id),
+                cost_center_id=estate.cost_centers["general"],
+            ),
+        )
+        await request_access(
+            person, "modelApi", resource_id, justification, cost_center="general",
+            form_submission=RequestFormSubmission.model_validate({
+                "revision": resolved.revision, "contextRevision": resolved.context_revision,
+                "answers": [
+                    {"questionId": "intended-use", "value": purpose},
+                    {"questionId": "data-class", "value": "synthetic"},
+                    {"questionId": "charge-reference", "value": "DEMO-167"},
+                    {"questionId": "data-policy", "value": True},
+                ],
+            }),
+        )
+    revised_form = form.model_copy(deep=True)
+    revised_form.questions[0].label = "Intended usage"
+    await services.entitlements.publish_request_form(
+        admin, RequestFormPublishInput(expected_revision=3, definition=revised_form)
     )
     return estate
 

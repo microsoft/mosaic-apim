@@ -1,6 +1,7 @@
 """Model endpoint onboarding: access verification, discovery, and runtime readiness."""
 
 import asyncio
+from datetime import timedelta
 
 import pytest
 from aoai_double import (
@@ -25,8 +26,10 @@ from mosaic_api.domain import (
     READER_ROLE_ID,
     READER_ROLE_NAME,
     AccessEvaluation,
+    AuditEvent,
     CognitiveServicesResourceId,
     EndpointAuthMode,
+    EndpointDetailEvidence,
     EntitlementSubject,
     EntitlementSubjectKind,
     Gateway,
@@ -54,9 +57,11 @@ from mosaic_api.domain import (
     new_id,
     utc_now,
 )
+from mosaic_api.endpoint_readiness import ENDPOINT_READINESS_RULES_REVISION
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
 from mosaic_api.integrations.aoai.client import SubscriptionScanner
 from mosaic_api.observed import AiBackendKind, ObservedBackend
+from mosaic_api.pricing import deployment_facts
 from mosaic_api.repositories import InMemoryGatewayRepository, InMemoryModelEndpointRepository
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.model_endpoints import (
@@ -131,6 +136,82 @@ class TestResourceId:
 
 
 class TestRegistration:
+    async def test_unreadable_registration_records_placeholder_provenance(self) -> None:
+        fake = FakeCognitiveServices(account_status=403)
+        endpoint = await build_endpoint_service(fake).register(ACTOR, _create())
+
+        assert endpoint.detail_evidence == EndpointDetailEvidence(
+            endpoint_source="resourceIdPlaceholder", provider_source="default"
+        )
+        assert endpoint.access.rules_revision == ENDPOINT_READINESS_RULES_REVISION
+        assert endpoint.detail_evidence.account_read_at is None
+
+    async def test_failed_check_preserves_confirmed_facts_and_pricing(self) -> None:
+        fake = FakeCognitiveServices()
+        service = build_endpoint_service(fake)
+        endpoint = await service.register(ACTOR, _create())
+        assert endpoint.detail_evidence is not None
+        assert endpoint.detail_evidence.provider_source == "accountKind"
+        assert endpoint.detail_evidence.endpoint_source == "account"
+        assert endpoint.detail_evidence.account_read_at is not None
+        before = deployment_facts(endpoint)
+        fake.account_status = 403
+
+        checked = await service.preflight(ACTOR, endpoint.id)
+
+        assert checked.access.can_read is False
+        assert checked.provider == ModelProvider.AZURE_OPENAI
+        assert checked.endpoint == endpoint.endpoint
+        assert checked.detail_evidence == endpoint.detail_evidence
+        assert checked.capabilities == endpoint.capabilities
+        assert deployment_facts(checked) == before
+
+    async def test_account_read_confirms_facts_without_model_list_permission(self) -> None:
+        service = build_endpoint_service(FakeCognitiveServices(permissions=PARTIAL_PERMISSIONS))
+        endpoint = await service.register(ACTOR, _create())
+
+        assert endpoint.access.can_read is False
+        assert endpoint.detail_evidence is not None
+        assert endpoint.detail_evidence.provider_confirmed_at is not None
+        assert endpoint.detail_evidence.endpoint_confirmed_at is not None
+
+    async def test_host_inference_is_not_account_kind_confirmation(self) -> None:
+        endpoint = await build_endpoint_service(
+            FakeCognitiveServices(kind="Unrecognized")
+        ).register(ACTOR, _create())
+
+        assert endpoint.detail_evidence is not None
+        assert endpoint.detail_evidence.account_read_at is not None
+        assert endpoint.detail_evidence.endpoint_confirmed_at is not None
+        assert endpoint.detail_evidence.provider_source == "urlInference"
+        assert endpoint.detail_evidence.provider_confirmed_at is None
+
+    @pytest.mark.parametrize("unreadable", [False, True])
+    async def test_runtime_does_not_promote_inferred_or_historical_kind_to_fresh_evidence(
+        self, gateway_repository: InMemoryGatewayRepository, unreadable: bool
+    ) -> None:
+        gateway = _gateway()
+        gateway_repository.gateways[gateway.id] = gateway
+        fake = FakeCognitiveServices()
+        fake.role_assignments.append(role_assignment(
+            COGNITIVE_SERVICES_USER_ROLE_ID, AI_RESOURCE_ID, APIM_PRINCIPAL_ID
+        ))
+        service = build_endpoint_service(fake, gateway_repository=gateway_repository)
+        endpoint = await service.register(ACTOR, _create())
+        assert endpoint.runtime_access[0].can_invoke is True
+        if unreadable:
+            fake.account_status = 403
+        else:
+            fake.kind = "Unrecognized"
+
+        checked = await service.preflight(ACTOR, endpoint.id)
+
+        assert checked.runtime_access[0].can_invoke is False
+        assert checked.runtime_access[0].evaluation == RuntimeAccessEvaluation.NOT_EVALUATED
+        assert checked.runtime_access[0].rules_revision == ENDPOINT_READINESS_RULES_REVISION
+        if unreadable:
+            assert checked.capabilities.kind == "OpenAI"
+
     @pytest.mark.asyncio
     async def test_registers_and_preflights(
         self, endpoint_service, fake_aoai: FakeCognitiveServices
@@ -350,6 +431,8 @@ class TestKeyBasedEndpoints:
         assert endpoint.auth_mode == EndpointAuthMode.API_KEY
         assert endpoint.provider == ModelProvider.OPENAI_COMPATIBLE
         assert endpoint.credential_reference_id is not None
+        assert endpoint.detail_evidence is not None
+        assert endpoint.detail_evidence.provider_source == "urlInference"
 
     @pytest.mark.asyncio
     async def test_serialised_endpoint_never_carries_a_secret(self, endpoint_service) -> None:
@@ -598,6 +681,38 @@ class TestDiscovery:
 
 
 class TestGatewayRuntimeAccess:
+    async def test_explicit_preflight_clears_removed_gateway_results(
+        self, endpoint_service, gateway_repository: InMemoryGatewayRepository,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        gateway = _gateway()
+        await gateway_repository.record_gateway_state(gateway)
+        endpoint = await endpoint_service.register(ACTOR, _create())
+        assert len(endpoint.runtime_access) == 1
+        previous_check = endpoint.runtime_access[0].checked_at
+        assert previous_check is not None
+        await gateway_repository.delete_gateway(
+            gateway,
+            AuditEvent(
+                id=new_id("audit"), tenant_id=ACTOR.tenant_id,
+                action="gateway.removed", resource_type="gateway", resource_id=gateway.id,
+                actor_object_id=ACTOR.object_id,
+            ),
+        )
+        assert await gateway_repository.list_gateways(ACTOR.tenant_id) == []
+        next_check = previous_check + timedelta(seconds=1)
+        monkeypatch.setattr(
+            "mosaic_api.integrations.aoai.preflight.utc_now", lambda: next_check
+        )
+
+        checked = await endpoint_service.preflight(ACTOR, endpoint.id)
+
+        assert checked.access.checked_at is not None
+        assert checked.access.checked_at > previous_check
+        assert checked.runtime_access == []
+        assert await endpoint_service.runtime_access(ACTOR, endpoint.id) == []
+        assert (await endpoint_service.get_endpoint(ACTOR, endpoint.id)).runtime_access == []
+
     @pytest.mark.asyncio
     async def test_reports_missing_role_with_remediation(
         self, endpoint_service, gateway_repository: InMemoryGatewayRepository
@@ -876,7 +991,7 @@ class TestGatewayRuntimeAccess:
         fake.role_assignments.append(
             role_assignment(FOUNDRY_USER_ROLE_ID, AI_RESOURCE_ID, APIM_PRINCIPAL_ID)
         )
-        granted = (await service.runtime_access(ACTOR, endpoint.id))[0]
+        granted = (await service.preflight(ACTOR, endpoint.id)).runtime_access[0]
 
         assert granted.can_invoke is True
         assert granted.granted_role_definition_id == FOUNDRY_USER_ROLE_ID
@@ -954,7 +1069,7 @@ class TestGatewayRuntimeAccess:
         fake.role_assignments.append(
             role_assignment(FOUNDRY_USER_ROLE_ID, AI_RESOURCE_ID, APIM_PRINCIPAL_ID)
         )
-        granted = (await service.runtime_access(ACTOR, endpoint.id))[0]
+        granted = (await service.preflight(ACTOR, endpoint.id)).runtime_access[0]
 
         assert granted.can_invoke is True
         assert granted.assignment_scope == AI_RESOURCE_ID
@@ -1043,7 +1158,7 @@ class TestGatewayRuntimeAccess:
         assert [access.can_invoke for access in endpoint.runtime_access] == [True, True]
         assert fake.role_definition_reads() == 1
         # Nothing outlives a check: a role an administrator edits is read afresh next time.
-        await service.runtime_access(ACTOR, endpoint.id)
+        await service.preflight(ACTOR, endpoint.id)
         assert fake.role_definition_reads() == 2
 
     @pytest.mark.asyncio

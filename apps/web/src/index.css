@@ -63,6 +63,25 @@
   box-sizing: border-box;
 }
 
+.governance-steps { display: flex; flex-wrap: wrap; gap: 12px; list-style: none; padding: 0; margin: 24px 0; }
+[data-workspace-editor] [hidden] { display: none !important; }
+.governance-steps li { padding: 12px 18px; border: 1px solid var(--mosaic-border); border-radius: 6px; background: var(--mosaic-surface-subtle); }
+.governance-steps [aria-current="step"] { color: var(--mosaic-primary); background: var(--mosaic-primary-soft); font-weight: 600; }
+.governance-form-fields { display: grid; gap: 24px; min-width: 0; }
+.governance-form-fields .fui-Input, .governance-form-fields .fui-Textarea, .governance-form-fields .fui-Select { width: 100%; }
+.governance-question { padding: 24px 0; border-top: 1px solid var(--mosaic-border-soft); min-width: 0; }
+.governance-question header, .governance-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.governance-question header { justify-content: space-between; margin-bottom: 20px; }
+.governance-question-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 20px; }
+.governance-actions { margin-top: 24px; }
+.recorded-request-form { min-width: 0; padding: 20px 0; }
+.recorded-request-form h3 { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 0 0 12px; }
+.recorded-request-form dl { margin: 20px 0; }
+.recorded-request-form dl > div { padding: 16px 0; border-top: 1px solid var(--mosaic-border-soft); }
+.recorded-request-form dt { color: var(--mosaic-text-muted); font-weight: 600; }
+.recorded-request-form dd { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.recorded-request-form dd p { margin: 0 0 8px; max-width: 75ch; color: var(--mosaic-text-muted); }
+
 html,
 body,
 #root {

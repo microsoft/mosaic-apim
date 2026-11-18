@@ -14,6 +14,7 @@ import {
   buildEnforcement,
   limitInputError,
   describePersonLimits,
+  describeLimits,
   emptyLimitForm,
   limitFormFrom,
   personLimitsFor,
@@ -36,6 +37,9 @@ import type {
 import { PolicyCapabilityError } from './PolicyCapabilityFeedback'
 import { policyReviewFields } from '../policy-capabilities'
 import { AccessRequestRequester } from './AccessRequestRequester'
+import { RequestFormAnswers } from './RequestFormAnswers'
+import { useRecordedRequestForm } from './useRecordedRequestForm'
+import { ErrorState, Loading } from './AsyncState'
 import { LimitFields, type LimitTargetContext } from './GovernanceFields'
 import { useFocusAwareAnnounce } from './useFocusAwareAnnounce'
 import type { RequesterDisplay } from '../requester-display'
@@ -98,6 +102,11 @@ export function ApproveAccessRequestDialog({
   onApprove: (approval: AccessRequestApproval) => void
 }) {
   const requestedCostCenterId = accessRequest.costCenterId ?? ''
+  const evidence = useRecordedRequestForm(accessRequest)
+  const guided = evidence.hasForm
+  const [step, setStep] = useState(0)
+  const stepHeading = useRef<HTMLHeadingElement>(null)
+  useLayoutEffect(() => { if (guided) stepHeading.current?.focus() }, [step, guided])
   const [note, setNote] = useState('')
   const [costCenterId, setCostCenterId] = useState(requestedCostCenterId)
   // The grant is charged to the cost center chosen here, or else the requested one, or else, for a
@@ -149,6 +158,7 @@ export function ApproveAccessRequestDialog({
     event.preventDefault()
     // Approve stays focusable while pending, and a focusable submit button still submits the form.
     if (rateError || existingGrant || locked || accessRequest.state !== 'pending' || pending || (environmentMoved && !confirmedMove)) return
+    if (guided && (step !== 2 || !evidence.form)) return
     onApprove({
       note: note.trim() || null,
       enforcement: buildEnforcement(limits, governed),
@@ -170,6 +180,9 @@ export function ApproveAccessRequestDialog({
     if (!error || (Object.is(error, shown.error) && errorKey === shown.key)) return
     errorRef.current?.focus()
   }, [error, errorKey])
+  useLayoutEffect(() => {
+    if (evidence.detail.isError) errorRef.current?.focus()
+  }, [evidence.detail.isError, evidence.detail.errorUpdatedAt])
 
   return (
     <Dialog
@@ -186,6 +199,12 @@ export function ApproveAccessRequestDialog({
         <form ref={formRef} onSubmit={submit}>
           <DialogBody>
             <DialogContent className={styles.dialogForm}>
+              {guided && <>
+                <ol className="governance-steps" aria-label="Approval steps">
+                  {['Evidence', 'Grant', 'Confirm'].map((label, index) => <li key={label} aria-current={step === index ? 'step' : undefined}>{index + 1}. {label}</li>)}
+                </ol>
+                <h3 ref={stepHeading} tabIndex={-1}>{['Review recorded evidence', 'Review grant settings', 'Confirm grant intent'][step]}</h3>
+              </>}
               {(locked || accessRequest.state !== 'pending') && <MessageBar intent="warning"><MessageBarBody>
                 {accessRequest.state !== 'pending'
                   ? 'This request has already been decided. Decisions are final; no further approval can be made.'
@@ -195,11 +214,17 @@ export function ApproveAccessRequestDialog({
                 <AnnounceProvider value={errorAnnouncement}>
                   <div ref={errorRef} tabIndex={-1}>
                     <PolicyCapabilityError title="Unable to approve access request" error={error}
-                      reviewFields={policyReviewFields(formRef.current, error)}
+                      reviewFields={!guided || step === 1 ? policyReviewFields(formRef.current, error) : {}}
                       announcementKey={errorKey} />
                   </div>
                 </AnnounceProvider>
               )}
+              {guided && Boolean(error) && step !== 1 && <Button type="button" onClick={() => setStep(1)}>Review grant fields</Button>}
+              {guided && !error && evidence.detail.isError && <AnnounceProvider value={errorAnnouncement}>
+                <div ref={errorRef} tabIndex={-1}><ErrorState context="action" title="Recorded answers unavailable" error={evidence.detail.error} announcementKey={evidence.detail.errorUpdatedAt} />
+                  <Button type="button" onClick={() => void evidence.detail.refetch()}>Retry recorded answers</Button></div>
+              </AnnounceProvider>}
+              <section className={styles.dialogForm} hidden={guided && step !== 0}>
               <dl className={styles.detailList}>
                 <div>
                   <dt>Requester</dt>
@@ -232,6 +257,10 @@ export function ApproveAccessRequestDialog({
                   <dd>{justification || 'No justification given'}</dd>
                 </div>
               </dl>
+              {guided && (evidence.form ? <RequestFormAnswers form={evidence.form} />
+                : evidence.detail.isSuccess ? <Text role="alert">Recorded answers are unavailable. Do not approve using today's form.</Text>
+                : !evidence.detail.isError && <Loading label="Loading recorded governance answers" />)}
+              </section>
               {(requestedIsProduction || currentIsProduction) && (
                 <MessageBar intent="warning">
                   <MessageBarBody>This approval grants production-class access.</MessageBarBody>
@@ -246,6 +275,7 @@ export function ApproveAccessRequestDialog({
                   </MessageBarBody>
                 </MessageBar>
               )}
+              <section className={styles.dialogForm} hidden={guided && step !== 1}>
               {environmentMoved && (
                 <Checkbox
                   checked={confirmedMove}
@@ -320,8 +350,24 @@ export function ApproveAccessRequestDialog({
               <Field label="Decision note" hint="Optional. Recorded with the approval.">
                 <Input value={note} onChange={(_, data) => setNote(data.value)} />
               </Field>
+              </section>
+              {guided && step === 2 && <>
+                <p><strong>Requester:</strong> {requester.label} · <strong>Resource:</strong> {resourceLabel}</p>
+                <p><strong>Charged cost center:</strong> {charged?.name ?? accessRequest.costCenter?.name ?? 'Requester default (revalidated on approval)'}</p>
+                <p><strong>Grant limits:</strong> {personDefaults && editedLimits === null
+                  ? describePersonLimits(personDefaults)
+                  : describeLimits({ enforcement: buildEnforcement(limits, governed) }).join(' ')}</p>
+                <p>{inheritedNote}. Approval records intent only; the affected gateway plan still requires separate review and apply.</p>
+                {note && <p><strong>Decision note:</strong> {note}</p>}
+                {evidence.form && <RequestFormAnswers form={evidence.form} />}
+              </>}
             </DialogContent>
             <DialogActions>
+              {guided && step > 0 && <Button type="button" disabled={pending} onClick={() => setStep(step - 1)}>Previous step</Button>}
+              {guided && step < 2 ? <Button type="button" appearance="primary" disabledFocusable={pending}
+                disabled={!evidence.form || locked || accessRequest.state !== 'pending' ||
+                  step === 1 && (existingGrant || Boolean(rateError) || environmentMoved && !confirmedMove)}
+                onClick={() => { if (!pending) setStep(step + 1) }}>{step === 0 ? 'Next: Grant settings' : 'Next: Confirm'}</Button> : <>
               {/* A browser takes focus off a button that becomes disabled, so a busy button stays focusable. */}
               <Button
                 appearance="primary"
@@ -331,6 +377,7 @@ export function ApproveAccessRequestDialog({
               >
                 Approve and create grant
               </Button>
+              </>}
             </DialogActions>
           </DialogBody>
         </form>

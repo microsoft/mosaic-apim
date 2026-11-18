@@ -122,10 +122,14 @@ sequenceDiagram
     actor Admin as Administrator
     participant Gateway as APIM
     Person->>Portal: Choose exact Request-only offering<br/>and eligible cost center
-    Portal->>API: Submit access request
+    Portal->>API: Resolve applicable versioned questions
+    API-->>Portal: Applicable fields and opaque context revision
+    Person->>Portal: Answer and explicitly review, if configured
+    Portal->>API: Submit request with reviewed revision and answers
     API->>API: Verify center setup, membership,<br/>resource mode and availability
-    API->>State: Save request
-    Admin->>API: Approve with appropriate limits
+    API->>API: Reject stale schema or invalid answers
+    API->>State: Save request and immutable evidence<br/>with a conditional schema-head guard
+    Admin->>API: Review recorded evidence and grant limits;<br/>explicitly confirm approval
     API->>API: Recheck current eligibility and mode
     API->>State: Save linked individual grant intent
     Note over State,Gateway: Approval alone<br/>changes no gateway policy
@@ -136,7 +140,9 @@ sequenceDiagram
     Person->>Gateway: Call with membership-bearing runtime token<br/>or separately allowed individual key
 ```
 
-A scheduled approval policy can replace the manual resource approval step, not the gateway apply.
+A scheduled approval policy can replace the manual resource approval step only for existing
+no-form requests, not the gateway apply. Phase-1 form-bearing requests explicitly require a person;
+automatic preview/execution reports that their answers were not evaluated.
 It still creates an individual grant and is different from a center's Automatic resource mode.
 The offering, environment, and cost center remain explicit even when the portal groups visually
 similar models. Not available blocks new requests/grants server-side. Security-group grants are
@@ -144,6 +150,14 @@ token-only; direct model grants can allow tokens, keys, or both according to res
 settings. For a custom center, an individual token grant still requires its group claim.
 Default-center preferences are not membership. Government's separate key-only workflow is unchanged
 and is excluded from these new center modes.
+
+Administrator authoring uses Questions, Applicability, and Publish. The requester uses Offering,
+Questions, and Review; form-bearing single/bulk approvals use Evidence, Grant, and Confirm.
+Next/Back are draft navigation, never publication, submission, approval, or gateway apply.
+Later schema publication does not rewrite a recorded request. A charge reference remains
+informational, and self-reported answers establish no permission. See
+[governance questions](access.md#governance-questions-on-access-requests) for bounds, privacy,
+stale recovery, and the compatible-writer rollout boundary.
 
 For an MCP server that calls a model, authorize two independent legs: the client's grant to the
 MCP server and the server identity's grant to the model. One grant does not authorize the other.

@@ -3,6 +3,7 @@ import {
   CAN_INVOKE,
   CANNOT_INVOKE,
   NOT_CONFIRMED,
+  checkFreshness,
   describeScope,
   findingSummary,
   runtimeVerdict,
@@ -32,6 +33,10 @@ function access(
     evaluation,
     reason,
     inherited: false,
+    checkedAt: '2026-09-01T12:00:00Z',
+    rulesRevision: 'test-rules/1',
+    currentRulesRevision: 'test-rules/1',
+    freshness: 'current',
   }
 }
 
@@ -48,6 +53,20 @@ function finding(overrides: Partial<RuntimeRoleFinding>): RuntimeRoleFinding {
 }
 
 describe('runtimeVerdict', () => {
+  it.each([true, false])('does not present an unversioned verdict (%s) as current', canInvoke => {
+    const saved = access(canInvoke ? 'granted' : 'missingRole', 'roleAssignments', canInvoke)
+    expect(runtimeVerdict({ ...saved, rulesRevision: null })).toBe(NOT_CONFIRMED)
+    expect(runtimeVerdict({ ...saved, rulesRevision: 'older' })).toBe(NOT_CONFIRMED)
+    expect(runtimeVerdict({ ...saved, freshness: undefined })).toBe(NOT_CONFIRMED)
+  })
+
+  it('distinguishes never checked from historical evidence without changing the saved record', () => {
+    const empty = { ...access(null, 'notEvaluated'), checkedAt: null, freshness: undefined, rulesRevision: null }
+    expect(checkFreshness(empty)).toBe('neverChecked')
+    expect(checkFreshness({ ...empty, message: 'A prior attempt could not finish' })).toBe('stale')
+    expect(empty.checkedAt).toBeNull()
+  })
+
   it.each<[RuntimeAccessReason, RuntimeAccessEvaluation, boolean, RuntimeVerdict]>([
     ['granted', 'roleAssignments', true, CAN_INVOKE],
     ['missingRole', 'roleAssignments', false, CANNOT_INVOKE],
@@ -62,6 +81,7 @@ describe('runtimeVerdict', () => {
     ['assignmentsUnreadable', 'notEvaluated', false, NOT_CONFIRMED],
     ['identityNotObserved', 'notEvaluated', false, NOT_CONFIRMED],
     ['networkUnverified', 'notEvaluated', false, NOT_CONFIRMED],
+    ['accountKindUnconfirmed', 'notEvaluated', false, NOT_CONFIRMED],
   ])('%s (%s) reads as the expected verdict', (reason, evaluation, canInvoke, expected) => {
     expect(runtimeVerdict(access(reason, evaluation, canInvoke))).toBe(expected)
   })
