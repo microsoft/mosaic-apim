@@ -3,6 +3,7 @@
 [Documentation](README.md) | [MOSAIC](../README.md)
 
 - [Gateways](#gateways)
+- [Self-hosted gateways](#self-hosted-gateways)
 - [MCP servers](#mcp-servers)
 - [Importing models and MCP servers](#importing-models-and-mcp-servers)
 - [Registering MCP servers](#registering-mcp-servers)
@@ -59,6 +60,19 @@ service, product, and API scopes. Operation-scope policies are read on demand ra
 full sync. A failure reading one collection degrades the run to `partial` and is recorded, rather
 than discarding the whole snapshot — and the entity types it could not read are exempt from the
 stale-document sweep, so a transient failure never looks like a deletion.
+
+## Self-hosted gateways
+
+In **Gateways → Self-hosted gateways**, choose a registered parent APIM service and onboard an
+existing child gateway from its ARM inventory. Record the local HTTPS ingress that callers use
+and the running container image version and digest. The APIM configuration endpoint, ARM
+identity, and parent Azure-managed ingress are separate addresses. MOSAIC does not probe the
+local URL, deploy a runtime, attach APIs, or grant permissions during registration.
+
+Registration records intent, not runtime readiness. The parent still controls Observe/Manage and
+APIM permissions. Removing a runtime record never deletes the gateway; MOSAIC refuses removal
+while a publication selects it. See [model publication targets](model-publishing.md#publication-targets)
+for the bounded, offline-verified path and its remaining live proof.
 
 ## MCP servers
 

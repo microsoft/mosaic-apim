@@ -85,6 +85,10 @@ import type {
   GrantOverlapReport,
   GrantKey,
   Gateway,
+  GatewayRuntimeChoice,
+  SelfHostedGateway,
+  SelfHostedGatewayCandidate,
+  SelfHostedGatewayCreate,
   GatewayPolicyView,
   GatewayRuntimeAccess,
   GatewaySuggestion,
@@ -359,6 +363,10 @@ export interface MosaicApi extends AdminApi {
     environment?: string | null
   }): Promise<Gateway>
   getGateway(gatewayId: string): Promise<Gateway>
+  listSelfHostedGateways(gatewayId: string): Promise<SelfHostedGateway[]>
+  listSelfHostedGatewayCandidates(gatewayId: string): Promise<SelfHostedGatewayCandidate[]>
+  registerSelfHostedGateway(gatewayId: string, value: SelfHostedGatewayCreate): Promise<SelfHostedGateway>
+  removeSelfHostedGateway(gatewayId: string, runtimeId: string): Promise<void>
   getGatewayTelemetry(gatewayId: string): Promise<GatewayTelemetry>
   enableGatewayTelemetry(gatewayId: string): Promise<GatewayTelemetry>
   refreshGatewayTelemetry(gatewayId: string): Promise<AnalyticsGatewayHealth>
@@ -392,6 +400,7 @@ export interface MosaicApi extends AdminApi {
     /** Null exactly when the deployment's `tokenLimitsSupported` is false. */
     enforcement: TokenEnforcement | null
     governedAccess?: ModelAccessSettings | null
+    runtimeTarget?: GatewayRuntimeChoice
   }): Promise<Publication>
   getPublication(publicationId: string): Promise<Publication>
   getPublicationLock(publicationId: string): Promise<PublicationLockInfo>
@@ -1048,6 +1057,12 @@ export function useMosaicApi(): MosaicApi {
           `/api/v1/principals/${encodeURIComponent(principalId)}/members?limit=${encodeURIComponent(String(limit))}`,
         ),
       listGateways: () => request<Gateway[]>('/api/v1/gateways'),
+      listSelfHostedGateways: (id) => request<SelfHostedGateway[]>(`/api/v1/gateways/${encodeURIComponent(id)}/self-hosted`),
+      listSelfHostedGatewayCandidates: (id) => request<SelfHostedGatewayCandidate[]>(`/api/v1/gateways/${encodeURIComponent(id)}/self-hosted/candidates`),
+      registerSelfHostedGateway: (id, value) => request<SelfHostedGateway>(`/api/v1/gateways/${encodeURIComponent(id)}/self-hosted`, {
+        method: 'POST', body: JSON.stringify(value),
+      }),
+      removeSelfHostedGateway: (id, runtimeId) => request<void>(`/api/v1/gateways/${encodeURIComponent(id)}/self-hosted/${encodeURIComponent(runtimeId)}`, { method: 'DELETE' }),
       registerGateway: (payload) =>
         request<Gateway>('/api/v1/gateways', { method: 'POST', body: payload }),
       getGateway: (id) => request<Gateway>(`/api/v1/gateways/${id}`),

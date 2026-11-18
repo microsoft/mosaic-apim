@@ -559,6 +559,8 @@ export interface ConnectionOperation {
 export type ApiShape = 'azureOpenAi' | 'foundryModels' | 'anthropicMessages'
 
 export interface ModelConnection {
+  selfHosted?: boolean
+  apiVersion?: string
   azureCloud?: AzureCloud
   entitlementId: string
   publicationId: string

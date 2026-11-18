@@ -404,6 +404,10 @@ class FakeApim:
         # definition, its operations, and its policy, or None when it has no policy.
         self.extra_backends: list[dict[str, Any]] = []
         self.extra_apis: list[tuple[dict[str, Any], list[dict[str, Any]], str | None]] = []
+        self.create_outcomes: dict[str, int] = {}
+
+    def seed_self_hosted(self, name: str, *, resource_id: str = RESOURCE_ID) -> None:
+        self.seed(f"gateways/{name}", {"id": f"{resource_id}/gateways/{name}", "properties": {}})
 
     def fail_once(self, path_suffix: str, status_code: int) -> None:
         self.failures[path_suffix] = status_code
@@ -617,6 +621,16 @@ class FakeApim:
         except ValueError:
             body = {}
         body = body if isinstance(body, dict) else {}
+        exact_create = (
+            suffix.startswith("gateways/") and "/apis/" in suffix
+        ) or suffix.startswith("namedValues/mosaic-binding-")
+        status = 200
+        if exact_create:
+            if request.headers.get("If-None-Match") == "*" and suffix in self.written:
+                return httpx.Response(412, json={"error": {"message": "already exists"}})
+            status = self.create_outcomes.pop(suffix, 200 if suffix in self.written else 201)
+            if status == 200 and suffix in self.written:
+                return httpx.Response(status, json=self._written_resource(suffix))
         if self.rejects_dot_paths and _is_api(suffix):
             properties = body.get("properties")
             path = properties.get("path") if isinstance(properties, dict) else None
@@ -655,7 +669,7 @@ class FakeApim:
                     "Retry-After": "0",
                 },
             )
-        return httpx.Response(200, json=self._written_resource(suffix))
+        return httpx.Response(status, json=self._written_resource(suffix))
 
     def _exists(self, suffix: str) -> bool:
         return suffix in self.written or suffix in STATIC_RESOURCES
@@ -891,6 +905,12 @@ class FakeApim:
                     self.permissions_status, json={"error": {"message": "denied"}}
                 )
             return httpx.Response(200, json={"value": self.permissions})
+        if suffix == "gateways":
+            return self._collection([
+                self._written_resource(key)
+                for key in sorted(self.written)
+                if key.startswith("gateways/") and key.count("/") == 1
+            ])
         if suffix == "apis":
             if api_filter and "mcp" in api_filter:
                 return self._collection(self._mcp_servers())

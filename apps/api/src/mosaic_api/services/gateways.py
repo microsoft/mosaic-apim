@@ -47,6 +47,9 @@ from mosaic_api.domain import (
     ModelApiCandidateList,
     ModelApiCatalogUpdate,
     PublicationStatus,
+    SelfHostedGateway,
+    SelfHostedGatewayCandidate,
+    SelfHostedGatewayCreate,
     deterministic_id,
     mcp_server_id,
     model_api_id,
@@ -89,6 +92,7 @@ from mosaic_api.services.model_access import (
     scope_lease,
 )
 from mosaic_api.services.policy_capabilities import resolve_resource_policy_capabilities
+from mosaic_api.services.self_hosted import child_candidate, ingress_origin
 
 logger = structlog.get_logger()
 
@@ -188,6 +192,74 @@ class GatewayService:
         if not gateway:
             raise NotFoundError("Gateway was not found", details={"id": gateway_id})
         return gateway
+
+    async def self_hosted_gateways(
+        self, actor: Actor, gateway_id: str
+    ) -> list[SelfHostedGateway]:
+        await self.get_gateway(actor, gateway_id)
+        return await self._repository.list_self_hosted_gateways(actor.tenant_id, gateway_id)
+
+    async def self_hosted_candidates(
+        self, actor: Actor, gateway_id: str
+    ) -> list[SelfHostedGatewayCandidate]:
+        gateway = await self.get_gateway(actor, gateway_id)
+        client = self._client_factory(gateway.arm_resource())
+        return [child_candidate(gateway, row) for row in await client.list_self_hosted_gateways()]
+
+    async def register_self_hosted(
+        self, actor: Actor, gateway_id: str, payload: SelfHostedGatewayCreate
+    ) -> SelfHostedGateway:
+        origin = ingress_origin(payload.ingress_origin)
+        if payload.gateway_name.casefold() == "managed":
+            raise ValidationError("Select an existing self-hosted gateway, not Azure-managed.")
+        async with publication_lock(
+            self._repository, actor.tenant_id, gateway_mutation_scope(gateway_id)
+        ):
+            gateway = await self.get_gateway(actor, gateway_id)
+            if origin == str(gateway.capabilities.gateway_url).rstrip("/").lower():
+                raise ValidationError("Use local ingress, not the parent Azure-managed ingress.")
+            client = self._client_factory(gateway.arm_resource())
+            live = await client.get_self_hosted_gateway(payload.gateway_name)
+            if live is None:
+                raise NotFoundError("The self-hosted gateway was not found on this APIM service.")
+            child = child_candidate(gateway, live, expected_name=payload.gateway_name)
+            runtime = SelfHostedGateway(
+                id=deterministic_id("runtime", actor.tenant_id, gateway_id,
+                                    child.gateway_name.casefold()),
+                tenant_id=actor.tenant_id,
+                parent_gateway_id=gateway_id,
+                parent_resource_id=gateway.arm_resource().canonical,
+                gateway_name=child.gateway_name,
+                ingress_origin=origin,
+                image_version=payload.image_version,
+                image_digest=payload.image_digest,
+            )
+            return await self._repository.create_self_hosted_gateway(
+                runtime, self._audit(actor, "gateway.runtimeRegistered", gateway_id)
+            )
+
+    async def remove_self_hosted(self, actor: Actor, gateway_id: str, runtime_id: str) -> None:
+        async with publication_lock(
+            self._repository, actor.tenant_id, gateway_mutation_scope(gateway_id)
+        ):
+            await self.get_gateway(actor, gateway_id)
+            record = await self._repository.get_self_hosted_gateway(actor.tenant_id, runtime_id)
+            if record is None or record.parent_gateway_id != gateway_id:
+                raise NotFoundError("The self-hosted gateway was not found on this APIM service.")
+            publications = await self._repository.list_publications(
+                actor.tenant_id, gateway_id=gateway_id
+            )
+            if any(
+                item.runtime_target is not None and item.runtime_target.runtime_id == runtime_id
+                for item in publications
+            ):
+                raise ConflictError(
+                    "A model publication selects this gateway. Unpublish it and remove its "
+                    "saved publication before forgetting this runtime."
+                )
+            await self._repository.delete_self_hosted_gateway(
+                record, self._audit(actor, "gateway.runtimeRemoved", gateway_id)
+            )
 
     async def register(self, actor: Actor, request: GatewayCreate) -> Gateway:
         if request.azure_connection_id is not None or request.azure_cloud != "commercial":
@@ -327,6 +399,8 @@ class GatewayService:
 
     async def _delete(self, actor: Actor, gateway_id: str) -> None:
         gateway = await self.get_gateway(actor, gateway_id)
+        if await self._repository.list_self_hosted_gateways(actor.tenant_id, gateway_id):
+            raise ConflictError("Remove this service's registered self-hosted runtimes first.")
         # Forgetting a gateway MOSAIC published into would strand real API Management resources
         # with nothing left that knows it owns them. Removing them is a decision an administrator
         # has to make explicitly, so it is asked for rather than assumed either way.

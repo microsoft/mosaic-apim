@@ -41,6 +41,7 @@ from mosaic_api.domain import (
     PublishRun,
     RequestFormHead,
     RequestFormRevision,
+    SelfHostedGateway,
 )
 from mosaic_api.environments import EnvironmentCatalog, EnvironmentUsage
 from mosaic_api.model_deployments import ModelDeploymentPlan, ModelDeploymentRun
@@ -167,6 +168,22 @@ class GatewayRepository(Protocol):
         ...
 
     async def delete_gateway(self, gateway: Gateway, audit_event: AuditEvent) -> None: ...
+
+    async def list_self_hosted_gateways(
+        self, tenant_id: str, parent_gateway_id: str
+    ) -> list[SelfHostedGateway]: ...
+
+    async def get_self_hosted_gateway(
+        self, tenant_id: str, runtime_id: str
+    ) -> SelfHostedGateway | None: ...
+
+    async def create_self_hosted_gateway(
+        self, runtime: SelfHostedGateway, audit_event: AuditEvent
+    ) -> SelfHostedGateway: ...
+
+    async def delete_self_hosted_gateway(
+        self, runtime: SelfHostedGateway, audit_event: AuditEvent
+    ) -> None: ...
 
     async def save_sync_run(self, run: GatewaySyncRun) -> GatewaySyncRun: ...
 

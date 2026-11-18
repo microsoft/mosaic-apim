@@ -183,6 +183,10 @@ class DemoTeamsProvider:
 
 
 GATEWAY_RESOURCE_ID = RESOURCE_ID
+EDGE_GATEWAY_RESOURCE_ID = (
+    f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/rg-field-lab"
+    "/providers/Microsoft.ApiManagement/service/field-lab-apim"
+)
 GOV_GATEWAY_RESOURCE_ID = (
     f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/rg-contoso-gov"
     "/providers/Microsoft.ApiManagement/service/apim-contoso-gov"
@@ -790,7 +794,7 @@ class DemoApim(FakeApim):
         api_filter: str | None,
     ) -> httpx.Response:
         if suffix == "policies/policy":
-            if self.azure_cloud == "government":
+            if self.azure_cloud == "government" or self.resource_id == EDGE_GATEWAY_RESOURCE_ID:
                 return self._policy(
                     "<policies><inbound><base /></inbound><backend><base /></backend>"
                     "<outbound><base /></outbound><on-error><base /></on-error></policies>"

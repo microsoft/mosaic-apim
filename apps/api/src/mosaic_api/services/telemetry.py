@@ -231,6 +231,9 @@ async def governed_apis(
         publication = (
             publications.get(model_api.publication_id) if model_api.publication_id else None
         )
+        # Parent diagnostic settings and logs neither instrument nor prove the local runtime.
+        if publication is not None and publication.is_self_hosted():
+            continue
         apis.setdefault(model_api.gateway_id, {})[name] = RolledUpApi(
             api_name=name,
             resource_id=model_api.id,

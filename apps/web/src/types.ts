@@ -1106,6 +1106,45 @@ export interface Gateway {
   updatedAt: string
 }
 
+export type GatewayRuntimeChoice =
+  | { kind: 'azureManaged' }
+  | { kind: 'selfHosted'; runtimeId: string }
+
+export interface SelfHostedGatewayCandidate {
+  gatewayName: string
+  resourceId: string
+}
+
+export interface SelfHostedGatewayCreate {
+  gatewayName: string
+  ingressOrigin: string
+  imageVersion: string
+  imageDigest?: string
+}
+
+export interface SelfHostedGateway extends SelfHostedGatewayCreate {
+  id: string
+  parentGatewayId: string
+  parentResourceId: string
+  createdAt: string
+}
+
+export interface SelfHostedRuntimeReview {
+  runtimeId: string
+  gatewayName: string
+  imageVersion: string
+  ingressOrigin: string
+  parentName: string
+  parentResourceId: string
+  parentIngress?: string | null
+  apiName: string
+  associationId: string
+  bindingId: string
+  operationPath: string
+  apiVersion: string
+  blockers: string[]
+}
+
 export type GatewaySyncStatus = 'running' | 'succeeded' | 'partial' | 'failed'
 
 export interface GatewaySyncRun {
@@ -1691,6 +1730,8 @@ export type PublishStepStatus =
 export type PublishRunStatus = 'running' | 'succeeded' | 'failed' | 'rolledBack' | 'rollbackFailed' | 'interrupted'
 export type PublishStage = 'prepare' | 'policy' | 'activate'
 export type PublishedResourceKind =
+  | 'gatewayApi'
+  | 'publicationBinding'
   | 'namedValue'
   | 'policyFragment'
   | 'backend'
@@ -1814,6 +1855,7 @@ export interface PublicationLockInfo {
 }
 
 export interface Publication {
+  runtimeTarget?: GatewayRuntimeChoice | null
   azureCloud?: AzureCloud
   id: string
   tenantId: string
@@ -1892,6 +1934,7 @@ export interface McpPublishingCapability {
 }
 
 export interface McpPublicationCreate {
+  runtimeTarget?: GatewayRuntimeChoice
   gatewayId: string
   mcpEndpointId: string
   displayName?: string
@@ -1946,6 +1989,7 @@ export interface PlanReview {
 }
 
 export interface PublishPlan {
+  runtimeReview?: SelfHostedRuntimeReview | null
   id: string
   tenantId: string
   entityType: 'publishPlan'
@@ -2454,6 +2498,8 @@ export interface KeySharedModel {
 }
 
 export interface ModelConnection {
+  selfHosted?: boolean
+  apiVersion?: string
   azureCloud?: AzureCloud
   entitlementId: string
   /** A pool model's pool ID. */

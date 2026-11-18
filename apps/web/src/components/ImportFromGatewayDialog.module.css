@@ -87,6 +87,11 @@
 }
 
 @media (max-width: 640px) {
+  .runtimeReviewActions {
+    width: 100%;
+    min-width: 0;
+  }
+
   .gatewayField {
     min-width: 0;
     flex-basis: 100%;

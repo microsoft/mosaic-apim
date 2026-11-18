@@ -425,7 +425,8 @@ function ConnectionSession({
                 <CloudBadge cloud={modelInfo.azureCloud} />
                 {modelInfo.azureCloud === 'government' && <Text>{governmentStatus(modelInfo)}</Text>}
                 <dl className={styles.detailList}>
-                  <div><dt>Endpoint</dt><dd>{modelInfo.endpoint}</dd></div>
+                  <div><dt>{modelInfo.selfHosted ? 'Self-hosted endpoint' : 'Endpoint'}</dt><dd>{modelInfo.endpoint}</dd></div>
+                  {modelInfo.apiVersion && <div><dt>API version</dt><dd>{modelInfo.apiVersion}</dd></div>}
                   {isPool && modelInfo.poolName && <div><dt>Pool</dt><dd>{modelInfo.poolName}</dd></div>}
                   <div><dt>{isPool ? 'Model name to send' : 'Deployment'}</dt><dd>{modelInfo.deploymentName}</dd></div>
                   <div><dt>Tenant</dt><dd>{modelInfo.tenantId}</dd></div>

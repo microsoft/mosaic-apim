@@ -418,6 +418,9 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-portal-handoff-light`, `console-portal-handoff-dark` | Console | `/` in the isolated fictional User-only access fixture; separate administrator explanation, configured portal link, and Sign out | Both | Portal handoff for end users |
 | `portal-catalog-light`, `portal-catalog-dark` | Portal | `/catalog`, full-width model-grouped rows with filters, blue-tinted glass navigation, and appearance controls | Both | Light and dark: portal catalog |
 | `console-gateways` | Console | `/gateways`, compact list with selected gateway overview | Light | Gateways |
+| `console-self-hosted-gateways` | Console | `/gateways?tab=self-hosted`, fictional existing child registered under its APIM parent | Light | Self-hosted gateways |
+| `console-self-hosted-publication-review` | Console | `/models?tab=published`, Association map and local caller preview with Apply blocked | Light | Self-hosted publication review |
+| `console-self-hosted-publication-review-narrow` | Console | Same publication review at 430 px, with the parent, API, and local runtime stacked | Light | Self-hosted publication review |
 | `console-government-gateway` | Console | `/gateways`, fictional Government gateway selected with AzGov and Production context | Light | Government gateway |
 | `console-gateway-overview` | Console | Contoso AI Gateway, **Overview** section | Dark | Gateway overview |
 | `console-gateway-apis` | Console | Contoso AI Gateway, **APIs and endpoints** section | Light | APIs and endpoints |

@@ -4,6 +4,10 @@ This guide is for administrators who want MOSAIC to publish a registered MCP ser
 managed API Management gateway and enforce MOSAIC grants at the gateway. Publishing is an APIM write
 operation. MOSAIC records intent first, then changes APIM only when you review and apply a plan.
 
+MCP publications still use the parent APIM service's Azure-managed gateway. The runtime chooser
+explains why self-hosted publishing is unavailable; the later slice must verify both the MCP API
+and its protected-resource discovery on local ingress before it can enable that option.
+
 ## Prerequisites
 
 You need:

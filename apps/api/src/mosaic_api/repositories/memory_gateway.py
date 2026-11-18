@@ -12,6 +12,7 @@ from mosaic_api.domain import (
     PublishPlan,
     PublishRun,
     PublishRunStatus,
+    SelfHostedGateway,
     utc_now,
 )
 from mosaic_api.errors import ConflictError
@@ -27,6 +28,7 @@ class InMemoryGatewayRepository:
 
     def __init__(self) -> None:
         self.gateways: dict[str, Gateway] = {}
+        self.self_hosted_gateways: dict[str, SelfHostedGateway] = {}
         self.sync_runs: dict[str, GatewaySyncRun] = {}
         self.observed: dict[str, ObservedEntity] = {}
         self.model_apis: dict[str, ModelApi] = {}
@@ -57,6 +59,36 @@ class InMemoryGatewayRepository:
     async def get_gateway(self, tenant_id: str, gateway_id: str) -> Gateway | None:
         gateway = self.gateways.get(gateway_id)
         return gateway if gateway and gateway.tenant_id == tenant_id else None
+
+    async def list_self_hosted_gateways(
+        self, tenant_id: str, parent_gateway_id: str
+    ) -> list[SelfHostedGateway]:
+        return sorted(
+            (item for item in self.self_hosted_gateways.values()
+             if item.tenant_id == tenant_id and item.parent_gateway_id == parent_gateway_id),
+            key=lambda item: item.gateway_name.casefold(),
+        )
+
+    async def get_self_hosted_gateway(
+        self, tenant_id: str, runtime_id: str
+    ) -> SelfHostedGateway | None:
+        item = self.self_hosted_gateways.get(runtime_id)
+        return item if item and item.tenant_id == tenant_id else None
+
+    async def create_self_hosted_gateway(
+        self, runtime: SelfHostedGateway, audit_event: AuditEvent
+    ) -> SelfHostedGateway:
+        if runtime.id in self.self_hosted_gateways:
+            raise ConflictError("This self-hosted gateway is already registered")
+        self.self_hosted_gateways[runtime.id] = runtime
+        self.audit_events[audit_event.id] = audit_event
+        return runtime
+
+    async def delete_self_hosted_gateway(
+        self, runtime: SelfHostedGateway, audit_event: AuditEvent
+    ) -> None:
+        self.self_hosted_gateways.pop(runtime.id, None)
+        self.audit_events[audit_event.id] = audit_event
 
     async def find_gateway_by_resource_id(
         self, tenant_id: str, azure_resource_id: str, *, azure_cloud: str = "commercial"

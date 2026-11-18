@@ -66,6 +66,8 @@ const actionLabels: Record<PublishAction, string> = {
 }
 
 const kindLabels: Record<PublishedResourceKind, string> = {
+  gatewayApi: 'Gateway–API association',
+  publicationBinding: 'APIM publication binding',
   namedValue: 'Named value',
   policyFragment: 'Policy fragment',
   backend: 'Backend',

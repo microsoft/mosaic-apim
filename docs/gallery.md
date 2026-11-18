@@ -122,6 +122,20 @@ embeddings remain disabled read-only intent, not current save or enforcement pro
 <table>
   <tr>
     <td width="50%" valign="top">
+      <img src="images/screenshots/console-self-hosted-gateways.png" alt="The self-hosted gateway registry with an existing child selected under its parent APIM service">
+      <p><b>Self-hosted gateways.</b> Register an existing child under its parent service and
+      distinguish the caller ingress and image details from runtime readiness.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/console-self-hosted-publication-review.png" alt="The Association map linking the parent, owned API, and selected runtime, with caller preview and Apply blocked">
+      <p><b>Self-hosted publication review.</b> Review the API attachment and binding, the proposed
+      local connection, and the missing evidence that blocks Apply. At
+      <a href="images/screenshots/console-self-hosted-publication-review-narrow.png">narrow widths</a>,
+      the association steps stack.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
       <img src="images/screenshots/console-gateways.png" alt="A compact registered-gateway list beside the selected gateway's overview and inventory counts">
       <p><b>Gateways.</b> A compact list selects an existing API Management service and opens its
       overview in the same workspace. The selected gateway shows its cloud, environment, read/manage mode,

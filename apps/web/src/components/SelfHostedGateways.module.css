@@ -1,0 +1,14 @@
+.row, .fields, .details {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  justify-items: start;
+}
+.row { gap: 2px; }
+.fields { max-width: 46rem; justify-items: stretch; }
+.details h2 { margin: 0; }
+.details dl { margin: 0; }
+.details dl > div { margin-block: 0 12px; }
+.details dt { color: var(--mosaic-text-muted); }
+.details dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+.details dd code { display: block; }

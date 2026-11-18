@@ -25,14 +25,17 @@ import structlog
 
 from mosaic_api.budgets import BLOCKED_COST_CENTERS_NAMED_VALUE
 from mosaic_api.domain import (
+    SELF_HOSTED_CHAT_API_VERSION,
     AiBackendKind,
     ApimResourceId,
     ApiShape,
     AppliedCostCenterPool,
+    AppliedSelfHostedRuntime,
     AuditEvent,
     BindingSource,
     CapabilitySupport,
     DeclaredDeployment,
+    DeploymentCapability,
     EntitlementBinding,
     EntitlementSubjectKind,
     Gateway,
@@ -61,6 +64,8 @@ from mosaic_api.domain import (
     PublishStepResult,
     PublishStepStatus,
     ReadinessFreshness,
+    SelfHostedGateway,
+    SelfHostedRuntimeReview,
     TokenEnforcement,
     grant_precedence_key,
     model_access_subscription_name,
@@ -78,8 +83,9 @@ from mosaic_api.environments import (
     refuse_blocked_pairing,
 )
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
-from mosaic_api.integrations.access_policy import validate_cloud_access
+from mosaic_api.integrations.access_policy import governed_operations, validate_cloud_access
 from mosaic_api.integrations.apim import ApimClient
+from mosaic_api.integrations.apim.client import gateway_api_segment
 from mosaic_api.integrations.apim.model_apis import (
     CURATED_SHAPE_VERSION,
     DeploymentFit,
@@ -103,6 +109,7 @@ from mosaic_api.integrations.apim.policy_capabilities import (
 from mosaic_api.integrations.apim.writer import DEFAULT_SUBSCRIPTION_KEY_NAMES, ApimWriter
 from mosaic_api.integrations.backend_keys import backend_key_name
 from mosaic_api.integrations.policy import PublicationPolicy, render_publication_policy
+from mosaic_api.integrations.rbac import permits as arm_permits
 from mosaic_api.observed import ObservedApi, ObservedModelDeployment
 from mosaic_api.repositories import (
     CostCenterRepository,
@@ -140,6 +147,21 @@ from mosaic_api.services.policy_capabilities import (
     publication_policy_capabilities,
     refresh_policy_gateway,
 )
+from mosaic_api.services.self_hosted import (
+    RUNTIME_RULES,
+    EvidenceReader,
+    applied_runtime_snapshot,
+    binding_name,
+    binding_value,
+    child_candidate,
+    fingerprint,
+    matching_binding,
+    missing_evidence,
+    require_chat_profile,
+    require_runtime,
+    runtime_fingerprint,
+    simple_service_policy,
+)
 
 logger = structlog.get_logger()
 
@@ -156,6 +178,14 @@ DENY_ALL_POLICY = (
 DENY_ALL_FRAGMENT = (
     '<fragment><return-response><set-status code="403" reason="Access unavailable"/>'
     "</return-response></fragment>"
+)
+EXACT_RUNTIME_RESOURCES = {
+    PublishedResourceKind.GATEWAY_API, PublishedResourceKind.PUBLICATION_BINDING
+}
+RUNTIME_ACTIONS = (
+    "Microsoft.ApiManagement/service/gateways/read",
+    *(f"Microsoft.ApiManagement/service/{path}/{action}"
+      for path in ("gateways/apis", "namedValues") for action in ("read", "write", "delete")),
 )
 
 # Dependency order: every resource is created after the resources it names. The fragment's
@@ -176,6 +206,8 @@ CREATE_ORDER: tuple[PublishedResourceKind, ...] = (
     PublishedResourceKind.PRODUCT,
     PublishedResourceKind.PRODUCT_API,
     PublishedResourceKind.SUBSCRIPTION,
+    PublishedResourceKind.PUBLICATION_BINDING,
+    PublishedResourceKind.GATEWAY_API,
 )
 
 
@@ -213,7 +245,10 @@ class _Backend:
 
 
 def _desired_resources(publication: Publication) -> list[_Resource]:
-    operations = operations_for(publication)
+    operations = (
+        governed_operations(publication) if publication.is_self_hosted()
+        else operations_for(publication)
+    )
     resources: list[_Resource] = []
     if publication.backend_key_name is not None:
         resources.append(
@@ -256,6 +291,8 @@ def _desired_resources(publication: Publication) -> list[_Resource]:
             f"apis/{publication.api_name}/policies/policy",
         )
     )
+    if publication.is_self_hosted():
+        return resources
     resources.append(
         _Resource(
             PublishedResourceKind.PRODUCT,
@@ -423,6 +460,8 @@ _KIND_NOUNS: dict[PublishedResourceKind, str] = {
     PublishedResourceKind.PRODUCT: "product",
     PublishedResourceKind.PRODUCT_API: "product link",
     PublishedResourceKind.SUBSCRIPTION: "subscription",
+    PublishedResourceKind.GATEWAY_API: "gateway API association",
+    PublishedResourceKind.PUBLICATION_BINDING: "publication binding",
 }
 
 
@@ -435,6 +474,8 @@ def _resource_label(publication: Publication, item: PublishedResource) -> str:
 
 
 _REMOVAL_REASONS: dict[PublishedResourceKind, str] = {
+    PublishedResourceKind.GATEWAY_API: "Detach only this owned API association.",
+    PublishedResourceKind.PUBLICATION_BINDING: "Delete the owned APIM publication binding.",
     PublishedResourceKind.API: (
         "Delete the API that fronts this model. The gateway stops serving it."
     ),
@@ -480,12 +521,14 @@ class PublishingService:
         environment_repository: EnvironmentRepository | None = None,
         cost_center_repository: CostCenterRepository | None = None,
         blocked_list: BlockedListGate | None = None,
+        self_hosted_evidence: EvidenceReader | None = None,
     ) -> None:
         self._repository = repository
         self._cost_centers = cost_center_repository
         # What a new blocked list holds. Without it, a list MOSAIC creates blocks nothing until
         # the budget check writes it.
         self._blocked_list = blocked_list
+        self._self_hosted_evidence = self_hosted_evidence
         self._endpoints = endpoint_repository
         self._client_factory = client_factory
         self._writer_factory = writer_factory
@@ -646,6 +689,16 @@ class PublishingService:
                 "instead of publishing it again.",
                 details={"id": existing.id, "status": str(existing.status)},
             )
+        choice = request.runtime_target
+        if existing and existing.is_self_hosted() and choice is None:
+            raise ConflictError("Choose a runtime explicitly before replacing the draft.")
+        if choice is not None and choice.kind == "selfHosted":
+            runtime = await require_runtime(self._repository, gateway, choice)
+            require_chat_profile(
+                gateway, runtime, endpoint.provider, fit.api_shape,
+                fit.capability == DeploymentCapability.CHAT, request.governed_access,
+                backend_key=endpoint.uses_backend_key(),
+            )
         publication = Publication(
             id=target,
             tenant_id=actor.tenant_id,
@@ -675,6 +728,7 @@ class PublishingService:
             governed_access=request.governed_access,
             shape_version=CURATED_SHAPE_VERSION,
             api_shape=fit.api_shape,
+            runtime_target=choice,
             created_at=existing.created_at if existing else utc_now(),
         )
         capabilities = await publication_policy_capabilities(self._endpoints, publication, gateway)
@@ -836,6 +890,8 @@ class PublishingService:
                     ),
                 )
         validate_cloud_access(gateway.azure_cloud, settings)
+        if publication.is_self_hosted() and (settings is None or settings.keys_enabled):
+            raise ValidationError("Self-hosted publishing does not support caller keys.")
         if settings:
             changes["subscription_required"] = not settings.entra_enabled
         updated = Publication.model_validate(
@@ -1054,16 +1110,24 @@ class PublishingService:
         backend = await self._backend(publication, endpoint, gateway)
         origin = backend.origin
         snapshot, access_warnings = await self._access_snapshot(publication, gateway)
-        policy = self._policy(publication, snapshot)
+        runtime = await self._runtime(actor, publication, gateway, endpoint)
+        policy = self._policy(publication, snapshot, runtime)
         self._require_policy_fit(
             publication, policy,
             await publication_policy_capabilities(self._endpoints, publication, gateway),
             boundary="plan",
         )
         await self._reject_collisions(actor, publication, gateway, client)
+        runtime_review, runtime_snapshot, runtime_steps = (
+            await self._review_runtime(publication, gateway, runtime, client, backend, policy)
+            if runtime is not None else (None, None, [])
+        )
 
         if snapshot:
             steps = await self._governed_steps(publication, snapshot, client, resource)
+            if runtime_steps:
+                activation = next(i for i, step in enumerate(steps) if step.stage == "activate")
+                steps[activation:activation] = runtime_steps
             live = await client.get_api(publication.api_name)
             key_names = (
                 (live.get("properties") or {}).get("subscriptionKeyParameterNames")
@@ -1097,6 +1161,10 @@ class PublishingService:
                     )
                 )
 
+        digest = publication_digest(
+            publication, policy, origin, snapshot, environment_fingerprint=environment_fingerprint,
+            key_secret=backend.key_secret,
+        )
         plan = PublishPlan(
             id=new_id("publishplan"),
             tenant_id=actor.tenant_id,
@@ -1105,19 +1173,16 @@ class PublishingService:
             steps=steps,
             facets=policy.facets,
             policy_content_sha256=policy.content_sha256,
-            digest=publication_digest(
-                publication,
-                policy,
-                origin,
-                snapshot,
-                environment_fingerprint=environment_fingerprint,
-                key_secret=backend.key_secret,
-            ),
-            warnings=[
-                *self._warnings(publication, gateway, endpoint),
+            digest=self._runtime_digest(digest, runtime_snapshot, runtime_steps, publication),
+            warnings=(self._warnings(publication, gateway, endpoint) if runtime is None else [
+                "Only the selected local ingress may serve this API. Streaming token counts are "
+                "estimates; counters do not synchronize across gateways.",
+            ]) + [
                 *([verdict.reason] if verdict.level == VerdictLevel.WARNING else []),
                 *access_warnings,
             ],
+            runtime_review=runtime_review,
+            runtime_snapshot=runtime_snapshot,
             actor_object_id=actor.object_id,
             access_snapshot=snapshot,
             previous_access_version=(
@@ -1144,13 +1209,194 @@ class PublishingService:
 
     @staticmethod
     def _policy(
-        publication: Publication, snapshot: ModelAccessSnapshot | None
+        publication: Publication, snapshot: ModelAccessSnapshot | None,
+        runtime: SelfHostedGateway | None = None,
     ) -> PublicationPolicy:
         if snapshot is None:
+            if publication.is_self_hosted():
+                raise ValidationError("Self-hosted publishing requires a governed access snapshot.")
             return render_publication_policy(publication)
+        if runtime is not None and any(
+            grant.enabled and grant.subject.kind != EntitlementSubjectKind.USER
+            for grant in snapshot.grants
+        ):
+            raise ValidationError("This self-hosted profile supports only direct user grants.")
         from mosaic_api.integrations.access_policy import render_governed_policy
 
-        return render_governed_policy(publication, snapshot)
+        return render_governed_policy(
+            publication, snapshot, self_hosted_gateway=runtime.gateway_name if runtime else None
+        )
+
+    async def _runtime(
+        self, actor: Actor, publication: Publication, gateway: Gateway, endpoint: ModelEndpoint
+    ) -> SelfHostedGateway | None:
+        if not publication.is_self_hosted() or publication.runtime_target is None:
+            return None
+        runtime = await require_runtime(self._repository, gateway, publication.runtime_target)
+        fit = self._fit(
+            endpoint,
+            await self._require_known_deployment(actor, endpoint, publication.deployment_name),
+            gateway,
+        )
+        require_chat_profile(
+            gateway, runtime, endpoint.provider, publication.api_shape,
+            fit.capability == DeploymentCapability.CHAT, publication.governed_access,
+            backend_key=endpoint.uses_backend_key(),
+        )
+        return runtime
+
+    @staticmethod
+    def _runtime_items(
+        publication: Publication, runtime: SelfHostedGateway
+    ) -> tuple[_Resource, _Resource]:
+        marker = binding_name(publication)
+        return (
+            _Resource(PublishedResourceKind.PUBLICATION_BINDING, marker, f"namedValues/{marker}"),
+            _Resource(
+                PublishedResourceKind.GATEWAY_API, runtime.gateway_name,
+                gateway_api_segment(runtime.gateway_name, publication.api_name),
+            ),
+        )
+
+    async def _review_runtime(
+        self, publication: Publication, gateway: Gateway, runtime: SelfHostedGateway,
+        client: ApimClient, backend: _Backend, policy: PublicationPolicy,
+    ) -> tuple[SelfHostedRuntimeReview, AppliedSelfHostedRuntime | None, list[PublishPlanStep]]:
+        child = await client.get_self_hosted_gateway(runtime.gateway_name)
+        if child is None:
+            raise ConflictError("The selected self-hosted gateway no longer exists in APIM.")
+        child_candidate(gateway, child, expected_name=runtime.gateway_name)
+        await self._reject_foreign_links(publication, gateway, runtime, client)
+        await self._check_chat_operations(publication, client, publication.resources)
+        binding, association = self._runtime_items(publication, runtime)
+        live_binding = await client.get_named_value(binding.name)
+        live_association = await client.get_gateway_api(runtime.gateway_name, publication.api_name)
+        if live_binding is not None and not matching_binding(
+            live_binding, binding_value(publication, runtime.gateway_name)
+        ):
+            raise ConflictError("The APIM publication binding has drifted or is unowned.")
+        steps = []
+        for item, observed, reason in (
+            (binding, live_binding, "Record the model deployment and selected runtime in APIM."),
+            (association, live_association, "Attach this API to the selected self-hosted gateway."),
+        ):
+            exact = f"{gateway.arm_resource().canonical}/{item.segment}"
+            owned = any(
+                row.created_by_mosaic and row.kind == item.kind and row.resource_id == exact
+                for row in publication.resources
+            )
+            if (observed is not None) != owned:
+                raise ConflictError("An unowned or missing APIM runtime resource prevents review.")
+            steps.append(PublishPlanStep(
+                kind=item.kind, name=item.name, resource_id=exact, existed=owned,
+                action=PublishAction.NO_CHANGE if owned else PublishAction.CREATE,
+                reason="Retain the existing owned resource." if owned else reason, stage="policy",
+            ))
+        permissions = await client.effective_permissions()
+        inherited = await client.get_service_policy(strict=True)
+        scope = self._runtime_scope(publication, runtime, backend, policy, inherited)
+        blockers = await missing_evidence(self._self_hosted_evidence, scope)
+        if not simple_service_policy(inherited):
+            blockers.insert(0, "Custom parent policy is outside the first self-hosted profile.")
+        if not runtime.image_digest:
+            blockers.insert(0, "Record the running image digest before qualifying it.")
+        if not all(arm_permits(permissions or [], action) for action in RUNTIME_ACTIONS):
+            blockers.insert(0, "APIM association and binding permissions are unconfirmed.")
+        parent_origin = str(gateway.capabilities.gateway_url).rstrip("/").lower()
+        if runtime.ingress_origin == parent_origin:
+            blockers.insert(0, "The registered ingress is the parent Azure-managed ingress.")
+        operation = governed_operations(publication)[0]
+        operation_path = f"/{publication.api_path.strip('/')}/{operation.url_template.lstrip('/')}"
+        review = SelfHostedRuntimeReview(
+            runtime_id=runtime.id, gateway_name=runtime.gateway_name,
+            image_version=runtime.image_version, ingress_origin=runtime.ingress_origin,
+            parent_name=gateway.name, parent_resource_id=gateway.arm_resource().canonical,
+            parent_ingress=(str(gateway.capabilities.gateway_url).rstrip("/")
+                            if gateway.capabilities.gateway_url else None),
+            api_name=publication.api_name, association_id=steps[1].resource_id,
+            binding_id=steps[0].resource_id,
+            operation_path=operation_path,
+            api_version=SELF_HOSTED_CHAT_API_VERSION, blockers=blockers,
+        )
+        return review, applied_runtime_snapshot(runtime, scope) if not blockers else None, steps
+
+    @staticmethod
+    def _runtime_scope(
+        publication: Publication, runtime: SelfHostedGateway,
+        backend: _Backend, policy: PublicationPolicy, inherited: str | None,
+    ) -> str:
+        return fingerprint({
+            "runtime": runtime_fingerprint(runtime), "rules": RUNTIME_RULES,
+            "origin": backend.origin, "publication": publication.id,
+            "apiPath": publication.api_path,
+            "policy": policy.content_sha256, "inheritedPolicy": inherited,
+            "binding": binding_value(publication, runtime.gateway_name),
+        })
+
+    @staticmethod
+    def _runtime_digest(
+        digest: str, snapshot: AppliedSelfHostedRuntime | None,
+        steps: list[PublishPlanStep], publication: Publication,
+    ) -> str:
+        if not publication.is_self_hosted():
+            return digest
+        return fingerprint({
+            "intent": digest,
+            "qualification": snapshot.model_dump(mode="json") if snapshot else None,
+            "writes": [step.model_dump(mode="json") for step in steps],
+        })
+
+    async def _reject_foreign_links(
+        self, publication: Publication, gateway: Gateway, runtime: SelfHostedGateway,
+        client: ApimClient, *, include_selected: bool = False,
+    ) -> None:
+        selected_seen = False
+        for row in await client.list_self_hosted_gateways():
+            child = child_candidate(gateway, row)
+            selected = child.gateway_name.casefold() == runtime.gateway_name.casefold()
+            selected_seen = selected_seen or selected
+            if selected and not include_selected:
+                continue
+            if await client.get_gateway_api(child.gateway_name, publication.api_name) is not None:
+                raise ConflictError("This API is also attached to a different or unowned runtime.")
+        if not selected_seen:
+            raise ConflictError("The APIM gateway inventory does not include the selected runtime.")
+
+    @staticmethod
+    async def _check_chat_operations(
+        publication: Publication, client: ApimClient, owned: list[PublishedResource],
+        *, require_chat: bool = False,
+    ) -> None:
+        api = await client.get_api(publication.api_name)
+        if api is None and not require_chat:
+            return
+        properties = api.get("properties") if api else None
+        if not isinstance(properties, dict) or properties.get("serviceUrl"):
+            raise ConflictError("The self-hosted API configuration could not be verified.")
+        expected = governed_operations(publication)[0]
+        operations = await client.list_operations(publication.api_name, strict=True)
+        resource_id = (
+            f"{client.resource.canonical}/apis/{publication.api_name}/operations/{expected.name}"
+        )
+        if len(operations) > 1 or (require_chat and len(operations) != 1):
+            raise ConflictError("The self-hosted API must expose only the reviewed Chat operation.")
+        for operation in operations:
+            observed = operation.get("properties")
+            if (
+                operation.get("name") != expected.name or not isinstance(observed, dict)
+                or observed.get("method") != expected.method
+                or observed.get("urlTemplate") != expected.url_template
+                or not any(
+                    item.created_by_mosaic and item.kind == PublishedResourceKind.API_OPERATION
+                    and item.name == expected.name and item.resource_id == resource_id
+                    for item in owned
+                )
+            ):
+                raise ConflictError("The self-hosted API has an unknown or unowned operation.")
+            if await client.get_operation_policy(
+                publication.api_name, expected.name, strict=True
+            ) is not None:
+                raise ConflictError("An operation policy overrides the reviewed runtime guard.")
 
     @staticmethod
     def _require_policy_fit(
@@ -1522,6 +1768,10 @@ class PublishingService:
                 }
             )
         )
+        if publication.is_self_hosted() and not api.existed:
+            steps.append(api_policy.model_copy(update={
+                "stage": "prepare", "reason": "Install deny-all before exposing any operation.",
+            }))
 
         grants = {
             grant.subscription_name: grant
@@ -1798,6 +2048,8 @@ class PublishingService:
                 return any(entry.get("name") == publication.api_name for entry in linked)
             case PublishedResourceKind.SUBSCRIPTION:
                 return await client.get_subscription(item.name) is not None
+            case _:
+                raise ConflictError("This resource requires exact runtime ownership verification.")
 
     async def apply(self, actor: Actor, target_id: str, plan_id: str | None = None) -> PublishRun:
         owner = new_id("publishrun")
@@ -1860,21 +2112,39 @@ class PublishingService:
         )
         backend = await self._backend(publication, endpoint, gateway)
         snapshot, _ = await self._access_snapshot(publication, gateway, boundary="apply")
-        policy = self._policy(publication, snapshot)
+        runtime = await self._runtime(actor, publication, gateway, endpoint)
+        policy = self._policy(publication, snapshot, runtime)
         self._require_policy_fit(
             publication, policy,
             await publication_policy_capabilities(self._endpoints, publication, gateway),
             boundary="apply",
         )
+        runtime_snapshot: AppliedSelfHostedRuntime | None = None
+        runtime_steps: list[PublishPlanStep] = []
+        if runtime is not None:
+            review, runtime_snapshot, runtime_steps = await self._review_runtime(
+                publication, gateway, runtime, client, backend, policy
+            )
+            if (
+                runtime_snapshot is None or plan.runtime_snapshot != runtime_snapshot
+                or plan.runtime_review is None or plan.runtime_review.blockers
+            ):
+                raise ConflictError(
+                    "The selected self-hosted runtime is not verified for this reviewed plan.",
+                    details={"blockers": review.blockers, "reason": "localGatewayNotReady"},
+                )
+            approved_steps = [step for step in plan.steps if step.kind in EXACT_RUNTIME_RESOURCES]
+            if approved_steps != runtime_steps:
+                raise ConflictError("The reviewed gateway association or binding has changed.")
         if (
-            publication_digest(
+            self._runtime_digest(publication_digest(
                 publication,
                 policy,
                 backend.origin,
                 snapshot,
                 environment_fingerprint=environment_fingerprint,
                 key_secret=backend.key_secret,
-            )
+            ), runtime_snapshot, runtime_steps, publication)
             != plan.digest
         ):
             raise ConflictError(
@@ -1897,7 +2167,8 @@ class PublishingService:
         client = self._client_factory(resource)
         if snapshot:
             self._spawn(
-                self._run_governed_apply(publication, gateway, client, plan, policy, backend, run)
+                self._run_governed_apply(publication, gateway, client, plan, policy, backend, run,
+                                         runtime=runtime)
             )
         else:
             self._spawn(self._run_apply(publication, gateway, client, plan, policy, backend, run))
@@ -1928,6 +2199,7 @@ class PublishingService:
                 warnings=self._unpublish_warnings(publication),
                 actor_object_id=actor.object_id,
                 access_snapshot=publication.applied_access,
+                runtime_snapshot=publication.applied_runtime,
             )
             plan.review = build_review(publication, plan, publication.applied_access)
             await self._repository.save_publish_plan(plan)
@@ -1968,7 +2240,9 @@ class PublishingService:
             or plan.publication_id != publication.id
         ):
             raise NotFoundError("Unpublish plan was not found", details={"id": plan_id})
-        if unpublish_digest(publication) != plan.digest:
+        if unpublish_digest(publication) != plan.digest or (
+            publication.is_self_hosted() and plan.runtime_snapshot != publication.applied_runtime
+        ):
             raise ConflictError(
                 "This publication changed after its unpublish plan was made, so the plan no "
                 "longer says what unpublishing removes or who loses access. Review a new plan "
@@ -1995,7 +2269,10 @@ class PublishingService:
         if _is_governed(publication):
             # Keep the deny policy attached until the API itself is gone. Removing a policy first
             # can expose the backend under inherited APIM policies while cleanup is still running.
-            removals.sort(key=lambda item: item.kind != PublishedResourceKind.API)
+            removals.sort(key=lambda item: (
+                0 if item.kind == PublishedResourceKind.GATEWAY_API else
+                1 if item.kind == PublishedResourceKind.API else 2
+            ))
         return removals
 
     @staticmethod
@@ -2058,6 +2335,7 @@ class PublishingService:
             plan_digest=plan.digest,
             actor_object_id=actor.object_id,
             access_snapshot=plan.access_snapshot,
+            runtime_snapshot=plan.runtime_snapshot,
         )
 
     def _spawn(self, coroutine: Coroutine[Any, Any, None]) -> None:
@@ -2141,6 +2419,8 @@ class PublishingService:
         policy: PublicationPolicy,
         backend: _Backend,
         run: PublishRun,
+        *,
+        runtime: SelfHostedGateway | None = None,
     ) -> None:
         started = utc_now()
         writer = self._writer_factory(gateway.arm_resource())
@@ -2165,6 +2445,18 @@ class PublishingService:
                     )
                     write_started = False
                     try:
+                        if step.kind in EXACT_RUNTIME_RESOURCES:
+                            if runtime is None:
+                                raise ConflictError("The plan did not select a local runtime.")
+                            await self._apply_runtime_resource(
+                                publication, runtime, client, writer, step, result, run,
+                                results, owned,
+                            )
+                            continue
+                        if runtime is not None and step.stage == "activate":
+                            await self._require_runtime_activation(
+                                publication, gateway, runtime, client, backend, policy, run, owned,
+                            )
                         if is_blocked_list(step.kind, step.name):
                             # Before any policy that reads it. MOSAIC keeps it for the gateway, so
                             # the publication never owns it, and no rollback deletes it.
@@ -2200,6 +2492,10 @@ class PublishingService:
                         await self._write_governed_step(
                             writer, publication, policy, backend, step, item, plan.access_snapshot
                         )
+                        if runtime is not None and step.stage == "activate":
+                            await self._require_runtime_activation(
+                                publication, gateway, runtime, client, backend, policy, run, owned,
+                            )
                         result.status = PublishStepStatus.SUCCEEDED
                         owned = _merge_resources(
                             owned,
@@ -2217,6 +2513,16 @@ class PublishingService:
                         result.status = PublishStepStatus.FAILED
                         result.error = str(error)
                         failure = f"{step.kind} {step.name}: {error}"
+                        if result.write_outcome == "pending":
+                            await self._progress(publication, run, results, owned)
+                            actual = publication.model_copy(update={"resources": owned})
+                            await self._establish_deny(actual, client, writer)
+                            await self._interrupted(
+                                publication, run,
+                                "The APIM association or binding write is unconfirmed. "
+                                "Reconcile exact ownership before releasing this run.",
+                            )
+                            return
                         if write_started and result.created_by_mosaic:
                             # A failed ARM poll/response is not proof that the create did nothing.
                             # Retain confirmed creation for denial and subsequent reconciliation.
@@ -2263,6 +2569,87 @@ class PublishingService:
             raise
         finally:
             self._active.discard(publication.id)
+
+    async def _apply_runtime_resource(
+        self, publication: Publication, runtime: SelfHostedGateway, client: ApimClient,
+        writer: ApimWriter, step: PublishPlanStep, result: PublishStepResult, run: PublishRun,
+        results: list[PublishStepResult], owned: list[PublishedResource],
+    ) -> None:
+        binding, association = self._runtime_items(publication, runtime)
+        item = binding if step.kind == binding.kind else association
+        if step.resource_id != writer.resource_id(item.segment) or step.name != item.name:
+            raise ConflictError("This write does not match the reviewed APIM resource.")
+        marker = binding_value(publication, runtime.gateway_name)
+        existing = (
+            await client.get_named_value(item.name) if item == binding
+            else await client.get_gateway_api(
+                runtime.gateway_name, publication.api_name
+            )
+        )
+        if step.action == PublishAction.NO_CHANGE:
+            if (
+                existing is None
+                or not any(row.created_by_mosaic and row.kind == step.kind
+                           and row.resource_id == step.resource_id for row in owned)
+                or (item == binding and not matching_binding(existing, marker))
+            ):
+                raise ConflictError("The owned APIM resource changed after review.")
+            result.write_outcome = "retained"
+        else:
+            if existing is not None or step.action != PublishAction.CREATE:
+                result.write_outcome = "notCreated"
+                raise ConflictError("An unowned APIM resource appeared after review.")
+            result.write_outcome = "pending"
+            await self._progress(publication, run, results, owned)
+            status = (
+                await writer.create_publication_binding(item.name, marker)
+                if item == binding
+                else await writer.attach_gateway_api(runtime.gateway_name, publication.api_name)
+            )
+            if status != 201:
+                result.write_outcome = "notCreated"
+                raise ConflictError("APIM reported an existing resource; MOSAIC does not own it.")
+            result.created_by_mosaic = True
+            result.write_outcome = "created"
+            owned[:] = _merge_resources(owned, [
+                PublishedResource(kind=item.kind, name=item.name, resource_id=step.resource_id,
+                                  created_by_mosaic=True)
+            ])
+        result.status = PublishStepStatus.SUCCEEDED
+        await self._progress(publication, run, results, owned)
+
+    async def _require_runtime_activation(
+        self, publication: Publication, gateway: Gateway, runtime: SelfHostedGateway,
+        client: ApimClient, backend: _Backend, policy: PublicationPolicy, run: PublishRun,
+        owned: list[PublishedResource],
+    ) -> None:
+        choice = publication.runtime_target
+        assert choice is not None
+        current = await require_runtime(self._repository, gateway, choice)
+        inherited = await client.get_service_policy(strict=True)
+        scope = self._runtime_scope(publication, current, backend, policy, inherited)
+        child = await client.get_self_hosted_gateway(current.gateway_name)
+        if child is None:
+            raise ConflictError("The selected APIM gateway disappeared before activation.")
+        child_candidate(gateway, child, expected_name=current.gateway_name)
+        await self._reject_foreign_links(publication, gateway, runtime, client)
+        await self._check_chat_operations(publication, client, owned, require_chat=True)
+        marker = await client.get_named_value(binding_name(publication))
+        value = binding_value(publication, runtime.gateway_name)
+        if (
+            run.runtime_snapshot != applied_runtime_snapshot(current, scope)
+            or not simple_service_policy(inherited)
+            or await missing_evidence(self._self_hosted_evidence, scope)
+            or marker is None or not matching_binding(marker, value)
+            or await client.get_gateway_api(runtime.gateway_name, publication.api_name) is None
+        ):
+            raise ConflictError("APIM binding, association or runtime evidence changed.")
+        if (
+            await client.get_api_policy(publication.api_name, strict=True) != policy.api_policy_xml
+            or await client.get_policy_fragment(publication.fragment_name, strict=True)
+            != policy.fragment_xml
+        ):
+            raise ConflictError("The APIM runtime guard did not match the reviewed policy.")
 
     async def _delete_revoked_key(
         self,
@@ -2510,7 +2897,9 @@ class PublishingService:
             # If persisting progress fails here, the API stays denied and the lock is retained.
             await self._progress(publication, run, results, resources)
             candidate = safe_access_snapshot(publication, target)
-            if self._owns(actual, PublishedResourceKind.API, publication.api_name):
+            if not publication.is_self_hosted() and self._owns(
+                actual, PublishedResourceKind.API, publication.api_name
+            ):
                 try:
                     await self._assert_lock(publication, run)
                     restored = self._policy(publication, candidate)
@@ -2605,6 +2994,10 @@ class PublishingService:
             failure,
             *recovery_errors,
             (
+                "The API Management deny policy was written. Verify local ingress is fenced "
+                "before retrying or cleaning up."
+                if denied and publication.is_self_hosted()
+                else
                 "Access was restricted to the last safe snapshot. Subscriptions were retained "
                 "for a reviewed retry; suspension failures are listed above. No keys were rotated."
                 if denied
@@ -2726,8 +3119,21 @@ class PublishingService:
         )
         try:
             await self._assert_lock(publication, run)
+            runtime = None
             if governed:
                 client = self._client_factory(writer.resource)
+                if publication.is_self_hosted() and publication.runtime_target is not None:
+                    runtime = await require_runtime(
+                        self._repository, gateway, publication.runtime_target
+                    )
+                    await self._reject_foreign_links(publication, gateway, runtime, client)
+                    await self._require_fenced(publication, runtime)
+                    await self._check_chat_operations(publication, client, remaining)
+                    marker = await client.get_named_value(binding_name(publication))
+                    if marker is not None and not matching_binding(
+                        marker, binding_value(publication, runtime.gateway_name)
+                    ):
+                        raise ConflictError("The APIM publication binding has drifted.")
                 denied, guard_errors = await self._establish_deny(publication, client, writer)
                 errors.extend(guard_errors)
                 errors.extend(await self._suspend_owned_subscriptions(publication, client, writer))
@@ -2745,7 +3151,16 @@ class PublishingService:
                 )
                 try:
                     await self._progress(publication, run, [*results, result], remaining)
-                    await self._remove(writer, publication, step.kind, step.name)
+                    if runtime is not None and step.kind in EXACT_RUNTIME_RESOURCES:
+                        await self._remove_runtime_resource(
+                            publication, runtime, client, writer, step, remaining
+                        )
+                    else:
+                        if runtime is not None and step.kind == PublishedResourceKind.API:
+                            await self._reject_foreign_links(
+                                publication, gateway, runtime, client, include_selected=True
+                            )
+                        await self._remove(writer, publication, step.kind, step.name)
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
@@ -2804,6 +3219,38 @@ class PublishingService:
             raise
         finally:
             self._active.discard(publication.id)
+
+    async def _require_fenced(
+        self, publication: Publication, runtime: SelfHostedGateway
+    ) -> None:
+        # A cached allow can survive loss of cloud connectivity. An ARM deny is not a fence.
+        scope = fingerprint({"teardown": publication.id, "runtime": runtime_fingerprint(runtime)})
+        if await missing_evidence(self._self_hosted_evidence, scope, ("ingress", "topology")):
+            raise ConflictError(
+                "The local ingress is not confirmed fenced. Runtime cleanup cannot continue."
+            )
+
+    async def _remove_runtime_resource(
+        self, publication: Publication, runtime: SelfHostedGateway, client: ApimClient,
+        writer: ApimWriter, step: PublishPlanStep, remaining: list[PublishedResource],
+    ) -> None:
+        binding, association = self._runtime_items(publication, runtime)
+        item = binding if step.kind == binding.kind else association
+        if (
+            step.resource_id != writer.resource_id(item.segment) or step.name != item.name
+            or not any(row.created_by_mosaic and row.kind == item.kind
+                       and row.resource_id == step.resource_id for row in remaining)
+        ):
+            raise ConflictError("MOSAIC does not own this exact runtime resource.")
+        if item == association:
+            await writer.detach_gateway_api(runtime.gateway_name, publication.api_name)
+        else:
+            existing = await client.get_named_value(item.name)
+            if existing is None:
+                return
+            if not matching_binding(existing, binding_value(publication, runtime.gateway_name)):
+                raise ConflictError("The APIM binding changed and will not be removed.")
+            await writer.delete_named_value(item.name)
 
     async def _rollback(
         self,
@@ -2922,6 +3369,7 @@ class PublishingService:
             applied=True,
             access_snapshot=access_snapshot,
             access_state="applied" if access_snapshot else None,
+            applied_runtime=run.runtime_snapshot,
         )
         current = await self._repository.get_publication(publication.tenant_id, publication.id)
         if current is None:
@@ -3052,6 +3500,7 @@ class PublishingService:
         unpublished: bool = False,
         access_snapshot: ModelAccessSnapshot | None = None,
         access_state: str | None = None,
+        applied_runtime: AppliedSelfHostedRuntime | None = None,
     ) -> None:
         """Re-read before writing, so an apply never resurrects a publication that was removed."""
 
@@ -3068,12 +3517,15 @@ class PublishingService:
             updates["last_run_id"] = run_id
         if status in {PublicationStatus.FAILED, PublicationStatus.ROLLED_BACK}:
             updates["applied_review"] = None
+            updates["applied_runtime"] = None
         if applied:
             updates["last_applied_at"] = utc_now()
             updates["unpublished_at"] = None
             updates["applied_review"] = review_snapshot(publication, access_snapshot)
+            updates["applied_runtime"] = applied_runtime
         if unpublished:
             updates["applied_review"] = None
+            updates["applied_runtime"] = None
             updates["unpublished_at"] = utc_now()
             updates["key_policy_hashes"] = {}
             updates["key_lifecycle"] = {
@@ -3337,10 +3789,45 @@ class PublishingService:
         client = self._client_factory(gateway.arm_resource())
         writer = self._writer_factory(gateway.arm_resource())
         await self._assert_lock(publication, run)
-        # Pending steps identify writes the old process may have completed before it lost storage.
-        # Recovery retains that evidence rather than dropping an unrecorded resource on the floor.
+        runtime = None
+        if publication.is_self_hosted() and publication.runtime_target is not None:
+            runtime = await require_runtime(
+                self._repository, gateway, publication.runtime_target
+            )
+            await self._require_fenced(publication, runtime)
+        # A visible resource never resolves an unconfirmed association or binding create.
         resources = list(publication.resources)
         for step in run.steps:
+            if step.kind in EXACT_RUNTIME_RESOURCES:
+                if runtime is None:
+                    raise ConflictError("Recovery has no matching registered runtime.")
+                binding, association = self._runtime_items(publication, runtime)
+                item = binding if step.kind == binding.kind else association
+                exact_id = writer.resource_id(item.segment)
+                if step.resource_id != exact_id or step.name != item.name:
+                    raise ConflictError("The recovery journal names a different runtime resource.")
+                if step.write_outcome in {"pending", "created"}:
+                    live = (
+                        await client.get_named_value(item.name) if item == binding
+                        else await client.get_gateway_api(
+                            runtime.gateway_name, publication.api_name
+                        )
+                    )
+                    if live is not None and step.write_outcome == "pending":
+                        raise ConflictError(
+                            "An unconfirmed APIM resource still exists. Do not claim or detach it "
+                            "as part of recovery. Reconcile ownership first."
+                        )
+                    if live is not None:
+                        if item == binding and not matching_binding(
+                            live, binding_value(publication, runtime.gateway_name)
+                        ):
+                            raise ConflictError("The APIM publication binding has drifted.")
+                        resources = _merge_resources(resources, [PublishedResource(
+                            kind=step.kind, name=step.name, resource_id=step.resource_id,
+                            created_by_mosaic=True,
+                        )])
+                continue
             if not step.created_by_mosaic or step.action == PublishAction.DELETE:
                 continue
             item = _Resource(step.kind, step.name, "")

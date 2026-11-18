@@ -3,6 +3,7 @@
 [Documentation](README.md) | [MOSAIC](../README.md)
 
 - [Publishing models](#publishing-models)
+- [Publication targets](#publication-targets)
 - [Catalog summaries](#catalog-summaries)
 - [Unpublishing](#unpublishing)
 
@@ -135,6 +136,29 @@ Unpublishing runs the same machinery over the tracked resources in reverse, so a
 before the backend it routes to. A publication that still owns API Management resources cannot be
 deleted, and a gateway with published models cannot be removed, so intent is never dropped while
 the resources it created keep running.
+
+## Publication targets
+
+Choose the **APIM service** that owns the API, then its **Gateway runtime**. Azure-managed is the
+default for a new publication and for a legacy publication that never selected a target.
+Registered self-hosted runtimes are an explicit same-parent choice. An unavailable or stale
+self-hosted selection blocks the plan; it never becomes an Azure-managed selection.
+
+The **Association map** distinguishes the parent, owned API, and selected runtime. A reviewed
+self-hosted plan includes an exact gateway–API attachment and an owned non-secret APIM binding
+that records the endpoint and deployment. The marker is not a route or an authorization decision.
+A preexisting attachment is not newly owned. Uncertain writes retain their journal and require
+reconciliation; cleanup never detaches a link without exact recorded ownership. Azure-managed
+ingress is not a fallback. Only a verified applied local target supplies caller guidance.
+
+The first profile is offline-verified only: one existing single-replica Linux x64 APIM 2.13.2 on
+private AKS, a Commercial Developer parent, and governed Azure OpenAI Chat Completions
+(`2024-10-21`) with JSON or streaming, direct delegated Entra access, and workload identity to
+the backend. Custom inherited APIM policies, caller or backend keys, other operations, and
+multi-runtime delivery are outside this profile. Required policy, ingress, identity, topology,
+and grant/budget attribution evidence is not inferred from ARM writes or parent logs. Streaming
+token counts are estimates, and limits are not shared across gateways. Outside the fictional
+fixtures, the runtime remains ineligible until separate non-production proof qualifies it.
 
 ## Catalog summaries
 

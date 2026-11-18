@@ -84,6 +84,18 @@ _SENTENCE_ENDINGS: tuple[str, ...] = (".", "!", "?", "…")
 JsonObject = dict[str, Any]
 
 
+def self_hosted_gateway_segment(name: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,79}", name) or name.casefold() == "managed":
+        raise ValueError("An existing self-hosted gateway name is required.")
+    return name
+
+
+def gateway_api_segment(gateway_name: str, api_name: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,79}", api_name):
+        raise ValueError("An exact APIM API name is required.")
+    return f"gateways/{self_hosted_gateway_segment(gateway_name)}/apis/{api_name}"
+
+
 def _json_body(response: httpx.Response) -> object:
     try:
         return response.json()
@@ -413,6 +425,7 @@ class ArmClient:
         params: dict[str, str] | None = None,
         json: JsonObject | None = None,
         if_match: str | None = None,
+        if_none_match: str | None = None,
         allow_not_found: bool = False,
         sensitive: bool = False,
         return_client_errors: bool = False,
@@ -441,6 +454,8 @@ class ArmClient:
             }
             if if_match is not None:
                 headers["If-Match"] = if_match
+            if if_none_match is not None:
+                headers["If-None-Match"] = if_none_match
             try:
                 response = await self._client.request(
                     method, target, params=params, json=json, headers=headers,
@@ -573,6 +588,7 @@ class ArmClient:
         *,
         params: dict[str, str] | None = None,
         allow_not_found: bool = False,
+        require_object: bool = False,
     ) -> JsonObject | None:
         response = await self.request(url, params=params, allow_not_found=allow_not_found)
         if response is None:
@@ -584,6 +600,8 @@ class ArmClient:
                 "Azure Resource Manager returned a response MOSAIC could not parse",
                 details={"url": url},
             ) from error
+        if require_object and not isinstance(payload, dict):
+            raise UpstreamError("Azure Resource Manager returned an invalid object")
         return payload if isinstance(payload, dict) else {"value": payload}
 
     async def list(
@@ -601,7 +619,8 @@ class ArmClient:
         pages = 0
         while next_url and pages < max_pages:
             payload = await self.get(
-                next_url, params=next_params, allow_not_found=allow_not_found
+                next_url, params=next_params, allow_not_found=allow_not_found,
+                require_object=require_complete,
             )
             if payload is None:
                 if require_complete:
@@ -752,6 +771,20 @@ class ArmClient:
             return None
         return body if isinstance(body, dict) else None
 
+    async def put_create_status(
+        self, url: str, payload: JsonObject, *, params: dict[str, str], create_only: bool
+    ) -> int:
+        """Return the original result, without replaying an uncertain ownership write."""
+        response = await self._send(
+            "PUT", url, params=params, json=payload, retry=False,
+            if_none_match="*" if create_only else None,
+        )
+        if response is None or response.status_code not in {200, 201}:
+            raise UpstreamError("API Management did not confirm the create outcome.")
+        if _poll_url(response):
+            await self._await_operation(response, resource_url=self._absolute(url))
+        return response.status_code
+
     async def delete(
         self,
         url: str,
@@ -814,7 +847,29 @@ class ApimClient:
     async def list_apis(self) -> list[JsonObject]:
         return await self._collection("apis")
 
-    async def list_operations(self, api_name: str) -> list[JsonObject]:
+    async def list_self_hosted_gateways(self) -> list[JsonObject]:
+        return await self._arm.list(
+            f"{self._base}/gateways", params=self._params, require_complete=True
+        )
+
+    async def get_self_hosted_gateway(self, name: str) -> JsonObject | None:
+        return await self._sub_resource(f"gateways/{self_hosted_gateway_segment(name)}")
+
+    async def list_gateway_apis(self, gateway_name: str) -> list[JsonObject]:
+        name = self_hosted_gateway_segment(gateway_name)
+        return await self._arm.list(
+            f"{self._base}/gateways/{name}/apis", params=self._params, require_complete=True
+        )
+
+    async def get_gateway_api(self, gateway_name: str, api_name: str) -> JsonObject | None:
+        return await self._sub_resource(gateway_api_segment(gateway_name, api_name))
+
+    async def list_operations(self, api_name: str, *, strict: bool = False) -> list[JsonObject]:
+        if strict:
+            return await self._arm.list(
+                f"{self._base}/apis/{api_name}/operations",
+                params=self._params, require_complete=True,
+            )
         return await self._collection(f"apis/{api_name}/operations")
 
     async def list_api_products(self, api_name: str) -> list[JsonObject]:
@@ -892,7 +947,7 @@ class ApimClient:
     async def list_policy_fragments(self) -> list[JsonObject]:
         return await self._collection("policyFragments")
 
-    async def _policy_value(self, path: str) -> str | None:
+    async def _policy_value(self, path: str, *, strict: bool = False) -> str | None:
         payload = await self._arm.get(
             path,
             params={**self._params, "format": "rawxml"},
@@ -901,27 +956,32 @@ class ApimClient:
         if payload is None:
             return None
         properties = payload.get("properties")
-        if not isinstance(properties, dict):
-            return None
-        value = properties.get("value")
+        value = properties.get("value") if isinstance(properties, dict) else None
+        if strict and (not isinstance(value, str) or not value.strip()):
+            raise UpstreamError("API Management returned an invalid policy; retry the read.")
         return value if isinstance(value, str) else None
 
-    async def get_service_policy(self) -> str | None:
-        return await self._policy_value(f"{self._base}/policies/policy")
+    async def get_service_policy(self, *, strict: bool = False) -> str | None:
+        return await self._policy_value(f"{self._base}/policies/policy", strict=strict)
 
-    async def get_api_policy(self, api_name: str) -> str | None:
-        return await self._policy_value(f"{self._base}/apis/{api_name}/policies/policy")
+    async def get_api_policy(self, api_name: str, *, strict: bool = False) -> str | None:
+        return await self._policy_value(
+            f"{self._base}/apis/{api_name}/policies/policy", strict=strict
+        )
 
     async def get_product_policy(self, product_name: str) -> str | None:
         return await self._policy_value(f"{self._base}/products/{product_name}/policies/policy")
 
-    async def get_operation_policy(self, api_name: str, operation_name: str) -> str | None:
+    async def get_operation_policy(
+        self, api_name: str, operation_name: str, *, strict: bool = False
+    ) -> str | None:
         return await self._policy_value(
-            f"{self._base}/apis/{api_name}/operations/{operation_name}/policies/policy"
+            f"{self._base}/apis/{api_name}/operations/{operation_name}/policies/policy",
+            strict=strict,
         )
 
-    async def get_policy_fragment(self, name: str) -> str | None:
-        return await self._policy_value(f"{self._base}/policyFragments/{name}")
+    async def get_policy_fragment(self, name: str, *, strict: bool = False) -> str | None:
+        return await self._policy_value(f"{self._base}/policyFragments/{name}", strict=strict)
 
     async def _sub_resource(self, segment: str) -> JsonObject | None:
         return await self._arm.get(

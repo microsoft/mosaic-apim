@@ -47,6 +47,7 @@ import { ErrorState, Loading } from './AsyncState'
 import { useFocusAwareAnnounce } from './useFocusAwareAnnounce'
 import { PolicyCapabilityError } from './PolicyCapabilityFeedback'
 import { ChangeReview, TechnicalExecution } from './ChangeReview'
+import { GatewayRuntimePicker, azureManaged, useGatewayRuntimes } from './GatewayRuntimePicker'
 import { EnvironmentBadge } from './EnvironmentBadge'
 import { ModelAccessRecovery } from './ModelAccessRecovery'
 import { PolicyFacetItem } from './PolicyFacets'
@@ -76,6 +77,8 @@ const actionLabels: Record<PublishAction, string> = {
 }
 
 const kindLabels: Record<PublishedResourceKind, string> = {
+  gatewayApi: 'Gateway–API association',
+  publicationBinding: 'APIM publication binding',
   namedValue: 'Named value',
   policyFragment: 'Policy fragment',
   backend: 'Backend',
@@ -369,6 +372,7 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
   const gatewayOptions: Gateway[] = useMemo(() => gateways.data ?? [], [gateways.data])
   const catalog = useEnvironmentCatalog()
   const selectedGateway = gatewayOptions.find((gateway) => gateway.id === gatewayId)
+  const runtimes = useGatewayRuntimes(gatewayId, open && !initialReview)
 
   useEffect(() => {
     if (!open || reviewingExistingPlan) {
@@ -599,6 +603,9 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
                     ))}
                   </Select>
                 </Field>
+                {selectedGateway && <GatewayRuntimePicker gateway={selectedGateway} choice={azureManaged}
+                  onChange={() => { /* The only enabled choice is the managed gateway. */ }}
+                  runtimes={runtimes} path="mcp" />}
                 {gateways.isPending && <Loading label="Loading gateways" />}
                 {selectedGateway && (
                   <Text size={200}>

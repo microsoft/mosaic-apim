@@ -21,6 +21,7 @@ from pydantic import (
 from pydantic.alias_generators import to_camel
 
 APIM_API_VERSION = "2024-05-01"
+SELF_HOSTED_CHAT_API_VERSION = "2024-10-21"
 # MCP servers are only visible on a preview contract. It is deliberately not the version the rest
 # of the inventory uses: a preview API that changes or disappears must degrade MCP discovery alone,
 # never the gateway sync that administrators depend on.
@@ -2924,6 +2925,8 @@ class PublishedResourceKind(StrEnum):
     API_OPERATION = "apiOperation"
     API_POLICY = "apiPolicy"
     API_OPERATION_POLICY = "apiOperationPolicy"
+    GATEWAY_API = "gatewayApi"
+    PUBLICATION_BINDING = "publicationBinding"
     PRODUCT = "product"
     PRODUCT_API = "productApi"
     SUBSCRIPTION = "subscription"
@@ -2951,6 +2954,62 @@ def _holds_api(resources: list[PublishedResource], api_name: str) -> bool:
         and item.created_by_mosaic
         for item in resources
     )
+
+
+class GatewayRuntimeChoice(MosaicModel):
+    kind: Literal["azureManaged", "selfHosted"]
+    runtime_id: str | None = Field(default=None, min_length=1, max_length=128, exclude_if=_unset)
+
+    @model_validator(mode="after")
+    def require_exact_choice(self) -> Self:
+        if (self.kind == "selfHosted") != (self.runtime_id is not None):
+            raise ValueError("A self-hosted choice must name one registered runtime")
+        return self
+
+
+class SelfHostedGatewayCreate(MosaicModel):
+    gateway_name: str = Field(max_length=80, pattern=r"^[A-Za-z0-9][A-Za-z0-9-]*$")
+    ingress_origin: str = Field(min_length=1, max_length=255)
+    image_version: str = Field(max_length=24, pattern=r"^\d+\.\d+\.\d+$")
+    image_digest: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class SelfHostedGateway(Entity):
+    entity_type: Literal["selfHostedGateway"] = "selfHostedGateway"
+    parent_gateway_id: str
+    parent_resource_id: str
+    gateway_name: str
+    ingress_origin: str
+    image_version: str
+    image_digest: str | None = None
+
+
+class SelfHostedGatewayCandidate(MosaicModel):
+    gateway_name: str
+    resource_id: str
+
+
+class SelfHostedRuntimeReview(MosaicModel):
+    runtime_id: str
+    gateway_name: str
+    image_version: str
+    ingress_origin: str
+    parent_name: str
+    parent_resource_id: str
+    parent_ingress: str | None = None
+    api_name: str
+    association_id: str
+    binding_id: str
+    operation_path: str
+    api_version: str
+    blockers: list[str] = Field(default_factory=list)
+
+
+class AppliedSelfHostedRuntime(MosaicModel):
+    runtime_id: str
+    ingress_origin: str
+    runtime_fingerprint: str
+    evidence_scope: str
 
 
 class AppliedCostCenterPool(MosaicModel):
@@ -3290,6 +3349,11 @@ class Publication(Entity):
     key_lifecycle: dict[str, KeyState] = Field(default_factory=dict)
     key_policy_hashes: dict[str, str] = Field(default_factory=dict)
     access_state: Literal["pending", "applying", "applied", "failed", "unknown"] = "pending"
+    runtime_target: GatewayRuntimeChoice | None = Field(default=None, exclude_if=_unset)
+    applied_runtime: AppliedSelfHostedRuntime | None = Field(default=None, exclude_if=_unset)
+
+    def is_self_hosted(self) -> bool:
+        return self.runtime_target is not None and self.runtime_target.kind == "selfHosted"
 
     @model_validator(mode="after")
     def fill_legacy_shape(self) -> Self:
@@ -4299,6 +4363,8 @@ class PublishPlan(Entity):
     pool_access_snapshot: PoolAccessSnapshot | None = None
     previous_access_version: int | None = None
     review: PlanReview | None = None
+    runtime_review: SelfHostedRuntimeReview | None = Field(default=None, exclude_if=_unset)
+    runtime_snapshot: AppliedSelfHostedRuntime | None = Field(default=None, exclude_if=_unset)
 
 
 class PublishStepResult(MosaicModel):
@@ -4310,6 +4376,9 @@ class PublishStepResult(MosaicModel):
     created_by_mosaic: bool = False
     error: str | None = None
     stage: Literal["prepare", "policy", "activate"] | None = None
+    write_outcome: Literal["pending", "created", "retained", "notCreated"] | None = Field(
+        default=None, exclude_if=_unset
+    )
 
 
 class PublishRun(Entity):
@@ -4335,6 +4404,7 @@ class PublishRun(Entity):
     access_snapshot: ModelAccessSnapshot | None = None
     mcp_access_snapshot: McpAccessSnapshot | None = None
     pool_access_snapshot: PoolAccessSnapshot | None = None
+    runtime_snapshot: AppliedSelfHostedRuntime | None = Field(default=None, exclude_if=_unset)
 
 
 class PublicationCreate(MosaicModel):
@@ -4350,6 +4420,7 @@ class PublicationCreate(MosaicModel):
     # which case it must be omitted. The publishable-models listing reports which applies.
     enforcement: TokenEnforcement | None = None
     governed_access: ModelAccessSettings | None = None
+    runtime_target: GatewayRuntimeChoice | None = None
 
     @field_validator("api_name", "product_name")
     @classmethod
@@ -4390,6 +4461,14 @@ class McpPublicationCreate(MosaicModel):
     display_name: str | None = Field(default=None, min_length=1, max_length=200)
     api_name: str | None = Field(default=None, min_length=1, max_length=80)
     api_path: str | None = Field(default=None, min_length=1, max_length=200)
+    runtime_target: GatewayRuntimeChoice | None = None
+
+    @field_validator("runtime_target")
+    @classmethod
+    def reject_self_hosted(cls, value: GatewayRuntimeChoice | None) -> GatewayRuntimeChoice | None:
+        if value is not None and value.kind == "selfHosted":
+            raise ValueError("Self-hosted publishing for MCP servers is not supported yet.")
+        return value
 
     @field_validator("api_name")
     @classmethod
@@ -4441,6 +4520,8 @@ class ModelConnection(MosaicModel):
     endpoint: str
     deployment_name: str
     tenant_id: str
+    self_hosted: bool | None = Field(default=None, exclude_if=_unset)
+    api_version: str | None = Field(default=None, exclude_if=_unset)
     runtime: EntitlementRuntime | None = None
     applied_methods: ModelAccessSettings | None = None
     entra_audience: str | None = None
