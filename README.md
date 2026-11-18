@@ -131,11 +131,20 @@ identifiers and secrets blurred. Directory data and checks are simulated, not li
     separately from the short call-rate window, with saved or inherited limits beside the draft.
     Saving intent does not change API Management; the affected gateway plan still needs review and apply.</td>
   </tr>
+  <tr>
+    <td colspan="2"><img src="docs/images/screenshots/console-pricing-catalog-review.png" alt="Guided public-price review with separate Commercial and Government evidence, scoped rate changes, protected rates, and a future-dated activation"></td>
+  </tr>
+  <tr>
+    <td colspan="2"><b>Public pricing catalog.</b> Review source trust and freshness, exact cloud/unit
+    changes, retained manual/billing rates, and remaining gaps before activating a dated catalog.
+    The fictional future draft is never activated by the capture and does not publish model offerings.</td>
+  </tr>
 </table>
 
 The [full gallery](docs/gallery.md) includes publishing reviews, model pools, Entra directory
 lookups, grants, cost centers, budgets, analytics, notifications, Government connections, and
-[billing-rate review](docs/gallery.md#billing-data-and-rate-review).
+[billing-rate review](docs/gallery.md#billing-data-and-rate-review) and
+[public-catalog maintenance](docs/gallery.md#public-catalog-refresh-and-review).
 The gallery's [endpoint evidence](docs/gallery.md#endpoint-evidence) distinguishes unconfirmed
 account facts from dated access checks recorded under older readiness rules.
 It also shows [cost-center requests and Automatic access](docs/gallery.md#cost-center-requests-and-automatic-access),

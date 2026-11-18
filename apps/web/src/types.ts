@@ -3631,6 +3631,8 @@ export interface PricingOverview {
   currency: 'USD'
   asOf: string
   seedLastUpdated: string
+  publicCatalogRevision?: string | null
+  publicCatalogUpdatedOn?: string | null
   sources: PriceSource[]
   clouds: PricingCloud[]
   deploymentTypes: string[]
@@ -3642,6 +3644,136 @@ export interface PricingOverview {
   lastBillingPublishedAt?: string | null
   lastBillingSourceMonth?: string | null
   billingSchedulerAlwaysOn?: boolean
+}
+
+export interface PublicCatalogRate {
+  id: string
+  cloud: string
+  publisher?: string | null
+  model: string
+  version?: string | null
+  aliases?: string[]
+  deploymentType?: string | null
+  regions?: string[] | null
+  inputPerMillion?: number | null
+  cachedInputPerMillion?: number | null
+  outputPerMillion?: number | null
+  ptuHourly?: number | null
+  effectiveFrom: string
+  effectiveUntil?: string | null
+  sourceIds: string[]
+}
+
+export interface PublicCatalogSource {
+  id: string
+  title: string
+  url: string
+  retrievedOn: string
+  method: 'supplied' | 'retail' | 'packaged'
+  acquiredAt?: string | null
+  ageDays: number
+}
+
+export interface PublicCatalogMapping {
+  cloud: 'commercial' | 'government'
+  publisher: string
+  model: string
+  version?: string | null
+  deploymentType?: string | null
+  kind: 'tokens' | 'ptu'
+  meters: { product: string; input?: string | null; output?: string | null; cachedInput?: string | null; provisioned?: string | null } | null
+  availabilitySource?: { title: string; url: string; retrievedOn: string } | null
+}
+
+export interface PublicCatalogEvidence {
+  sourceId: string
+  cloud: 'commercial' | 'government'
+  priceIds: string[]
+  excerpt: string
+}
+
+export interface PublicCatalogDraft {
+  id: string
+  version: string
+  baseRevision: string | null
+  method: 'supplied' | 'retail' | 'recovery'
+  status: 'readyForReview' | 'invalid' | 'activated'
+  error: string | null
+  acquiredAt: string
+  activationId: string | null
+  definitions: number
+  prices: number
+  sources: PublicCatalogSource[]
+  evidence: PublicCatalogEvidence[]
+  mappings: PublicCatalogMapping[]
+  missingPrices: string[]
+}
+
+export interface PublicCatalogActivation {
+  id: string
+  draftId: string
+  previousRevision: string | null
+  effectiveFrom: string
+  createdAt: string
+  recordedBy: string
+  note: string
+  backdated: boolean
+  recoveredFrom?: string | null
+}
+
+export interface PublicCatalogStatus {
+  revision: string | null
+  seedLastUpdated: string
+  sources: PublicCatalogSource[]
+  definitions: number
+  mappings: PublicCatalogMapping[]
+  deployments: number
+  pricedDeployments: number
+  drafts: PublicCatalogDraft[]
+  history: PublicCatalogActivation[]
+  nextOffset: number | null
+}
+
+export interface PublicCatalogPreview {
+  draft: PublicCatalogDraft
+  baseRevision: string | null
+  effectiveFrom: string
+  previewDigest: string
+  changes: Array<{
+    price: PublicCatalogRate
+    previous: PublicCatalogRate | null
+    previousLabel: string
+    change: 'added' | 'changed' | 'unchanged'
+    effectiveFrom: string
+  }>
+  totalChanges: number
+  added: number
+  changed: number
+  unchanged: number
+  retained: number
+  protectedManual: number
+  protectedBilling: number
+  coverage: Array<{ cloud: string; deployments: number; pricedBefore: number; pricedAfter: number }>
+  gaps: Array<{ key: string; cloud: string | null; model: string | null; region: string | null; deploymentType: string | null; reason: string; message: string }>
+  totalGaps: number
+  backdated: boolean
+  sourceDatesPrecedeActivation: boolean
+  nextOffset: number | null
+}
+
+export interface PublicCatalogApproval {
+  draftVersion: string
+  baseRevision: string | null
+  previewDigest: string
+  effectiveFrom: string
+  note: string
+  acknowledgeSourceAndGaps: boolean
+  acknowledgeBackdateImpact: boolean
+}
+
+export interface PublicCatalogTemplate {
+  schema: Record<string, unknown>
+  example: Record<string, unknown>
 }
 
 export interface PriceCreate {

@@ -2,7 +2,7 @@
 
 import base64
 import binascii
-from typing import Annotated, cast
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Query, Request, status
 from pydantic import ValidationError as PydanticValidationError
@@ -26,6 +26,15 @@ from mosaic_api.billing_pricing import (
 )
 from mosaic_api.errors import ValidationError
 from mosaic_api.pricing import EndpointPricingUpdate, PriceCreate
+from mosaic_api.pricing_catalog import (
+    MAX_CATALOG_BYTES,
+    CatalogActivateRequest,
+    CatalogActivation,
+    CatalogPackage,
+    CatalogPreviewRequest,
+    CatalogRecoveryRequest,
+    CatalogRefreshRequest,
+)
 from mosaic_api.services.billing_ingestion import (
     DEFAULT_MAX_UPLOAD_BYTES,
     BillingPayloadTooLargeError,
@@ -38,6 +47,11 @@ from mosaic_api.services.pricing import (
     PricingOverview,
     PricingService,
     UnpricedReport,
+)
+from mosaic_api.services.pricing_catalog import (
+    CatalogDraftView,
+    CatalogPreviewView,
+    CatalogStatusView,
 )
 
 pricing_router = APIRouter(prefix="/api/v1/pricing", tags=["admin"])
@@ -78,6 +92,122 @@ async def _read_bounded_stream(request: Request, *, max_bytes: int) -> bytes:
 @pricing_router.get("", response_model=PricingOverview)
 async def pricing_overview(request: Request, auth: Admin) -> PricingOverview:
     return await _pricing(request).overview(_actor(auth))
+
+
+@pricing_router.get("/catalog", response_model=CatalogStatusView)
+async def public_catalog(
+    request: Request,
+    auth: Admin,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> CatalogStatusView:
+    return await _pricing(request).catalog.status(_actor(auth), offset, limit)
+
+
+@pricing_router.get("/catalog/template")
+async def public_catalog_template(request: Request, auth: Admin) -> dict[str, Any]:
+    today = _pricing(request)._today().isoformat()
+    return {
+        "schema": CatalogPackage.model_json_schema(by_alias=True),
+        "example": {
+            "format": "mosaicPublicCatalog",
+            "schemaVersion": 1,
+            "catalog": [
+                {
+                    "cloud": "commercial",
+                    "publisher": "ExampleAI",
+                    "model": "example-chat",
+                    "deploymentType": "GlobalStandard",
+                    "kind": "tokens",
+                    "requiresOutput": True,
+                    "meters": {
+                        "product": "Example product",
+                        "input": "Example input",
+                        "output": "Example output",
+                    },
+                }
+            ],
+            "priceList": {
+                "schemaVersion": 1,
+                "currency": "USD",
+                "lastUpdated": today,
+                "sources": [
+                    {
+                        "id": "fictional-example",
+                        "title": "Fictional example, not provider price evidence",
+                        "url": "https://example.invalid/public-prices",
+                        "retrievedOn": today,
+                    }
+                ],
+                "prices": [
+                    {
+                        "id": "fictional.example-chat",
+                        "cloud": "commercial",
+                        "publisher": "ExampleAI",
+                        "model": "example-chat",
+                        "deploymentType": "GlobalStandard",
+                        "inputPerMillion": 2.5,
+                        "outputPerMillion": 10,
+                        "effectiveFrom": today,
+                        "sourceIds": ["fictional-example"],
+                    }
+                ],
+            },
+            "evidence": [],
+        },
+    }
+
+
+@pricing_router.post("/catalog/imports", response_model=CatalogDraftView, status_code=201)
+async def import_public_catalog(
+    request: Request,
+    auth: Admin,
+    base_revision: Annotated[str | None, Query(alias="baseRevision", max_length=200)] = None,
+) -> CatalogDraftView:
+    content = await _read_bounded_stream(request, max_bytes=MAX_CATALOG_BYTES)
+    return await _pricing(request).catalog.import_bytes(_actor(auth), content, base_revision)
+
+
+@pricing_router.post("/catalog/refreshes", response_model=CatalogDraftView, status_code=201)
+async def refresh_public_catalog(
+    request: Request, auth: Admin, payload: CatalogRefreshRequest
+) -> CatalogDraftView:
+    return await _pricing(request).catalog.refresh(
+        _actor(auth), payload.base_revision, payload.draft_id
+    )
+
+
+@pricing_router.get("/catalog/drafts/{draft_id}", response_model=CatalogDraftView)
+async def public_catalog_draft(request: Request, auth: Admin, draft_id: str) -> CatalogDraftView:
+    return await _pricing(request).catalog.draft_view(_actor(auth), draft_id[:_ID])
+
+
+@pricing_router.post("/catalog/drafts/{draft_id}/preview", response_model=CatalogPreviewView)
+async def preview_public_catalog(
+    request: Request,
+    auth: Admin,
+    draft_id: str,
+    payload: CatalogPreviewRequest,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> CatalogPreviewView:
+    return await _pricing(request).catalog.preview(
+        _actor(auth), draft_id[:_ID], payload.effective_from, offset, limit
+    )
+
+
+@pricing_router.post("/catalog/drafts/{draft_id}/activate", response_model=CatalogActivation)
+async def activate_public_catalog(
+    request: Request, auth: Admin, draft_id: str, payload: CatalogActivateRequest
+) -> CatalogActivation:
+    return await _pricing(request).catalog.activate(_actor(auth), draft_id[:_ID], payload)
+
+
+@pricing_router.post("/catalog/recoveries", response_model=CatalogDraftView, status_code=201)
+async def recover_public_catalog(
+    request: Request, auth: Admin, payload: CatalogRecoveryRequest
+) -> CatalogDraftView:
+    return await _pricing(request).catalog.recover(_actor(auth), payload.revision)
 
 
 @pricing_router.get("/prices", response_model=PriceListView)

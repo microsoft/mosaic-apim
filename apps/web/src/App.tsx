@@ -146,6 +146,7 @@ function AdminShell() {
     { label: 'Settings · Cost centers', to: '/settings?tab=costCenters' },
     { label: 'Notification inbox', to: '/notifications' },
     { label: 'Pricing · Unpriced deployments', to: '/pricing?tab=unpriced' },
+    { label: 'Pricing · Public catalog', to: '/pricing?tab=catalog' },
     { label: 'Settings · Appearance', to: '/settings?tab=appearance' },
   ]
 

@@ -15,6 +15,8 @@ administrator entered, whether or not anyone calls them. Each month's cost is sh
 deployment's callers by their share of its tokens.
 """
 
+from __future__ import annotations
+
 import calendar
 import json
 import re
@@ -23,7 +25,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from functools import cache
 from importlib import resources
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
@@ -37,6 +39,9 @@ from mosaic_api.domain import (
     deterministic_id,
 )
 from mosaic_api.observed import ObservedModelDeployment
+
+if TYPE_CHECKING:
+    from mosaic_api.pricing_catalog import CatalogDefinition
 
 CURRENCY = "USD"
 SEED_RESOURCE = "data/model_prices.json"
@@ -227,7 +232,7 @@ class ModelPrice(MosaicModel):
         return value
 
     @model_validator(mode="after")
-    def validate_prices(self) -> "ModelPrice":
+    def validate_prices(self) -> ModelPrice:
         if self.ptu_hourly is None and self.input_per_million is None:
             raise ValueError(f"Price {self.id} has neither a token price nor a PTU rate")
         if self.ptu_hourly is not None and not is_provisioned(self.deployment_type):
@@ -268,7 +273,7 @@ class PriceSeed(MosaicModel):
     ptu_throughput: list[PtuThroughput] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def validate_sources(self) -> "PriceSeed":
+    def validate_sources(self) -> PriceSeed:
         known = {source.id for source in self.sources}
         if len(known) != len(self.sources):
             raise ValueError("Two sources share an ID")
@@ -436,7 +441,7 @@ class PriceCreate(MosaicModel):
         return cleaned or None
 
     @model_validator(mode="after")
-    def validate_kind(self) -> "PriceCreate":
+    def validate_kind(self) -> PriceCreate:
         token = any(
             value is not None
             for value in (
@@ -583,7 +588,7 @@ class PriceEntry:
             _fold(self.model),
             _fold(self.version),
             _compact(self.deployment_type),
-            ",".join(self.regions or ()),
+            ",".join(sorted(self.regions or ())),
             _fold(self.deployment),
         )
 
@@ -848,12 +853,23 @@ class PriceBook:
         self,
         entries: Iterable[PriceEntry],
         throughput: Iterable[PtuThroughput] = (),
+        *,
+        protected_baseline: Iterable[PriceEntry] | None = None,
+        catalog_definitions: Iterable[CatalogDefinition] = (),
+        catalog_revision: str | None = None,
+        public_seed: PriceSeed | None = None,
     ) -> None:
         self.entries = list(entries)
         self.throughput = list(throughput)
+        self.catalog_definitions = tuple(catalog_definitions)
+        self.catalog_revision = catalog_revision
+        self.public_seed = public_seed
+        self._protected = PriceBook(protected_baseline) if protected_baseline is not None else None
         self._by_model: dict[str, list[PriceEntry]] = {}
         self._by_deployment: dict[str, list[PriceEntry]] = {}
+        self._by_line: dict[str, list[PriceEntry]] = {}
         for entry in self.entries:
+            self._by_line.setdefault(entry.line_id, []).append(entry)
             if entry.deployment:
                 self._by_deployment.setdefault(_fold(entry.deployment), []).append(entry)
                 continue
@@ -863,9 +879,11 @@ class PriceBook:
         changes |= {
             entry.effective_until + timedelta(days=1)
             for entry in self.entries
-            if entry.effective_until is not None
+            if entry.effective_until is not None and entry.effective_until < date.max
         }
-        self._changes = sorted(changes)
+        if self._protected is not None:
+            changes.update(self._protected._changes)
+        self._changes: list[date] = sorted(changes)
 
     def clouds(self) -> list[str]:
         custom = sorted({entry.cloud for entry in self.entries} - set(BUILT_IN_CLOUDS))
@@ -918,6 +936,10 @@ class PriceBook:
     def match(self, facts: DeploymentFacts, day: date) -> PriceMatch | Unpriced:
         """The most specific price in effect on ``day``, or why there's none."""
 
+        if self._protected is not None:
+            explicit = self._protected.match(facts, day)
+            if isinstance(explicit, PriceMatch) and explicit.entry.origin in {"admin", "billing"}:
+                return explicit
         applicable: list[tuple[tuple[int, ...], PriceEntry]] = []
         for entry in self._candidates(facts):
             score = self._applies(entry, facts)
@@ -925,6 +947,29 @@ class PriceBook:
                 applicable.append((_specificity(entry, score), entry))
         effective = [(rank, entry) for rank, entry in applicable if entry.in_effect(day)]
         if effective:
+            if self._protected is not None:
+                highest = max(rank for rank, _ in effective)
+                canonical_models = {
+                    _fold(entry.model) for rank, entry in effective if rank == highest
+                }
+                if len(canonical_models) > 1:
+                    return Unpriced(
+                        "noPrice",
+                        "This alias matches multiple public models at the same specificity. "
+                        "Review the canonical model mapping; MOSAIC will not guess a rate.",
+                    )
+            if self._protected is not None and not facts.publisher:
+                highest = max(rank for rank, _ in effective)
+                publishers = {
+                    _compact(entry.publisher) for rank, entry in effective if rank == highest
+                }
+                if len(publishers) > 1:
+                    return Unpriced(
+                        "noPrice",
+                        "Multiple publishers match this model and its other facts. Review the "
+                        "endpoint inventory to establish its publisher, or enter an explicit "
+                        "deployment-bound rate; MOSAIC will not guess a public price.",
+                    )
             _, entry = max(
                 effective,
                 key=lambda item: (item[0], *item[1].precedence),
@@ -969,6 +1014,17 @@ class PriceBook:
             "noPrice",
             f"No price for {_describe(facts)}{where} in {cloud_label(facts.cloud)}.",
         )
+
+    def line_current(self, versions: list[PriceEntry], day: date) -> PriceEntry | None:
+        if versions and self._protected is not None:
+            protected = self._protected.line_current(
+                self._protected._by_line.get(versions[0].line_id, []),
+                day,
+            )
+            if protected is not None and protected.origin in {"admin", "billing"}:
+                return protected
+        effective = [entry for entry in versions if entry.in_effect(day)]
+        return max(effective, key=lambda entry: entry.precedence) if effective else None
 
     def throughput_for(self, model: str | None, version: str | None) -> PtuThroughput | None:
         if not model:
@@ -1021,6 +1077,7 @@ def build_book(
     return PriceBook(
         [*seed_entries(shipped), *(version_entry(version) for version in visible_versions)],
         shipped.ptu_throughput,
+        public_seed=shipped,
     )
 
 

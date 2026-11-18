@@ -1,0 +1,2100 @@
+[
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4o",
+    "version": "2024-11-20",
+    "aliases": [],
+    "deploymentType": "GlobalStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4o 1120 Inp glbl Tokens",
+      "cachedInput": "gpt 4o 1120 cached Inp glbl Tokens",
+      "output": "gpt 4o 1120 Outp glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4o",
+    "version": "2024-11-20",
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4o 1120 Inp Data Zone Tokens",
+      "cachedInput": "gpt 4o 1120 cached Inp Data Zone Tokens",
+      "output": "gpt 4o 1120 Outp Data Zone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4o",
+    "version": "2024-11-20",
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4o 1120 Inp regnl Tokens",
+      "cachedInput": "gpt 4o 1120 cached Inp regnl Tokens",
+      "output": "gpt 4o 1120 Outp regnl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4o",
+    "version": "2024-11-20",
+    "aliases": [],
+    "deploymentType": "GlobalBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4o 1120 Batch Inp glbl Tokens",
+      "cachedInput": null,
+      "output": "gpt 4o 1120 Batch Outp glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4o",
+    "version": "2024-11-20",
+    "aliases": [],
+    "deploymentType": "DataZoneBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4o 1120 Batch Inp DZ Tokens",
+      "cachedInput": null,
+      "output": "gpt 4o 1120 Batch Outp DZ Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4o",
+    "version": "2024-08-06",
+    "aliases": [],
+    "deploymentType": "GlobalStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt-4o-0806-Inp-glbl Tokens",
+      "cachedInput": "gpt 4o 0806 cached Inp glbl Tokens",
+      "output": "gpt-4o-0806-Outp-glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4o",
+    "version": "2024-08-06",
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4o 0806 Inp Data Zone Tokens",
+      "cachedInput": "gpt 4o 0806 cached Inp Data Zone Tokens",
+      "output": "gpt 4o 0806 Outp Data Zone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4o",
+    "version": "2024-08-06",
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt-4o-0806-Inp-regnl Tokens",
+      "cachedInput": "gpt 4o 0806 cached Inp regnl Tokens",
+      "output": "gpt-4o-0806-Outp-regnl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4o",
+    "version": "2024-08-06",
+    "aliases": [],
+    "deploymentType": "GlobalBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt-4o-0806-Batch-Inp-glbl Tokens",
+      "cachedInput": null,
+      "output": "gpt-4o-0806-Batch-Outp-glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4o",
+    "version": "2024-08-06",
+    "aliases": [],
+    "deploymentType": "DataZoneBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4o 0806 Batch Inp Data Zone Tokens",
+      "cachedInput": null,
+      "output": "gpt 4o 0806 Batch Outp Data Zone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4o",
+    "version": "2024-05-13",
+    "aliases": [],
+    "deploymentType": "GlobalStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4o 0513 Input global Tokens",
+      "cachedInput": null,
+      "output": "gpt 4o 0513 Output global Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4o",
+    "version": "2024-05-13",
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4o 0513 Input Data Zone Tokens",
+      "cachedInput": null,
+      "output": "gpt 4o 0513 Output Data Zone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4o",
+    "version": "2024-05-13",
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4o 0513 Input regional Tokens",
+      "cachedInput": null,
+      "output": "gpt 4o 0513 Output regional Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4o",
+    "version": "2024-05-13",
+    "aliases": [],
+    "deploymentType": "GlobalBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4o 0513 Batch Inp glbl Tokens",
+      "cachedInput": null,
+      "output": "gpt 4o 0513 Batch Outp glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4o",
+    "version": "2024-05-13",
+    "aliases": [],
+    "deploymentType": "DataZoneBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4o 0513 Batch Inp Data Zone Tokens",
+      "cachedInput": null,
+      "output": "gpt 4o 0513 Batch Outp Data Zone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4o-mini",
+    "version": "2024-07-18",
+    "aliases": [],
+    "deploymentType": "GlobalStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt-4o-mini-0718-Inp-glbl Tokens",
+      "cachedInput": "gpt 4o mini 0718 cached Inp glbl Tokens",
+      "output": "gpt-4o-mini-0718-Outp-glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4o-mini",
+    "version": "2024-07-18",
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4o mini 0718 Inp Data Zone Tokens",
+      "cachedInput": "gpt 4o mini 0718 cached Inp Data Zone Tokens",
+      "output": "gpt 4o mini 0718 Outp Data Zone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4o-mini",
+    "version": "2024-07-18",
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt-4o-mini-0718-Inp-regnl Tokens",
+      "cachedInput": "gpt 4o mini 0718 cached Inp regnl Tokens",
+      "output": "gpt-4o-mini-0718-Outp-regnl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4o-mini",
+    "version": "2024-07-18",
+    "aliases": [],
+    "deploymentType": "GlobalBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt-4o-mini-0718-Batch-Inp-glbl Tokens",
+      "cachedInput": null,
+      "output": "gpt-4o-mini-0718-Batch-Outp-glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4o-mini",
+    "version": "2024-07-18",
+    "aliases": [],
+    "deploymentType": "DataZoneBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4o mini 0718 Batch Inp Data Zone Tokens",
+      "cachedInput": null,
+      "output": "gpt 4o mini0718 BatchOutp DataZone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4.1",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "GlobalStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4.1 Inp glbl Tokens",
+      "cachedInput": "gpt 4.1 cached Inp glbl Tokens",
+      "output": "gpt 4.1 Outp glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4.1",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4.1 Inp Data Zone Tokens",
+      "cachedInput": "gpt 4.1 cached Inp Data Zone Tokens",
+      "output": "gpt 4.1 Outp Data Zone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4.1",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4.1 Inp regnl Tokens",
+      "cachedInput": "gpt 4.1 cached Inp regnl Tokens",
+      "output": "gpt 4.1 Outp regnl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4.1",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "GlobalBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4.1 Batch Inp glbl Tokens",
+      "cachedInput": null,
+      "output": "gpt 4.1 Batch Outp glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4.1",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "DataZoneBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4.1 Batch Inp Data Zone Tokens",
+      "cachedInput": null,
+      "output": "gpt 4.1 Batch Outp Data Zone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4.1-mini",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "GlobalStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4.1 mini Inp glbl Tokens",
+      "cachedInput": "gpt 4.1 mini cached Inp glbl Tokens",
+      "output": "gpt 4.1 mini Outp glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4.1-mini",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4.1 mini Inp Data Zone Tokens",
+      "cachedInput": "gpt 4.1 mini cached Inp DZone Tokens",
+      "output": "gpt 4.1 mini Outp Data Zone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4.1-mini",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4.1 mini Inp regnl Tokens",
+      "cachedInput": "gpt 4.1 mini cached Inp regnl Tokens",
+      "output": "gpt 4.1 mini Outp regnl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4.1-mini",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "GlobalBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4.1 mini Batch Inp glbl Tokens",
+      "cachedInput": null,
+      "output": "gpt 4.1 mini Batch Outp glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4.1-mini",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "DataZoneBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4.1 mini Batch Inp DZone Tokens",
+      "cachedInput": null,
+      "output": "gpt 4.1 mini Batch Outp DZone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4.1-nano",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "GlobalStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4.1 nano Inp glbl Tokens",
+      "cachedInput": "gpt 4.1 nano cached Inp glbl Tokens",
+      "output": "gpt 4.1 nano Outp glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4.1-nano",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4.1 nano Inp Data Zone Tokens",
+      "cachedInput": "gpt 4.1 nano cached Inp DZone Tokens",
+      "output": "gpt 4.1 nano Outp Data Zone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4.1-nano",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4.1 nano Inp regnl Tokens",
+      "cachedInput": "gpt 4.1 nano cached Inp regnl Tokens",
+      "output": "gpt 4.1 nano Outp regnl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4.1-nano",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "GlobalBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4.1 nano Batch Inp glbl Tokens",
+      "cachedInput": null,
+      "output": "gpt 4.1 nano Batch Outp glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-4.1-nano",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "DataZoneBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4.1 nano Batch Inp DZone Tokens",
+      "cachedInput": null,
+      "output": "gpt 4.1 nano Batch Outp DZone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "o1",
+    "version": "2024-12-17",
+    "aliases": [],
+    "deploymentType": "GlobalStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "o1 1217 Inp glbl Tokens",
+      "cachedInput": "o1 1217 cached Inp glbl Tokens",
+      "output": "o1 1217 Outp glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "o1",
+    "version": "2024-12-17",
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "o1 1217 Inp Data Zone Tokens",
+      "cachedInput": "o1 1217 cached Inp Data Zone Tokens",
+      "output": "o1 1217 Outp Data Zone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "o1",
+    "version": "2024-12-17",
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "o1 1217 Inp regnl Tokens",
+      "cachedInput": "o1 1217 cached Inp regnl Tokens",
+      "output": "o1 1217 Outp regnl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "o1",
+    "version": "2024-12-17",
+    "aliases": [],
+    "deploymentType": "GlobalBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "o1 1217 Batch Inp glbl Tokens",
+      "cachedInput": null,
+      "output": "o1 1217 Batch Outp glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "o1",
+    "version": "2024-12-17",
+    "aliases": [],
+    "deploymentType": "DataZoneBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "o1 1217 Batch Inp Data Zone Tokens",
+      "cachedInput": null,
+      "output": "o1 1217 Batch Outp Data Zone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "o3-mini",
+    "version": "2025-01-31",
+    "aliases": [],
+    "deploymentType": "GlobalStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "o3 mini 0131 input glbl Tokens",
+      "cachedInput": "o3 mini 0131 cached input glbl Tokens",
+      "output": "o3 mini 0131 output glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "o3-mini",
+    "version": "2025-01-31",
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "o3 mini 0131 input Data Zone Tokens",
+      "cachedInput": "o3 mini 0131 cached input Data Zone Tokens",
+      "output": "o3 mini 0131 output Data Zone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "o3-mini",
+    "version": "2025-01-31",
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "o3 mini 0131 input regnl Tokens",
+      "cachedInput": "o3 mini 0131 cached input regnl Tokens",
+      "output": "o3 mini 0131 output regnl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "o3-mini",
+    "version": "2025-01-31",
+    "aliases": [],
+    "deploymentType": "GlobalBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "o3 mini 0131 Batch Inp glbl Tokens",
+      "cachedInput": null,
+      "output": "o3 mini 0131 Batch Outp glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "o3-mini",
+    "version": "2025-01-31",
+    "aliases": [],
+    "deploymentType": "DataZoneBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "o3 mini 0131 Batch Inp Data Zone Tokens",
+      "cachedInput": null,
+      "output": "o3 mini 0131 Batch Outp Data Zone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "o3",
+    "version": "2025-04-16",
+    "aliases": [],
+    "deploymentType": "GlobalStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "o3 0416 Inp glbl Tokens",
+      "cachedInput": "o3 0416 cached Inp glbl Tokens",
+      "output": "o3 0416 Outp glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "o3",
+    "version": "2025-04-16",
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "o3 0416 Inp Data Zone Tokens",
+      "cachedInput": "o3 0416 cached Inp Data Zone Tokens",
+      "output": "o3 0416 Outp Data Zone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "o3",
+    "version": "2025-04-16",
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "o3 0416 Inp regnl Tokens",
+      "cachedInput": "o3 0416 cached Inp regnl Tokens",
+      "output": "o3 0416 Outp regnl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "o3",
+    "version": "2025-04-16",
+    "aliases": [],
+    "deploymentType": "GlobalBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "o3 0416 Batch Inp glbl Tokens",
+      "cachedInput": null,
+      "output": "o3 0416 Batch Outp glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "o3",
+    "version": "2025-04-16",
+    "aliases": [],
+    "deploymentType": "DataZoneBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "o3 0416 Batch Inp Data Zone Tokens",
+      "cachedInput": null,
+      "output": "o3 0416 Batch Outp Data Zone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "o4-mini",
+    "version": "2025-04-16",
+    "aliases": [],
+    "deploymentType": "GlobalStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI Reasoning",
+      "input": "o4-mini 0416 Inp glbl Tokens",
+      "cachedInput": "o4-mini 0416 cached Inp glbl Tokens",
+      "output": "o4-mini 0416 Outp glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "o4-mini",
+    "version": "2025-04-16",
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI Reasoning",
+      "input": "o4-mini 0416 Inp Data Zone Tokens",
+      "cachedInput": "o4-mini 0416 cached Inp DataZone Tokens",
+      "output": "o4-mini 0416 Outp Data Zone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "o4-mini",
+    "version": "2025-04-16",
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI Reasoning",
+      "input": "o4-mini 0416 Inp regnl Tokens",
+      "cachedInput": "o4-mini 0416 cached Inp regnl Tokens",
+      "output": "o4-mini 0416 Outp regnl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "o4-mini",
+    "version": "2025-04-16",
+    "aliases": [],
+    "deploymentType": "GlobalBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI Reasoning",
+      "input": "o4-mini 0416 Batch Inp glbl Tokens",
+      "cachedInput": null,
+      "output": "o4-mini 0416 Batch Outp glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "o4-mini",
+    "version": "2025-04-16",
+    "aliases": [],
+    "deploymentType": "DataZoneBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI Reasoning",
+      "input": "o4-mini 0416 Batch Inp Data Zone Tokens",
+      "cachedInput": null,
+      "output": "o4-mini 0416 Batch Outp Data Zone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-5",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "GlobalStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI GPT5",
+      "input": "GPT 5 Inpt Glbl 1M Tokens",
+      "cachedInput": "GPT 5 cchd Inpt Glbl 1M Tokens",
+      "output": "GPT 5 outpt Glbl 1M Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-5",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI GPT5",
+      "input": "GPT 5 Inpt DZone 1M Tokens",
+      "cachedInput": "GPT 5 cchd Inpt DZone 1M Tokens",
+      "output": "GPT 5 outpt DZone 1M Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-5",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "GlobalBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI GPT5",
+      "input": "GPT 5 Batch Inpt Glbl 1M Tokens",
+      "cachedInput": "GPT 5 Batch Inpt cchd Glbl 1M Tokens",
+      "output": "GPT 5 Batch outpt Glbl 1M Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-5",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "DataZoneBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI GPT5",
+      "input": "GPT 5 Batch Inpt DZone 1M Tokens",
+      "cachedInput": "GPT 5 Batch Inpt cchd Dzone 1M Tokens",
+      "output": "GPT 5 Batch outpt DZone 1M Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-5-mini",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "GlobalStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI GPT5",
+      "input": "GPT 5 Mini Inpt Glbl 1M Tokens",
+      "cachedInput": "GPT 5 Mini cchd Inpt Glbl 1M Tokens",
+      "output": "GPT 5 Mini outpt Glbl 1M Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-5-mini",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI GPT5",
+      "input": "GPT 5 Mini Inpt DZone 1M Tokens",
+      "cachedInput": "GPT 5 Mini cchd Inpt DZone 1M Tokens",
+      "output": "GPT 5 Mini outpt DZone 1M Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-5-mini",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "GlobalBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI GPT5",
+      "input": "GPT 5 Mini Batch Inpt Glbl 1M Tokens",
+      "cachedInput": "GPT 5 Mini Batch Inpt cchd Glbl 1M Tokens",
+      "output": "GPT 5 Mini Batch outpt Glbl 1M Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-5-mini",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "DataZoneBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI GPT5",
+      "input": "GPT 5 Mini Batch Inpt DZone 1M Tokens",
+      "cachedInput": "GPT 5 Mini Batch Inpt cchd Dzone 1M Tokens",
+      "output": "GPT 5 Mini Batch outpt DZone 1M Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-5-nano",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "GlobalStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI GPT5",
+      "input": "GPT 5 Nano Inpt Glbl 1M Tokens",
+      "cachedInput": "GPT 5 Nano cchd Inpt Glbl 1M Tokens",
+      "output": "GPT 5 Nano outpt Glbl 1M Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-5-nano",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI GPT5",
+      "input": "GPT 5 Nano Inpt DZone 1M Tokens",
+      "cachedInput": "GPT 5 Nano cchd Inpt DZone 1M Tokens",
+      "output": "GPT 5 Nano outpt DZone 1M Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-5-nano",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "GlobalBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI GPT5",
+      "input": "GPT 5 Nano Batch Inpt Glbl 1M Tokens",
+      "cachedInput": "GPT 5 Nano Batch Inpt cchd Glbl 1M Tokens",
+      "output": "GPT 5 Nano Batch outpt Glbl 1M Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-5-nano",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "DataZoneBatch",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI GPT5",
+      "input": "GPT 5 Nano Batch Inpt DZone 1M Tokens",
+      "cachedInput": "GPT 5 Nano Batch Inpt cchd Dzone 1M Tokens",
+      "output": "GPT 5 Nano Batch outpt DZone 1M Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-35-turbo",
+    "version": "0125",
+    "aliases": [
+      "gpt-3.5-turbo"
+    ],
+    "deploymentType": "GlobalStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt-35-turbo16K-0125 Inp-glbl Tokens",
+      "cachedInput": null,
+      "output": "gpt-35-turbo16K-0125 Outp-glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-35-turbo",
+    "version": "0125",
+    "aliases": [
+      "gpt-3.5-turbo"
+    ],
+    "deploymentType": "Standard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt-35-turbo-16K-0125 Input-regional Tokens",
+      "cachedInput": null,
+      "output": "gpt-35-turbo-16K-0125 Output-regional Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "text-embedding-3-large",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "GlobalStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "text-embedding-3-large-glbl Tokens",
+      "cachedInput": null,
+      "output": null
+    },
+    "requiresOutput": false,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "text-embedding-3-large",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI Embedding",
+      "input": "text embedding 3 large DZ Tokens",
+      "cachedInput": null,
+      "output": null
+    },
+    "requiresOutput": false,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "text-embedding-3-large",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "text-embedding-3-large-regional Tokens",
+      "cachedInput": null,
+      "output": null
+    },
+    "requiresOutput": false,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "text-embedding-3-small",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "GlobalStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "text-embedding-3-small-glbl Tokens",
+      "cachedInput": null,
+      "output": null
+    },
+    "requiresOutput": false,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "text-embedding-3-small",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI Embedding",
+      "input": "text embedding 3 small DZ Tokens",
+      "cachedInput": null,
+      "output": null
+    },
+    "requiresOutput": false,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "text-embedding-3-small",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "text-embedding-3-small-regional Tokens",
+      "cachedInput": null,
+      "output": null
+    },
+    "requiresOutput": false,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "text-embedding-ada-002",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "GlobalStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "embedding-ada-glbl Tokens",
+      "cachedInput": null,
+      "output": null
+    },
+    "requiresOutput": false,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "text-embedding-ada-002",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "embedding-ada-datazone Tokens",
+      "cachedInput": null,
+      "output": null
+    },
+    "requiresOutput": false,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "text-embedding-ada-002",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "embedding-ada-regional Tokens",
+      "cachedInput": null,
+      "output": null
+    },
+    "requiresOutput": false,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "Microsoft",
+    "model": "Phi-4",
+    "version": null,
+    "aliases": [],
+    "deploymentType": null,
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure Phi Models",
+      "input": "Phi-4-Input Tokens",
+      "cachedInput": null,
+      "output": "Phi-4-Output Tokens"
+    },
+    "requiresOutput": true,
+    "notes": "The Retail Prices API lists one pay-as-you-go price for Phi-4, for any deployment type."
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "DeepSeek",
+    "model": "DeepSeek-R1",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "GlobalStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure Deepseek Models",
+      "input": "R1 Inp glbl Tokens",
+      "cachedInput": null,
+      "output": "R1 Outp glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "DeepSeek",
+    "model": "DeepSeek-R1",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure Deepseek Models",
+      "input": "R1 Inp DZone Tokens",
+      "cachedInput": null,
+      "output": "R1 Outp DZone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "DeepSeek",
+    "model": "DeepSeek-R1",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure Deepseek Models",
+      "input": "R1 Inp regnl Tokens",
+      "cachedInput": null,
+      "output": "R1 Outp regnl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "Meta",
+    "model": "Llama-3.3-70B-Instruct",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "GlobalStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure Llama Models",
+      "input": "Llama 3.3 70B Inp glbl Tokens",
+      "cachedInput": null,
+      "output": "Llama 3.3 70B Outp glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "Meta",
+    "model": "Llama-3.3-70B-Instruct",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure Llama Models",
+      "input": "Llama 3.3 70B Inp Dzone Tokens",
+      "cachedInput": null,
+      "output": "Llama 3.3 70B Outp Dzone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "Meta",
+    "model": "Llama-3.3-70B-Instruct",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure Llama Models",
+      "input": "Llama 3.3 70B Inp regnl Tokens",
+      "cachedInput": null,
+      "output": "Llama 3.3 70B Outp regnl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": null
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "*",
+    "deploymentType": "GlobalProvisionedManaged",
+    "kind": "ptu",
+    "meters": {
+      "product": "Azure OpenAI",
+      "provisioned": "Provisioned Managed Global Unit"
+    },
+    "requiresOutput": false
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "*",
+    "deploymentType": "DataZoneProvisionedManaged",
+    "kind": "ptu",
+    "meters": {
+      "product": "Azure OpenAI",
+      "provisioned": "Provisioned Managed Data Zone Unit"
+    },
+    "requiresOutput": false
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "*",
+    "deploymentType": "ProvisionedManaged",
+    "kind": "ptu",
+    "meters": {
+      "product": "Azure OpenAI",
+      "provisioned": "Provisioned Managed Regional Unit"
+    },
+    "requiresOutput": false
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "DeepSeek",
+    "model": "*",
+    "deploymentType": "GlobalProvisionedManaged",
+    "kind": "ptu",
+    "meters": {
+      "product": "Azure Deepseek Models",
+      "provisioned": "Provisioned Managed Global Unit"
+    },
+    "requiresOutput": false
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "DeepSeek",
+    "model": "*",
+    "deploymentType": "DataZoneProvisionedManaged",
+    "kind": "ptu",
+    "meters": {
+      "product": "Azure Deepseek Models",
+      "provisioned": "Provisioned Managed Data Zone Unit"
+    },
+    "requiresOutput": false
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "DeepSeek",
+    "model": "*",
+    "deploymentType": "ProvisionedManaged",
+    "kind": "ptu",
+    "meters": {
+      "product": "Azure Deepseek Models",
+      "provisioned": "Provisioned Managed Regional Unit"
+    },
+    "requiresOutput": false
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "Meta",
+    "model": "*",
+    "deploymentType": "GlobalProvisionedManaged",
+    "kind": "ptu",
+    "meters": {
+      "product": "Azure Llama Models",
+      "provisioned": "Provisioned Managed Global Unit"
+    },
+    "requiresOutput": false
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "Meta",
+    "model": "*",
+    "deploymentType": "DataZoneProvisionedManaged",
+    "kind": "ptu",
+    "meters": {
+      "product": "Azure Llama Models",
+      "provisioned": "Provisioned Managed Data Zone Unit"
+    },
+    "requiresOutput": false
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "Meta",
+    "model": "*",
+    "deploymentType": "ProvisionedManaged",
+    "kind": "ptu",
+    "meters": {
+      "product": "Azure Llama Models",
+      "provisioned": "Provisioned Managed Regional Unit"
+    },
+    "requiresOutput": false
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "Mistral AI",
+    "model": "*",
+    "deploymentType": "GlobalProvisionedManaged",
+    "kind": "ptu",
+    "meters": {
+      "product": "Azure Mistral Models",
+      "provisioned": "Provisioned Managed Global Unit"
+    },
+    "requiresOutput": false
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "Mistral AI",
+    "model": "*",
+    "deploymentType": "DataZoneProvisionedManaged",
+    "kind": "ptu",
+    "meters": {
+      "product": "Azure Mistral Models",
+      "provisioned": "Provisioned Managed Data Zone Unit"
+    },
+    "requiresOutput": false
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "Mistral AI",
+    "model": "*",
+    "deploymentType": "ProvisionedManaged",
+    "kind": "ptu",
+    "meters": {
+      "product": "Azure Mistral Models",
+      "provisioned": "Provisioned Managed Regional Unit"
+    },
+    "requiresOutput": false
+  },
+  {
+    "cloud": "government",
+    "publisher": "Meta",
+    "model": "Llama-3.3-70B-Instruct",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "GlobalStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure Llama Models",
+      "input": "Llama 3.3 70B Inp glbl Tokens",
+      "output": "Llama 3.3 70B Outp glbl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": "Legacy Government mapping retained from the packaged seed; not inferred from Commercial availability."
+  },
+  {
+    "cloud": "government",
+    "publisher": "OpenAI",
+    "model": "*",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "DataZoneProvisionedManaged",
+    "regions": null,
+    "kind": "ptu",
+    "meters": {
+      "product": "Azure OpenAI",
+      "provisioned": "Provisioned Managed Data Zone Unit"
+    },
+    "requiresOutput": false,
+    "notes": "Legacy Government mapping retained from the packaged seed; not inferred from Commercial availability."
+  },
+  {
+    "cloud": "government",
+    "publisher": "OpenAI",
+    "model": "*",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "ProvisionedManaged",
+    "regions": [
+      "usgovarizona",
+      "usgovtexas",
+      "usgovvirginia"
+    ],
+    "kind": "ptu",
+    "meters": {
+      "product": "Azure OpenAI",
+      "provisioned": "Provisioned Managed Regional Unit"
+    },
+    "requiresOutput": false,
+    "notes": "Legacy Government mapping retained from the packaged seed; not inferred from Commercial availability."
+  },
+  {
+    "cloud": "government",
+    "publisher": "OpenAI",
+    "model": "gpt-35-turbo",
+    "version": "0125",
+    "aliases": [
+      "gpt-3.5-turbo"
+    ],
+    "deploymentType": "Standard",
+    "regions": [
+      "usgovarizona",
+      "usgovvirginia"
+    ],
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt-35-turbo-16K-0125 Input-regional Tokens",
+      "output": "gpt-35-turbo-16K-0125 Output-regional Tokens"
+    },
+    "requiresOutput": true,
+    "notes": "Legacy Government mapping retained from the packaged seed; not inferred from Commercial availability."
+  },
+  {
+    "cloud": "government",
+    "publisher": "OpenAI",
+    "model": "gpt-4.1-mini",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4.1 mini Inp Data Zone Tokens",
+      "cachedInput": "gpt 4.1 mini cached Inp DZone Tokens",
+      "output": "gpt 4.1 mini Outp Data Zone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": "Legacy Government mapping retained from the packaged seed; not inferred from Commercial availability."
+  },
+  {
+    "cloud": "government",
+    "publisher": "OpenAI",
+    "model": "gpt-4.1-mini",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": [
+      "usgovarizona",
+      "usgovvirginia"
+    ],
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4.1 mini Inp regnl Tokens",
+      "cachedInput": "gpt 4.1 mini cached Inp regnl Tokens",
+      "output": "gpt 4.1 mini Outp regnl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": "Legacy Government mapping retained from the packaged seed; not inferred from Commercial availability."
+  },
+  {
+    "cloud": "government",
+    "publisher": "OpenAI",
+    "model": "gpt-4.1",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": [
+      "usgovarizona",
+      "usgovvirginia"
+    ],
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4.1 Inp regnl Tokens",
+      "cachedInput": "gpt 4.1 cached Inp regnl Tokens",
+      "output": "gpt 4.1 Outp regnl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": "Legacy Government mapping retained from the packaged seed; not inferred from Commercial availability."
+  },
+  {
+    "cloud": "government",
+    "publisher": "OpenAI",
+    "model": "gpt-4o-mini",
+    "version": "2024-07-18",
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4o mini 0718 Inp Data Zone Tokens",
+      "cachedInput": "gpt 4o mini 0718 cached Inp Data Zone Tokens",
+      "output": "gpt 4o mini 0718 Outp Data Zone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": "Legacy Government mapping retained from the packaged seed; not inferred from Commercial availability."
+  },
+  {
+    "cloud": "government",
+    "publisher": "OpenAI",
+    "model": "gpt-4o-mini",
+    "version": "2024-07-18",
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": [
+      "usgovarizona"
+    ],
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt-4o-mini-0718-Inp-regnl Tokens",
+      "cachedInput": "gpt 4o mini 0718 cached Inp regnl Tokens",
+      "output": "gpt-4o-mini-0718-Outp-regnl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": "Legacy Government mapping retained from the packaged seed; not inferred from Commercial availability."
+  },
+  {
+    "cloud": "government",
+    "publisher": "OpenAI",
+    "model": "gpt-4o",
+    "version": "2024-05-13",
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": [
+      "usgovarizona"
+    ],
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4o 0513 Input regional Tokens",
+      "output": "gpt 4o 0513 Output regional Tokens"
+    },
+    "requiresOutput": true,
+    "notes": "Legacy Government mapping retained from the packaged seed; not inferred from Commercial availability."
+  },
+  {
+    "cloud": "government",
+    "publisher": "OpenAI",
+    "model": "gpt-4o",
+    "version": "2024-05-13",
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": [
+      "usgovvirginia"
+    ],
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4o 0513 Input regional Tokens",
+      "output": "gpt 4o 0513 Output regional Tokens"
+    },
+    "requiresOutput": true,
+    "notes": "Legacy Government mapping retained from the packaged seed; not inferred from Commercial availability."
+  },
+  {
+    "cloud": "government",
+    "publisher": "OpenAI",
+    "model": "gpt-4o",
+    "version": "2024-11-20",
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4o 1120 Inp Data Zone Tokens",
+      "cachedInput": "gpt 4o 1120 cached Inp Data Zone Tokens",
+      "output": "gpt 4o 1120 Outp Data Zone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": "Legacy Government mapping retained from the packaged seed; not inferred from Commercial availability."
+  },
+  {
+    "cloud": "government",
+    "publisher": "OpenAI",
+    "model": "gpt-4o",
+    "version": "2024-11-20",
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": [
+      "usgovarizona",
+      "usgovvirginia"
+    ],
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "gpt 4o 1120 Inp regnl Tokens",
+      "cachedInput": "gpt 4o 1120 cached Inp regnl Tokens",
+      "output": "gpt 4o 1120 Outp regnl Tokens"
+    },
+    "requiresOutput": true,
+    "notes": "Legacy Government mapping retained from the packaged seed; not inferred from Commercial availability."
+  },
+  {
+    "cloud": "government",
+    "publisher": "OpenAI",
+    "model": "o3-mini",
+    "version": "2025-01-31",
+    "aliases": [],
+    "deploymentType": "DataZoneStandard",
+    "regions": null,
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "o3 mini 0131 input Data Zone Tokens",
+      "cachedInput": "o3 mini 0131 cached input Data Zone Tokens",
+      "output": "o3 mini 0131 output Data Zone Tokens"
+    },
+    "requiresOutput": true,
+    "notes": "Legacy Government mapping retained from the packaged seed; not inferred from Commercial availability."
+  },
+  {
+    "cloud": "government",
+    "publisher": "OpenAI",
+    "model": "text-embedding-3-large",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": [
+      "usgovarizona"
+    ],
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "text-embedding-3-large-regional Tokens"
+    },
+    "requiresOutput": false,
+    "notes": "Legacy Government mapping retained from the packaged seed; not inferred from Commercial availability."
+  },
+  {
+    "cloud": "government",
+    "publisher": "OpenAI",
+    "model": "text-embedding-3-small",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": [
+      "usgovarizona"
+    ],
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "text-embedding-3-small-regional Tokens"
+    },
+    "requiresOutput": false,
+    "notes": "Legacy Government mapping retained from the packaged seed; not inferred from Commercial availability."
+  },
+  {
+    "cloud": "government",
+    "publisher": "OpenAI",
+    "model": "text-embedding-ada-002",
+    "version": null,
+    "aliases": [],
+    "deploymentType": "Standard",
+    "regions": [
+      "usgovarizona",
+      "usgovvirginia"
+    ],
+    "kind": "tokens",
+    "meters": {
+      "product": "Azure OpenAI",
+      "input": "embedding-ada-regional Tokens"
+    },
+    "requiresOutput": false,
+    "notes": "Legacy Government mapping retained from the packaged seed; not inferred from Commercial availability."
+  },
+  {
+    "cloud": "government",
+    "publisher": "OpenAI",
+    "model": "gpt-5.1",
+    "version": "2025-11-13",
+    "deploymentType": "DataZoneStandard",
+    "regions": [
+      "usgovarizona",
+      "usgovvirginia"
+    ],
+    "kind": "tokens",
+    "requiresOutput": true,
+    "availabilitySource": {
+      "id": "learn-government-availability",
+      "title": "Microsoft Learn: government model availability (not price evidence)",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure-gov",
+      "retrievedOn": "2026-11-17"
+    },
+    "notes": "Availability reference only. No numeric public rate or meter mapping is inferred."
+  },
+  {
+    "cloud": "government",
+    "publisher": "OpenAI",
+    "model": "gpt-5.6-sol",
+    "version": "2026-07-09",
+    "deploymentType": "DataZoneStandard",
+    "regions": [
+      "usgovarizona",
+      "usgovvirginia"
+    ],
+    "kind": "tokens",
+    "requiresOutput": true,
+    "availabilitySource": {
+      "id": "learn-government-availability",
+      "title": "Microsoft Learn: government model availability (not price evidence)",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure-gov",
+      "retrievedOn": "2026-11-17"
+    },
+    "notes": "Availability reference only. No numeric public rate or meter mapping is inferred."
+  },
+  {
+    "cloud": "government",
+    "publisher": "OpenAI",
+    "model": "gpt-5.6-terra",
+    "version": "2026-07-09",
+    "deploymentType": "DataZoneStandard",
+    "regions": [
+      "usgovarizona",
+      "usgovvirginia"
+    ],
+    "kind": "tokens",
+    "requiresOutput": true,
+    "availabilitySource": {
+      "id": "learn-government-availability",
+      "title": "Microsoft Learn: government model availability (not price evidence)",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure-gov",
+      "retrievedOn": "2026-11-17"
+    },
+    "notes": "Availability reference only. No numeric public rate or meter mapping is inferred."
+  },
+  {
+    "cloud": "government",
+    "publisher": "OpenAI",
+    "model": "gpt-5.6-luna",
+    "version": "2026-07-09",
+    "deploymentType": "DataZoneStandard",
+    "regions": [
+      "usgovarizona",
+      "usgovvirginia"
+    ],
+    "kind": "tokens",
+    "requiresOutput": true,
+    "availabilitySource": {
+      "id": "learn-government-availability",
+      "title": "Microsoft Learn: government model availability (not price evidence)",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure-gov",
+      "retrievedOn": "2026-11-17"
+    },
+    "notes": "Availability reference only. No numeric public rate or meter mapping is inferred."
+  },
+  {
+    "cloud": "commercial",
+    "publisher": "OpenAI",
+    "model": "gpt-5.1",
+    "version": "2025-11-13",
+    "deploymentType": "GlobalStandard",
+    "regions": null,
+    "kind": "tokens",
+    "requiresOutput": true,
+    "availabilitySource": {
+      "id": "learn-commercial-availability",
+      "title": "Microsoft Learn: commercial model availability (not price evidence)",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+      "retrievedOn": "2026-11-17"
+    },
+    "notes": "Availability reference only. No numeric public rate or meter mapping is inferred."
+  }
+]

@@ -21,6 +21,7 @@ import sys
 import time
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -1377,17 +1378,63 @@ SHOTS: list[Shot] = [
         height=1600,
     ),
     Shot(
+        "console-pricing-catalog",
+        "console",
+        "/pricing?tab=catalog",
+        "light",
+        "Dated activation history",
+        width=1800,
+        height=2200,
+    ),
+    Shot(
+        "console-pricing-catalog-review",
+        "console",
+        "/pricing?tab=catalog",
+        "dark",
+        "Dated activation history",
+        actions=(
+            lambda page: (
+                page.get_by_role("table", name="Public catalog acquisitions", exact=True)
+                .get_by_role("row")
+                .filter(has_text="Ready for review")
+                .get_by_role("button", name="Validate & review", exact=True)
+                .click()
+            ),
+            wait_for_text("Validate public catalog"),
+            lambda page: page.get_by_role("button", name="Review changes", exact=True).click(),
+            wait_for_text("Review public catalog"),
+            lambda page: page.get_by_label("Effective from (UTC)", exact=False).fill(
+                (datetime.now(UTC).date() + timedelta(days=1)).isoformat()
+            ),
+            lambda page: page.get_by_label("Activation note", exact=False).fill(
+                "Fictional public price evidence reviewed; future draft, never activated."
+            ),
+            lambda page: page.get_by_role(
+                "checkbox",
+                name=(
+                    "I reviewed the source evidence, protected rates, "
+                    "and remaining coverage gaps."
+                ),
+                exact=True,
+            ).check(),
+        ),
+        width=1800,
+        height=2100,
+    ),
+    Shot(
         "console-billing-review",
         "console",
         "/pricing?tab=billing",
         "dark",
         "fictional-amortized-draft.csv",
         actions=(
-            lambda page: page.get_by_role("table", name="Billing runs", exact=True)
-            .get_by_role("row")
-            .filter(has_text="Ready for review")
-            .get_by_role("button", name="Review & publish", exact=True)
-            .click(),
+            lambda page: (
+                page.get_by_role("table", name="Billing runs", exact=True)
+                .get_by_role("row")
+                .filter(has_text="Ready for review")
+                .get_by_role("button", name="Review & publish", exact=True)
+                .click()
+            ),
             wait_for_text("Normalized billing evidence"),
         ),
         width=1800,
@@ -1706,9 +1753,7 @@ SHOTS: list[Shot] = [
         "light",
         "Claims Operations",
         actions=(
-            lambda page: page.get_by_role(
-                "link", name="Request to join", exact=True
-            ).first.click(),
+            lambda page: page.get_by_role("link", name="Request to join", exact=True).first.click(),
             fill_textbox(
                 "Purpose / justification",
                 "Review claims triage and evaluate the team's governed AI offerings.",

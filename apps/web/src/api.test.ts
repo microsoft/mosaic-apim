@@ -17,6 +17,22 @@ describe('useMosaicApi', () => {
     vi.unstubAllGlobals()
   })
 
+  it('uploads a pricing package as bounded raw JSON without double encoding or activation', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ id: 'catalog-draft', status: 'readyForReview' }), { status: 201 },
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useMosaicApi())
+    const content = '{\n  "format": "mosaicPublicCatalog", "schemaVersion": 1\n}'
+    await result.current.importPublicCatalog(content, 'revision/one')
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toContain('/api/v1/pricing/catalog/imports?baseRevision=revision%2Fone')
+    expect(options.method).toBe('POST')
+    expect(options.body).toBe(content)
+    expect((options.headers as Headers).get('Content-Type')).toBe('application/json')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps saved endpoint runtime GET separate from an explicit POST access check', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response('[]', { status: 200 }))

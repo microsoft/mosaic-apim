@@ -410,6 +410,27 @@ def test_price_changes_within_a_month_are_found() -> None:
     assert not book.changes_within(date(2026, 4, 1), date(2026, 4, 30))
 
 
+@pytest.mark.parametrize("boundary", ["starts", "ends"])
+def test_runtime_change_detection_includes_protected_baseline_boundaries(boundary: str) -> None:
+    manual = _entry("manual", effective_from=date(2026, 1, 1))
+    seed = _entry(
+        "superseded-seed", origin="seed", input_per_million=2.5,
+        effective_from=date(2026, 3, 15) if boundary == "starts" else date(2026, 2, 1),
+        effective_until=None if boundary == "starts" else date(2026, 3, 14),
+    )
+    public = _entry(
+        "runtime", origin="seed", input_per_million=0.9, effective_from=date(2026, 3, 1),
+    )
+    book = PriceBook([public, manual], protected_baseline=[seed, manual])
+    early = _matched(book, _facts(), date(2026, 3, 14))
+    late = _matched(book, _facts(), date(2026, 3, 15))
+    assert (early.id, late.id) == (
+        ("manual", "runtime") if boundary == "starts" else ("runtime", "manual")
+    )
+    assert book.changes_within(date(2026, 3, 1), date(2026, 3, 31))
+    assert not book.changes_within(date(2026, 3, 15), date(2026, 3, 31))
+
+
 def test_a_replaced_seed_price_ends_the_day_before_its_replacement() -> None:
     # A seed refresh keeps the price it replaced, with the day it ended.
     old = _entry("old", origin="seed", input_per_million=2.5, effective_until=date(2026, 5, 10))

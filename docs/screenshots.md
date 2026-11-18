@@ -60,6 +60,12 @@ configurations have no credentials, remain **Untested**, and make no provider ca
 worker and all source schedules stay disabled. This demonstrates review and evidence, not live
 provider connectivity, automatic activation, or a markup feature.
 
+Public-catalog captures also use the production pricing service, with generated fictional JSON
+and explicit **Administrator supplied** evidence. One catalog activation preserves the existing
+active amounts; a separate future Commercial/Government draft is reviewed but never activated
+by capture actions. Neither seeding nor capture fetches Retail prices or billing data, and no
+deployment, publication, permission, or schedule changes are part of those shots.
+
 ## When to update them
 
 Regenerate the affected shots, and reread their gallery and any README descriptions, in the same change as any of
@@ -384,13 +390,18 @@ shows both themes. Keep new shots in that pattern.
 
 ## Shot inventory
 
-Every shot below appears in [the gallery](gallery.md). The README selection is the console overview
-and portal catalog, each in light and dark; keep those shared images and descriptions in step.
+Every shot below appears in [the gallery](gallery.md). The README selects the console overview
+and portal catalog in both themes, grant call-quota authoring, and guided public-price review;
+keep those shared images and descriptions in step.
 
 **Capture warning (PR #182):** `console-grant-call-quota`, `console-access-request-approval`,
-`console-bulk-approval`, and `console-approval-policy` were independently captured on this branch.
+`console-bulk-approval`, and `console-approval-policy` were independently captured for PR #182.
 Other refreshed images, including the formerly pending `console-gateway-limit-refusal`, are
 inherited from merged `main`, not independent PR #182 capture evidence.
+
+Issue #145 separately regenerates `console-pricing`, `console-billing-data`, and
+`console-billing-review`, and adds `console-pricing-catalog` and
+`console-pricing-catalog-review` through the same fictional capture/redaction pipeline.
 
 The portal shots use the console's cool light/dark palette and glass navigation, with opaque
 resource lists, forms, and connection drawers. The Usage & cost overview uses a taller viewport
@@ -457,6 +468,8 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-notification-readiness` | Console | `/settings?tab=notifications&notificationView=health`, evidence and remediation for storage, hosting, email, public links, and disabled workers | Dark | Notification readiness |
 | `console-analytics-cost` | Console | `/analytics?tab=cost` | Light | Cost |
 | `console-pricing` | Console | `/pricing`, **Prices** section filtered to `2024-11-20` | Dark | Pricing |
+| `console-pricing-catalog` | Console | `/pricing?tab=catalog`, active reference catalog, source trust/read dates, attempts and dated recovery history; unchanged active demo amounts | Light | Public catalog |
+| `console-pricing-catalog-review` | Console | The latest fictional public-catalog draft in B's guided **Review & activate** step, with separate cloud evidence, units, protected rates and selected future date; never activated by capture | Dark | Review public prices |
 | `console-billing-data` | Console | `/pricing?tab=billing`, untested fictional Azure/AWS/GCP source configurations and published/draft upload history; no provider calls | Light | Billing data |
 | `console-billing-review` | Console | `/pricing?tab=billing`, latest fictional Azure draft opened in **Review billing run**, quantities/rates, exclusions, bindings and effective date; never published by capture actions | Dark | Billing rate review |
 | `console-analytics-consumers` | Console | `/analytics?tab=consumers` | Light | Consumers |
