@@ -99,3 +99,31 @@ it('labels historical evidence after a partial scan and blocks review', async ()
   expect(await screen.findByRole('button', { name: 'Review proposal' })).toBeDisabled()
   expect(api.discoverModelChanges).not.toHaveBeenCalled()
 })
+
+it('retries an unconfirmed request but starts a fresh scan after its terminal status is observed', async () => {
+  const user = userEvent.setup()
+  api.discoverModelChanges.mockRejectedValueOnce(new Error('Connection lost'))
+    .mockRejectedValueOnce(new Error('Connection lost'))
+  openWorkbench()
+  const discover = await screen.findByRole('button', { name: 'Discover changes' })
+  await user.click(discover)
+  await waitFor(() => expect(discover).toBeEnabled())
+  const requestId = api.discoverModelChanges.mock.calls[0][1]
+  const running = { ...evidence, id: 'new-run', requestId, status: 'running' }
+  api.listModelProposals.mockResolvedValue({
+    supported: true, latestAttempt: running, lastComplete: evidence, evidenceCurrent: false, items: [],
+  })
+
+  await user.click(discover)
+  expect(api.discoverModelChanges).toHaveBeenLastCalledWith(endpoint.id, requestId)
+  const check = await screen.findByRole('button', { name: 'Check discovery status' })
+  const complete = { ...running, status: 'complete' }
+  api.listModelProposals.mockResolvedValue({
+    supported: true, latestAttempt: complete, lastComplete: complete, evidenceCurrent: true, items: [],
+  })
+  await user.click(check)
+  expect(api.discoverModelChanges).toHaveBeenCalledTimes(2)
+  await user.click(await screen.findByRole('button', { name: 'Discover changes' }))
+  expect(api.discoverModelChanges).toHaveBeenCalledTimes(3)
+  expect(api.discoverModelChanges.mock.calls[2][1]).not.toBe(requestId)
+})

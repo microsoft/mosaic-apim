@@ -63,10 +63,12 @@ def test_read_only_diff_retry_context_and_catalog_loss(
     token = str(uuid4())
     baseline = scan(token)
     assert baseline["status"] == "complete", baseline
+    assert baseline["requestId"] == token
     reads = fake.requests.copy()
     assert scan(token)["id"] == baseline["id"]
     assert fake.requests == reads
     listed = client.get(f"{base}/proposals").json()
+    assert listed["latestAttempt"]["requestId"] == token
     assert [(item["change"], item["deploymentStatus"]) for item in listed["items"]] == [
         ("baseline", "observed"),
     ]

@@ -1443,7 +1443,7 @@ export function useMosaicApi(): MosaicApi {
         request<DeploymentCatalogue>(`/api/v1/model-endpoints/${encodeURIComponent(id)}/deployable-models`),
       discoverModelChanges: (id, requestId) =>
         request<ModelDiscoveryRun>(`/api/v1/model-endpoints/${encodeURIComponent(id)}/model-lifecycle/discoveries`, {
-          method: 'POST', body: JSON.stringify({ requestId }),
+          method: 'POST', body: { requestId },
         }),
       listModelProposals: (id) =>
         request<ModelProposalList>(`/api/v1/model-endpoints/${encodeURIComponent(id)}/model-lifecycle/proposals`),
@@ -1451,7 +1451,7 @@ export function useMosaicApi(): MosaicApi {
         request<ModelProposalDetail>(`/api/v1/model-endpoints/${encodeURIComponent(id)}/model-lifecycle/proposals/${encodeURIComponent(proposalId)}`),
       saveModelProposalContext: (id, proposalId, context) =>
         request<ModelProposalDetail>(`/api/v1/model-endpoints/${encodeURIComponent(id)}/model-lifecycle/proposals/${encodeURIComponent(proposalId)}/context`, {
-          method: 'PUT', body: JSON.stringify(context),
+          method: 'PUT', body: context,
         }),
       planModelDeployment: (id, payload) =>
         request<ModelDeploymentPlan>(`/api/v1/model-endpoints/${encodeURIComponent(id)}/deployment-plans`, {

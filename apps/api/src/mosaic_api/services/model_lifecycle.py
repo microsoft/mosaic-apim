@@ -356,6 +356,7 @@ class ModelLifecycleService:
             id=run_id,
             tenant_id=actor.tenant_id,
             endpoint_id=endpoint_id,
+            request_id=request_id,
             actor_object_id=actor.object_id,
             source=source,
             started_at=utc_now(),

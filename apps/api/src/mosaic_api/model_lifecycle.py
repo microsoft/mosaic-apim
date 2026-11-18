@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import Field
 
-from mosaic_api.domain import Entity, ModelProvider, MosaicModel
+from mosaic_api.domain import Entity, ModelProvider, MosaicModel, _unset
 from mosaic_api.model_deployments import DeploymentModelRef
 
 DISCOVERY_RULES_REVISION = "model-lifecycle/1"
@@ -31,6 +31,7 @@ class DiscoveryRequest(MosaicModel):
 class DiscoveryRun(Entity):
     entity_type: Literal["modelDiscoveryRun"] = "modelDiscoveryRun"
     endpoint_id: str
+    request_id: UUID | None = Field(default=None, exclude_if=_unset)
     actor_object_id: str
     source: DiscoverySource
     rules_revision: str = DISCOVERY_RULES_REVISION

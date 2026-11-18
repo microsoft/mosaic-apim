@@ -102,7 +102,9 @@ is no automatic detection, deployment, publication, grant, or model invocation.
 For administrators integrating the API, use
 `POST /api/v1/model-endpoints/{id}/model-lifecycle/discoveries` with a UUID `requestId`.
 Retry the same token to retrieve that attempt without re-reading Azure; use a new token to start
-another read. A running attempt can be checked with `GET /discoveries/{runId}` under the same prefix.
+another read. Discovery runs echo the request ID so clients can match a saved run to a request
+whose response was lost. A running attempt can be checked with `GET /discoveries/{runId}` under
+the same prefix.
 An interrupted attempt does not replace the complete baseline. Proposal reads and context writes
 under `/proposals` refer to exact versions of the registered endpoint. Context saves are conditional
 on the reviewed evidence and the expected draft revision.

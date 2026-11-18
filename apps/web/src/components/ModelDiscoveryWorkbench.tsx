@@ -188,7 +188,10 @@ export function ModelDiscoveryWorkbench({ endpoint, onClose }: { endpoint: Model
         aria-busy={busy} disabled={busy} onClick={() => {
           setSaved(false)
           if (latest?.status === 'running') void cache.invalidateQueries({ queryKey: listKey })
-          else discover.mutate()
+          else {
+            if (latest?.requestId === lastRequest.current) lastRequest.current = null
+            discover.mutate()
+          }
         }}
       >{busy ? 'Discovering changes…' : latest?.status === 'running' ? 'Check discovery status' : 'Discover changes'}</Button>}
       toolbar={<div className={styles.messages}>

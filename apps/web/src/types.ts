@@ -1569,6 +1569,7 @@ export interface DeploymentModelRef {
 
 export interface ModelDiscoveryRun {
   id: string
+  requestId?: string
   status: 'running' | 'complete' | 'partial' | 'failed' | 'interrupted'
   source: {
     provider: ModelProvider
