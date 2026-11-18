@@ -1141,7 +1141,9 @@ export interface SelfHostedRuntimeReview {
   associationId: string
   bindingId: string
   operationPath: string
-  apiVersion: string
+  apiVersion?: string | null
+  discoveryAssociationId?: string | null
+  discoveryPath?: string | null
   blockers: string[]
 }
 
@@ -1896,6 +1898,7 @@ export interface Publication {
 }
 
 export interface McpPublication {
+  runtimeTarget?: GatewayRuntimeChoice | null
   azureCloud?: AzureCloud
   id: string
   tenantId: string
@@ -2540,6 +2543,7 @@ export interface ModelConnection {
 }
 
 export interface McpConnection {
+  selfHosted?: boolean
   azureCloud?: AzureCloud
   appliedMethods?: ModelAccessSettings | null
   subscriptionHeader?: string

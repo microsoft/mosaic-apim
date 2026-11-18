@@ -914,7 +914,33 @@ class PortalAccessService:
         if context.publication is None:
             connection = self._adopted_mcp_connection(actor, context, administrator=administrator)
         else:
-            connection = self._published_mcp_connection(actor, context, administrator=administrator)
+            local = None
+            if context.publication.is_self_hosted():
+                local = await require_applied_ingress(
+                    self._gateways, context.gateway, context.publication,
+                    self._self_hosted_evidence,
+                )
+                snapshot = context.publication.applied_access
+                intent = await self._intent(actor, context, require_current=True)
+                if (
+                    snapshot is None or not snapshot.settings.entra_enabled or intent is None
+                    or not context.entitlement.enabled or not any(
+                        grant.entitlement_id == entitlement_id and grant.enabled
+                        and grant.subject == context.entitlement.subject
+                        and grant.object_id.casefold() == context.principal.object_id.casefold()
+                        and grant.intent_digest == entitlement_intent_digest(
+                            context.entitlement, context.principal, intent,
+                        )
+                        for grant in snapshot.grants
+                    )
+                ):
+                    raise ConflictError(
+                        "This grant has not been applied to the selected local MCP gateway.",
+                        details={"reason": "localGatewayNotReady"},
+                    )
+            connection = self._published_mcp_connection(
+                actor, context, administrator=administrator, local_ingress=local,
+            )
         book = await self._entitlements.cost_center_book(actor.tenant_id)
         intent = cost_center_intent(context.entitlement, context.principal, book)
         return connection.model_copy(
@@ -965,11 +991,14 @@ class PortalAccessService:
         )
 
     def _published_mcp_connection(
-        self, actor: Actor, context: _McpAccessContext, *, administrator: bool
+        self, actor: Actor, context: _McpAccessContext, *, administrator: bool,
+        local_ingress: str | None = None,
     ) -> McpConnection:
         publication = context.publication
         assert publication is not None
-        gateway_url = context.gateway.capabilities.gateway_url
+        gateway_url = local_ingress if publication.is_self_hosted() else (
+            context.gateway.capabilities.gateway_url
+        )
         snapshot = publication.applied_access
         government = context.gateway.azure_cloud == "government"
         audience = snapshot.audience if snapshot else self._runtime_client_id
@@ -1019,6 +1048,7 @@ class PortalAccessService:
             entitlement_id=context.entitlement.id,
             azure_cloud=context.gateway.azure_cloud,
             applied_methods=snapshot.settings if snapshot else None,
+            self_hosted=True if publication.is_self_hosted() else None,
             keys_available=government
             and context.entitlement.subject.kind in {"user", "application"},
             key_exists=bool(runtime and runtime.key_exists),

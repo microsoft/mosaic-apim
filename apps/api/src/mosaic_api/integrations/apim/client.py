@@ -1021,7 +1021,13 @@ class ApimClient:
             f"{self._base}/apis/{name}", params=self._mcp_params, allow_not_found=True
         )
 
-    async def get_mcp_api_policy(self, api_name: str) -> str | None:
+    async def list_mcp_api_operations(self, name: str) -> list[JsonObject]:
+        return await self._arm.list(
+            f"{self._base}/apis/{name}/operations",
+            params=self._mcp_params, require_complete=True,
+        )
+
+    async def get_mcp_api_policy(self, api_name: str, *, strict: bool = False) -> str | None:
         payload = await self._arm.get(
             f"{self._base}/apis/{api_name}/policies/policy",
             params={**self._mcp_params, "format": "rawxml"},
@@ -1030,9 +1036,9 @@ class ApimClient:
         if payload is None:
             return None
         properties = payload.get("properties")
-        if not isinstance(properties, dict):
-            return None
-        value = properties.get("value")
+        value = properties.get("value") if isinstance(properties, dict) else None
+        if strict and (not isinstance(value, str) or not value.strip()):
+            raise UpstreamError("API Management returned an invalid MCP policy.")
         return value if isinstance(value, str) else None
 
     async def get_logger(self, name: str) -> JsonObject | None:

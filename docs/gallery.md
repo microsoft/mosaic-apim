@@ -132,6 +132,8 @@ embeddings remain disabled read-only intent, not current save or enforcement pro
       local connection, and the missing evidence that blocks Apply. At
       <a href="images/screenshots/console-self-hosted-publication-review-narrow.png">narrow widths</a>,
       the association steps stack.</p>
+      <p>The <a href="images/screenshots/console-self-hosted-mcp-review.png">MCP server review</a>
+      also shows the shared OAuth discovery attachment and the local Streamable HTTP endpoint.</p>
     </td>
   </tr>
   <tr>

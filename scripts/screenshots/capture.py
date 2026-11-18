@@ -431,6 +431,25 @@ def _review_fictional_edge(page: Page) -> None:
     commercial.get_by_role("checkbox", name="Publish gpt-4o-mini", exact=True).check()
     click_button(re.compile(r"^Configure$"))(page)
     click_button("Review plan")(page)
+    _assert_fictional_local_review(page)
+
+
+def _review_fictional_edge_mcp(page: Page) -> None:
+    _fictional_edge(page)
+    click_button("Publish an MCP server")(page)
+    page.get_by_role("combobox", name="Gateway", exact=True).select_option(label="Field Lab APIM")
+    page.get_by_role("combobox", name="Gateway runtime", exact=True).select_option(
+        label="plant-edge (self-hosted)"
+    )
+    page.get_by_role("checkbox", name="Publish IT Service Desk", exact=True).check()
+    click_button(re.compile(r"^Configure$"))(page)
+    click_button("Review plan")(page)
+    _assert_fictional_local_review(page)
+    if not page.get_by_text("Attach shared OAuth discovery", exact=True).is_visible():
+        raise CaptureError("The MCP review must show both APIM attachments.")
+
+
+def _assert_fictional_local_review(page: Page) -> None:
     page.get_by_role("heading", name="Gateway\u2013API association", exact=True).wait_for()
     if not page.get_by_role("button", name="Apply all pending changes").is_disabled():
         raise CaptureError("The fictional self-hosted plan must remain blocked.")
@@ -1904,6 +1923,10 @@ SHOTS: list[Shot] = [
         "console-self-hosted-publication-review-narrow",
         "console", "/models?tab=published", "light", "Published models",
         actions=(_review_fictional_edge,), width=430, height=2550,
+    ),
+    Shot(
+        "console-self-hosted-mcp-review", "console", "/mcps?tab=published", "light",
+        "Published MCP servers", actions=(_review_fictional_edge_mcp,), height=1670,
     ),
     # This saves an unapplied key-setting change; keep it after all connection screenshots.
     Shot(

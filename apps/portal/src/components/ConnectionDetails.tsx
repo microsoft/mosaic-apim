@@ -418,6 +418,10 @@ function McpEndpointSection({ connection }: { connection: McpConnection }) {
   return (
     <section className="connection-section" aria-labelledby={headingId}>
       <h3 id={headingId}>Server</h3>
+      {connection.selfHosted && <Text as="p">
+        Connect from a network that can reach the self-hosted gateway. Tools use the server’s
+        gateway; there is no Azure fallback.
+      </Text>}
       <dl className="fact-list">
         <div>
           <dt>Server URL</dt>

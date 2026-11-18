@@ -44,7 +44,7 @@ export function GatewayRuntimePicker({ gateway, choice, onChange, runtimes, path
         <option value="">Azure-managed gateway (default)</option>
         {missing && <option value={selected} disabled>Previously selected self-hosted gateway</option>}
         {rows.map((runtime) => {
-          const reason = path === 'mcp' ? 'Self-hosted MCP is not supported yet' : runtimeRefusal(gateway, runtime)
+          const reason = runtimeRefusal(gateway, runtime)
           return <option key={runtime.id} value={runtime.id} disabled={Boolean(reason)}>
             {runtime.gatewayName} (self-hosted){reason ? ` — ${reason}` : ''}
           </option>
@@ -53,8 +53,8 @@ export function GatewayRuntimePicker({ gateway, choice, onChange, runtimes, path
     </Field>
     {runtimes.isPending && <Loading label="Loading self-hosted gateways" />}
     {runtimes.isError && <ErrorState error={runtimes.error} />}
-    {path === 'mcp' && rows.length > 0 && <Text block size={200}>
-      MCP servers still use the Azure-managed gateway. Self-hosted support requires separate discovery and runtime verification.
+    {path === 'mcp' && selected && !missing && <Text block size={200}>
+      Tools inherit their server’s gateway. Apply needs proof of local MCP traffic and OAuth discovery.
     </Text>}
     {path === 'model' && selected && !missing && <Text block size={200}>
       Self-hosted publishing supports governed Azure OpenAI Chat Completions with Entra. Review verifies the selected runtime before Apply.

@@ -226,7 +226,11 @@ def _runtime_url(path: str) -> str:
     )
 
 
-def _auth_header_value(path: str, prefix: str, *, suffix: str = "") -> str:
+def _auth_header_value(
+    path: str, prefix: str, *, suffix: str = "", origin: str | None = None
+) -> str:
+    if origin is not None:
+        return f"{prefix}{origin}/{path.strip('/')}{suffix}"
     return _expression(
         [
             *_runtime_origin_lines(),
@@ -304,6 +308,8 @@ def _mcp_authentication(
     publication: McpPublication,
     snapshot: McpAccessSnapshot,
     grants: list[McpAccessGrant],
+    *,
+    origin: str | None = None,
 ) -> None:
     if not snapshot.settings.entra_enabled:
         _authentication(fragment, publication, snapshot, grants)
@@ -317,6 +323,7 @@ def _mcp_authentication(
             'resource_metadata="'
         ),
         suffix='"',
+        origin=origin,
     )
     _initialize_caller(fragment)
     _variable(fragment, "mosaic-mcp-auth-failure", "")
@@ -434,9 +441,24 @@ def describe_reference_passing(facet: PolicyFacet, caller: McpModelCaller) -> No
     facet.attributes = {"name": ON_BEHALF_HEADER, "exists-action": "override"}
 
 
-def _api_policy(publication: McpPublication, *, key_only: bool = False) -> ET.Element:
+def _require_mcp_runtime(parent: ET.Element, gateway_name: str) -> None:
+    _reject(
+        parent,
+        "@(context.Deployment.Gateway == null || context.Deployment.Gateway.IsManaged"
+        f" || context.Deployment.Gateway.Id != {_literal(gateway_name)})",
+        reason="wrong-runtime",
+        message="This MCP resource is not available on this gateway.",
+    )
+
+
+def _api_policy(
+    publication: McpPublication, *, key_only: bool = False,
+    runtime: tuple[str, str] | None = None,
+) -> ET.Element:
     policies = ET.Element("policies")
     inbound = ET.SubElement(policies, "inbound")
+    if runtime:
+        _require_mcp_runtime(inbound, runtime[0])
     ET.SubElement(inbound, "base")
     ET.SubElement(inbound, "include-fragment", {"fragment-id": publication.fragment_name})
     ET.SubElement(ET.SubElement(policies, "backend"), "base")
@@ -458,7 +480,8 @@ def _api_policy(publication: McpPublication, *, key_only: bool = False) -> ET.El
     failure = 'context.Variables.GetValueOrDefault<string>("mosaic-mcp-auth-failure", "")'
     challenge = ET.SubElement(when, "choose")
     invalid = _auth_header_value(
-        metadata_path, 'Bearer error="invalid_token", resource_metadata="', suffix='"'
+        metadata_path, 'Bearer error="invalid_token", resource_metadata="', suffix='"',
+        origin=runtime[1] if runtime else None,
     )
     # Observed live on native MCP APIs, and not publicly documented: the gateway inserts the API
     # path into the metadata URL of a challenge set inside return-response, inbound or here, but
@@ -467,7 +490,10 @@ def _api_policy(publication: McpPublication, *, key_only: bool = False) -> ET.El
     for reason, header in (
         (
             "no-credential",
-            _auth_header_value(metadata_path, 'Bearer resource_metadata="', suffix='"'),
+            _auth_header_value(
+                metadata_path, 'Bearer resource_metadata="', suffix='"',
+                origin=runtime[1] if runtime else None,
+            ),
         ),
         ("token-malformed", invalid),
     ):
@@ -477,10 +503,12 @@ def _api_policy(publication: McpPublication, *, key_only: bool = False) -> ET.El
     return policies
 
 
-def _metadata_body(publication: McpPublication, snapshot: McpAccessSnapshot) -> str:
+def _metadata_body(
+    publication: McpPublication, snapshot: McpAccessSnapshot, *, origin: str | None = None
+) -> str:
     return _expression(
         [
-            *_runtime_origin_lines(),
+            *(_runtime_origin_lines() if origin is None else [f"var origin = {_literal(origin)};"]),
             f"var resource = origin + {_literal(f'/{publication.api_path}/{MCP_MESSAGE_PATH}')};",
             "var document = new JObject();",
             'document["resource"] = resource;',
@@ -492,9 +520,14 @@ def _metadata_body(publication: McpPublication, snapshot: McpAccessSnapshot) -> 
     )
 
 
-def _metadata_policy(publication: McpPublication, snapshot: McpAccessSnapshot) -> ET.Element:
+def _metadata_policy(
+    publication: McpPublication, snapshot: McpAccessSnapshot,
+    *, runtime: tuple[str, str] | None = None,
+) -> ET.Element:
     policies = ET.Element("policies")
     inbound = ET.SubElement(policies, "inbound")
+    if runtime:
+        _require_mcp_runtime(inbound, runtime[0])
     ET.SubElement(inbound, "base")
     response = ET.SubElement(inbound, "return-response")
     if not snapshot.settings.entra_enabled:
@@ -505,6 +538,8 @@ def _metadata_policy(publication: McpPublication, snapshot: McpAccessSnapshot) -
         for section in ("backend", "outbound", "on-error"):
             ET.SubElement(ET.SubElement(policies, section), "base")
         return policies
+
+
     ET.SubElement(response, "set-status", {"code": "200", "reason": "OK"})
     content = ET.SubElement(
         response,
@@ -518,10 +553,18 @@ def _metadata_policy(publication: McpPublication, snapshot: McpAccessSnapshot) -
         {"name": "Cache-Control", "exists-action": "override"},
     )
     ET.SubElement(cache, "value").text = "public, max-age=3600"
-    ET.SubElement(response, "set-body").text = _metadata_body(publication, snapshot)
+    ET.SubElement(response, "set-body").text = _metadata_body(
+        publication, snapshot, origin=runtime[1] if runtime else None
+    )
     for section in ("backend", "outbound", "on-error"):
         ET.SubElement(ET.SubElement(policies, section), "base")
     return policies
+
+
+def render_mcp_metadata_policy(
+    publication: McpPublication, snapshot: McpAccessSnapshot, runtime: tuple[str, str],
+) -> str:
+    return _serialize(_metadata_policy(publication, snapshot, runtime=runtime))
 
 
 def _facets(
@@ -718,6 +761,7 @@ def render_mcp_policy(
     *,
     backend_auth: McpAuthMode,
     backend_audience: str | None,
+    runtime: tuple[str, str] | None = None,
 ) -> McpPolicyDocuments:
     """Return MCP APIM policy XML and redacted facets; reject unsafe intent."""
 
@@ -738,7 +782,16 @@ def render_mcp_policy(
     grants_for_lookup = [*(grant for grant in grants if not grant.is_group_grant), *group_grants]
     caller = snapshot.model_caller
     fragment = ET.Element("fragment")
-    _mcp_authentication(fragment, publication, snapshot, grants_for_lookup)
+    if publication.is_self_hosted() != (runtime is not None):
+        raise ValidationError("The reviewed MCP policy must name the exact self-hosted runtime.")
+    if runtime and (
+        snapshot.settings.keys_enabled or snapshot.model_caller is not None
+        or any(grant.subject.kind not in {"user", "application"} for grant in grants)
+    ):
+        raise ValidationError("Use direct Entra grants without model bridging for self-hosted MCP.")
+    _mcp_authentication(
+        fragment, publication, snapshot, grants_for_lookup, origin=runtime[1] if runtime else None
+    )
     if caller is not None:
         _variable(fragment, "mosaic-mcp-call", "@(context.RequestId.ToString())")
         append_grant_attribution_trace(
@@ -765,12 +818,15 @@ def render_mcp_policy(
         _pass_reference(fragment)
     if backend_auth == McpAuthMode.MANAGED_IDENTITY:
         assert backend_audience is not None
-        ET.SubElement(fragment, "authentication-managed-identity", {"resource": backend_audience})
+        attrs = {"resource": backend_audience}
+        if runtime:
+            attrs["authentication-provider"] = "WorkloadIdentity"
+        ET.SubElement(fragment, "authentication-managed-identity", attrs)
     fragment_xml = _serialize(fragment)
     if len(fragment_xml.encode("utf-8")) > MAX_FRAGMENT_BYTES:
         raise ValidationError("The MCP policy fragment exceeds APIM's 512 KB UTF-8 size limit.")
-    api = _api_policy(publication, key_only=not snapshot.settings.entra_enabled)
-    metadata = _metadata_policy(publication, snapshot)
+    api = _api_policy(publication, key_only=not snapshot.settings.entra_enabled, runtime=runtime)
+    metadata = _metadata_policy(publication, snapshot, runtime=runtime)
     api_policy_xml = _serialize(api)
     metadata_policy_xml = _serialize(metadata)
     facets, unrecognized = _facets(

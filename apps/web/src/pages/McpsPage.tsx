@@ -156,6 +156,9 @@ function AccessStateBadge({ publication }: { publication: McpPublication }) {
 }
 
 function mcpServerUrl(publication: McpPublication, gateway?: Gateway): string {
+  if (publication.runtimeTarget?.kind === 'selfHosted') {
+    return 'Self-hosted gateway — see verified connection details'
+  }
   const base = gateway?.capabilities.gatewayUrl?.replace(/\/+$/, '')
   return base ? `${base}/${publication.apiPath.replace(/^\/+/, '')}/mcp` : 'Gateway URL not known'
 }

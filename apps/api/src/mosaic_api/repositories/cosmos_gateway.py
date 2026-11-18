@@ -110,6 +110,14 @@ class CosmosGatewayRepository(CosmosRepositoryBase):
             conflict_message="The self-hosted gateway changed; reload it and try again",
         )
 
+    async def save_self_hosted_gateway(
+        self, runtime: SelfHostedGateway, audit_event: AuditEvent
+    ) -> None:
+        await self._mutate(
+            runtime, None, audit_event, "replace",
+            conflict_message="The self-hosted gateway changed; reload it and try again",
+        )
+
     async def find_gateway_by_resource_id(
         self, tenant_id: str, azure_resource_id: str, *, azure_cloud: str = "commercial"
     ) -> Gateway | None:

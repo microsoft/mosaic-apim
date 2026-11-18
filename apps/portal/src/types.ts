@@ -626,6 +626,7 @@ export type PrincipalKind =
   | 'securityGroup'
 
 export interface McpConnection {
+  selfHosted?: boolean
   azureCloud?: AzureCloud
   appliedMethods?: ModelAccessSettings | null
   subscriptionHeader?: string

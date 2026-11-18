@@ -101,8 +101,9 @@ identifiers and secrets blurred. Directory data and checks are simulated, not li
 <a id="administrator-console"></a>
 <a id="end-user-portal"></a>
 
-The [self-hosted gateway registry and publication review](docs/gallery.md#estate-administration)
-show the fictional target selection, APIM association, and evidence required before Apply.
+The [self-hosted gateway registry and publication reviews](docs/gallery.md#estate-administration)
+show the fictional target selection, APIM associations, and evidence required before applying
+model and MCP server publications.
 
 <table>
   <tr>

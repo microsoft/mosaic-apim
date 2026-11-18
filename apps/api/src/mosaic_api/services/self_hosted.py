@@ -10,10 +10,12 @@ from datetime import datetime
 from urllib.parse import urlsplit
 
 from mosaic_api.domain import (
+    MCP_METADATA_API_NAME,
     ApiShape,
     AppliedSelfHostedRuntime,
     Gateway,
     GatewayRuntimeChoice,
+    McpPublication,
     ModelAccessSettings,
     ModelProvider,
     Publication,
@@ -27,6 +29,7 @@ from mosaic_api.repositories import GatewayRepository
 
 SELF_HOSTED_IMAGE = "2.13.2"
 RUNTIME_RULES = "self-hosted-chat/1"
+MCP_RUNTIME_RULES = "self-hosted-mcp/1"
 CHECKS = {
     "ingress": "The approved local TLS ingress and Azure-ingress denial are unconfirmed.",
     "backend": "Runtime workload identity and backend reachability are unconfirmed.",
@@ -34,6 +37,20 @@ CHECKS = {
     "telemetry": "Grant attribution, token usage and budget propagation are unconfirmed.",
     "topology": "Single-replica topology and stale-configuration containment are unconfirmed.",
 }
+MCP_CHECKS = {
+    **CHECKS,
+    "policy": "Native MCP streaming and grant enforcement are unconfirmed on this runtime.",
+    "telemetry": "MCP grant attribution, call limits and budget propagation are unconfirmed.",
+    "discovery": "Local OAuth discovery and the native authentication challenge are unconfirmed.",
+}
+RUNTIME_ACTIONS = (
+    "Microsoft.ApiManagement/service/gateways/read",
+    *(
+        f"Microsoft.ApiManagement/service/{path}/{action}"
+        for path in ("gateways/apis", "namedValues")
+        for action in ("read", "write", "delete")
+    ),
+)
 
 
 def ingress_origin(value: str) -> str:
@@ -130,19 +147,25 @@ def require_chat_profile(
         )
 
 
-def binding_name(publication: Publication) -> str:
+def binding_name(publication: Publication | McpPublication) -> str:
     digest = hashlib.sha256(publication.api_name.casefold().encode()).hexdigest()
     return f"mosaic-binding-{digest[:24]}"
 
 
-def binding_value(publication: Publication, child_name: str) -> str:
+def binding_value(publication: Publication | McpPublication, child_name: str) -> str:
+    if isinstance(publication, McpPublication):
+        source = {"kind": "mcp", "endpoint": publication.mcp_endpoint_id}
+    else:
+        source = {
+            "kind": "model",
+            "endpoint": publication.model_endpoint_id,
+            "deployment": publication.deployment_name,
+        }
     return json.dumps(
         {
             "version": 1,
-            "kind": "model",
+            **source,
             "publication": publication.id,
-            "endpoint": publication.model_endpoint_id,
-            "deployment": publication.deployment_name,
             "api": publication.api_name,
             "target": "selfHosted",
             "gateway": child_name,
@@ -191,7 +214,7 @@ def fingerprint(value: object) -> str:
 
 
 def runtime_fingerprint(runtime: SelfHostedGateway) -> str:
-    return fingerprint(runtime.model_dump(mode="json"))
+    return fingerprint(runtime.model_dump(mode="json", exclude={"mcp_discovery_link", "etag"}))
 
 
 @dataclass(frozen=True)
@@ -209,26 +232,31 @@ EvidenceReader = Callable[[str], Awaitable[RuntimeEvidence | None]]
 
 
 async def missing_evidence(
-    reader: EvidenceReader | None, scope: str, checks: Iterable[str] = CHECKS
+    reader: EvidenceReader | None,
+    scope: str,
+    checks: Iterable[str] = CHECKS,
+    *,
+    rules: str = RUNTIME_RULES,
 ) -> list[str]:
+    labels = MCP_CHECKS if rules == MCP_RUNTIME_RULES else CHECKS
     evidence = await reader(scope) if reader is not None else None
     if evidence is not None:
         now = utc_now()
         if (
             evidence.scope != scope
-            or evidence.rules_revision != RUNTIME_RULES
+            or evidence.rules_revision != rules
             or not evidence.checked_at <= now < evidence.expires_at
         ):
             return ["The selected runtime's evidence is stale or no longer matches this plan."]
     return [
-        CHECKS[check] for check in checks if evidence is None or check not in evidence.confirmed
+        labels[check] for check in checks if evidence is None or check not in evidence.confirmed
     ]
 
 
 async def require_applied_ingress(
     repo: GatewayRepository,
     gateway: Gateway,
-    publication: Publication,
+    publication: Publication | McpPublication,
     reader: EvidenceReader | None,
 ) -> str:
     applied = publication.applied_runtime
@@ -245,13 +273,23 @@ async def require_applied_ingress(
     metadata = f"{parent}/namedValues/{binding_name(publication)}"
     expected = {association, metadata}
     owned = {item.resource_id for item in publication.created_resources()}
+    is_mcp = isinstance(publication, McpPublication)
+    if is_mcp:
+        discovery = f"{parent}/gateways/{runtime.gateway_name}/apis/{MCP_METADATA_API_NAME}"
+        if runtime.mcp_discovery_link != discovery:
+            raise ConflictError(unavailable, details={"reason": "localGatewayNotReady"})
     if (
         applied.runtime_id != runtime.id
         or applied.ingress_origin != runtime.ingress_origin
         or applied.ingress_origin == str(gateway.capabilities.gateway_url).rstrip("/").lower()
         or applied.runtime_fingerprint != runtime_fingerprint(runtime)
         or not expected <= owned
-        or await missing_evidence(reader, applied.evidence_scope)
+        or await missing_evidence(
+            reader,
+            applied.evidence_scope,
+            MCP_CHECKS if is_mcp else CHECKS,
+            rules=MCP_RUNTIME_RULES if is_mcp else RUNTIME_RULES,
+        )
     ):
         raise ConflictError(unavailable, details={"reason": "localGatewayNotReady"})
     return applied.ingress_origin

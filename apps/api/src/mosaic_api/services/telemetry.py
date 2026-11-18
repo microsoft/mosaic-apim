@@ -245,7 +245,14 @@ async def governed_apis(
             subscription_name=publication.subscription_name if publication else None,
             first_seen_at=seen_at,
         )
+    local_mcp_ids = {
+        publication.id
+        for publication in await gateway_repository.list_mcp_publications(tenant_id)
+        if publication.is_self_hosted()
+    }
     for server in mcp_servers:
+        if server.publication_id in local_mcp_ids:
+            continue
         name = server.api_name.casefold()
         if not API_NAME.fullmatch(name):
             logger.warning("usage_api_name_skipped", gateway_id=server.gateway_id)

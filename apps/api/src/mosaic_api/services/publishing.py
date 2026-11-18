@@ -148,6 +148,7 @@ from mosaic_api.services.policy_capabilities import (
     refresh_policy_gateway,
 )
 from mosaic_api.services.self_hosted import (
+    RUNTIME_ACTIONS,
     RUNTIME_RULES,
     EvidenceReader,
     applied_runtime_snapshot,
@@ -182,11 +183,6 @@ DENY_ALL_FRAGMENT = (
 EXACT_RUNTIME_RESOURCES = {
     PublishedResourceKind.GATEWAY_API, PublishedResourceKind.PUBLICATION_BINDING
 }
-RUNTIME_ACTIONS = (
-    "Microsoft.ApiManagement/service/gateways/read",
-    *(f"Microsoft.ApiManagement/service/{path}/{action}"
-      for path in ("gateways/apis", "namedValues") for action in ("read", "write", "delete")),
-)
 
 # Dependency order: every resource is created after the resources it names. The fragment's
 # set-backend-service names the backend, and API Management validates a fragment asynchronously and

@@ -249,12 +249,18 @@ class GatewayService:
             publications = await self._repository.list_publications(
                 actor.tenant_id, gateway_id=gateway_id
             )
-            if any(
-                item.runtime_target is not None and item.runtime_target.runtime_id == runtime_id
-                for item in publications
+            mcp_publications = await self._repository.list_mcp_publications(
+                actor.tenant_id, gateway_id=gateway_id
+            )
+            choices = [
+                *(item.runtime_target for item in publications),
+                *(item.runtime_target for item in mcp_publications),
+            ]
+            if record.mcp_discovery_link or any(
+                choice is not None and choice.runtime_id == runtime_id for choice in choices
             ):
                 raise ConflictError(
-                    "A model publication selects this gateway. Unpublish it and remove its "
+                    "A publication selects this gateway. Unpublish it and remove its "
                     "saved publication before forgetting this runtime."
                 )
             await self._repository.delete_self_hosted_gateway(

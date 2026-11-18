@@ -421,6 +421,7 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-self-hosted-gateways` | Console | `/gateways?tab=self-hosted`, fictional existing child registered under its APIM parent | Light | Self-hosted gateways |
 | `console-self-hosted-publication-review` | Console | `/models?tab=published`, Association map and local caller preview with Apply blocked | Light | Self-hosted publication review |
 | `console-self-hosted-publication-review-narrow` | Console | Same publication review at 430 px, with the parent, API, and local runtime stacked | Light | Self-hosted publication review |
+| `console-self-hosted-mcp-review` | Console | `/mcps?tab=published`, Association map for the native MCP API and shared OAuth discovery, with Apply blocked | Light | Self-hosted MCP review |
 | `console-government-gateway` | Console | `/gateways`, fictional Government gateway selected with AzGov and Production context | Light | Government gateway |
 | `console-gateway-overview` | Console | Contoso AI Gateway, **Overview** section | Dark | Gateway overview |
 | `console-gateway-apis` | Console | Contoso AI Gateway, **APIs and endpoints** section | Light | APIs and endpoints |

@@ -90,6 +90,14 @@ class InMemoryGatewayRepository:
         self.self_hosted_gateways.pop(runtime.id, None)
         self.audit_events[audit_event.id] = audit_event
 
+    async def save_self_hosted_gateway(
+        self, runtime: SelfHostedGateway, audit_event: AuditEvent
+    ) -> None:
+        if runtime.id not in self.self_hosted_gateways:
+            raise ConflictError("The self-hosted gateway no longer exists.")
+        self.self_hosted_gateways[runtime.id] = runtime
+        self.audit_events[audit_event.id] = audit_event
+
     async def find_gateway_by_resource_id(
         self, tenant_id: str, azure_resource_id: str, *, azure_cloud: str = "commercial"
     ) -> Gateway | None:

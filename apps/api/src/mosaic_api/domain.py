@@ -2982,6 +2982,7 @@ class SelfHostedGateway(Entity):
     ingress_origin: str
     image_version: str
     image_digest: str | None = None
+    mcp_discovery_link: str | None = Field(default=None, exclude_if=_unset)
 
 
 class SelfHostedGatewayCandidate(MosaicModel):
@@ -3001,7 +3002,9 @@ class SelfHostedRuntimeReview(MosaicModel):
     association_id: str
     binding_id: str
     operation_path: str
-    api_version: str
+    api_version: str | None = None
+    discovery_association_id: str | None = Field(default=None, exclude_if=_unset)
+    discovery_path: str | None = Field(default=None, exclude_if=_unset)
     blockers: list[str] = Field(default_factory=list)
 
 
@@ -3442,6 +3445,11 @@ class McpPublication(Entity):
     # names one. Its model calls are then attributed to the person each MCP call served, never
     # authorized by them. The applied snapshot's ``model_caller`` says what's live. See ADR 0025.
     model_caller_id: str | None = Field(default=None, exclude_if=_unset)
+    runtime_target: GatewayRuntimeChoice | None = Field(default=None, exclude_if=_unset)
+    applied_runtime: AppliedSelfHostedRuntime | None = Field(default=None, exclude_if=_unset)
+
+    def is_self_hosted(self) -> bool:
+        return self.runtime_target is not None and self.runtime_target.kind == "selfHosted"
 
     def created_resources(self) -> list[PublishedResource]:
         """The subset rollback and unpublish are allowed to delete."""
@@ -4463,13 +4471,6 @@ class McpPublicationCreate(MosaicModel):
     api_path: str | None = Field(default=None, min_length=1, max_length=200)
     runtime_target: GatewayRuntimeChoice | None = None
 
-    @field_validator("runtime_target")
-    @classmethod
-    def reject_self_hosted(cls, value: GatewayRuntimeChoice | None) -> GatewayRuntimeChoice | None:
-        if value is not None and value.kind == "selfHosted":
-            raise ValueError("Self-hosted publishing for MCP servers is not supported yet.")
-        return value
-
     @field_validator("api_name")
     @classmethod
     def validate_resource_name(cls, value: str | None) -> str | None:
@@ -4571,6 +4572,7 @@ class ModelConnection(MosaicModel):
 
 
 class McpConnection(MosaicModel):
+    self_hosted: bool | None = Field(default=None, exclude_if=_unset)
     """How a grantee connects to a governed MCP server, and whether the gateway enforces it yet.
 
     ``enforced`` is true only for a server MOSAIC publishes whose grant is applied. Grants on an
