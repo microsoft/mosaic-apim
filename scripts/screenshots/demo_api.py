@@ -99,6 +99,10 @@ from mosaic_api.domain import (
     PublicationStatus,
     PublishRunStatus,
     RequestEnforcement,
+    RequestFormContextInput,
+    RequestFormDefinition,
+    RequestFormPublishInput,
+    RequestFormSubmission,
     TokenEnforcement,
     deterministic_id,
     entitlement_id,
@@ -2323,6 +2327,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         cost_center: str | None = None,
         capture_identity: bool = True,
         captured_name: str | None = None,
+        form_submission: RequestFormSubmission | None = None,
     ) -> str:
         group_ids = {
             group_id
@@ -2349,6 +2354,7 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
                 ),
                 justification=justification,
                 cost_center_id=estate.cost_centers[cost_center] if cost_center else None,
+                request_form=form_submission,
             ),
         )
         return created.id
@@ -2399,20 +2405,6 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
                 requests=_calls(per_window=30, window_seconds=60)
             ),
         ),
-    )
-    await request_access(
-        PORTAL_USER,
-        "modelApi",
-        estate.model_apis["foundry-inference"],
-        "Taking the claims summarization prototype to production.",
-        cost_center="general",
-    )
-    await request_access(
-        ISAIAH,
-        "modelApi",
-        gpt4o_mini,
-        "Prototype for customer email triage.",
-        cost_center="general",
     )
     await request_access(
         LIDIA,
@@ -2626,6 +2618,80 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
             source_url="https://contoso.example/agreements/government-demo",
             note="Fictional demo-only Government contract rate, not an Azure price quote.",
         ),
+    )
+    # Create all legacy estate requests before enabling questions, then use real admission for
+    # these two explicitly configured examples. No global required form or synthesized answers.
+    form_scope = {
+        "resourceKinds": ["modelApi"],
+        "resources": [
+            {"kind": "modelApi", "id": estate.model_apis["foundry-inference"]},
+            {"kind": "modelApi", "id": gpt4o_mini},
+        ],
+        "environments": ["production"],
+    }
+    form = RequestFormDefinition.model_validate({
+        "questions": [
+            {"id": "intended-use", "kind": "paragraph", "label": "Intended use",
+             "helpText": "Describe the application without code, secrets or datasets.",
+             "required": True, "scope": form_scope},
+            {"id": "data-class", "kind": "singleChoice", "label": "Data class",
+             "required": True, "scope": form_scope, "options": [
+                 {"id": "synthetic", "label": "Public / synthetic"},
+                 {"id": "internal", "label": "Internal"},
+                 {"id": "unsure", "label": "Unsure - needs review"},
+             ]},
+            {"id": "charge-reference", "kind": "shortText", "label": "Charge reference",
+             "helpText": "Informational only. The selected cost center remains authoritative.",
+             "maxLength": 128, "scope": form_scope},
+            {"id": "data-policy", "kind": "acknowledgment",
+             "label": "I will follow the organization's data policy.",
+             "required": True, "scope": form_scope},
+        ],
+    })
+    await services.entitlements.publish_request_form(
+        admin, RequestFormPublishInput(expected_revision=0, definition=form)
+    )
+    form.questions[0].help_text = "Describe intended usage at a high level. No sensitive code."
+    await services.entitlements.publish_request_form(
+        admin, RequestFormPublishInput(expected_revision=1, definition=form)
+    )
+    form = form.model_copy(update={"enabled": True}, deep=True)
+    await services.entitlements.publish_request_form(
+        admin, RequestFormPublishInput(
+            expected_revision=2, definition=form, enable_confirmed=True
+        )
+    )
+    for person, resource_id, purpose, justification in (
+        (PORTAL_USER, estate.model_apis["foundry-inference"],
+         "Summarize synthetic claims for a fictional demonstration assistant.",
+         "Taking the claims summarization prototype to production."),
+        (ISAIAH, gpt4o_mini,
+         "Evaluate email triage using only generated fictional messages.",
+         "Prototype for customer email triage."),
+    ):
+        resolved = await services.entitlements.resolve_request_form(
+            Actor(person.object_id, tenant_id),
+            RequestFormContextInput(
+                resource=EntitlementResource(kind="modelApi", id=resource_id),
+                cost_center_id=estate.cost_centers["general"],
+            ),
+        )
+        await request_access(
+            person, "modelApi", resource_id, justification, cost_center="general",
+            form_submission=RequestFormSubmission.model_validate({
+                "revision": resolved.revision, "contextRevision": resolved.context_revision,
+                "answers": [
+                    {"questionId": "intended-use", "value": purpose},
+                    {"questionId": "data-class", "value": "synthetic"},
+                    {"questionId": "charge-reference", "value": "DEMO-167"},
+                    {"questionId": "data-policy", "value": True},
+                ],
+            }),
+        )
+    revised_form = form.model_copy(deep=True)
+    revised_form.questions[0].label = "Intended usage"
+    await services.entitlements.publish_request_form(
+        admin, RequestFormPublishInput(expected_revision=3, definition=revised_form)
     )
     return estate
 

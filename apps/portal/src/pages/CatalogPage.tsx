@@ -2,11 +2,12 @@ import { Badge, Button, Input, Textarea, Text, useAnnounce } from '@fluentui/rea
 import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { usePortalApi } from '../api'
+import { ApiError, usePortalApi } from '../api'
 import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader } from '../components/PageHeader'
 import { DetailPanel } from '../components/DetailPanel'
+import { RequestAccessPage } from './RequestAccessPage'
 import { ResourceRow } from '../components/ResourceRow'
 import { CloudBadge } from '../components/CloudBadge'
 import { cloudLabel } from '../cloud-label'
@@ -58,7 +59,7 @@ function costCenterLabel(costCenter: CostCenterRef) {
   return `${costCenter.name} (${costCenter.code})`
 }
 
-function CatalogAction({ entry }: { entry: CatalogEntry }) {
+function CatalogAction({ entry, initialCostCenterId, onOpenForm }: { entry: CatalogEntry; initialCostCenterId?: string; onOpenForm: (costCenterId: string, justification: string) => void }) {
   const api = usePortalApi()
   const queryClient = useQueryClient()
   const requests = useQuery({ queryKey: ['portal', 'requests'], queryFn: api.listAccessRequests })
@@ -76,7 +77,7 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
     return () => { mounted.current = false }
   }, [])
   const [params] = useSearchParams()
-  const [selectedCostCenterId, setSelectedCostCenterId] = useState<string | undefined>(() => params.get('costCenter') ?? undefined)
+  const [selectedCostCenterId, setSelectedCostCenterId] = useState<string | undefined>(() => initialCostCenterId ?? params.get('costCenter') ?? undefined)
   const resource = resourceFromCatalog(entry)
   const definitions = entry.costCenterAccess ?? []
   const choices = [...new Map([
@@ -110,16 +111,31 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
   const keysDisallowed = government && selectedDefinition?.keysAllowed === false
   const defaultUnavailable = profile.data?.defaultCostCenter && (profile.data.defaultCostCenterEligible === false ||
     !definitions.some((definition) => definition.costCenter.id === profile.data.defaultCostCenter?.id))
+  const requestForm = useQuery({
+    queryKey: ['portal', 'request-form', resource, effectiveCostCenterId],
+    queryFn: () => {
+      if (!effectiveCostCenterId) throw new Error('Choose an eligible cost center.')
+      return api.resolveRequestForm(resource, effectiveCostCenterId)
+    },
+    enabled: showRequestControls && !keysDisallowed && Boolean(effectiveCostCenterId),
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  })
 
   const create = useMutation({
     mutationFn: () => {
       if (!selectedDefinition || selectedDefinition.mode !== 'requestOnly' || !effectiveCostCenterId) {
         throw new Error('Choose an eligible Request-only cost center for this exact offering.')
       }
+      if (requestForm.data?.status !== 'notRequired' || requestForm.isError || requestForm.isFetching) {
+        throw new Error('Load and review the current request form before submitting.')
+      }
       return api.createAccessRequest({
         resource,
         costCenterId: effectiveCostCenterId,
         justification: justification.trim() || undefined,
+        requestForm: { revision: requestForm.data.revision, contextRevision: requestForm.data.contextRevision, answers: [] },
       })
     },
     onSuccess: () => {
@@ -132,6 +148,8 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
     onSuccess: () => invalidateRequests(queryClient),
   })
   const submittedId = create.isSuccess && pendingRequest?.id === create.data.id ? create.data.id : null
+  const formChanged = create.error instanceof ApiError &&
+    (create.error.body?.details?.reason === 'requestFormRequired' || create.error.body?.details?.reason === 'requestFormChanged')
   useLayoutEffect(() => {
     if (!showRequestControls && requestFocus.current && !requestFocus.current.isConnected
       && document.activeElement === document.body) {
@@ -228,7 +246,15 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
           <Text>Approval is for you under this cost center. Gateway apply is a separate step.
             {selectedDefinition.keysAllowed ? ' Individual keys may be available after approval and apply; keys are never inherited from the group.' :
               'Individual keys are not available for this offering and cost center. Use Entra tokens where enabled.'}</Text>
-          <Textarea
+          {requestForm.isPending && !keysDisallowed && <Text role="status">Loading request questions…</Text>}
+          {requestForm.isError && <><ErrorState context="action" title="Request questions unavailable" error={requestForm.error} />
+            <Button onClick={() => void requestForm.refetch()}>Retry request questions</Button></>}
+          {requestForm.data?.status === 'configured' && !requestForm.isError && !requestForm.isFetching && <div>
+            <Text block>{requestForm.data.questions.length} governance questions apply (form v{requestForm.data.revision}). Answers are recorded for human review.</Text>
+            <Button appearance="primary" disabled={keysDisallowed || !effectiveCostCenterId}
+              onClick={() => { if (effectiveCostCenterId && !keysDisallowed) onOpenForm(effectiveCostCenterId, justification) }}>Continue request</Button>
+          </div>}
+          {(requestForm.data?.status === 'notRequired' && !requestForm.isError && !requestForm.isFetching || keysDisallowed) && <><Textarea
             value={justification}
             aria-label={`Justification for ${entry.displayName}`}
             placeholder="Optional justification"
@@ -240,10 +266,15 @@ function CatalogAction({ entry }: { entry: CatalogEntry }) {
             onClick={() => { if (!create.isPending && !keysDisallowed && effectiveCostCenterId) create.mutate() }}
             disabled={keysDisallowed || !effectiveCostCenterId} disabledFocusable={create.isPending}>
             Request access
-          </Button>
+            </Button></>}
         </>
       )}
       {create.isError && <Text role="alert" className="form-error">{create.error.message}</Text>}
+      {formChanged && <Button disabledFocusable={requestForm.isFetching} onClick={() => {
+        if (!requestForm.isFetching) void requestForm.refetch().then(result => {
+          if (result.isSuccess) announce('Request questions reloaded. Review the current form before submitting.', { polite: true })
+        })
+      }}>Reload current request questions</Button>}
       {withdraw.isError && <Text role="alert" className="form-error">{withdraw.error.message}</Text>}
       {submittedId && (
         <Text ref={successRef} tabIndex={-1}>Request submitted. <Link to={`/requests?request=${encodeURIComponent(submittedId)}`}>Track it in My requests</Link>. Gateway access may still need to be applied after approval.</Text>
@@ -285,6 +316,8 @@ export function CatalogPage() {
   const [search, setSearch] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [offeringId, setOfferingId] = useState<string | null>(null)
+  const [requestInitial, setRequestInitial] = useState<{ key: string; costCenterId: string; justification: string } | null>(null)
+  const [returnCenter, setReturnCenter] = useState<{ key: string; id: string } | null>(null)
   const filteredCatalog = useMemo(() => {
     if (!catalog.data) return []
     return catalog.data.filter((entry) => {
@@ -315,6 +348,32 @@ export function CatalogPage() {
     setKindFilter('all')
     setCostCenterFilter('all')
     setSearch('')
+  }
+  const requestedResource = params.get('requestResource')
+  const requestedEntry = catalog.data?.find(entry => entry.id === requestedResource &&
+    entry.kind === params.get('requestKind') && (entry.scopeId ?? '') === (params.get('requestScope') ?? ''))
+  function closeRequest() {
+    setRequestInitial(null)
+    if (requestedEntry) {
+      const selectedGroup = groups.find(group => group.items.some(entry => sameResource(resourceFromCatalog(entry), resourceFromCatalog(requestedEntry))))
+      if (selectedGroup) setSelectedId(selectedGroup.key)
+      setOfferingId(resourceKey(resourceFromCatalog(requestedEntry)))
+    }
+    const next = new URLSearchParams(params)
+    next.delete('requestResource'); next.delete('requestKind'); next.delete('requestScope')
+    setParams(next)
+  }
+  if (requestedResource) {
+    if (catalog.isPending) return <Loading label="Loading the exact requested offering" />
+    if (catalog.isError) return <><ErrorState error={catalog.error} /><Button onClick={closeRequest}>Back to Catalog</Button></>
+    if (!requestedEntry) return <EmptyState title="Offering unavailable">This exact offering is not in your catalog. <Button onClick={closeRequest}>Back to Catalog</Button></EmptyState>
+    const key = resourceKey(resourceFromCatalog(requestedEntry))
+    return <RequestAccessPage key={key} entry={requestedEntry} environments={environments.data} onBack={costCenterId => {
+      if (costCenterId) setReturnCenter({ key, id: costCenterId })
+      closeRequest()
+    }}
+      initialCostCenterId={requestInitial?.key === key ? requestInitial.costCenterId : undefined}
+      initialJustification={requestInitial?.key === key ? requestInitial.justification : undefined} />
   }
 
   return (
@@ -442,7 +501,16 @@ export function CatalogPage() {
               {offering.summary && (!isModelResource(offering.kind) || offering.summary.trim()) &&
                 <p className={isModelResource(offering.kind) ? 'catalog-summary' : undefined}>{offering.summary}</p>}
               <p className="connection-note">Choose an exact offering and cost center. Automatic access uses its Entra group; Request-only access needs individual approval. Model and MCP grants are separate.</p>
-              <CatalogAction entry={offering} />
+              <CatalogAction entry={offering}
+                initialCostCenterId={returnCenter?.key === resourceKey(resourceFromCatalog(offering)) ? returnCenter.id : undefined}
+                onOpenForm={(costCenterId, justification) => {
+                setRequestInitial({ key: resourceKey(resourceFromCatalog(offering)), costCenterId, justification })
+                const next = new URLSearchParams(params)
+                next.set('requestResource', offering.id); next.set('requestKind', offering.kind)
+                if (offering.scopeId) next.set('requestScope', offering.scopeId)
+                else next.delete('requestScope')
+                setParams(next)
+              }} />
             </div> : <p className="connection-note">Select an option to check access or make a request.</p>}
           </DetailPanel>}
         </>

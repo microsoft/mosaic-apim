@@ -9,6 +9,8 @@ import type {
 import type {
   AccessRequest,
   AccessRequestCreate,
+  EntitlementResource,
+  RequestFormResolution,
   ApiErrorBody,
   CatalogEntry,
   CostCenterRequestCreate,
@@ -93,6 +95,8 @@ export interface PortalApi {
   createCostCenterMembershipRequest(payload: CostCenterMembershipRequestCreate): Promise<PortalCostCenterMembershipRequest>
   withdrawCostCenterMembershipRequest(id: string): Promise<PortalCostCenterMembershipRequest>
   listAccessRequests(): Promise<AccessRequest[]>
+  getAccessRequest(requestId: string): Promise<AccessRequest>
+  resolveRequestForm(resource: EntitlementResource, costCenterId: string): Promise<RequestFormResolution>
   getRequestCounts(): Promise<PortalRequestCounts>
   listCostCenterRequests(): Promise<PortalCostCenterRequest[]>
   getCostCenterRequest(requestId: string): Promise<PortalCostCenterRequest>
@@ -206,6 +210,10 @@ export function usePortalApi(): PortalApi {
       withdrawCostCenterMembershipRequest: (id) => request<PortalCostCenterMembershipRequest>(
         `/api/v1/portal/cost-center-membership-requests/${encodeURIComponent(id)}/withdraw`, { method: 'POST' }),
       listAccessRequests: () => request<AccessRequest[]>('/api/v1/portal/access-requests'),
+      getAccessRequest: (id) => request<AccessRequest>(`/api/v1/portal/access-requests/${encodeURIComponent(id)}`),
+      resolveRequestForm: (resource, costCenterId) => request<RequestFormResolution>(
+        '/api/v1/portal/access-requests/form', { method: 'POST', body: { resource, costCenterId } },
+      ),
       getRequestCounts: () => request<PortalRequestCounts>('/api/v1/portal/request-counts', { cache: 'no-store' }),
       listCostCenterRequests: () => request<PortalCostCenterRequest[]>('/api/v1/portal/cost-center-requests'),
       getCostCenterRequest: (requestId) =>

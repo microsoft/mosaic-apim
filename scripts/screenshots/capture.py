@@ -28,6 +28,7 @@ import httpx
 from PIL import Image, ImageFilter
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Locator, Page, Route, sync_playwright
+from playwright.sync_api import Request as BrowserRequest
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from scripts.screenshots.demo_api import (
@@ -398,8 +399,43 @@ def select_first_resource(list_name: str) -> Action:
 
 def select_resource_request(page: Page) -> None:
     page.get_by_role("list", name="Requests", exact=True).get_by_role("button").filter(
-        has=page.get_by_text("Resource access", exact=True)
+        has=page.get_by_text("Jordan Rowan", exact=True)
     ).first.click()
+
+def review_form_request(page: Page) -> None:
+    page.get_by_role("list", name="Requests", exact=True).get_by_role("button").filter(
+        has=page.get_by_text("Resource access", exact=True)
+    ).filter(
+        has=page.get_by_text("Megan Bowen", exact=True)
+    ).first.click()
+    click_button("Approve")(page)
+    _visible_text(page, "Recorded form v3").wait_for()
+
+
+def review_form_requests(page: Page) -> None:
+    click_button("Bulk resource approval review")(page)
+    _settle(page)
+    for name in ("Megan Bowen", "Isaiah Langer"):
+        page.get_by_role("checkbox", name=re.compile(rf"^{re.escape(name)}\s")).check()
+    click_button("Review 2 requests")(page)
+    _visible_text(page, "Review recorded evidence").wait_for()
+
+
+def draft_governance_request(page: Page) -> None:
+    click_button("View access options for gpt-4o-mini")(page)
+    select_access_offering("Azure Commercial")(page)
+    select_option("Cost center for GPT-4o mini", "General")(page)
+    click_button("Continue request")(page)
+    click_button("Next: Questions")(page)
+    fill_textbox(
+        "Intended usage", "Summarize synthetic research notes in a demonstration assistant."
+    )(page)
+    page.get_by_role("combobox", name="Data class", exact=True).select_option("synthetic")
+    fill_textbox("Charge reference", "DEMO-167")(page)
+    page.get_by_role("checkbox", name=re.compile("I acknowledge this statement")).check()
+    fill_textbox("Justification (optional)", "Pilot for a fictional research team.")(page)
+    click_button("Next: Review")(page)
+    _visible_text(page, "Review your answers").wait_for()
 
 
 def click_detail_menu_action(name: str) -> Action:
@@ -1081,6 +1117,20 @@ SHOTS: list[Shot] = [
         height=2400,
     ),
     Shot(
+        "console-request-form-authoring", "console", "/entitlements?tab=requestForm",
+        "light", "Request form",
+        actions=(click_button("Edit request form"), wait_for_text("Define questions")),
+        height=3100,
+    ),
+    Shot(
+        "console-request-form-review", "console", "/entitlements?tab=requests",
+        "light", "Requests", actions=(review_form_request,), height=2050,
+    ),
+    Shot(
+        "console-request-form-bulk", "console", "/entitlements?tab=requests",
+        "dark", "Requests", actions=(review_form_requests,), height=2700,
+    ),
+    Shot(
         "console-approval-policy",
         "console",
         "/entitlements?tab=approvalPolicies",
@@ -1510,8 +1560,14 @@ SHOTS: list[Shot] = [
         actions=(
             click_button("View access options for gpt-4o-mini"),
             select_access_offering("Azure Commercial"),
+            select_option("Cost center for GPT-4o mini", "General"),
+            wait_for_text("governance questions apply"),
         ),
         height=1100,
+    ),
+    Shot(
+        "portal-request-form", "portal", "/catalog", "light", "Docs search MCP",
+        actions=(draft_governance_request,), height=1550,
     ),
     Shot(
         "portal-access",
@@ -1598,7 +1654,11 @@ SHOTS: list[Shot] = [
         "/requests?status=pending",
         "dark",
         "Responsible AI evaluation",
-        height=1320,
+        actions=(
+            click_button(re.compile(r"^View submitted answers")),
+            wait_for_text("Recorded form v3"),
+        ),
+        height=2100,
     ),
     Shot(
         "portal-cost-center-request",
@@ -2663,6 +2723,108 @@ def _check_console_handoff(page: Page, shot: Shot, api_port: int, portal_url: st
     print(f"verified {shot.name}: link, role boundary, keyboard, 320px reflow, and URL fallbacks")
 
 
+def _check_governance_navigation(page: Page, urls: dict[App, str]) -> None:
+    """Exercise real guided drafts without publishing, submitting, approving, or model calls."""
+
+    writes: list[str] = []
+
+    def observe(request: BrowserRequest) -> None:
+        if (
+            request.method in {"POST", "PUT", "PATCH", "DELETE"}
+            and "/api/v1/" in request.url
+            and not request.url.endswith(("/request-form/preview", "/access-requests/form"))
+        ):
+            writes.append(f"{request.method} {request.url}")
+
+    page.on("request", observe)
+    for theme in ("light", "dark"):
+        page.set_viewport_size({"width": 1440, "height": 900})
+        page.goto(urls["console"] + "/entitlements?tab=requestForm")
+        page.evaluate("theme => localStorage.setItem('mosaic-theme', theme)", theme)
+        page.reload()
+        click_button("Edit request form")(page)
+        label = page.get_by_role("textbox", name="Question 1 label", exact=True)
+        original = label.input_value()
+        label.fill(original + " (local draft)")
+        click_button("Next: Applicability")(page)
+        page.get_by_role("heading", name="Target and preview questions", exact=True).wait_for()
+        if not page.get_by_role("heading", name="Target and preview questions").evaluate(
+            "element => element === document.activeElement"
+        ):
+            raise CaptureError("form authoring: the actual step heading did not receive focus")
+        select_option("Preview exact offering", "GPT-4o mini (model API)")(page)
+        click_button("Preview questions")(page)
+        _visible_text(page, "Current draft preview").wait_for()
+        click_button("Next: Publish")(page)
+        page.get_by_role("heading", name="Review publication", exact=True).wait_for()
+        for _ in range(2):
+            page.get_by_role("button", name="Previous step", exact=True).click()
+        if label.input_value() != original + " (local draft)":
+            raise CaptureError("form authoring: step navigation lost the draft")
+        for width in (1440, 390, 320):
+            page.set_viewport_size({"width": width, "height": 900})
+            _assert_no_document_overflow(page, f"form authoring {theme} at {width}px")
+        page.get_by_role("button", name="Back", exact=True).click()
+        dialog = page.get_by_role("dialog", name="Discard unsaved changes?")
+        dialog.get_by_role("button", name="Stay", exact=True).click()
+        if label.input_value() != original + " (local draft)":
+            raise CaptureError("form authoring: canceling discard lost the draft")
+        page.get_by_role("button", name="Back", exact=True).click()
+        dialog.get_by_role("button", name="Discard changes", exact=True).click()
+        edit = page.get_by_role("button", name="Edit request form", exact=True)
+        edit.wait_for()
+        page.wait_for_function(
+            "() => document.activeElement?.textContent === 'Edit request form'"
+        )
+
+        page.set_viewport_size({"width": 1440, "height": 900})
+        page.goto(urls["portal"] + "/catalog")
+        page.evaluate("theme => localStorage.setItem('mosaic-theme', theme)", theme)
+        page.reload()
+        draft_governance_request(page)
+        page.get_by_role("button", name="Back", exact=True).click()
+        purpose = page.get_by_role("textbox", name="Intended usage", exact=True)
+        if purpose.input_value() != (
+            "Summarize synthetic research notes in a demonstration assistant."
+        ):
+            raise CaptureError("portal form: Back lost the reviewed answer")
+        if not page.get_by_role("checkbox", name=re.compile("I acknowledge")).is_checked():
+            raise CaptureError("portal form: Back changed the acknowledgment")
+        page.get_by_role("textbox", name="Charge reference", exact=True).press("Enter")
+        page.get_by_role("heading", name="Governance questions", exact=True).wait_for()
+        for width in (1440, 390, 320):
+            page.set_viewport_size({"width": width, "height": 900})
+            _assert_no_document_overflow(page, f"portal form {theme} at {width}px")
+        page.emulate_media(forced_colors="active")
+        _assert_no_document_overflow(page, f"portal form forced colors {theme}")
+        page.emulate_media(forced_colors="none")
+        stored = page.evaluate(
+            "() => JSON.stringify({local: {...localStorage}, session: {...sessionStorage}})"
+        )
+        if "DEMO-167" in stored or "synthetic research notes" in stored:
+            raise CaptureError("portal form: a draft escaped into browser storage")
+        if "DEMO-167" in page.url or "synthetic" in page.url:
+            raise CaptureError("portal form: a draft escaped into the URL")
+        page.get_by_role("button", name="Back to Catalog", exact=True).click()
+        discard = page.get_by_role("dialog", name="Discard this access request?")
+        discard.get_by_role("button", name="Keep editing", exact=True).click()
+        if purpose.input_value() != (
+            "Summarize synthetic research notes in a demonstration assistant."
+        ):
+            raise CaptureError("portal form: canceling discard lost an answer")
+        page.get_by_role("button", name="Back to Catalog", exact=True).click()
+        discard.get_by_role("button", name="Discard and leave", exact=True).click()
+        drawer = page.get_by_role("dialog", name="Access to gpt-4o-mini", exact=True)
+        drawer.wait_for()
+        selected = drawer.get_by_role("combobox", name="Cost center for GPT-4o mini")
+        if not selected.locator("option:checked").inner_text().startswith("General"):
+            raise CaptureError("portal form: returning changed the exact charging context")
+    if writes:
+        raise CaptureError("Guided draft navigation performed an unexpected mutation")
+    print("verified governance steps, real heading focus, draft/discard retention, 320px reflow, "
+          "both themes, forced colors, storage exclusion, and zero mutations")
+
+
 def capture(
     shots: Sequence[Shot],
     *,
@@ -2740,6 +2902,17 @@ def capture(
                 except (CaptureError, PlaywrightTimeoutError) as error:
                     failures.append(CaptureError(str(error)))
                     print(f"FAILED {error}", file=sys.stderr)
+                finally:
+                    context.close()
+            if check_navigation and any("request-form" in shot.name for shot in shots):
+                context = browser.new_context(
+                    viewport={"width": 1440, "height": 900}, reduced_motion="reduce",
+                )
+                try:
+                    context.route("**/config.js", _config_route(
+                        _config_script(api_port, portal_url=urls["portal"])
+                    ))
+                    _check_governance_navigation(context.new_page(), urls)
                 finally:
                     context.close()
         finally:

@@ -36,12 +36,14 @@ from mosaic_api.domain import (
     CatalogVisibility,
     EntitlementResource,
     PortalAccessRequest,
+    PortalAccessRequestDetail,
     PortalModel,
     PortalProfile,
     PortalResolvedEntitlement,
     PublicationStatus,
     ResolvedEntitlement,
 )
+from mosaic_api.errors import NotFoundError
 from mosaic_api.model_pools import ModelPool, PoolModel, capacity_label
 from mosaic_api.observed import ObservedModelDeployment
 from mosaic_api.repositories import (
@@ -49,6 +51,7 @@ from mosaic_api.repositories import (
     GatewayRepository,
     ModelEndpointRepository,
 )
+from mosaic_api.request_forms import form_summary, snapshot_view
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.entitlements import EntitlementService, GovernedRecords
 from mosaic_api.services.model_access import portal_entitlement
@@ -195,6 +198,7 @@ class PortalService:
                 resource_summary=summary,
                 model=model,
                 cost_center=book.ref(item.cost_center_id),
+                request_form_summary=form_summary(item.request_form),
             )
             for item, name, summary, model in zip(requests, names, summaries, models, strict=True)
         ]
@@ -231,6 +235,20 @@ class PortalService:
 
     async def my_access_requests(self, actor: Actor) -> list[PortalAccessRequest]:
         return await self._portal_requests(actor, await self._requests(actor))
+
+    async def access_request_detail(
+        self, actor: Actor, request_id: str,
+    ) -> PortalAccessRequestDetail:
+        record = await self._entitlements.get_access_request(
+            actor, request_id, requester_object_id=actor.object_id,
+        )
+        if record.requester_object_id != actor.object_id:
+            raise NotFoundError("Access request was not found.")
+        projected = (await self._portal_requests(actor, [record]))[0]
+        return PortalAccessRequestDetail(
+            **projected.model_dump(by_alias=False),
+            recorded_form=snapshot_view(record.request_form),
+        )
 
     async def create_access_request(
         self, actor: Actor, request: AccessRequestCreate

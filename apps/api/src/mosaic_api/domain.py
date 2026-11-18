@@ -3,7 +3,7 @@ import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 from urllib.parse import urlsplit, urlunsplit
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -13,6 +13,8 @@ from pydantic import (
     ConfigDict,
     Field,
     SecretStr,
+    StrictBool,
+    StrictStr,
     field_validator,
     model_validator,
 )
@@ -2325,6 +2327,270 @@ class AccessRequestState(StrEnum):
 REQUESTER_DISPLAY_MAX_LENGTH = 200
 
 
+RequestQuestionKind = Literal["shortText", "paragraph", "singleChoice", "acknowledgment"]
+RequestResourceKind = Literal["modelApi", "poolModel", "mcpServer"]
+QuestionId = Annotated[str, Field(pattern=r"^[a-zA-Z0-9_-]{1,64}$")]
+
+
+def _validate_request_resource_scope(resource: EntitlementResource) -> None:
+    if resource.kind in {"modelApi", "mcpServer"} and resource.scope_id is not None:
+        raise ValueError("Only a pool-model request names a scopeId; reload the exact offering")
+    if resource.kind == "poolModel" and (
+        resource.scope_id is None or not resource.scope_id.strip()
+    ):
+        raise ValueError("A pool-model request must name its exact pool scopeId")
+
+
+class RequestFormScope(MosaicModel):
+    resource_kinds: list[RequestResourceKind] = Field(default_factory=list, max_length=3)
+    resources: list[EntitlementResource] = Field(default_factory=list, max_length=50)
+    environments: list[str] = Field(default_factory=list, max_length=30)
+
+    @model_validator(mode="after")
+    def _valid_scope(self) -> Self:
+        keys = [(item.kind, item.id, item.scope_id) for item in self.resources]
+        if len(set(keys)) != len(keys):
+            raise ValueError("An exact resource may appear only once")
+        for item in self.resources:
+            _validate_request_resource_scope(item)
+            if item.kind not in {"modelApi", "poolModel", "mcpServer"}:
+                raise ValueError("Choose a model API, pool model, or MCP server")
+            if not item.id.strip() or (item.kind == "poolModel") != bool(item.scope_id):
+                raise ValueError("An exact pool model requires its pool scope; other kinds do not")
+        if len(set(self.resource_kinds)) != len(self.resource_kinds):
+            raise ValueError("Resource kinds must be unique")
+        if len(set(self.environments)) != len(self.environments) or any(
+            not re.fullmatch(r"[a-z][a-z0-9-]{1,31}", item) for item in self.environments
+        ):
+            raise ValueError("Choose unique environment keys or unclassified")
+        return self
+
+
+class RequestChoice(MosaicModel):
+    id: QuestionId
+    label: str = Field(min_length=1, max_length=100)
+
+    @field_validator("label")
+    @classmethod
+    def _label(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Enter a nonblank choice label")
+        return value.strip()
+
+
+class RequestQuestionBase(MosaicModel):
+    id: QuestionId
+    label: str = Field(min_length=1, max_length=120)
+    help_text: str | None = Field(default=None, max_length=500)
+    required: bool = Field(default=False, strict=True)
+    scope: RequestFormScope = Field(default_factory=RequestFormScope)
+
+    @field_validator("label")
+    @classmethod
+    def _label(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Enter a nonblank question label")
+        return value.strip()
+
+
+class RequestShortTextQuestion(RequestQuestionBase):
+    kind: Literal["shortText"] = "shortText"
+    max_length: int = Field(default=200, ge=1, le=200, strict=True)
+
+
+class RequestParagraphQuestion(RequestQuestionBase):
+    kind: Literal["paragraph"] = "paragraph"
+    max_length: int = Field(default=2000, ge=1, le=2000, strict=True)
+
+
+class RequestSingleChoiceQuestion(RequestQuestionBase):
+    kind: Literal["singleChoice"] = "singleChoice"
+    options: list[RequestChoice] = Field(min_length=2, max_length=12)
+
+    @model_validator(mode="after")
+    def _unique_choices(self) -> Self:
+        if len({item.id for item in self.options}) != len(self.options):
+            raise ValueError("Choice IDs must be unique")
+        return self
+
+
+class RequestAcknowledgmentQuestion(RequestQuestionBase):
+    kind: Literal["acknowledgment"] = "acknowledgment"
+
+
+RequestQuestion = Annotated[
+    RequestShortTextQuestion
+    | RequestParagraphQuestion
+    | RequestSingleChoiceQuestion
+    | RequestAcknowledgmentQuestion,
+    Field(discriminator="kind"),
+]
+
+
+class RequestFormDefinition(MosaicModel):
+    format_version: Literal[1] = 1
+    enabled: bool = Field(default=False, strict=True)
+    questions: list[RequestQuestion] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def _bounded_definition(self) -> Self:
+        if self.enabled and not self.questions:
+            raise ValueError("An enabled form needs at least one question")
+        if len({item.id for item in self.questions}) != len(self.questions):
+            raise ValueError("Question IDs must be unique")
+        if sum(len(item.scope.resources) for item in self.questions) > 50:
+            raise ValueError("A form may target at most 50 exact resources")
+        if len(self.model_dump_json().encode("utf-8")) > 64 * 1024:
+            raise ValueError("The form must fit within 64 KiB")
+        return self
+
+
+class RequestFormRevision(Entity):
+    entity_type: Literal["requestFormRevision"] = "requestFormRevision"
+    revision: int = Field(ge=1, strict=True)
+    definition: RequestFormDefinition
+    schema_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    published_by: str
+
+
+class RequestFormHead(Entity):
+    entity_type: Literal["requestFormHead"] = "requestFormHead"
+    revision: int = Field(default=0, ge=0, strict=True)
+
+
+class RequestFormConfiguration(MosaicModel):
+    revision: int = 0
+    definition: RequestFormDefinition = Field(default_factory=RequestFormDefinition)
+
+
+class RequestFormPublishInput(MosaicModel):
+    expected_revision: int = Field(ge=0, strict=True)
+    definition: RequestFormDefinition
+    enable_confirmed: bool = Field(default=False, strict=True)
+
+
+class RequestFormContextInput(MosaicModel):
+    resource: EntitlementResource
+    cost_center_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def _exact_scope(self) -> Self:
+        _validate_request_resource_scope(self.resource)
+        return self
+
+
+class RequestFormPreviewInput(MosaicModel):
+    definition: RequestFormDefinition
+    resource: EntitlementResource
+
+    @model_validator(mode="after")
+    def _exact_scope(self) -> Self:
+        _validate_request_resource_scope(self.resource)
+        if self.resource.kind not in {"modelApi", "poolModel", "mcpServer"}:
+            raise ValueError("Preview a model API, pool model, or MCP server")
+        return self
+
+
+class RequestQuestionView(MosaicModel):
+    id: QuestionId
+    kind: RequestQuestionKind
+    label: str = Field(min_length=1, max_length=120)
+    help_text: str | None = Field(default=None, max_length=500)
+    required: bool
+    max_length: int | None = Field(default=None, ge=1, le=2000)
+    options: list[RequestChoice] = Field(default_factory=list, max_length=12)
+
+
+class RequestFormResolution(MosaicModel):
+    status: Literal["configured", "notRequired"]
+    revision: int = Field(ge=0)
+    context_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
+    environment: str | None
+    questions: list[RequestQuestionView] = Field(default_factory=list, max_length=20)
+
+
+class RequestFormAnswer(MosaicModel):
+    question_id: QuestionId
+    value: StrictStr | StrictBool
+
+
+class RequestFormSubmission(MosaicModel):
+    revision: int = Field(ge=0, strict=True)
+    context_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
+    answers: list[RequestFormAnswer] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def _bounded_answers(self) -> Self:
+        if len({item.question_id for item in self.answers}) != len(self.answers):
+            raise ValueError("Each question may be answered only once")
+        if len(self.model_dump_json(include={"answers"}).encode("utf-8")) > 16 * 1024:
+            raise ValueError("Answers must fit within 16 KiB")
+        return self
+
+
+class RequestFormSnapshotView(MosaicModel):
+    format_version: Literal[1] = 1
+    revision: int = Field(ge=1)
+    questions: list[RequestQuestionView] = Field(min_length=1, max_length=20)
+    answers: list[RequestFormAnswer] = Field(default_factory=list, max_length=20)
+
+
+class RequestFormSnapshot(RequestFormSnapshotView):
+    schema_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    context_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
+    resource: EntitlementResource
+    environment: str | None = None
+    cost_center_id: str
+
+    @model_validator(mode="after")
+    def _bounded_snapshot(self) -> Self:
+        if len(self.model_dump_json().encode("utf-8")) > 80 * 1024:
+            raise ValueError("The recorded form must fit within 80 KiB")
+        RequestFormSubmission(
+            revision=self.revision, context_revision=self.context_revision, answers=self.answers
+        )
+        questions = {item.id: item for item in self.questions}
+        answers = {item.question_id: item.value for item in self.answers}
+        if len(questions) != len(self.questions) or answers.keys() - questions.keys():
+            raise ValueError("Recorded answers must match unique recorded questions")
+        for item in self.questions:
+            value = answers.get(item.id)
+            if item.kind == "singleChoice":
+                if (
+                    not 2 <= len(item.options) <= 12
+                    or len({choice.id for choice in item.options}) != len(item.options)
+                    or (value is not None and value not in {choice.id for choice in item.options})
+                ):
+                    raise ValueError("The recorded choice evidence is invalid")
+            elif item.options:
+                raise ValueError("Only a choice question has options")
+            if item.kind in {"shortText", "paragraph"}:
+                bound = 200 if item.kind == "shortText" else 2000
+                if item.max_length is None or item.max_length > bound:
+                    raise ValueError("The recorded text bound is invalid")
+                if value is not None and (
+                    not isinstance(value, str) or len(value) > item.max_length
+                ):
+                    raise ValueError("The recorded text answer is invalid")
+            elif item.max_length is not None:
+                raise ValueError("Only a text question has a character bound")
+            if item.kind == "acknowledgment" and value is not None and not isinstance(value, bool):
+                raise ValueError("The recorded acknowledgment is invalid")
+            if item.required and (
+                value is None
+                or (isinstance(value, str) and not value.strip())
+                or (item.kind == "acknowledgment" and value is not True)
+            ):
+                raise ValueError("The recorded required answer is missing")
+        return self
+
+
+class RequestFormSummary(MosaicModel):
+    revision: int
+    question_count: int
+    answer_count: int
+
+
 class AccessRequest(Entity):
     entity_type: Literal["accessRequest"] = "accessRequest"
     requester_object_id: str
@@ -2354,6 +2620,18 @@ class AccessRequest(Entity):
     decision_note: str | None = None
     granted_entitlement_id: str | None = None
     approval_provenance: dict[str, Any] | None = None
+    request_form: RequestFormSnapshot | None = Field(default=None, exclude_if=_unset)
+
+    @model_validator(mode="after")
+    def _matching_form_context(self) -> Self:
+        form = self.request_form
+        if form is not None and (
+            form.resource != self.resource
+            or form.cost_center_id != self.cost_center_id
+            or form.environment != self.requested_environment
+        ):
+            raise ValueError("The recorded form must match the request's original context")
+        return self
 
 
 class AccessRequestCreate(MosaicModel):
@@ -2361,6 +2639,12 @@ class AccessRequestCreate(MosaicModel):
     # One of the requester's cost centers. Omitted, it's their default.
     cost_center_id: str | None = Field(default=None, min_length=1, max_length=128)
     justification: str | None = None
+    request_form: RequestFormSubmission | None = None
+
+    @model_validator(mode="after")
+    def _exact_scope(self) -> Self:
+        _validate_request_resource_scope(self.resource)
+        return self
 
 
 class AccessRequestDecision(MosaicModel):
@@ -2409,8 +2693,14 @@ class ResourceSummary(MosaicModel):
 
 
 class AdminAccessRequestListItem(AccessRequest):
+    request_form: RequestFormSnapshot | None = Field(default=None, exclude=True)
+    request_form_summary: RequestFormSummary | None = Field(default=None, exclude_if=_unset)
     resource_summary: ResourceSummary | None = None
     cost_center: CostCenterRef | None = None
+
+
+class AdminAccessRequestDetail(AdminAccessRequestListItem):
+    recorded_form: RequestFormSnapshotView | None = None
 
 
 class CatalogEntryKind(StrEnum):
@@ -2541,6 +2831,11 @@ class PortalAccessRequest(MosaicModel):
     model: PortalModel | None = None
     resource_summary: ResourceSummary | None = None
     cost_center: CostCenterRef | None = None
+    request_form_summary: RequestFormSummary | None = Field(default=None, exclude_if=_unset)
+
+
+class PortalAccessRequestDetail(PortalAccessRequest):
+    recorded_form: RequestFormSnapshotView | None = None
 
 
 class PortalProfile(MosaicModel):
