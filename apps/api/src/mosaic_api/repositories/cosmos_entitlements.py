@@ -4,7 +4,12 @@ from typing import Any, TypeVar
 from azure.cosmos import exceptions
 
 from mosaic_api.approvals import ApprovalDecisionProvenance, ApprovalPolicy
-from mosaic_api.cost_center_delegation import ReviewItem, ReviewKind, ReviewPosition
+from mosaic_api.cost_center_delegation import (
+    ReviewItem,
+    ReviewKind,
+    ReviewPosition,
+    review_time_key,
+)
 from mosaic_api.cost_center_membership_requests import (
     MembershipRequest,
     MembershipRequestGuard,
@@ -96,7 +101,7 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
         rows: list[dict[str, Any]] = []
         prior: dict[str, str] = {}
         if before is not None:
-            moment = before.model_dump(mode="json", by_alias=True)["createdAt"]
+            moment = review_time_key(before.created_at)
             if kind < before.kind:
                 rows = await read(limit, " AND c.createdAt = @at", "id", at=moment)
             elif kind == before.kind:

@@ -50,12 +50,17 @@ class ReviewPosition(MosaicModel):
         return cls(created_at=item.created_at, kind=item.kind, id=item.id)
 
     @property
-    def key(self) -> tuple[datetime, ReviewKind, str]:
-        return self.created_at, self.kind, self.id
+    def key(self) -> tuple[str, ReviewKind, str]:
+        return review_time_key(self.created_at), self.kind, self.id
 
 
-def review_sort_key(item: ReviewItem) -> tuple[datetime, ReviewKind, str]:
-    return item.created_at, item.kind, item.id
+def review_time_key(created_at: datetime) -> str:
+    # Match the stored ISO string that Cosmos indexes, including whole-second values.
+    return created_at.isoformat().replace("+00:00", "Z")
+
+
+def review_sort_key(item: ReviewItem) -> tuple[str, ReviewKind, str]:
+    return review_time_key(item.created_at), item.kind, item.id
 
 
 class ReviewDetail(ReviewItem):

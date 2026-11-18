@@ -655,7 +655,11 @@ async def test_cosmos_queue_pages_projected_rows_across_request_kinds(estate: Es
                     "id": f"{prefix}-{index}",
                     "tenantId": CALLER.tenant_id,
                     "entityType": kind,
-                    "createdAt": moment if index else "2026-01-01T12:00:00Z",
+                    "createdAt": (
+                        "2026-03-01T12:00:00.500000Z"
+                        if index == 1
+                        else moment if index else "2026-01-01T12:00:00Z"
+                    ),
                     "state": "pending",
                     "requesterName": "Fictional requester",
                     "requesterObjectId": CALLER.object_id if index != 2 else REVIEWER.upper(),
@@ -676,9 +680,9 @@ async def test_cosmos_queue_pages_projected_rows_across_request_kinds(estate: Es
     expected = [
         "access-4",
         "access-3",
-        "access-1",
         "join-4",
         "join-3",
+        "access-1",
         "join-1",
         "access-0",
         "join-0",

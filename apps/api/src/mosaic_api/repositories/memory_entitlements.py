@@ -7,6 +7,7 @@ from mosaic_api.cost_center_delegation import (
     ReviewKind,
     ReviewPosition,
     review_sort_key,
+    review_time_key,
 )
 from mosaic_api.cost_center_membership_requests import MembershipRequest, membership_guard_id
 from mosaic_api.cost_center_requests import CostCenterRequest
@@ -107,7 +108,7 @@ class InMemoryEntitlementRepository:
             == center_id
             and item.state == state
             and item.requester_object_id.casefold() != reviewer_id.casefold()
-            and (before is None or (item.created_at, kind, item.id) < before.key)
+            and (before is None or (review_time_key(item.created_at), kind, item.id) < before.key)
         ), key=review_sort_key)
 
     async def close(self) -> None:
