@@ -124,6 +124,13 @@ identifiers and secrets blurred. Directory data and checks are simulated, not li
     inspect existing access. Open an exact offering's access options without leaving the catalog.</td>
   </tr>
   <tr>
+    <td colspan="2"><img src="docs/images/screenshots/portal-approval-review.png" alt="The portal review desk for an assigned cost center"></td>
+  </tr>
+  <tr>
+    <td colspan="2"><b>Delegated review.</b> Approved cost-center contacts review submitted evidence
+    and see what their decision changes. Resource access still requires a reviewed gateway apply.</td>
+  </tr>
+  <tr>
     <td colspan="2"><img src="docs/images/screenshots/console-grant-call-quota.png" alt="The full-workspace grant editor with independent call-rate and calendar-quota controls beside a decision summary"></td>
   </tr>
   <tr>

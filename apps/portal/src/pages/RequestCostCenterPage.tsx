@@ -10,10 +10,10 @@ import { costCenterPolicyKey, invalidateRequests } from '../request-queries'
 import { ErrorState, Loading } from '../components/AsyncState'
 import type { CostCenterRequestCreate } from '../types'
 
-type FormField = 'name' | 'code' | 'description' | 'justification' | 'suggestedGroupObjectId'
+type FormField = 'name' | 'code' | 'description' | 'justification' | 'suggestedGroupObjectId' | 'technical' | 'billing'
 type FormErrors = Partial<Record<FormField, string>>
 const groupIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const fields: FormField[] = ['name', 'code', 'description', 'justification', 'suggestedGroupObjectId']
+const fields: FormField[] = ['name', 'code', 'description', 'justification', 'suggestedGroupObjectId', 'technical', 'billing']
 
 function validationErrors(error: unknown): FormErrors {
   if (!(error instanceof ApiError) || !Array.isArray(error.body?.detail)) return {}
@@ -33,7 +33,7 @@ export function RequestCostCenterPage() {
   const navigate = useNavigate()
   const policy = useQuery({ queryKey: costCenterPolicyKey, queryFn: api.getCostCenterSelfServiceSettings })
   const [values, setValues] = useState<Record<FormField, string>>({
-    name: '', code: '', description: '', justification: '', suggestedGroupObjectId: '',
+    name: '', code: '', description: '', justification: '', suggestedGroupObjectId: '', technical: '', billing: '',
   })
   const [errors, setErrors] = useState<FormErrors>({})
   const [invalidSubmission, setInvalidSubmission] = useState(0)
@@ -84,6 +84,9 @@ export function RequestCostCenterPage() {
       description: values.description.trim() || undefined,
       justification: values.justification.trim(),
       suggestedGroupObjectId: values.suggestedGroupObjectId.trim() || undefined,
+      ...(values.technical.trim() || values.billing.trim() ? { proposedPocs: {
+        technical: values.technical.trim() || undefined, billing: values.billing.trim() || undefined,
+      } } : {}),
       idempotencyKey,
     })
   }
@@ -133,6 +136,18 @@ export function RequestCostCenterPage() {
         <Field label="Suggested group object ID (optional)" validationMessage={errors.suggestedGroupObjectId} validationState={errors.suggestedGroupObjectId ? 'error' : 'none'}>
           <Input value={values.suggestedGroupObjectId} onChange={(_, data) => update('suggestedGroupObjectId', data.value)} disabled={create.isPending} />
         </Field>
+      </section>
+      <section className="request-form-section" aria-labelledby="proposed-pocs">
+        <h2 id="proposed-pocs">Propose points of contact</h2>
+        <p>Suggest a name or work email for each role. Suggestions do not grant approval permissions. An administrator must select and approve each Entra identity.</p>
+        <div className="request-form-fields">
+          <Field label="Technical contact (optional)" validationMessage={errors.technical} validationState={errors.technical ? 'error' : 'none'}>
+            <Input maxLength={254} value={values.technical} onChange={(_, data) => update('technical', data.value)} disabled={create.isPending} />
+          </Field>
+          <Field label="Billing contact (optional)" validationMessage={errors.billing} validationState={errors.billing ? 'error' : 'none'}>
+            <Input maxLength={254} value={values.billing} onChange={(_, data) => update('billing', data.value)} disabled={create.isPending} />
+          </Field>
+        </div>
       </section>
       <div className="request-submit">
         <p>Submitting does not add you to the group. An administrator must explicitly choose whether to request your membership. Approval creates one cost center; group setup and gateway access may still be pending.</p>

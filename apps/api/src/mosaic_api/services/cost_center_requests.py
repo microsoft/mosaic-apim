@@ -20,7 +20,14 @@ from mosaic_api.cost_center_requests import (
     RequestCounts,
     requested_cost_center_id,
 )
-from mosaic_api.cost_centers import CostCenter, CostCenterCreate, CostCenterUpdate, default_settings
+from mosaic_api.cost_centers import (
+    CostCenter,
+    CostCenterCreate,
+    CostCenterPoc,
+    CostCenterUpdate,
+    PocSelection,
+    default_settings,
+)
 from mosaic_api.domain import (
     AccessRequestState,
     AuditEvent,
@@ -43,8 +50,13 @@ logger = structlog.get_logger()
 
 
 class RequestedCostCenters(Protocol):
+    async def verify_poc_selections(
+        self, actor: Actor, selections: list[PocSelection], approved_by: str | None = None,
+    ) -> list[CostCenterPoc]: ...
+
     async def create(
-        self, actor: Actor, payload: CostCenterCreate, *, cost_center_id: str | None = None
+        self, actor: Actor, payload: CostCenterCreate, *, cost_center_id: str | None = None,
+        poc_creation_request_id: str | None = None, poc_approved_by: str | None = None,
     ) -> object: ...
 
     async def update_cost_center(
@@ -156,6 +168,7 @@ class CostCenterRequestService:
             code=payload.code,
             description=payload.description,
             justification=payload.justification,
+            proposed_pocs=payload.proposed_pocs,
             suggested_group_object_id=payload.suggested_group_object_id,
         )
         try:
@@ -179,6 +192,8 @@ class CostCenterRequestService:
         request = await self._require_request(actor, request_id)
         self._require_approvable(request, payload)
         if request.approval is None:
+            if payload.cost_center.poc_selections:
+                await self._actions.verify_poc_selections(actor, payload.cost_center.poc_selections)
             center_id = requested_cost_center_id(actor.tenant_id, request.id)
             proposed = self._proposed_center(actor, center_id, payload.cost_center)
             for existing in await self._cost_centers.list_cost_centers(actor.tenant_id):
@@ -216,7 +231,9 @@ class CostCenterRequestService:
                 local_only = request.approval.cost_center.model_copy(update={"group_setup": None})
                 try:
                     await self._actions.create(
-                        actor, local_only, cost_center_id=request.approval.cost_center_id
+                        actor, local_only, cost_center_id=request.approval.cost_center_id,
+                        poc_creation_request_id=request.id,
+                        poc_approved_by=request.approval.decided_by_object_id,
                     )
                 except DomainError as error:
                     await self._record_preparation_error(actor, request, error)
@@ -485,6 +502,7 @@ class CostCenterRequestService:
             request.code,
             request.description,
             request.justification,
+            request.proposed_pocs,
             request.suggested_group_object_id,
         )
 
@@ -531,6 +549,7 @@ class CostCenterRequestService:
             code=request.code,
             description=request.description,
             justification=request.justification,
+            proposed_pocs=request.proposed_pocs,
             suggested_group_object_id=request.suggested_group_object_id,
             state=request.state,
             created_at=request.created_at,

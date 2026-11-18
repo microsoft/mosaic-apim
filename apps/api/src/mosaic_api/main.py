@@ -26,6 +26,7 @@ from mosaic_api.azure_connections_api import azure_connections_router
 from mosaic_api.billing_pricing import BillingConnector
 from mosaic_api.budgets_api import budgets_router, portal_budgets_router
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings, get_settings
+from mosaic_api.cost_center_delegation_api import delegation_router
 from mosaic_api.cost_center_directory import directory_object_id
 from mosaic_api.cost_center_membership_requests_api import membership_requests_router
 from mosaic_api.cost_center_requests_api import cost_center_requests_router
@@ -143,6 +144,7 @@ from mosaic_api.services.budget_gate import BlockedListGate
 from mosaic_api.services.budget_notification_bridge import BudgetNotificationBridge
 from mosaic_api.services.budgets import BudgetService
 from mosaic_api.services.capability_notification_sources import CapabilityNotificationSource
+from mosaic_api.services.cost_center_delegation import CostCenterDelegationService
 from mosaic_api.services.cost_center_membership_requests import CostCenterMembershipService
 from mosaic_api.services.cost_center_requests import CostCenterRequestService
 from mosaic_api.services.cost_centers import CostCenterService
@@ -250,10 +252,12 @@ def create_app(
             connection_repository = InMemoryAzureConnectionRepository()
             gateway_repository = InMemoryGatewayRepository()
             endpoint_repository = InMemoryModelEndpointRepository()
+            cost_center_repository = InMemoryCostCenterRepository(repository)
             entitlement_repository = InMemoryEntitlementRepository(
                 directory_repository=repository,
                 notification_events=notification_events,
                 approval_policies=approval_repository.policies,
+                cost_centers=cost_center_repository.cost_centers,
             )
             mcp_repository = InMemoryMcpEndpointRepository()
             environment_repository = InMemoryEnvironmentRepository(
@@ -261,7 +265,6 @@ def create_app(
             )
             rollup_repository = InMemoryUsageRollupRepository()
             pricing_repository = InMemoryPricingRepository()
-            cost_center_repository = InMemoryCostCenterRepository(repository)
             budget_repository = InMemoryBudgetRepository()
             notification_repository = InMemoryNotificationRepository(
                 events=notification_events,
@@ -671,6 +674,10 @@ def create_app(
             directory_lookup,
         )
         app.state.cost_center_membership_request_service = app.state.cost_center_membership_service
+        app.state.cost_center_delegation_service = CostCenterDelegationService(
+            cost_center_repository, entitlement_repository, entitlement_service,
+            app.state.cost_center_membership_service,
+        )
         environment_service = EnvironmentService(
             environment_repository,
             gateway_repository=gateway_repository,
@@ -1439,6 +1446,7 @@ def create_app(
     app.include_router(portal_cost_centers_router)
     app.include_router(cost_center_requests_router)
     app.include_router(membership_requests_router)
+    app.include_router(delegation_router)
     app.include_router(budgets_router)
     app.include_router(portal_budgets_router)
     app.include_router(portal_router)

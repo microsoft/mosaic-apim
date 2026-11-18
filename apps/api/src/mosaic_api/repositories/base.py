@@ -11,6 +11,7 @@ from mosaic_api.billing_pricing import (
 from mosaic_api.budget_notifications import BudgetNotificationOutbox
 from mosaic_api.budgets import Budget, BudgetState, EmailSettings, GateState
 from mosaic_api.clouds import AzureCloud
+from mosaic_api.cost_center_delegation import ReviewItem, ReviewKind, ReviewPosition
 from mosaic_api.cost_center_directory import (
     CostCenterDirectoryOperation,
     CostCenterGroupReservation,
@@ -535,6 +536,11 @@ class McpEndpointRepository(EndpointStateRepository, Protocol):
 
 
 class EntitlementRepository(Protocol):
+    async def list_review_items(
+        self, tenant_id: str, center_id: str, reviewer_id: str, state: str, kind: ReviewKind,
+        *, before: ReviewPosition | None, limit: int,
+    ) -> list[ReviewItem]: ...
+
     """Persistence for entitlements and access requests.
 
     Both live in ``desired-state`` alongside the directory and gateway records they reference, so
@@ -577,10 +583,12 @@ class EntitlementRepository(Protocol):
         *,
         requester_object_id: str | None = None,
         state: str | None = None,
+        cost_center_id: str | None = None,
     ) -> list[AccessRequest]: ...
 
     async def get_access_request(
         self, tenant_id: str, request_id: str, *, requester_object_id: str | None = None,
+        review_center_ids: frozenset[str] | None = None,
     ) -> AccessRequest | None: ...
 
     async def create_access_request(
@@ -599,7 +607,8 @@ class EntitlementRepository(Protocol):
     ) -> RequestFormRevision: ...
 
     async def save_access_request(
-        self, access_request: AccessRequest, audit_event: AuditEvent
+        self, access_request: AccessRequest, audit_event: AuditEvent, *,
+        center_guard: CostCenter | None = None,
     ) -> AccessRequest: ...
 
     async def list_cost_center_requests(
@@ -616,12 +625,15 @@ class EntitlementRepository(Protocol):
         *,
         requester_object_id: str | None = None,
         state: str | None = None,
+        cost_center_id: str | None = None,
     ) -> list[MembershipRequest]: ...
 
     async def get_membership_request(
         self,
         tenant_id: str,
         request_id: str,
+        *,
+        review_center_ids: frozenset[str] | None = None,
     ) -> MembershipRequest | None: ...
 
     async def create_membership_request(
@@ -636,6 +648,8 @@ class EntitlementRepository(Protocol):
         request: MembershipRequest,
         audit: AuditEvent,
         events: Sequence[NotificationEvent],
+        *,
+        center_guard: CostCenter | None = None,
     ) -> MembershipRequest: ...
 
     async def get_cost_center_request(
@@ -663,6 +677,8 @@ class EntitlementRepository(Protocol):
         access_request: AccessRequest,
         entitlement: Entitlement,
         audit_events: Sequence[AuditEvent],
+        *,
+        center_guard: CostCenter | None = None,
     ) -> AccessRequest:
         """Create a grant and record the approval that links it, atomically.
 

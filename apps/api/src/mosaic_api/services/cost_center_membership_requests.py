@@ -1,6 +1,7 @@
 import asyncio
 from datetime import timedelta
 
+from mosaic_api.cost_center_delegation import PocContact
 from mosaic_api.cost_center_directory import (
     CostCenterDirectoryOperation,
     DirectoryOperationState,
@@ -17,7 +18,7 @@ from mosaic_api.cost_center_membership_requests import (
     PortalMembershipRequest,
     SelfServiceSettings,
 )
-from mosaic_api.cost_centers import CostCenter
+from mosaic_api.cost_centers import CostCenter, delegated_audit
 from mosaic_api.domain import (
     AccessRequestState,
     AuditEvent,
@@ -102,8 +103,8 @@ class CostCenterMembershipService:
             raise DirectoryError(SAFE_MEMBERSHIP_ERROR)
         return evidence.member_group_ids
 
-    @staticmethod
-    def _center_view(
+    async def _center_view(
+        self,
         center: CostCenter,
         memberships: frozenset[str] | None,
         eligible_ids: frozenset[str],
@@ -118,6 +119,15 @@ class CostCenterMembershipService:
             if group in memberships
             else "notMember"
         )
+        contacts = center.pocs
+        if contacts and center.poc_creation_request_id:
+            origin = await self._repository.get_cost_center_request(
+                center.tenant_id, center.poc_creation_request_id,
+            )
+            if origin is None or (
+                origin.state != AccessRequestState.APPROVED or origin.cost_center_id != center.id
+            ):
+                contacts = []
         return PortalCenter(
             id=center.id,
             name=center.name,
@@ -126,6 +136,7 @@ class CostCenterMembershipService:
             built_in=center.is_general,
             membership_state=state,
             token_eligible=center.id in eligible_ids,
+            contacts=[PocContact(role=p.role, display_name=p.display_name) for p in contacts],
         )
 
     async def list_centers(
@@ -184,7 +195,7 @@ class CostCenterMembershipService:
         eligible_ids = frozenset(
             center.id for center in await self._actions.chargeable_for_caller(actor)
         )
-        items = [self._center_view(center, memberships, eligible_ids) for center in page]
+        items = [await self._center_view(center, memberships, eligible_ids) for center in page]
         return PortalCenterPage(
             items=items,
             next_cursor=self._cursor(actor, page[-1].id, mine=mine, query=query)
@@ -216,10 +227,11 @@ class CostCenterMembershipService:
         eligible_ids = frozenset(
             item.id for item in await self._actions.chargeable_for_caller(actor)
         )
-        view = self._center_view(center, memberships, eligible_ids)
-        if not center.discoverable and view.membership_state not in {"member", "exempt"}:
+        if not center.discoverable and not (
+            center.is_general or (memberships and center.verified_group_object_id in memberships)
+        ):
             raise NotFoundError("Cost center not found")
-        return view
+        return await self._center_view(center, memberships, eligible_ids)
 
     async def _target(self, actor: Actor, center_id: str) -> CostCenter:
         directory = self._actions._directory_groups
@@ -271,6 +283,7 @@ class CostCenterMembershipService:
             id=request_id,
             tenant_id=actor.tenant_id,
             requester_object_id=actor.object_id,
+            requester_name=actor.name or actor.username,
             cost_center=center.ref(),
             directory_tenant_id=center.entra_binding.directory_tenant_id,
             group_object_id=center.entra_binding.group_object_id,
@@ -354,8 +367,12 @@ class CostCenterMembershipService:
         payload: MembershipDecision,
         *,
         withdraw: bool,
+        center_guard: CostCenter | None = None,
+        reviewed_etag: str | None = None,
     ) -> PortalMembershipRequest:
         request = await self._request(actor, request_id, mine=withdraw)
+        if center_guard is not None and request.etag != reviewed_etag:
+            raise ConflictError("The membership request changed; reload the approval")
         state = AccessRequestState.WITHDRAWN if withdraw else AccessRequestState.DENIED
         if request.state == state:
             return await self._view(request, administrator=not withdraw)
@@ -370,11 +387,7 @@ class CostCenterMembershipService:
                 "updated_at": utc_now(),
             }
         )
-        saved = await self._repository.save_membership_request(
-            updated,
-            self._audit(actor, updated, str(state)),
-            [membership_request_event(updated)],
-        )
+        saved = await self._save_decision(actor, updated, center_guard)
         return await self._view(saved, administrator=not withdraw)
 
     async def approve(
@@ -384,10 +397,16 @@ class CostCenterMembershipService:
         payload: MembershipApproval,
         *,
         resume: bool = False,
+        center_guard: CostCenter | None = None,
+        reviewed_etag: str | None = None,
     ) -> AdminMembershipRequest:
         if not payload.acknowledge_membership_changes:
             raise ValidationError("Acknowledge the real group membership impact")
         request = await self._request(actor, request_id)
+        if center_guard is not None and (
+            request.etag != reviewed_etag or request.state != AccessRequestState.PENDING or resume
+        ):
+            raise ConflictError("The membership request changed; reload the approval")
         if request.state not in {AccessRequestState.PENDING, AccessRequestState.APPROVED}:
             raise ConflictError("This membership request has already been closed")
         if resume and request.state != AccessRequestState.APPROVED:
@@ -405,12 +424,10 @@ class CostCenterMembershipService:
                 }
             )
             try:
-                request = await self._repository.save_membership_request(
-                    updated,
-                    self._audit(actor, updated, "approved"),
-                    [membership_request_event(updated)],
-                )
+                request = await self._save_decision(actor, updated, center_guard)
             except ConflictError:
+                if center_guard is not None:
+                    raise
                 request = await self._request(actor, request_id)
                 if request.state != AccessRequestState.APPROVED:
                     raise
@@ -419,6 +436,18 @@ class CostCenterMembershipService:
         view = await self._view(request, administrator=True)
         assert isinstance(view, AdminMembershipRequest)
         return view
+
+    async def _save_decision(
+        self, actor: Actor, request: MembershipRequest, center_guard: CostCenter | None,
+    ) -> MembershipRequest:
+        audit = self._audit(actor, request, str(request.state))
+        events = [membership_request_event(request)]
+        if center_guard is None:
+            return await self._repository.save_membership_request(request, audit, events)
+        audit.details.update(delegated_audit(center_guard, actor.object_id, request.decision_note))
+        return await self._repository.save_membership_request(
+            request, audit, events, center_guard=center_guard,
+        )
 
     async def _verify_request_target(
         self,
@@ -583,12 +612,10 @@ class CostCenterMembershipService:
             "membership_error": operation.error_message,
         }
 
-    async def _view(
-        self,
-        request: MembershipRequest,
-        *,
-        administrator: bool,
-    ) -> PortalMembershipRequest:
+    async def _membership_outcome(
+        self, request: MembershipRequest,
+    ) -> tuple[DirectoryOperationState | None, str | None, str | None]:
+        """Resolve the directory operation even when request progress could not be saved."""
         state = request.membership_state
         error = request.membership_error
         operation_id = request.operation_id
@@ -615,6 +642,21 @@ class CostCenterMembershipService:
             elif error is None:
                 error = "Approval is saved, but no directory operation is recorded. "
                 "Resume this request."
+        return state, error, operation_id
+
+    async def membership_outcome(
+        self, request: MembershipRequest,
+    ) -> DirectoryOperationState | None:
+        state, _, _ = await self._membership_outcome(request)
+        return state
+
+    async def _view(
+        self,
+        request: MembershipRequest,
+        *,
+        administrator: bool,
+    ) -> PortalMembershipRequest:
+        state, error, operation_id = await self._membership_outcome(request)
         values = {
             **request.model_dump(by_alias=False),
             "membership_state": state,

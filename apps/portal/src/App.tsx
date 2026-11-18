@@ -46,6 +46,8 @@ import { NotificationBell } from './components/NotificationBell'
 import { NotificationsPage } from './pages/NotificationsPage'
 import { NotificationPreferencesPage } from './pages/NotificationPreferencesPage'
 import { requestCountsKey } from './request-queries'
+import { scopesKey } from './approvals'
+import { ApprovalsPage } from './pages/ApprovalsPage'
 import './index.css'
 
 interface NavigationItem {
@@ -63,8 +65,12 @@ const navigation: NavigationItem[] = [
   { to: '/notifications', label: 'Notifications', icon: <AlertRegular /> },
 ]
 
-function NavigationLinks({ onNavigate }: { onNavigate: () => void }) {
-  return navigation.map((item) => (
+function NavigationLinks({ onNavigate, canReview }: { onNavigate: () => void; canReview: boolean }) {
+  const items = canReview ? [
+    ...navigation.slice(0, -1), { to: '/approvals', label: 'Approvals', icon: <BookInformationRegular /> },
+    ...navigation.slice(-1),
+  ] : navigation
+  return items.map((item) => (
     <NavLink
       key={item.to}
       to={item.to}
@@ -86,6 +92,12 @@ function PortalShell() {
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('mosaic.portal.primary.collapsed') === 'true')
   const profile = useQuery({ queryKey: ['portal', 'profile'], queryFn: api.getProfile })
+  const scopes = useQuery({
+    queryKey: [...scopesKey, accounts[0]?.homeAccountId],
+    queryFn: () => api.listReviewCenters(),
+    enabled: profile.isSuccess && Boolean(api.listReviewCenters),
+    retry: false,
+  })
   const counts = useQuery({ queryKey: requestCountsKey, queryFn: api.getRequestCounts, enabled: profile.isSuccess })
   const accountName = profile.data?.displayLabel ?? accounts[0]?.name ?? 'MOSAIC user'
   const initials = useMemo(() => initialsFor(accountName), [accountName])
@@ -139,7 +151,7 @@ function PortalShell() {
           />
         </div>
         <nav className="primary-navigation" aria-label="Primary navigation">
-          <NavigationLinks onNavigate={closeNavigation} />
+          <NavigationLinks onNavigate={closeNavigation} canReview={scopes.isSuccess && scopes.data.length > 0} />
         </nav>
         <div className="utility-navigation">
           <AppearanceControl />
@@ -206,6 +218,8 @@ export default function App() {
             <Route path="/usage" element={<UsagePage />} />
             <Route path="/catalog" element={<CatalogPage />} />
             <Route path="/requests" element={<MyRequestsPage />} />
+            <Route path="/approvals" element={<ApprovalsPage />} />
+            <Route path="/approvals/:kind/:requestId" element={<ApprovalsPage />} />
             <Route path="/requests/new-cost-center" element={<RequestCostCenterPage />} />
             <Route path="/cost-centers" element={<MyCostCentersPage />} />
             <Route path="/cost-centers/new" element={<RequestCostCenterPage />} />

@@ -8,6 +8,7 @@ import { costCenterDraftErrors, costCenterDraftPayload, newCostCenterDraft, useC
 import type { AdminCostCenterRequest, CostCenterRequestApproval } from '../types'
 import { ErrorState } from './AsyncState'
 import { CostCenterSetupFields } from './CostCenterSetupForm'
+import { PocFields, pocSelections, type PocDraft } from './CostCenterPocEditor'
 import { completeWorkspaceNavigation } from './WorkspaceLeaveGuard'
 import { WorkspaceEditorFrame } from './WorkspaceEditorFrame'
 import styles from './CostCenterSetup.module.css'
@@ -45,6 +46,8 @@ export function CostCenterRequestSummary({ request, requester, onReview }: {
       <div><dt>Proposed code</dt><dd>{request.code || 'Administrator chooses'}</dd></div>
       <div><dt>Description</dt><dd>{request.description || 'No description supplied'}</dd></div>
       <div><dt>Justification</dt><dd>{request.justification}</dd></div>
+      {request.proposedPocs?.technical && <div><dt>Proposed technical contact</dt><dd>{request.proposedPocs.technical} · Unverified suggestion</dd></div>}
+      {request.proposedPocs?.billing && <div><dt>Proposed billing contact</dt><dd>{request.proposedPocs.billing} · Unverified suggestion</dd></div>}
       {request.suggestedGroupObjectId && <div><dt>Suggested Entra group</dt><dd>{request.suggestedGroupObjectId} · {suggestionUsed
         ? 'Selected in the recorded approval; inspect the saved center for current verification'
         : request.approval ? 'Not selected in the recorded approval' : 'Suggestion only; not adopted or verified'}</dd></div>}
@@ -102,6 +105,7 @@ export function CostCenterRequestReview({ request, requester, onBack, recordRefr
   const [draft, setDraft] = useState(initial.current)
   const [addRequester, setAddRequester] = useState(request.approval?.addRequester ?? false)
   const [note, setNote] = useState(request.approval?.note ?? '')
+  const [pocs, setPocs] = useState<PocDraft[]>([])
   const [submitted, setSubmitted] = useState<CostCenterRequestApproval | null>(null)
   const capabilities = useCostCenterCapabilities()
   const locked = recordedApproval(request) ?? submitted
@@ -147,7 +151,10 @@ export function CostCenterRequestReview({ request, requester, onBack, recordRefr
   const blocked = pending || recordRefreshing || Boolean(recordError)
   function approveReviewed() {
     if (blocked || errors.length) return
-    const payload = locked ?? { costCenter: costCenterDraftPayload(draft), addRequester, note: note.trim() || null }
+    const payload = locked ?? {
+      costCenter: { ...costCenterDraftPayload(draft), ...(pocs.length ? { pocSelections: pocSelections(pocs) } : {}) },
+      addRequester, note: note.trim() || null,
+    }
     setSubmitted(payload)
     approve.mutate(payload)
   }
@@ -155,7 +162,7 @@ export function CostCenterRequestReview({ request, requester, onBack, recordRefr
   return <WorkspaceEditorFrame title={locked ? 'Resume cost-center approval' : 'Review cost-center request'}
     description="Approval reserves exactly one center and the reviewed configuration. Group setup, requester membership, and gateway apply are separate outcomes."
     onBack={onBack} onCancel={onBack} pending={pending}
-    dirty={!locked && (JSON.stringify(draft) !== JSON.stringify(initial.current) || addRequester || Boolean(note.trim()))}
+    dirty={!locked && (JSON.stringify(draft) !== JSON.stringify(initial.current) || addRequester || Boolean(note.trim()) || pocs.length > 0)}
     primaryAction={approvable ? {
       label: locked ? 'Resume unchanged approval' : 'Approve cost-center request',
       onClick: approveReviewed, disabled: Boolean(errors.length || blocked),
@@ -175,6 +182,8 @@ export function CostCenterRequestReview({ request, requester, onBack, recordRefr
       {refresh.isError && <ErrorState title="Recorded request unavailable" error={refresh.error} />}
       <CostCenterSetupFields value={locked ? newCostCenterDraft(locked.costCenter) : draft} onChange={setDraft} disabled={blocked || Boolean(locked) || !approvable}
         recorded={Boolean(locked)} suggestedGroup={locked ? undefined : request.suggestedGroupObjectId} />
+      <PocFields assignments={locked ? locked.costCenter.pocSelections ?? [] : pocs}
+        onChange={setPocs} disabled={blocked || Boolean(locked) || !approvable} />
       <section className={styles.section} aria-label="Approval choices">
         <Title3 as="h3">Explicit approval choices</Title3>
         <Checkbox label="Add requester to the Entra group" checked={locked?.addRequester ?? addRequester} disabled={blocked || Boolean(locked) || !approvable}

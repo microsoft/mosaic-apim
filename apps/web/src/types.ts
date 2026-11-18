@@ -163,9 +163,15 @@ export interface CostCenterCreate {
   keysAllowed?: boolean
   groupSetup?: CostCenterGroupSetup | null
   resourceAccess?: CostCenterResourceAccess[]
+  pocSelections?: PocSelection[]
 }
 
-export type CostCenterUpdate = Partial<CostCenterCreate> & {
+export type PocRole = 'technical' | 'billing'
+export interface PocSelection { role: PocRole; objectId: string }
+export interface CostCenterPoc extends PocSelection { displayName: string; approvedBy: string; approvedAt: string }
+export interface PocAssignmentsUpdate { assignments: PocSelection[]; revision: string; reason: string }
+
+export type CostCenterUpdate = Partial<Omit<CostCenterCreate, 'pocSelections'>> & {
   discoverable?: boolean
   publicPurpose?: string | null
   acknowledgeMembershipChanges?: true
@@ -249,6 +255,8 @@ export interface CostCenter {
   discoverable?: boolean
   publicPurpose?: string | null
   owners: string[]
+  pocs?: CostCenterPoc[]
+  pocRevision?: string | null
   entraBinding?: EntraGroupBinding | null
   /** Derived by the server from the stable General identity, never from its editable name. */
   setupState: CostCenterSetupState
@@ -847,6 +855,7 @@ export interface AdminCostCenterRequest {
   code?: string | null
   description?: string | null
   justification: string
+  proposedPocs?: { technical?: string | null; billing?: string | null } | null
   suggestedGroupObjectId?: string | null
   state: AccessRequestState
   approval?: (CostCenterRequestApproval & {

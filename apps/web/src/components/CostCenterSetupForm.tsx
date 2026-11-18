@@ -190,6 +190,7 @@ export function CostCenterEditor({ costCenter, onCancel, onSaved }: {
   const queryClient = useQueryClient()
   const initial = useRef(newCostCenterDraft(costCenter))
   const [draft, setDraft] = useState(initial.current)
+  const [pocs, setPocs] = useState<PocDraft[]>([])
   const [discoverable, setDiscoverable] = useState(costCenter?.discoverable ?? false)
   const [publicPurpose, setPublicPurpose] = useState(costCenter?.publicPurpose ?? '')
   const [publicationAcknowledged, setPublicationAcknowledged] = useState(false)
@@ -209,7 +210,9 @@ export function CostCenterEditor({ costCenter, onCancel, onSaved }: {
         discoverable, publicPurpose: publicPurpose.trim() || null,
         ...(publicationAcknowledged ? { acknowledgeMembershipChanges: true } : {}),
       })
-      return costCenter ? api.updateCostCenter(costCenter.id, payload) : api.createCostCenter(costCenterDraftPayload(draft))
+      return costCenter ? api.updateCostCenter(costCenter.id, payload) : api.createCostCenter({
+        ...costCenterDraftPayload(draft), ...(pocs.length ? { pocSelections: pocSelections(pocs) } : {}),
+      })
     },
     retry: false,
     onSuccess: async (saved) => {
@@ -238,7 +241,7 @@ export function CostCenterEditor({ costCenter, onCancel, onSaved }: {
   return <WorkspaceEditorFrame title={costCenter ? `Edit ${costCenter.name}` : 'New cost center'}
     description="Save center details, verify a dedicated Entra group now or later, and choose exact resource access. Directory membership and reviewed gateway apply remain separate."
     onBack={onCancel} onCancel={onCancel}
-    dirty={!savedCenterId && !transportUnknown && (publicationChanged || JSON.stringify(draft) !== JSON.stringify(initial.current))}
+    dirty={!savedCenterId && !transportUnknown && (publicationChanged || pocs.length > 0 || JSON.stringify(draft) !== JSON.stringify(initial.current))}
     pending={save.isPending} error={message}
     primaryAction={{
       label: costCenter ? 'Save changes' : 'Create cost center',
@@ -258,6 +261,7 @@ export function CostCenterEditor({ costCenter, onCancel, onSaved }: {
       </MessageBarBody></MessageBar>}
       {costCenter && <div><Badge appearance="tint" color={costCenterSetupState(costCenter) === 'setupRequired' ? 'warning' : 'informative'}>{COST_CENTER_SETUP_LABELS[costCenterSetupState(costCenter)]}</Badge></div>}
       <CostCenterSetupFields value={draft} onChange={setDraft} costCenter={costCenter} disabled={save.isPending || Boolean(savedCenterId) || transportUnknown} />
+      {!costCenter && <PocFields assignments={pocs} onChange={setPocs} disabled={save.isPending || Boolean(savedCenterId) || transportUnknown} />}
       <section className={styles.section} aria-label="Portal publication">
         <Title3 as="h3">Portal publication</Title3>
         <Text>New centers start private. Publish only after saving and verifying a custom center. Turning publication off stops new join requests, not existing reviews or memberships.</Text>
@@ -276,3 +280,4 @@ export function CostCenterEditor({ costCenter, onCancel, onSaved }: {
     </div>
   </WorkspaceEditorFrame>
 }
+import { PocFields, pocSelections, type PocDraft } from './CostCenterPocEditor'

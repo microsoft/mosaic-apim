@@ -365,6 +365,7 @@ class Shot:
     height: int = 900
     width: int = 1440
     console_access: bool = False
+    delegated_reviewer: bool = False
 
 
 class CaptureError(RuntimeError):
@@ -416,7 +417,7 @@ def review_form_request(page: Page) -> None:
 def review_form_requests(page: Page) -> None:
     click_button("Bulk resource approval review")(page)
     _settle(page)
-    for name in ("Megan Bowen", "Isaiah Langer"):
+    for name in ("Megan Bowen", "Patti Fernandez"):
         page.get_by_role("checkbox", name=re.compile(rf"^{re.escape(name)}\s")).check()
     click_button("Review 2 requests")(page)
     _visible_text(page, "Review recorded evidence").wait_for()
@@ -1742,8 +1743,23 @@ SHOTS: list[Shot] = [
             fill_textbox(
                 "Suggested group object ID (optional)", EXTRA_DIRECTORY_OBJECTS[-1].object_id
             ),
+            fill_textbox("Technical contact (optional)", "Lidia Holloway"),
         ),
-        height=1200,
+        height=1450,
+    ),
+    Shot(
+        "portal-approval-queue", "portal", "/approvals", "light", "Approval queue",
+        actions=(wait_for_text("Customer Support"), wait_for_text("GPT-4o mini")),
+        delegated_reviewer=True,
+    ),
+    Shot(
+        "portal-approval-review", "portal", "/approvals", "light", "Approval queue",
+        actions=(
+            click_link("GPT-4o mini"),
+            wait_for_text("Recorded form v3"),
+            wait_for_text("Boundary & effect"),
+        ),
+        height=1300, delegated_reviewer=True,
     ),
     Shot(
         "portal-my-cost-centers",
@@ -2946,6 +2962,8 @@ def capture(
                     page.set_default_navigation_timeout(60_000)
                     url = console_access_url if shot.console_access else urls[shot.app]
                     assert url is not None
+                    if shot.delegated_reviewer:
+                        url = url.replace("127.0.0.1", "localhost", 1)
                     written.append(_capture_one(page, shot, url, literals, output, logs))
                     if check_navigation and shot.console_access:
                         _check_console_handoff(page, shot, api_port, urls["portal"])

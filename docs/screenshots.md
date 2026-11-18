@@ -56,6 +56,11 @@ are filled in, no guard is bypassed, and catalog/grant/request counts are not in
 screenshots. New request-form captures only navigate or edit local drafts; they never publish,
 submit a request, approve a grant, enable a worker, or apply a plan.
 
+The approval queue and review captures sign in through the demo fixture as a distinct fictional
+User-role technical contact for Customer Support. The regular requester remains unassigned.
+The review reuses the recorded GPT-4o mini example under that center; capture does not decide the
+request or write membership, grants, or gateways.
+
 Billing screenshots use only generated fictional Azure Cost Details rows, normalized through
 the production pricing service. One deployment-bound list is approved on the capture's UTC date
 at the same rate as the public seed, so provenance changes without changing its numerical rate;
@@ -502,7 +507,9 @@ to include both the daily trend and the complete last-24-hours chart.
 | `portal-find-cost-centers` | Portal | `/cost-centers?view=discover`, administrator-published centers with public purposes and caller membership states | Dark | Find cost centers |
 | `portal-cost-center-join` | Portal | Published Claims Operations join form with justification filled in, never submitted | Light | Request to join |
 | `portal-cost-center-membership-status` | Portal | `/requests?kind=costCenterMembership&status=completed`, approved Finance join with confirmed directory membership and distinct token/access guidance | Dark | Membership progress |
-| `portal-cost-center-request` | Portal | `/cost-centers/new`, completed proposal and optional group suggestion, never submitted | Light | Request a cost center |
+| `portal-cost-center-request` | Portal | `/cost-centers/new`, proposal with optional group and contact suggestions, never submitted | Light | Request a cost center |
+| `portal-approval-queue` | Portal | `/approvals`, fictional technical POC's Customer Support membership and resource queue | Light | Delegated approval queue |
+| `portal-approval-review` | Portal | `/approvals` opens the resource request's direct review route, with recorded answers and decision consequences; never submitted | Light | Review delegated access |
 | `portal-cost-center-request-status` | Portal | `/requests?kind=costCenter&status=completed`, approved Knowledge Engineering with setup still required | Dark | Track incomplete setup |
 | `portal-automatic-access` | Portal | `/access`, exact Customer Insights MCP offering's inherited-access drawer | Light | Automatic access |
 | `portal-usage` | Portal | `/usage`, the default portal landing page with icon-based, collapsible section navigation | Light | Usage & cost |

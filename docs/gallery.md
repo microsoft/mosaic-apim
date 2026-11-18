@@ -727,6 +727,18 @@ resource lists, forms, and connection drawers remain solid for readability.
 <table>
   <tr>
     <td width="50%" valign="top">
+      <img src="images/screenshots/portal-approval-queue.png" alt="An approval queue scoped to the reviewer's assigned cost center">
+      <p><b>Delegated queue.</b> Choose an assigned center and find membership and resource-access
+      requests without entering the administrator console.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/portal-approval-review.png" alt="A center-first request review with recorded answers, decision consequences and a reason field">
+      <p><b>Review a request.</b> Read the original answers and record one shared decision. Approving
+      resource access saves a grant; it does not apply the gateway plan.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
       <img src="images/screenshots/portal-my-cost-centers.png" alt="My cost centers with the caller's memberships, General charging option, and creation entry point">
       <p><b>My cost centers.</b> See your own cost-center memberships separately from resource
       access. General is a charging option, and new center proposals start in this area.</p>
@@ -740,7 +752,7 @@ resource lists, forms, and connection drawers remain solid for readability.
   <tr>
     <td width="50%" valign="top">
       <img src="images/screenshots/portal-cost-center-join.png" alt="A join-request form explaining the real membership effect and requesting a justification">
-      <p><b>Request to join.</b> Explain why you need membership before administrator review.
+      <p><b>Request to join.</b> Explain why you need membership before an assigned contact or administrator reviews it.
       Submission does not add you, create a key, or increase the center's budget.</p>
     </td>
     <td width="50%" valign="top">
@@ -763,10 +775,9 @@ resource lists, forms, and connection drawers remain solid for readability.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="images/screenshots/portal-cost-center-request.png" alt="A cost-center proposal form with purpose, optional code, and an optional existing Entra group object ID">
+      <img src="images/screenshots/portal-cost-center-request.png" alt="A cost-center proposal form with purpose, group suggestion and optional technical and billing contacts">
       <p><b>Request a cost center.</b> Explain the proposed team's purpose and optionally suggest
-      an existing Entra group. Submission does not create a group, add members, or grant resource
-      access.</p>
+      an existing Entra group and contacts. Suggestions do not grant approval permissions or access.</p>
     </td>
     <td width="50%" valign="top">
       <img src="images/screenshots/portal-cost-center-request-status.png" alt="An approved cost-center request that still needs group setup and administrator attention">

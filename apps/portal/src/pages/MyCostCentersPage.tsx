@@ -7,6 +7,7 @@ import { EmptyState, ErrorState, Loading } from '../components/AsyncState'
 import { DetailPanel } from '../components/DetailPanel'
 import { PageHeader } from '../components/PageHeader'
 import { membershipOutcome } from '../cost-center-membership'
+import { roleLabel } from '../approvals'
 import { costCenterDirectoryKey, costCenterPolicyKey, membershipRequestsKey, myCostCentersKey } from '../request-queries'
 import type { MembershipCostCenter } from '../types'
 
@@ -125,7 +126,7 @@ export function MyCostCentersPage() {
               {joinAction(center)}
             </div>
           </div>
-          {request && <p className="connection-note">{request.state === 'pending' ? 'Join request pending administrator review.' : membershipOutcome(request)}</p>}
+          {request && <p className="connection-note">{request.state === 'pending' ? 'Join request pending review.' : membershipOutcome(request)}</p>}
         </li>
       })}
     </ul>
@@ -140,6 +141,10 @@ export function MyCostCentersPage() {
         <Badge appearance="outline">{membershipLabels[selected.membershipState]}</Badge>
         {selected.publicPurpose && <p>{selected.publicPurpose}</p>}
         <dl className="metadata-list"><div><dt>Code</dt><dd>{selected.code}</dd></div>
+          {(['technical', 'billing'] as const).map(role => {
+            const names = selected.contacts?.filter(contact => contact.role === role).map(contact => contact.displayName)
+            return names?.length ? <div key={role}><dt>{roleLabel[role]}</dt><dd>{names.join(', ')}</dd></div> : null
+          })}
           <div><dt>Current sign-in eligibility</dt><dd>{selected.tokenEligible ? 'Eligible to select this charging option' : 'Not proven by your current token'}</dd></div></dl>
         <p>Membership can unlock Automatic offerings only after their grants are applied and a fresh token includes the group.
           Request-only resources still need approval. Center budgets, pooled quotas, and key restrictions remain unchanged.</p>

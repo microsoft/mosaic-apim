@@ -285,6 +285,7 @@ export interface MosaicApi extends AdminApi {
   listCostCenters(): Promise<CostCenter[]>
   createCostCenter(payload: CostCenterCreate): Promise<CostCenter>
   getCostCenter(costCenterId: string): Promise<CostCenter>
+  assignCostCenterPocs(costCenterId: string, payload: PocAssignmentsUpdate): Promise<CostCenter>
   updateCostCenter(
     costCenterId: string,
     payload: CostCenterUpdate,
@@ -889,6 +890,9 @@ export function useMosaicApi(): MosaicApi {
       createCostCenter: (payload) =>
         request<CostCenter>('/api/v1/cost-centers', { method: 'POST', body: payload }),
       getCostCenter: (id) => request<CostCenter>(`/api/v1/cost-centers/${encodeURIComponent(id)}`),
+      assignCostCenterPocs: (id, payload) => request<CostCenter>(`/api/v1/cost-centers/${encodeURIComponent(id)}/pocs`, {
+        method: 'PUT', body: payload,
+      }),
       updateCostCenter: (id, payload) =>
         request<CostCenter>(`/api/v1/cost-centers/${encodeURIComponent(id)}`, {
           method: 'PATCH',
@@ -1510,3 +1514,4 @@ export function useMosaicApi(): MosaicApi {
     }
   }, [accounts, instance])
 }
+import type { PocAssignmentsUpdate } from './types'

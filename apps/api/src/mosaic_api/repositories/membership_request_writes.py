@@ -11,6 +11,7 @@ IMMUTABLE = (
     "tenant_id",
     "created_at",
     "requester_object_id",
+    "requester_name",
     "cost_center",
     "directory_tenant_id",
     "group_object_id",
