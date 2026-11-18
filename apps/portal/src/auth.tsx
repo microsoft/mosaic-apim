@@ -44,7 +44,10 @@ export function AuthGate({ children }: PropsWithChildren) {
           <Text>Sign in with an account assigned the MOSAIC User application role.</Text>
           <Button
             appearance="primary"
-            onClick={() => void instance.loginRedirect({ scopes: [runtimeConfig.entraApiScope] })}
+            onClick={() => void instance.loginRedirect({
+              scopes: [runtimeConfig.entraApiScope],
+              redirectStartPage: window.location.href,
+            })}
           >
             Sign in with Microsoft
           </Button>

@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from mosaic_api.approvals import ApprovalDecisionProvenance, ApprovalPolicy
 from mosaic_api.cost_center_membership_requests import MembershipRequest, membership_guard_id
 from mosaic_api.cost_center_requests import CostCenterRequest
+from mosaic_api.cost_centers import CostCenter
 from mosaic_api.domain import (
     AccessRequest,
     AccessRequestState,
@@ -39,6 +40,7 @@ class InMemoryEntitlementRepository:
         notification_events: dict[tuple[str, str], NotificationEvent] | None = None,
         approval_policies: dict[tuple[str, str], ApprovalPolicy] | None = None,
         directory_repository: DirectoryRepository | None = None,
+        cost_centers: dict[tuple[str, str], CostCenter] | None = None,
     ) -> None:
         self.entitlements: dict[str, Entitlement] = {}
         self.access_requests: dict[str, AccessRequest] = {}
@@ -51,6 +53,21 @@ class InMemoryEntitlementRepository:
         self.notification_events = notification_events if notification_events is not None else {}
         self.approval_policies = approval_policies if approval_policies is not None else {}
         self._notification_directory = directory_repository
+        self._cost_centers = cost_centers
+
+    def _check_center(
+        self, center: CostCenter | None, tenant_id: str, center_id: str | None,
+    ) -> None:
+        if center is None:
+            return
+        if (
+            self._cost_centers is None or center_id is None
+            or center.tenant_id != tenant_id or center.id != center_id or not center.etag
+        ):
+            raise ValueError("The delegated decision requires its exact center version")
+        current = self._cost_centers.get((tenant_id, center_id))
+        if current is None or current.etag != center.etag:
+            raise ConflictError("The cost center changed; reload the approval")
 
     async def ready(self) -> bool:
         return True
@@ -146,6 +163,7 @@ class InMemoryEntitlementRepository:
         *,
         requester_object_id: str | None = None,
         state: str | None = None,
+        cost_center_id: str | None = None,
     ) -> list[AccessRequest]:
         items = [
             item
@@ -153,6 +171,7 @@ class InMemoryEntitlementRepository:
             if item.tenant_id == tenant_id
             and (requester_object_id is None or item.requester_object_id == requester_object_id)
             and (state is None or str(item.state) == state)
+            and (cost_center_id is None or item.cost_center_id == cost_center_id)
         ]
         return [
             item.model_copy(deep=True)
@@ -161,6 +180,7 @@ class InMemoryEntitlementRepository:
 
     async def get_access_request(
         self, tenant_id: str, request_id: str, *, requester_object_id: str | None = None,
+        review_center_ids: frozenset[str] | None = None,
     ) -> AccessRequest | None:
         access_request = self.access_requests.get(request_id)
         return (
@@ -170,6 +190,10 @@ class InMemoryEntitlementRepository:
                 requester_object_id is None
                 or access_request.requester_object_id == requester_object_id
             )
+            and (review_center_ids is None or (
+                access_request.cost_center_id is not None
+                and access_request.cost_center_id in review_center_ids
+            ))
             else None
         )
 
@@ -241,8 +265,10 @@ class InMemoryEntitlementRepository:
         return saved
 
     async def save_access_request(
-        self, access_request: AccessRequest, audit_event: AuditEvent
+        self, access_request: AccessRequest, audit_event: AuditEvent, *,
+        center_guard: CostCenter | None = None,
     ) -> AccessRequest:
+        self._check_center(center_guard, access_request.tenant_id, access_request.cost_center_id)
         return await self.save_access_request_with_events(
             access_request, audit_event, [access_request_event(access_request)]
         )
@@ -276,7 +302,10 @@ class InMemoryEntitlementRepository:
         access_request: AccessRequest,
         entitlement: Entitlement,
         audit_events: Sequence[AuditEvent],
+        *,
+        center_guard: CostCenter | None = None,
     ) -> AccessRequest:
+        self._check_center(center_guard, access_request.tenant_id, access_request.cost_center_id)
         return await self.approve_access_request_with_events(
             access_request, entitlement, audit_events, [access_request_event(access_request)]
         )
@@ -306,6 +335,7 @@ class InMemoryEntitlementRepository:
         *,
         requester_object_id: str | None = None,
         state: str | None = None,
+        cost_center_id: str | None = None,
     ) -> list[MembershipRequest]:
         return sorted(
             [
@@ -314,6 +344,7 @@ class InMemoryEntitlementRepository:
                 if tenant == tenant_id
                 and (requester_object_id is None or item.requester_object_id == requester_object_id)
                 and (state is None or item.state == state)
+                and (cost_center_id is None or item.cost_center.id == cost_center_id)
             ],
             key=lambda item: (item.created_at, item.id),
             reverse=True,
@@ -323,9 +354,15 @@ class InMemoryEntitlementRepository:
         self,
         tenant_id: str,
         request_id: str,
+        *,
+        review_center_ids: frozenset[str] | None = None,
     ) -> MembershipRequest | None:
         item = self.membership_requests.get((tenant_id, request_id))
-        return item.model_copy(deep=True) if item else None
+        if item is None or (
+            review_center_ids is not None and item.cost_center.id not in review_center_ids
+        ):
+            return None
+        return item.model_copy(deep=True)
 
     async def create_membership_request(
         self,
@@ -345,7 +382,10 @@ class InMemoryEntitlementRepository:
         request: MembershipRequest,
         audit: AuditEvent,
         events: Sequence[NotificationEvent],
+        *,
+        center_guard: CostCenter | None = None,
     ) -> MembershipRequest:
+        self._check_center(center_guard, request.tenant_id, request.cost_center.id)
         previous = self.membership_requests.get((request.tenant_id, request.id))
         if not request.etag or previous is None or previous.etag != request.etag:
             raise ConflictError(MEMBERSHIP_CHANGED)

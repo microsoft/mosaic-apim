@@ -55,12 +55,18 @@ from mosaic_api.config import (
     Settings,
     UsageSourceMode,
 )
-from mosaic_api.cost_center_requests import CostCenterRequestApproval, CostCenterRequestCreate
+from mosaic_api.cost_center_requests import (
+    CostCenterRequestApproval,
+    CostCenterRequestCreate,
+    ProposedPocs,
+)
 from mosaic_api.cost_centers import (
     CostCenterCreate,
     CostCenterLimit,
     CostCenterLimitsUpdate,
     CostCenterResourceAccess,
+    PocAssignmentsUpdate,
+    PocSelection,
     CostCenterResourceAccessMode,
     CostCenterUpdate,
     PersonLimits,
@@ -595,7 +601,7 @@ def build_directory_lookup() -> FakeDirectoryLookup:
 
 
 class DemoAuthenticator:
-    """Sign every console request in as the administrator and every portal request as the user.
+    """Use distinct fictional administrator, requester and POC personas.
 
     The browser names the calling SPA in the ``Origin`` header of each cross-origin request, which
     is all a local demo needs to tell the two apart.
@@ -609,6 +615,9 @@ class DemoAuthenticator:
         cost_center_group_id: str | None = None,
     ) -> None:
         self._portal_origins = {origin.rstrip("/").casefold() for origin in portal_origins}
+        self._review_origins = {
+            origin for origin in self._portal_origins if origin.startswith("http://localhost:")
+        }
         self._admin = AuthContext(
             object_id=ADMIN.object_id,
             tenant_id=tenant_id,
@@ -628,9 +637,15 @@ class DemoAuthenticator:
                 if item is not None
             ),
         )
+        self._reviewer = AuthContext(
+            object_id=LIDIA.object_id, tenant_id=tenant_id, roles=frozenset({"User"}),
+            name=LIDIA.label, username=_directory_detail(LIDIA),
+        )
 
     async def authenticate(self, request: Request) -> AuthContext:
         origin = (request.headers.get("origin") or "").rstrip("/").casefold()
+        if origin in self._review_origins:
+            return self._reviewer
         return self._user if origin in self._portal_origins else self._admin
 
     async def close(self) -> None:
@@ -2672,23 +2687,29 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
             expected_revision=2, definition=form, enable_confirmed=True
         )
     )
-    for person, resource_id, purpose, justification in (
-        (PORTAL_USER, estate.model_apis["foundry-inference"],
+    for person, resource_id, center_code, purpose, justification in (
+        (PORTAL_USER, estate.model_apis["foundry-inference"], "general",
          "Summarize synthetic claims for a fictional demonstration assistant.",
          "Taking the claims summarization prototype to production."),
-        (ISAIAH, gpt4o_mini,
+        (PATTI, gpt4o_mini, "CS-110",
          "Evaluate email triage using only generated fictional messages.",
          "Prototype for customer email triage."),
     ):
+        center = await services.cost_centers.get_cost_center(admin, estate.cost_centers[center_code])
+        group_ids = (
+            frozenset({center.verified_group_object_id})
+            if center.verified_group_object_id is not None
+            else frozenset()
+        )
         resolved = await services.entitlements.resolve_request_form(
-            Actor(person.object_id, tenant_id),
+            Actor(person.object_id, tenant_id, group_ids=group_ids),
             RequestFormContextInput(
                 resource=EntitlementResource(kind="modelApi", id=resource_id),
-                cost_center_id=estate.cost_centers["general"],
+                cost_center_id=estate.cost_centers[center_code],
             ),
         )
         await request_access(
-            person, "modelApi", resource_id, justification, cost_center="general",
+            person, "modelApi", resource_id, justification, cost_center=center_code,
             form_submission=RequestFormSubmission.model_validate({
                 "revision": resolved.revision, "contextRevision": resolved.context_revision,
                 "answers": [
@@ -2718,6 +2739,7 @@ async def seed_cost_center_requests(
             code="RAI-620",
             description="A shared evaluation space for the research team.",
             justification="Track safety evaluations and share reviewed model access with the team.",
+            proposed_pocs=ProposedPocs(technical=LIDIA.label, billing=DIEGO.label),
             suggested_group_object_id=EXTRA_DIRECTORY_OBJECTS[-1].object_id,
             idempotency_key=UUID("11111111-2222-4333-8444-555555555551"),
         ),
@@ -3798,6 +3820,18 @@ def build_demo_app(console_port: int, portal_port: int) -> FastAPI:
             services = install_demo_services(demo_app, portal_origins)
             try:
                 estate = await seed_estate(services, TENANT_ID)
+                admin = Actor(ADMIN.object_id, TENANT_ID)
+                support = await services.cost_centers.get_cost_center(
+                    admin, estate.cost_centers["CS-110"],
+                )
+                if not support.poc_revision:
+                    raise SeedError("The fictional cost-center version was not saved")
+                await services.cost_centers.assign_pocs(
+                    admin, support.id, PocAssignmentsUpdate(
+                        assignments=[PocSelection(role="technical", object_id=LIDIA.object_id)],
+                        revision=support.poc_revision, reason="Fictional review desk capture",
+                    ),
+                )
                 await seed_billing(services, estate, TENANT_ID)
                 await seed_public_catalog(services, TENANT_ID)
                 center = await services.cost_centers.get_cost_center(

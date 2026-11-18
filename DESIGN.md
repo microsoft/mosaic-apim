@@ -27,6 +27,9 @@ Primary mobile navigation is modal, traps focus, restores the opener, and makes 
 header/content inert. The portal opens on Usage & cost, followed by Catalog, My access,
 My cost centers, and My requests in its primary navigation. My cost centers owns membership,
 published discovery, and creation/join entry points; My requests tracks the decisions.
+Approvals is visible only with a current delegated assignment. Its queue and full-workspace
+review are organized by assigned center; evidence, consequences, and decision controls are
+separate from the requester's personal tracking view.
 Portal details use a modal trailing-edge drawer at every
 width, without resizing the underlying list. Closing or switching grant details unmounts
 credential controls; secrets never persist in route state.

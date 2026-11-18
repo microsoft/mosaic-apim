@@ -7,8 +7,9 @@ import type { DirectoryObject, DirectorySearchKind } from '../types'
 import { ErrorState } from './AsyncState'
 import styles from './CostCenterSetup.module.css'
 
-export function CostCenterDirectoryPicker({ group = false, selected, onSelect, disabled = false }: {
+export function CostCenterDirectoryPicker({ group = false, peopleOnly = false, selected, onSelect, disabled = false }: {
   group?: boolean
+  peopleOnly?: boolean
   selected: DirectoryObject | null
   onSelect: (value: DirectoryObject | null) => void
   disabled?: boolean
@@ -33,7 +34,7 @@ export function CostCenterDirectoryPicker({ group = false, selected, onSelect, d
     mutationFn: ({ id }: { id: string; revision: number }) => api.getDirectoryObject(id),
     onSuccess: (value, { revision }) => {
       if (revision !== lookupRevision.current) return
-      if (group ? value.kind === 'securityGroup' : value.kind !== 'securityGroup') onSelect(value)
+      if (supports(value)) onSelect(value)
     },
     retry: false,
   })
@@ -48,10 +49,13 @@ export function CostCenterDirectoryPicker({ group = false, selected, onSelect, d
     onSelect(value)
   }
   const current = query.trim() === searchText && searchText.length >= 2
-  const wrongKind = lookup.data && (group ? lookup.data.kind !== 'securityGroup' : lookup.data.kind === 'securityGroup')
+  function supports(value: DirectoryObject) {
+    return group ? value.kind === 'securityGroup' : peopleOnly ? value.kind === 'user' : value.kind !== 'securityGroup'
+  }
+  const wrongKind = lookup.data && !supports(lookup.data)
   return <div className={styles.stack}>
     <div className={styles.grid}>
-      {!group && <Field label="Directory identity type">
+      {!group && !peopleOnly && <Field label="Directory identity type">
         <Select value={kind} aria-label="Directory identity type" disabled={disabled}
           onChange={(_, data) => { setKind(data.value as DirectorySearchKind); select(null) }}>
           <option value="user">People</option>
@@ -73,7 +77,7 @@ export function CostCenterDirectoryPicker({ group = false, selected, onSelect, d
     {current && search.isSuccess && <ul className={styles.results} aria-label={group ? 'Security group results' : 'Directory member results'}>
       {search.data.length === 0 && <li>No matching identities. Try another name or verify an object ID.</li>}
       {search.data.map((value) => {
-        const supported = group ? value.kind === 'securityGroup' : value.kind !== 'securityGroup'
+        const supported = supports(value)
         return <li key={`${value.kind}:${value.objectId}`}>
           <button type="button" className={styles.choice} disabled={disabled || !supported}
             aria-pressed={selected?.objectId === value.objectId}
@@ -81,22 +85,24 @@ export function CostCenterDirectoryPicker({ group = false, selected, onSelect, d
             <strong>{value.displayName || 'Unnamed directory identity'}</strong>
             <span>{PRINCIPAL_KIND_LABELS[value.kind]}{value.detail ? ` · ${value.detail}` : ''}</span>
             <span className={styles.technical}>Object ID: {value.objectId}</span>
-            {!supported && <span>Nested groups are not editable in this member workflow.</span>}
+            {!supported && <span>{peopleOnly ? 'Only ordinary Entra users can be assigned.' : 'Nested groups are not editable in this member workflow.'}</span>}
           </button>
         </li>
       })}
     </ul>}
     <details>
-      <summary>Use an object ID</summary>
+      <summary>{peopleOnly ? 'Use a contact object ID' : 'Use an object ID'}</summary>
       <div className={styles.stack}>
-        <Field label={group ? 'Group object ID' : 'Member object ID'}>
-          <Input aria-label={group ? 'Group object ID' : 'Member object ID'} value={objectId} disabled={disabled}
+        <Field label={group ? 'Group object ID' : peopleOnly ? 'Contact object ID' : 'Member object ID'}>
+          <Input aria-label={group ? 'Group object ID' : peopleOnly ? 'Contact object ID' : 'Member object ID'} value={objectId} disabled={disabled}
             onChange={(_, data) => { setObjectId(data.value); select(null) }} />
         </Field>
         <Button type="button" disabled={disabled || !objectId.trim() || lookup.isPending}
-          onClick={() => lookup.mutate({ id: objectId.trim(), revision: ++lookupRevision.current })}>Verify directory identity</Button>
+          onClick={() => lookup.mutate({ id: objectId.trim(), revision: ++lookupRevision.current })}>
+          {peopleOnly ? 'Verify contact identity' : 'Verify directory identity'}
+        </Button>
         {lookup.isError && <ErrorState title="Identity verification failed" error={lookup.error} />}
-        {wrongKind && <Text>Unsupported identity type. {group ? 'Choose an Entra security group.' : 'Choose a person or workload identity; nested groups are not supported here.'}</Text>}
+        {wrongKind && <Text>Unsupported identity type. {group ? 'Choose an Entra security group.' : peopleOnly ? 'Choose an ordinary Entra user.' : 'Choose a person or workload identity; nested groups are not supported here.'}</Text>}
       </div>
     </details>
     {selected && <div className={styles.stack} role="status">

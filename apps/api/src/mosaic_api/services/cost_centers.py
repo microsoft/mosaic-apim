@@ -20,10 +20,13 @@ from mosaic_api.cost_centers import (
     CostCenterBook,
     CostCenterCreate,
     CostCenterLimitsUpdate,
+    CostCenterPoc,
     CostCenterSettings,
     CostCenterSettingsUpdate,
     CostCenterUpdate,
     PendingRecheck,
+    PocAssignmentsUpdate,
+    PocSelection,
     PortalCostCenter,
     default_settings,
     exact_resource_key,
@@ -32,6 +35,7 @@ from mosaic_api.cost_centers import (
     with_recheck,
 )
 from mosaic_api.domain import (
+    AccessRequestState,
     AuditEvent,
     EntitlementResourceKind,
     EntitlementSubjectKind,
@@ -161,6 +165,7 @@ class CostCenterService:
         # under the publication locks its own mutations take.
         self._repository = repository
         self._directory = directory_repository
+        self._poc_directory = directory_lookup
         self._entitlement_records = entitlement_repository
         self._gateways = gateway_repository
         self._entitlements = entitlements
@@ -215,6 +220,7 @@ class CostCenterService:
                     {
                         **cost_center.model_dump(by_alias=False),
                         "etag": cost_center.etag,
+                        "poc_revision": cost_center.etag,
                         "is_tenant_default": cost_center.id == book.tenant_default_id,
                         "member_details": [],
                         "grant_count": counts.get(cost_center.id, 0),
@@ -274,6 +280,8 @@ class CostCenterService:
         request: CostCenterCreate,
         *,
         cost_center_id: str | None = None,
+        poc_creation_request_id: str | None = None,
+        poc_approved_by: str | None = None,
     ) -> CostCenterManagementView:
         """Save before Graph; the internal forced ID lets request approval safely resume."""
 
@@ -296,6 +304,8 @@ class CostCenterService:
             owners=request.owners,
             keys_allowed=request.keys_allowed,
             resource_access=request.resource_access,
+            pocs=await self.verify_poc_selections(actor, request.poc_selections, poc_approved_by),
+            poc_creation_request_id=poc_creation_request_id,
         )
         await self._entitlements.validate_cost_center_access(actor, proposed)
         async with scope_lease(
@@ -310,11 +320,14 @@ class CostCenterService:
                     "owners",
                     "keys_allowed",
                     "resource_access",
+                    "poc_creation_request_id",
                 )
                 if (
                     cost_center_id is None
                     or existing.is_general
                     or any(getattr(existing, field) != getattr(proposed, field) for field in fields)
+                    or {(p.role, p.object_id) for p in existing.pocs}
+                    != {(p.role, p.object_id) for p in proposed.pocs}
                 ):
                     raise ConflictError(
                         "The reserved ID belongs to a different or subsequently edited center",
@@ -325,7 +338,10 @@ class CostCenterService:
                 await self._require_unique_code(actor, request.code)
                 await self._repository.create_cost_center(
                     proposed,
-                    self._audit(actor, "costCenter.created", proposed.id, {"code": request.code}),
+                    self._audit(actor, "costCenter.created", proposed.id, {
+                        "code": request.code,
+                        **({"pocRoles": [p.role for p in proposed.pocs]} if proposed.pocs else {}),
+                    }),
                 )
         try:
             if request.group_setup is not None:
@@ -341,6 +357,71 @@ class CostCenterService:
             ) from exc
         logger.info("cost_center_created", cost_center_id=proposed.id, tenant_id=actor.tenant_id)
         return await self.get_cost_center(actor, proposed.id)
+
+    async def verify_poc_selections(
+        self, actor: Actor, selections: list[PocSelection], approved_by: str | None = None,
+    ) -> list[CostCenterPoc]:
+        if not selections:
+            return []
+        if self._poc_directory is None:
+            raise ValidationError("Configure Entra directory lookup before assigning contacts")
+        self._directory_groups._directory_id(actor)
+        if len({(p.role, p.object_id) for p in selections}) != len(selections):
+            raise ValidationError("A person can hold each contact role only once per center")
+        resolved: list[CostCenterPoc] = []
+        for selection in selections:
+            person = await self._poc_directory.get_object(selection.object_id)
+            if (
+                person is None or person.kind != PrincipalKind.USER
+                or person.object_id.casefold() != selection.object_id
+                or not person.display_name or not person.display_name.strip()
+            ):
+                raise ValidationError("Select an ordinary Entra user with a directory display name")
+            resolved.append(CostCenterPoc(
+                **selection.model_dump(by_alias=False),
+                display_name=person.display_name.strip()[:256],
+                approved_by=approved_by or actor.object_id,
+            ))
+        return resolved
+
+    async def assign_pocs(
+        self, actor: Actor, center_id: str, payload: PocAssignmentsUpdate,
+    ) -> CostCenterManagementView:
+        before = await self._stored(actor, center_id)
+        if before.is_general:
+            raise ValidationError("General does not support delegated reviewers")
+        if before.etag != payload.revision:
+            raise ConflictError("The cost center changed; reload its assignments")
+        keys = [(p.role, p.object_id) for p in payload.assignments]
+        if len(set(keys)) != len(keys):
+            raise ValidationError("A person can hold each contact role only once per center")
+        assignments = {(p.role, p.object_id): p for p in before.pocs}
+        additions = [p for p in payload.assignments if (p.role, p.object_id) not in assignments]
+        for contact in await self.verify_poc_selections(actor, additions):
+            assignments[(contact.role, contact.object_id)] = contact
+        pocs = [assignments[key] for key in keys]
+        async with scope_lease(
+            self._gateways, actor.tenant_id, COST_CENTERS_SCOPE, busy_message=COST_CENTERS_BUSY,
+        ):
+            center = await self._stored(actor, center_id)
+            if center.etag != payload.revision:
+                raise ConflictError("The cost center changed; reload its assignments")
+            if center.poc_creation_request_id:
+                request = await self._entitlement_records.get_cost_center_request(
+                    actor.tenant_id, center.poc_creation_request_id,
+                )
+                if request is None or request.state != AccessRequestState.APPROVED:
+                    raise ConflictError("Finish the administrator creation review first")
+            details = {
+                "before": [p.model_dump(mode="json") for p in center.pocs],
+                "after": [p.model_dump(mode="json") for p in pocs],
+                "reason": payload.reason,
+            }
+            await self._repository.save_cost_center(
+                center.model_copy(update={"pocs": pocs}),
+                self._audit(actor, "costCenter.pocsChanged", center.id, details),
+            )
+        return await self.get_cost_center(actor, center_id)
 
     async def create_cost_center(
         self,

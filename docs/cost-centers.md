@@ -249,6 +249,25 @@ unavailable. Joining creates no key, increases no budget or pooled quota, and ch
 Graph membership reads in the portal are not a runtime authorization fallback, and do not bypass
 token group overage or gateway apply. The existing supported-cloud restriction remains in effect.
 
+## Delegated cost-center review
+
+Administrators can appoint technical and billing points of contact by selecting ordinary
+Entra users. Both roles can decide membership and resource-access requests for that cost
+center in the portal's **Approvals** page, using the existing MOSAIC User role. Neither
+contact ownership nor a suggested name or email gives access. New-cost-center approval
+and assignment changes remain administrator-only. Centers without assignments keep
+administrator review; General is not delegated.
+
+Reviewers cannot decide their own requests or override the submitted center, offering, or
+limits. Resource approvals use the center's existing defaults, even when no per-person limit
+is configured, and record a grant to be reviewed and applied by an administrator. Membership
+approval uses the existing Entra operation; administrators handle failed or uncertain
+operations. The decision, reason, and outcome are shared with the console, and removing an
+assignment blocks future decisions and access to old review links.
+
+POC-specific reporting, configuration and budget requests, and Teams/email delivery are not
+part of this milestone.
+
 ## Removing a member
 
 Removing someone in MOSAIC changes their real **direct Entra relationship**. It does not recall a
@@ -416,6 +435,11 @@ Membership discovery and requests use separate, owner-scoped routes:
 | Method | Route under `/api/v1` | Purpose |
 | --- | --- | --- |
 | GET | `/portal/cost-center-self-service-settings` | Read the two saved self-service switches without exposing administrator settings |
+| PUT | `/cost-centers/{id}/pocs` | Administrator-only replacement of approved POC assignments, with revision and reason |
+| GET | `/portal/approvals/centers` | List the caller's current delegated review scopes |
+| GET | `/portal/approvals?centerId=…` | List scoped review requests by status |
+| GET | `/portal/approvals/{kind}/{id}` | Read scoped request evidence and decision context |
+| POST | `/portal/approvals/{kind}/{id}/{approve\|deny}` | Decide the shared request with a reviewed revision and reason |
 | GET | `/portal/my-cost-centers` | Page/search the caller's current memberships with separate token eligibility |
 | GET | `/portal/cost-center-directory` | Page/search administrator-published centers using safe public fields |
 | GET | `/portal/cost-center-directory/{id}` | Read a published center or the caller's own private membership |

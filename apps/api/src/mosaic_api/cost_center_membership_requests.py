@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import Field, field_validator, model_validator
 
+from mosaic_api.cost_center_delegation import PocContact
 from mosaic_api.cost_center_directory import DirectoryOperationState, directory_object_id
 from mosaic_api.domain import (
     AccessRequestState,
@@ -41,6 +42,7 @@ class MembershipRequest(Entity):
     entity_type: Literal["costCenterMembershipRequest"] = "costCenterMembershipRequest"
     request_kind: Literal["costCenterMembership"] = "costCenterMembership"
     requester_object_id: str
+    requester_name: str | None = Field(default=None, max_length=256, exclude_if=lambda v: v is None)
     cost_center: CostCenterRef
     directory_tenant_id: str
     group_object_id: str
@@ -129,6 +131,7 @@ class PortalCenter(MosaicModel):
     built_in: bool = False
     membership_state: Literal["member", "notMember", "unknown", "exempt"]
     token_eligible: bool
+    contacts: list[PocContact] = Field(default_factory=list, exclude_if=lambda v: not v)
 
 
 class PortalCenterPage(MosaicModel):

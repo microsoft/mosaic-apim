@@ -60,6 +60,7 @@ export interface CostCenterSelfServiceSettings {
 }
 
 export interface MembershipCostCenter extends CostCenterRef {
+  contacts?: { role: 'technical' | 'billing'; displayName: string }[]
   publicPurpose: string | null
   builtIn: boolean
   membershipState: 'member' | 'notMember' | 'unknown' | 'exempt'
@@ -205,6 +206,7 @@ export interface PortalRequestCounts {
 }
 
 export interface CostCenterRequestCreate {
+  proposedPocs?: { technical?: string; billing?: string }
   name: string
   code?: string | null
   description?: string | null

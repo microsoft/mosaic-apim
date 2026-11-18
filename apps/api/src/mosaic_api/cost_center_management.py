@@ -98,6 +98,7 @@ def directory_operation_view(
 
 
 class CostCenterManagementView(CostCenterView):
+    poc_revision: str | None = None
     # Detail only. Listing centers does not fan out into Graph or operation history.
     directory_operations: list[CostCenterDirectoryOperationView] = Field(default_factory=list)
 

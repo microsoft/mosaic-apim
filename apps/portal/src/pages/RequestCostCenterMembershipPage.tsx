@@ -52,7 +52,7 @@ export function RequestCostCenterMembershipPage() {
   return <>
     <UnsavedChanges dirty={Boolean(justification) && !create.isSuccess} title="Discard this membership request?" />
     <div className="workspace-back"><Button appearance="subtle" onClick={() => navigate('/cost-centers?view=discover')}>Back to My cost centers</Button></div>
-    <PageHeader title="Request to join a cost center" description="An administrator reviews your request before adding you to the center's real Entra group." />
+    <PageHeader title="Request to join a cost center" description="An assigned contact or administrator reviews your request before adding you to the center's Entra group." />
     {(center.isPending || policy.isPending) && <Loading label="Checking cost-center membership and policy" />}
     {center.isError && <><ErrorState error={center.error} /><Button onClick={() => void center.refetch()}>Retry cost center</Button></>}
     {policy.isError && <><ErrorState error={policy.error} /><Button onClick={() => void policy.refetch()}>Retry cost-center settings</Button></>}
