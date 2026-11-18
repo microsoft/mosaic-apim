@@ -253,7 +253,8 @@ function GuidedReview({ draftId, stage, onSelectDraft }: Omit<Props, 'onWorkspac
       <p>{current.definitions} model/meter definitions · {current.prices} public-price rows · {current.sources.length} sources.</p>
       <p className={styles.muted}>Schema, required units, source references and declared cloud scopes were checked. Integrity validation is not independent proof of a supplied source or complete provider coverage.</p>
       <p className={styles.muted}>Existing Government records and provenance are retained unless a supported, explicitly reviewed replacement is activated. Missing rates are not zero and never fall back to another cloud.</p>
-      {current.method === 'supplied' && <Button icon={<CloudArrowDownRegular />} onClick={() => fetchMappings.mutate()}>Fetch Commercial prices using these mappings</Button>}
+      {current.method === 'supplied' && <Button icon={<CloudArrowDownRegular />} disabled={pending}
+        onClick={() => { if (!pending) fetchMappings.mutate() }}>Fetch Commercial prices using these mappings</Button>}
     </section>}
     {(stage === 'validate' || recorded) && <Evidence draft={current} />}
     {current.missingPrices.length > 0 && <MessageBar intent="warning"><MessageBarBody><MessageBarTitle>{current.missingPrices.length} mappings have no newly sourced rate</MessageBarTitle>

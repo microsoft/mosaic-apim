@@ -218,6 +218,36 @@ describe('Public catalog guided checkpoints', () => {
     expect(api.activatePublicCatalog).not.toHaveBeenCalled()
   })
 
+  it('starts only one mapping-context fetch and stays pending through status reconciliation', async () => {
+    const user = userEvent.setup()
+    const fetched = deferred<PublicCatalogDraft>()
+    const refreshed = deferred<PublicCatalogStatus>()
+    const retailDraft = { ...draft, id: 'retail-draft-context', method: 'retail' as const }
+    api.refreshPublicCatalog.mockReturnValueOnce(fetched.promise)
+    renderWorkspace(draft.id)
+    const button = await screen.findByRole('button', { name: 'Fetch Commercial prices using these mappings' })
+    try {
+      await user.dblClick(button)
+      expect(button).toBeDisabled()
+      expect(api.refreshPublicCatalog).toHaveBeenCalledOnce()
+      expect(api.refreshPublicCatalog).toHaveBeenCalledWith('current-revision', draft.id)
+    } finally {
+      api.getPublicCatalog.mockReturnValueOnce(refreshed.promise)
+      api.getPublicCatalogDraft.mockResolvedValue(retailDraft)
+      await act(async () => { fetched.resolve(retailDraft); await fetched.promise })
+    }
+    try {
+      await waitFor(() => expect(api.getPublicCatalog).toHaveBeenCalledTimes(2))
+      expect(button).toBeDisabled()
+      expect(api.getPublicCatalogDraft).toHaveBeenCalledTimes(1)
+    } finally {
+      await act(async () => { refreshed.resolve(status); await refreshed.promise })
+    }
+    await waitFor(() => expect(api.getPublicCatalogDraft).toHaveBeenLastCalledWith(retailDraft.id))
+    expect(api.refreshPublicCatalog).toHaveBeenCalledOnce()
+    expect(api.activatePublicCatalog).not.toHaveBeenCalled()
+  })
+
   it('requires source/gap and historical acknowledgements and preserves valid empty-date state', async () => {
     const user = userEvent.setup()
     renderWorkspace(draft.id, 'review')

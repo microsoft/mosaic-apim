@@ -202,17 +202,24 @@ class RetailPricesAdapter:
                     )
         prices = []
         seen_prices: set[str] = set()
-        provisioned = provisioned_prices(index)
         for definition in definitions:
             meters = definition.meters
             if meters is None:
                 continue
             if definition.kind == "ptu":
                 candidates = [
-                    item
-                    for item in provisioned
-                    if item["publisher"] == definition.publisher
-                    and item["deploymentType"] == definition.deployment_type
+                    {
+                        **item,
+                        "model": definition.model,
+                        "version": definition.version,
+                        "aliases": definition.aliases,
+                        "notes": definition.notes,
+                    }
+                    for item in provisioned_prices(
+                        index,
+                        products={definition.publisher: meters.product},
+                        meters={definition.deployment_type or "": meters.provisioned or ""},
+                    )
                 ]
             else:
                 candidates = model_prices(
@@ -231,7 +238,7 @@ class RetailPricesAdapter:
                     ),
                     index,
                 )
-            for item in candidates:
+            for candidate_number, item in enumerate(candidates, 1):
                 if item["cloud"] != "commercial":
                     continue
                 if definition.regions is not None:
@@ -241,6 +248,7 @@ class RetailPricesAdapter:
                     if not covered:
                         continue
                     item = {**item, "regions": covered}
+                item = {**item, "id": f"retail.{definition.key}.r{candidate_number}"}
                 if item["id"] not in seen_prices:
                     seen_prices.add(item["id"])
                     # PTU billing guidance is not itself a numeric rate source.

@@ -238,11 +238,20 @@ def model_prices(model: Model, index: Index) -> list[dict[str, Any]]:
     return prices
 
 
-def provisioned_prices(index: Index) -> list[dict[str, Any]]:
+def provisioned_prices(
+    index: Index,
+    *,
+    products: dict[str, str] | None = None,
+    meters: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Normalize explicit PTU product/meter mappings, retaining the CLI's default mappings."""
+
+    products = PROVISIONED_PRODUCTS if products is None else products
+    meters = PROVISIONED_METERS if meters is None else meters
     prices: list[dict[str, Any]] = []
-    for publisher, product in PROVISIONED_PRODUCTS.items():
+    for publisher, product in products.items():
         for cloud in ("commercial", "government"):
-            for deployment_type, meter in PROVISIONED_METERS.items():
+            for deployment_type, meter in meters.items():
                 rows = index.regions(product, meter, cloud)
                 if not rows:
                     continue
@@ -464,7 +473,11 @@ def carry_forward(
         start = _start(old)
         regions = old.get("regions")
         if regions is None:
-            successor = next((price for price in line if price.get("regions") is None), None)
+            successor = min(
+                (price for price in line if price.get("regions") is None),
+                key=_start,
+                default=None,
+            )
             if successor is None:
                 # Retired, or now priced by region. A regional price is more specific, so it
                 # takes over from its own start.

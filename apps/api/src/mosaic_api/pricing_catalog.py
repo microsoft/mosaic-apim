@@ -283,7 +283,14 @@ class CatalogPackage(MosaicModel):
             ):
                 if value is not None and (not math.isfinite(value) or value > 100_000):
                     raise ValueError("Rates must be finite and at most 100,000 USD per stated unit")
-            token = price.input_per_million is not None
+            token = any(
+                value is not None
+                for value in (
+                    price.input_per_million,
+                    price.cached_input_per_million,
+                    price.output_per_million,
+                )
+            )
             if token == (price.ptu_hourly is not None):
                 raise ValueError("A rate must use token units or PTU-hours, never both")
             matches = [

@@ -263,6 +263,61 @@ def test_strict_public_boundary_does_not_change_legacy_price_readers() -> None:
         assert version.input_per_million == 1.25
 
 
+@pytest.mark.parametrize("token_field", ["outputPerMillion", "cachedInputPerMillion"])
+@pytest.mark.parametrize("token_rate", [0, 1.25])
+async def test_public_ptu_rates_reject_every_mixed_token_dimension(
+    token_field: str, token_rate: float,
+) -> None:
+    service, repository, _, _ = await _build_estate()
+    package = json.loads(_raw_rate_package("ptuHourly", 1))
+    package["priceList"]["prices"][0][token_field] = token_rate
+    with pytest.raises(ValidationError, match="invalid"):
+        await service.catalog.import_bytes(_actor(), json.dumps(package).encode(), None)
+    assert await repository.get_catalog_head(TENANT) is None
+    assert not await repository.list_catalog_activations(TENANT)
+    assert await _rate(service) == 2.5
+    [failed] = await repository.list_catalog_drafts(TENANT)
+    assert failed.status == "invalid"
+    assert failed.error and "never both" in failed.error
+
+
+@pytest.mark.parametrize(
+    "coverage", ["publisher", "partialRegions", "coveredRegions", "regionless", "normalized"]
+)
+async def test_missing_source_rates_use_exact_identity_and_collective_region_coverage(
+    coverage: str,
+) -> None:
+    service, _, _, _ = await _build_estate()
+    package = _package()
+    definition = package["catalog"][0]
+    original = package["priceList"]["prices"][0]
+    if coverage == "publisher":
+        package["catalog"].append({**definition, "publisher": "Other publisher"})
+    elif coverage == "normalized":
+        definition.update({"publisher": "open ai", "model": "GPT-4O"})
+    else:
+        if coverage != "regionless":
+            definition["regions"] = ["eastus2", "westeurope"]
+            if coverage == "partialRegions":
+                definition["regions"].append("swedencentral")
+        original["regions"] = ["eastus2"]
+        package["priceList"]["prices"].append({
+            **original, "id": "commercial.west", "regions": ["westeurope"],
+        })
+    draft = await service.catalog.import_bytes(_actor(), json.dumps(package).encode(), None)
+    assert draft.status == "readyForReview"
+    if coverage in {"coveredRegions", "normalized"}:
+        assert draft.missing_prices == []
+    else:
+        assert len(draft.missing_prices) == 1
+        missing = draft.missing_prices[0]
+        assert {
+            "publisher": "Other publisher",
+            "partialRegions": "swedencentral",
+            "regionless": "every matching region",
+        }[coverage] in missing
+
+
 async def test_government_import_is_separate_and_requires_numeric_evidence() -> None:
     service, _, _, _ = await _build_estate()
     missing = _package(cloud="government")
@@ -503,6 +558,34 @@ async def test_backdated_regional_correction_trims_only_the_replaced_retained_sc
             assert matched.entry.input_per_million == expected
 
 
+@pytest.mark.parametrize("later_first", [False, True])
+async def test_regionless_successor_windows_do_not_depend_on_json_array_order(
+    later_first: bool,
+) -> None:
+    service, _, _, _ = await _build_estate()
+    package = _package()
+    first = {
+        **package["priceList"]["prices"][0],
+        "effectiveFrom": TODAY.isoformat(),
+        "effectiveUntil": (TODAY + timedelta(days=1)).isoformat(),
+    }
+    second = {
+        **first, "id": "commercial.later", "inputPerMillion": 0.8,
+        "effectiveFrom": (TODAY + timedelta(days=2)).isoformat(),
+    }
+    del second["effectiveUntil"]
+    package["priceList"]["prices"] = [second, first] if later_first else [first, second]
+    draft = await service.catalog.import_bytes(_actor(), json.dumps(package).encode(), None)
+    assert draft.status == "readyForReview"
+    approval = await _approval(service, draft.id)
+    assert await _rate(service, TODAY) == 2.5
+    await service.catalog.activate(_actor(), draft.id, approval)
+    assert await _rate(service, TODAY - timedelta(days=1)) == 2.5
+    assert await _rate(service, TODAY) == 1.2
+    assert await _rate(service, TODAY + timedelta(days=1)) == 1.2
+    assert await _rate(service, TODAY + timedelta(days=2)) == 0.8
+
+
 async def test_backdate_and_stale_preview_require_fresh_explicit_review() -> None:
     service, repository, _, _ = await _build_estate()
     draft = await _import(service)
@@ -691,6 +774,76 @@ async def test_retail_pages_are_complete_and_only_acquire_commercial() -> None:
     assert package.price_list.prices[0].input_per_million == 2
     assert {item.cloud for item in package.price_list.prices} == {"commercial"}
     assert not any("authorization" in item.headers for item in requests)
+
+
+@pytest.mark.parametrize("model,version", [("*", None), ("new-reserved", "v2")])
+async def test_retail_ptu_acquisition_uses_the_imported_exact_mapping(
+    model: str, version: str | None,
+) -> None:
+    definition = CatalogDefinition.model_validate({
+        "cloud": "commercial", "publisher": "Example AI", "model": model, "version": version,
+        "aliases": ["reserved-alias"], "deploymentType": "ProvisionedManaged",
+        "regions": ["eastus2"], "kind": "ptu", "requiresOutput": False,
+        "meters": {"product": "New provisioned product", "provisioned": "New reserved meter"},
+    })
+    row = {
+        **_retail_rows()[0], "productName": "New provisioned product",
+        "meterName": "New reserved meter", "unitOfMeasure": "1 Hour", "retailPrice": 3.25,
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"Items": [row], "NextPageLink": None})
+        )
+    ) as client:
+        package = await RetailPricesAdapter(client).acquire([definition], TODAY)
+    [price] = package.price_list.prices
+    assert price.publisher == definition.publisher
+    assert price.model == model and price.version == version
+    assert price.aliases == definition.aliases
+    assert price.deployment_type == "ProvisionedManaged"
+    assert price.regions == ["eastus2"] and price.ptu_hourly == 3.25
+    assert price.retail_meters == definition.meters
+    assert price.source_ids == [package.price_list.sources[0].id]
+
+
+async def test_retail_ids_keep_disjoint_definitions_and_their_fetched_rates() -> None:
+    first = CatalogDefinition.model_validate({
+        **_package()["catalog"][0], "regions": ["eastus2"],
+    })
+    assert first.meters is not None
+    second = first.model_copy(update={
+        "regions": ["westeurope"],
+        "meters": first.meters.model_copy(update={
+            "input": "West input", "output": "West output",
+        }),
+    })
+    rows = [
+        *_retail_rows(),
+        {
+            **_retail_rows()[0], "meterName": "West input",
+            "armRegionName": "westeurope", "retailPrice": 3,
+        },
+        {
+            **_retail_rows()[1], "meterName": "West output",
+            "armRegionName": "westeurope", "retailPrice": 12,
+        },
+    ]
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"Items": rows, "NextPageLink": None})
+        )
+    ) as client:
+        adapter = RetailPricesAdapter(client)
+        package = await adapter.acquire([first, second], TODAY)
+        reversed_package = await adapter.acquire([second, first], TODAY)
+    assert len(package.price_list.prices) == 2
+    by_scope = {tuple(price.regions): price for price in package.price_list.prices}
+    assert by_scope[("eastus2",)].input_per_million == 2
+    assert by_scope[("westeurope",)].input_per_million == 3
+    assert len({price.id for price in by_scope.values()}) == 2
+    assert {scope: price.id for scope, price in by_scope.items()} == {
+        tuple(price.regions): price.id for price in reversed_package.price_list.prices
+    }
 
 
 @pytest.mark.parametrize(

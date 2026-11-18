@@ -881,7 +881,9 @@ class PriceBook:
             for entry in self.entries
             if entry.effective_until is not None and entry.effective_until < date.max
         }
-        self._changes = sorted(changes)
+        if self._protected is not None:
+            changes.update(self._protected._changes)
+        self._changes: list[date] = sorted(changes)
 
     def clouds(self) -> list[str]:
         custom = sorted({entry.cloud for entry in self.entries} - set(BUILT_IN_CLOUDS))

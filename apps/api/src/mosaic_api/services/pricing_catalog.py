@@ -39,6 +39,7 @@ from mosaic_api.pricing_catalog import (
     CatalogPackage,
     CatalogRateRecord,
     CatalogReceipt,
+    _scope,
     canonical_json,
     catalog_head_id,
     content_hash,
@@ -348,18 +349,30 @@ class PublicCatalogService:
             view.prices = len(seed.prices)
             view.mappings = payload.catalog
             view.evidence = payload.evidence
-            view.missing_prices = [
-                f"{item.cloud}: {item.model} {item.version or ''} "
-                f"({item.deployment_type or 'any supported type'})"
-                for item in payload.catalog
-                if not any(
-                    price.cloud == item.cloud
-                    and price.model.casefold() == item.model.casefold()
-                    and (price.version or "").casefold() == (item.version or "").casefold()
-                    and price.deployment_type == item.deployment_type
-                    for price in seed.prices
+            prices_by_scope: dict[tuple[str, ...], list[ModelPrice]] = {}
+            for price in seed.prices:
+                prices_by_scope.setdefault(_scope(price), []).append(price)
+            for item in payload.catalog:
+                matching = prices_by_scope.get(_scope(item), [])
+                if any(price.regions is None for price in matching):
+                    continue
+                covered_regions = {
+                    region for price in matching for region in (price.regions or [])
+                }
+                missing_regions = (
+                    set(item.regions) - covered_regions if item.regions is not None else None
                 )
-            ]
+                if missing_regions is not None and not missing_regions:
+                    continue
+                scope = (
+                    ", ".join(sorted(missing_regions))
+                    if missing_regions is not None
+                    else "every matching region"
+                )
+                view.missing_prices.append(
+                    f"{item.cloud}: {item.publisher} {item.model} {item.version or ''} "
+                    f"({item.deployment_type or 'any supported type'}; {scope})"
+                )
             view.sources = self._sources(
                 seed,
                 draft.receipt if isinstance(payload, CatalogPackage) else None,

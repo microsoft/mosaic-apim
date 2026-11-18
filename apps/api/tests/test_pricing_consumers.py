@@ -22,6 +22,7 @@ from mosaic_api.budgets import (
     budget_key,
 )
 from mosaic_api.domain import CostCenterRef
+from mosaic_api.pricing import PriceCreate, PriceSource
 from mosaic_api.pricing_catalog import CatalogActivateRequest
 from mosaic_api.services.analytics.cost import (
     BILLING_DERIVED_NOTE,
@@ -72,6 +73,74 @@ from test_pool_usage import (
 )
 
 __all__ = ["harness", "settings"]
+
+
+async def test_backdated_public_activation_keeps_protected_midmonth_cost_changes(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await rolled_up(harness)
+    original = next(
+        price
+        for price in harness.pricing._seed.prices
+        if price.cloud == "commercial" and price.model == "gpt-4o"
+        and price.version == "2024-11-20" and price.deployment_type == "GlobalStandard"
+        and price.regions is None and price.effective_until is None
+    )
+    source = PriceSource(
+        id="fictional-public", title="Fictional public price evidence",
+        url="https://example.invalid/public-prices", retrieved_on=harness.now.date(),
+    )
+    baseline = original.model_copy(update={
+        "id": "fictional-baseline", "effective_from": date(2026, 3, 14),
+        "source_ids": [source.id],
+    })
+    seed = harness.pricing._seed.model_copy(update={
+        "sources": [source], "prices": [baseline], "ptu_throughput": [],
+    })
+    monkeypatch.setattr(harness.pricing, "_seed", seed)
+    monkeypatch.setattr(harness.pricing.catalog, "_seed", seed)
+    await harness.pricing.add_price(_actor(), PriceCreate(
+        cloud="commercial", publisher="OpenAI", model="gpt-4o", version="2024-11-20",
+        deployment_type="GlobalStandard", input_per_million=1.25, output_per_million=5,
+        effective_from=date(2026, 2, 1), source_url="https://example.invalid/agreement",
+        note="Earlier fictional manual rate",
+    ))
+    price = baseline.model_dump(mode="json", by_alias=True, exclude_none=True)
+    price.update({
+        "id": "fictional-correction", "inputPerMillion": 2, "outputPerMillion": 8,
+        "effectiveFrom": "2026-03-01",
+    })
+    package = {
+        "format": "mosaicPublicCatalog", "schemaVersion": 1,
+        "catalog": [{
+            "cloud": "commercial", "publisher": "OpenAI", "model": price["model"],
+            "version": price["version"], "deploymentType": "GlobalStandard",
+            "aliases": price.get("aliases", []), "meters": price["retailMeters"],
+        }],
+        "priceList": {
+            "schemaVersion": 1, "currency": "USD",
+            "lastUpdated": harness.now.date().isoformat(),
+            "sources": [source.model_dump(mode="json", by_alias=True)], "prices": [price],
+        },
+    }
+    draft = await harness.pricing.catalog.import_bytes(
+        _actor(), json.dumps(package).encode(), None
+    )
+    effective = date(2026, 3, 1)
+    preview = await harness.pricing.catalog.preview(_actor(), draft.id, effective)
+    await harness.pricing.catalog.activate(_actor(), draft.id, CatalogActivateRequest(
+        draft_version=preview.draft.version, base_revision=None,
+        preview_digest=preview.preview_digest, effective_from=effective,
+        note="Acknowledged fictional historical correction",
+        acknowledge_source_and_gaps=True, acknowledge_backdate_impact=True,
+    ))
+    for window in ("30d", "12m"):
+        consumers = harness.get("/api/v1/analytics/consumers", range=window)
+        people = {row["label"]: row["cost"] for row in consumers["people"]}
+        assert people["Alice"] == pytest.approx(5 * 1.75 + 5 * 2.8), window
+        models = harness.get("/api/v1/analytics/models", range=window)
+        chat = next(row for row in models["deployments"] if row["deploymentName"] == "chat")
+        assert chat["cost"] == pytest.approx(5 * 1.75 + 5 * 2.8 + 0.2), window
 
 
 async def test_runtime_public_catalog_prices_all_existing_cost_consumers(
