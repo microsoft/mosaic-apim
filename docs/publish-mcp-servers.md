@@ -225,6 +225,14 @@ is stopped and every ARM operation it submitted is complete. Confirmed recovery 
 denial, records the publication as failed, and releases the lock. Then plan again and apply the
 desired state.
 
+For a self-hosted publication, recovery must also confirm local ingress is fenced. If a
+completed creation reached the run journal before the publication record was saved, recovery
+can reconcile the exact owned discovery operation and policy before validating the shared API.
+Unconfirmed writes and foreign operations leave recovery blocked; MOSAIC does not restore grants.
+If the exact shared API is already gone after interrupted unpublish, a newly reviewed unpublish
+can finish the remaining cleanup. An incomplete operation inventory on an existing API never
+establishes that the shared API or its attachment can be removed.
+
 ## Verify OAuth discovery after applying
 
 A completed apply confirms the resource writes, not the gateway's OAuth discovery behavior. Use

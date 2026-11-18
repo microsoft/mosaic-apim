@@ -153,6 +153,9 @@ ClientFactory = Callable[[ApimResourceId], ApimClient]
 WriterFactory = Callable[[ApimResourceId], ApimWriter]
 RecoveryJournal = Callable[[PublishedResourceKind, str, bool, str], Awaitable[None]]
 _EXACT_KINDS = {PublishedResourceKind.GATEWAY_API, PublishedResourceKind.PUBLICATION_BINDING}
+_DISCOVERY_OPERATION_KINDS = {
+    PublishedResourceKind.API_OPERATION, PublishedResourceKind.API_OPERATION_POLICY
+}
 
 MCP_CREATE_ORDER: tuple[PublishedResourceKind, ...] = (
     PublishedResourceKind.BACKEND,
@@ -1130,7 +1133,7 @@ class McpPublishingService:
             return diagnostic
         if (
             run is None or publication is None or run.target != "mcp"
-            or run.publication_id != publication_id
+            or run.publication_id != publication_id or run.gateway_id != publication.gateway_id
         ):
             raise ConflictError("The retained lock has no matching MCP publication/run evidence")
         if not confirm_quiesced:
@@ -1144,6 +1147,9 @@ class McpPublishingService:
         client = self._client_factory(gateway.arm_resource())
         writer = self._writer_factory(gateway.arm_resource())
         resources = list(publication.resources)
+        if publication.is_self_hosted():
+            resources = await self._recover_discovery_operations(publication, client, run)
+            publication = publication.model_copy(update={"resources": resources})
         runtime = await self._teardown_runtime(publication, gateway, client)
         for step in run.steps:
             if step.kind in _EXACT_KINDS:
@@ -1152,6 +1158,9 @@ class McpPublishingService:
                 await self._recover_runtime_resource(
                     publication, runtime, client, writer, step, run, resources,
                 )
+                continue
+            if publication.is_self_hosted() and step.kind in _DISCOVERY_OPERATION_KINDS:
+                # The discovery gate admits only operations confirmed by the durable journal.
                 continue
             if not step.created_by_mosaic or step.action == PublishAction.DELETE:
                 continue
@@ -1221,6 +1230,50 @@ class McpPublishingService:
         )
         await self._release_run(publication, run)
         return recovered
+
+    async def _recover_discovery_operations(
+        self, publication: McpPublication, client: ApimClient, run: PublishRun,
+    ) -> list[PublishedResource]:
+        # Progress saves the run before the publication. Recover this gap in memory only;
+        # the caller still has to verify the fence and the live shared discovery API.
+        completed_creates = {
+            (step.kind, step.name, step.resource_id)
+            for step in run.steps
+            if step.status == PublishStepStatus.SUCCEEDED
+            and step.action == PublishAction.CREATE and step.created_by_mosaic
+        }
+        recovered: list[PublishedResource] = []
+        for item in _desired_resources(publication):
+            if (
+                item.target_api != MCP_METADATA_API_NAME
+                or item.kind not in _DISCOVERY_OPERATION_KINDS
+                or self._owns(publication, item.kind, item.name)
+            ):
+                continue
+            resource_id = f"{client.resource.canonical}/{item.segment}"
+            if (item.kind, item.name, resource_id) not in completed_creates:
+                continue
+            if item.kind == PublishedResourceKind.API_OPERATION:
+                live = await client.get_api_operation(MCP_METADATA_API_NAME, item.name)
+                if live is None:
+                    continue
+                observed_id = live.get("id")
+                if live.get("name") != item.name or (
+                    "id" in live
+                    and (
+                        not isinstance(observed_id, str)
+                        or observed_id.casefold() != resource_id.casefold()
+                    )
+                ):
+                    raise ConflictError("The live MCP discovery operation identity has changed.")
+            elif await client.get_operation_policy(
+                MCP_METADATA_API_NAME, item.name, strict=True,
+            ) is None:
+                continue
+            recovered.append(PublishedResource(
+                kind=item.kind, name=item.name, resource_id=resource_id, created_by_mosaic=True,
+            ))
+        return _merge_resources(publication.resources, recovered)
 
     async def _recover_runtime_resource(
         self, publication: McpPublication, runtime: SelfHostedGateway, client: ApimClient,
@@ -3450,6 +3503,8 @@ class McpPublishingService:
             case PublishedResourceKind.API if name == publication.api_name:
                 await writer.delete_mcp_api(name)
             case PublishedResourceKind.API if name == MCP_METADATA_API_NAME:
+                if publication.is_self_hosted() and await client.get_api(name) is None:
+                    return True
                 if await self._shared_metadata_api_in_use(client, publication):
                     return False
                 await writer.delete_api(name)
@@ -3495,10 +3550,14 @@ class McpPublishingService:
         """
 
         mine = publication.metadata_api_name
-        if any(
+        strict = publication.is_self_hosted()
+        # A previous DELETE can have completed before progress was saved. Only the exact
+        # root GET can establish absence; a collection failure on a known root cannot.
+        root_exists = not strict or await client.get_api(MCP_METADATA_API_NAME) is not None
+        if root_exists and any(
             str(operation.get("name") or "") != mine
             for operation in await client.list_operations(
-                MCP_METADATA_API_NAME, strict=publication.is_self_hosted(),
+                MCP_METADATA_API_NAME, strict=strict,
             )
         ):
             return True
