@@ -15,10 +15,10 @@ param appServicePlanSku string = 'B1'
 @description('The API Management SKU in Name_Capacity format.')
 param apimSkuName string = 'Developer_1'
 
-@description('Create the normal co-located gateway. False is for a core shared by separately deployed gateways.')
-param deployApim bool = true
+@description('Opt in to creating a co-located API Management gateway. By default, deploy MOSAIC only and register existing gateways afterward.')
+param deployApim bool = false
 
-@description('When deployApim is false, the resource ID of the separately deployed bootstrap gateway. No permissions or diagnostics are written to it here.')
+@description('Optional existing bootstrap gateway resource ID when deployApim is false. Leave empty to deploy without a gateway. No permissions or diagnostics are written to an existing gateway here.')
 param externalBootstrapApimResourceId string = ''
 
 @description('Additional tags for newly owned resources.')
@@ -27,11 +27,11 @@ param additionalTags object = {}
 @description('Reviewed existing tag values to preserve only on Cosmos and the backend/management vaults. Any approved exception expiry must be supplied unchanged; this template never creates or renews an expiry.')
 param coreBackingResourceTags object = {}
 
-@description('The publisher name surfaced by API Management.')
-param apimPublisherName string
+@description('Publisher name for an explicitly requested API Management deployment.')
+param apimPublisherName string = ''
 
-@description('The publisher email surfaced by API Management.')
-param apimPublisherEmail string
+@description('Publisher email for an explicitly requested API Management deployment.')
+param apimPublisherEmail string = ''
 
 @description('The Entra tenant identifier.')
 param tenantId string

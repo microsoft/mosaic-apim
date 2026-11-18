@@ -1,13 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1720" height="1760" viewBox="0 0 1720 1760" role="img" aria-labelledby="title description">
+<svg xmlns="http://www.w3.org/2000/svg" width="1720" height="1594" viewBox="0 0 1720 1594" role="img" aria-labelledby="title description">
 <title id="title">MOSAIC administrator-managed private networking reference</title>
-<desc id="description">Illustrative /24 VNet, three CIDR-labeled subnets, ten service private endpoints and their DNS zones. Public Bicep and Terraform do not deploy this topology.</desc>
+<desc id="description">Illustrative /24 VNet, 2 CIDR-labeled subnets, 8 service private endpoints and their DNS zones. No co-located APIM or APIM subnet. Public Bicep and Terraform do not deploy this topology.</desc>
 <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L8,3 z" fill="context-stroke"/></marker></defs>
-<rect width="1720" height="1760" fill="#ffffff"/>
-<text x="35" y="47.0" font-family="Arial, Helvetica, sans-serif" font-size="29" fill="#000000">MOSAIC | Private connectivity reference</text>
+<rect width="1720" height="1594" fill="#ffffff"/>
+<text x="35" y="47.0" font-family="Arial, Helvetica, sans-serif" font-size="29" fill="#000000">MOSAIC | Private hosting (no co-located APIM)</text>
 <text x="35" y="80.0" font-family="Arial, Helvetica, sans-serif" font-size="18" fill="#000000">ADMINISTRATOR-OWNED DESIGN. Supported azd/Bicep and Terraform deployments remain PUBLIC ONLY.</text>
-<rect x="20" y="110" width="1680" height="1530" rx="8" stroke="#0078D4" stroke-width="1.5" fill="none"/>
+<rect x="20" y="110" width="1680" height="1364" rx="8" stroke="#0078D4" stroke-width="1.5" fill="none"/>
 <text x="40" y="142.0" font-family="Arial, Helvetica, sans-serif" font-size="20" fill="#000000">Azure Commercial reference context</text>
-<rect x="40" y="160" width="1640" height="1460" rx="8" stroke="#0078D4" stroke-width="1.5" fill="none"/>
+<rect x="40" y="160" width="1640" height="1294" rx="8" stroke="#0078D4" stroke-width="1.5" fill="none"/>
 <text x="60" y="188.0" font-family="Arial, Helvetica, sans-serif" font-size="18" fill="#000000">MOSAIC deployment and external dependencies (logical grouping)</text>
 <rect x="65" y="225" width="440" height="170" rx="8" stroke="#0078D4" stroke-width="1.5" fill="#CFE4FA"/>
 <text x="85" y="261.0" font-family="Arial, Helvetica, sans-serif" font-size="19" fill="#000000">Administrators, portal users,</text>
@@ -19,30 +19,25 @@
 <text x="75" y="434.0" font-family="Arial, Helvetica, sans-serif" font-size="20" fill="#000000">Private DNS zones / records</text>
 <text x="75" y="462.0" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#000000">VNet links; corporate DNS needs forwarding.</text>
 <text x="75" y="482.0" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#000000">DNS zones are not placed inside a subnet.</text>
-<rect x="555" y="225" width="540" height="1330" rx="8" stroke="#0078D4" stroke-width="1.5" fill="none"/>
+<rect x="555" y="225" width="540" height="1164" rx="8" stroke="#0078D4" stroke-width="1.5" fill="none"/>
 <text x="575" y="263.0" font-family="Arial, Helvetica, sans-serif" font-size="23" fill="#000000">MOSAIC VNet | 10.42.0.0/24</text>
 <text x="575" y="294.0" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#000000">Illustrative ranges; size for your scale and region.</text>
-<rect x="575" y="315" width="240" height="150" rx="8" stroke="#107C10" stroke-width="1.5" fill="none"/>
+<rect x="575" y="315" width="500" height="150" rx="8" stroke="#107C10" stroke-width="1.5" fill="none"/>
 <text x="590" y="349.0" font-family="Arial, Helvetica, sans-serif" font-size="19" fill="#000000">App integration</text>
 <text x="590" y="372.75" font-family="Arial, Helvetica, sans-serif" font-size="19" fill="#000000">10.42.0.0/26</text>
 <text x="590" y="402.0" font-family="Arial, Helvetica, sans-serif" font-size="14" fill="#000000">Microsoft.Web/serverFarms</text>
 <text x="590" y="419.5" font-family="Arial, Helvetica, sans-serif" font-size="14" fill="#000000">API + console + portal</text>
 <text x="590" y="437.0" font-family="Arial, Helvetica, sans-serif" font-size="14" fill="#000000">Outbound, not Private Link</text>
-<rect x="835" y="315" width="240" height="150" rx="8" stroke="#107C10" stroke-width="1.5" fill="none"/>
-<text x="850" y="349.0" font-family="Arial, Helvetica, sans-serif" font-size="19" fill="#000000">APIM integration</text>
-<text x="850" y="372.75" font-family="Arial, Helvetica, sans-serif" font-size="19" fill="#000000">10.42.0.64/26</text>
-<text x="850" y="402.0" font-family="Arial, Helvetica, sans-serif" font-size="14" fill="#000000">Standard v2; dedicated</text>
-<text x="850" y="419.5" font-family="Arial, Helvetica, sans-serif" font-size="14" fill="#000000">Microsoft.Web/serverFarms</text>
-<text x="850" y="437.0" font-family="Arial, Helvetica, sans-serif" font-size="14" fill="#000000">Outbound, not Private Link</text>
 <rect x="1155" y="225" width="480" height="170" rx="8" stroke="#495057" stroke-width="1.5" fill="#F3F2F1"/>
 <text x="1175" y="259.0" font-family="Arial, Helvetica, sans-serif" font-size="19" fill="#000000">Required public / Azure service endpoints</text>
 <text x="1175" y="296.0" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#000000">Entra ID, Microsoft Graph, Azure ARM</text>
-<text x="1175" y="316.0" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#000000">Build/package sources and optional integrations</text>
-<text x="1175" y="336.0" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#000000">Not an air-gapped architecture</text>
+<text x="1175" y="316.0" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#000000">Existing APIMs can remain in their own networks</text>
+<text x="1175" y="336.0" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#000000">Build/package sources and optional integrations</text>
+<text x="1175" y="356.0" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#000000">Not an air-gapped architecture</text>
 <rect x="1155" y="410" width="480" height="80" rx="8" stroke="#5C2D91" stroke-width="1.5" fill="#E8DAEF"/>
 <text x="1170" y="439.0" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">APIM/resource logs: Azure platform delivery</text>
 <text x="1170" y="460.25" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">Separate from client Monitor ingestion/query</text>
-<rect x="575" y="500" width="500" height="1030" rx="8" stroke="#0078D4" stroke-width="1.5" fill="none"/>
+<rect x="575" y="500" width="500" height="864" rx="8" stroke="#0078D4" stroke-width="1.5" fill="none"/>
 <text x="595" y="534.0" font-family="Arial, Helvetica, sans-serif" font-size="20" fill="#000000">Private endpoint subnet | 10.42.0.128/25</text>
 <text x="595" y="561.0" font-family="Arial, Helvetica, sans-serif" font-size="14" fill="#000000">Endpoint NICs only; PaaS services remain outside the VNet.</text>
 <text x="1165" y="532.0" font-family="Arial, Helvetica, sans-serif" font-size="20" fill="#000000">Azure services (not subnet-hosted)</text>
@@ -116,54 +111,33 @@
 <text x="1170" y="1130.25" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">API-only: no gateway secret access</text>
 <polyline points="505,1116 643,1116" fill="none" stroke="#0078D4" stroke-width="1.5" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
 <polyline points="1000,1116 1153,1116" fill="none" stroke="#0078D4" stroke-width="1.5" marker-end="url(#arrow)"/>
-<rect x="65" y="1166" width="440" height="66" rx="8" stroke="#0078D4" stroke-width="1.5" fill="#CFE4FA"/>
-<text x="80" y="1192.0" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#000000">privatelink.azure-api.net</text>
-<rect x="645" y="1166" width="355" height="66" rx="8" stroke="#0078D4" stroke-width="1.5" fill="#CFE4FA"/>
-<text x="660" y="1192.0" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">Runtime gateway</text>
-<text x="660" y="1213.25" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">Private endpoint: Gateway</text>
-<rect x="1155" y="1166" width="480" height="66" rx="8" stroke="#495057" stroke-width="1.5" fill="#F3F2F1"/>
-<text x="1170" y="1192.0" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">API Management: Standard v2</text>
-<text x="1170" y="1213.25" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">Private endpoint is gateway-only</text>
+<rect x="65" y="1166" width="440" height="152" rx="8" stroke="#0078D4" stroke-width="1.5" fill="#CFE4FA"/>
+<text x="80" y="1191.0" font-family="Arial, Helvetica, sans-serif" font-size="15" fill="#000000">privatelink.monitor.azure.com</text>
+<text x="80" y="1209.75" font-family="Arial, Helvetica, sans-serif" font-size="15" fill="#000000">privatelink.oms.opinsights.azure.com</text>
+<text x="80" y="1228.5" font-family="Arial, Helvetica, sans-serif" font-size="15" fill="#000000">privatelink.ods.opinsights.azure.com</text>
+<text x="80" y="1247.25" font-family="Arial, Helvetica, sans-serif" font-size="15" fill="#000000">privatelink.agentsvc.azure-automation.net</text>
+<text x="80" y="1266.0" font-family="Arial, Helvetica, sans-serif" font-size="15" fill="#000000">privatelink.blob.core.windows.net</text>
+<rect x="645" y="1166" width="355" height="152" rx="8" stroke="#0078D4" stroke-width="1.5" fill="#CFE4FA"/>
+<text x="660" y="1192.0" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">Observability scope</text>
+<text x="660" y="1213.25" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">Private endpoint: azuremonitor</text>
+<rect x="1155" y="1166" width="480" height="152" rx="8" stroke="#495057" stroke-width="1.5" fill="#F3F2F1"/>
+<text x="1170" y="1192.0" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">Azure Monitor Private Link Scope</text>
+<text x="1170" y="1213.25" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">Linked Application Insights +</text>
+<text x="1170" y="1234.5" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">Log Analytics workspace</text>
 <polyline points="505,1199 643,1199" fill="none" stroke="#0078D4" stroke-width="1.5" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
 <polyline points="1000,1199 1153,1199" fill="none" stroke="#0078D4" stroke-width="1.5" marker-end="url(#arrow)"/>
-<rect x="65" y="1249" width="440" height="66" rx="8" stroke="#0078D4" stroke-width="1.5" fill="#CFE4FA"/>
-<text x="80" y="1275.0" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#000000">privatelink.openai.azure.com</text>
-<rect x="645" y="1249" width="355" height="66" rx="8" stroke="#0078D4" stroke-width="1.5" fill="#CFE4FA"/>
-<text x="660" y="1275.0" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">Example AI backend</text>
-<text x="660" y="1296.25" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">Private endpoint: account</text>
-<rect x="1155" y="1249" width="480" height="66" rx="8" stroke="#495057" stroke-width="1.5" fill="#F3F2F1"/>
-<text x="1170" y="1275.0" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">Azure OpenAI (optional/external)</text>
-<text x="1170" y="1296.25" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">Not deployed by MOSAIC</text>
-<polyline points="505,1282 643,1282" fill="none" stroke="#0078D4" stroke-width="1.5" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
-<polyline points="1000,1282 1153,1282" fill="none" stroke="#0078D4" stroke-width="1.5" marker-end="url(#arrow)"/>
-<rect x="65" y="1332" width="440" height="152" rx="8" stroke="#0078D4" stroke-width="1.5" fill="#CFE4FA"/>
-<text x="80" y="1357.0" font-family="Arial, Helvetica, sans-serif" font-size="15" fill="#000000">privatelink.monitor.azure.com</text>
-<text x="80" y="1375.75" font-family="Arial, Helvetica, sans-serif" font-size="15" fill="#000000">privatelink.oms.opinsights.azure.com</text>
-<text x="80" y="1394.5" font-family="Arial, Helvetica, sans-serif" font-size="15" fill="#000000">privatelink.ods.opinsights.azure.com</text>
-<text x="80" y="1413.25" font-family="Arial, Helvetica, sans-serif" font-size="15" fill="#000000">privatelink.agentsvc.azure-automation.net</text>
-<text x="80" y="1432.0" font-family="Arial, Helvetica, sans-serif" font-size="15" fill="#000000">privatelink.blob.core.windows.net</text>
-<rect x="645" y="1332" width="355" height="152" rx="8" stroke="#0078D4" stroke-width="1.5" fill="#CFE4FA"/>
-<text x="660" y="1358.0" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">Observability scope</text>
-<text x="660" y="1379.25" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">Private endpoint: azuremonitor</text>
-<rect x="1155" y="1332" width="480" height="152" rx="8" stroke="#495057" stroke-width="1.5" fill="#F3F2F1"/>
-<text x="1170" y="1358.0" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">Azure Monitor Private Link Scope</text>
-<text x="1170" y="1379.25" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">Linked Application Insights +</text>
-<text x="1170" y="1400.5" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">Log Analytics workspace</text>
-<polyline points="505,1365 643,1365" fill="none" stroke="#0078D4" stroke-width="1.5" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
-<polyline points="1000,1365 1153,1365" fill="none" stroke="#0078D4" stroke-width="1.5" marker-end="url(#arrow)"/>
 <polyline points="695,465 695,482 1040,482 1040,575" fill="none" stroke="#107C10" stroke-width="1.5" marker-end="url(#arrow)"/>
-<polyline points="955,465 955,472 1055,472 1055,575" fill="none" stroke="#107C10" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="1160" y="1515.0" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">Private Link does not replace identity/RBAC.</text>
-<text x="1160" y="1536.25" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">APIM private endpoint covers gateway traffic only.</text>
+<text x="1160" y="1349.0" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">Private Link does not replace identity/RBAC.</text>
+<text x="1160" y="1370.25" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">No local APIM subnet or endpoint is required.</text>
 <polyline points="1635,784 1655,784 1655,310 1637,310" fill="none" stroke="#495057" stroke-width="1.5" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
-<text x="70" y="1586.0" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#000000">Example only: /26 APIM subnet exceeds /27 minimum, but /24 is recommended for APIM growth. Enlarge the VNet as needed.</text>
-<polyline points="40,1680 110,1680" fill="none" stroke="#0078D4" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="120" y="1681.0" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#000000">Private Link / private client path</text>
-<polyline points="490,1680 560,1680" fill="none" stroke="#0078D4" stroke-width="1.5" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
-<text x="570" y="1681.0" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#000000">DNS mapping</text>
-<polyline points="800,1680 870,1680" fill="none" stroke="#107C10" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="880" y="1681.0" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#000000">Outbound VNet integration</text>
-<polyline points="1230,1680 1300,1680" fill="none" stroke="#495057" stroke-width="1.5" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
-<text x="1310" y="1681.0" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#000000">Management / identity</text>
-<text x="40" y="1727.0" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">Purple: platform telemetry. Each service row maps DNS -&gt; private endpoint -&gt; service, not an extra inference-time hop.</text>
+<text x="70" y="1420.0" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#000000">MOSAIC-only hosting: no APIM address space reserved. Add gateway subnets, endpoints and DNS only if your design needs them.</text>
+<polyline points="40,1514 110,1514" fill="none" stroke="#0078D4" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="120" y="1515.0" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#000000">Private Link / private client path</text>
+<polyline points="490,1514 560,1514" fill="none" stroke="#0078D4" stroke-width="1.5" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
+<text x="570" y="1515.0" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#000000">DNS mapping</text>
+<polyline points="800,1514 870,1514" fill="none" stroke="#107C10" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="880" y="1515.0" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#000000">Outbound VNet integration</text>
+<polyline points="1230,1514 1300,1514" fill="none" stroke="#495057" stroke-width="1.5" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
+<text x="1310" y="1515.0" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#000000">Management / identity</text>
+<text x="40" y="1561.0" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#000000">Purple: platform telemetry. Each service row maps DNS -&gt; private endpoint -&gt; service, not an extra inference-time hop.</text>
 </svg>

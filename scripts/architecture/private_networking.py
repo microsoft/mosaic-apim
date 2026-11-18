@@ -10,7 +10,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DESTINATION = ROOT / "docs" / "images" / "architecture"
 VNET = "10.42.0.0/24"
-SUBNETS = ("10.42.0.0/26", "10.42.0.64/26", "10.42.0.128/25")
+SUBNETS = ("10.42.0.0/26", "10.42.0.128/25")
+APIM_SUBNET = "10.42.0.64/26"
 ROWS = [
     (
         "Administrator console",
@@ -70,23 +71,33 @@ ROWS = [
 ]
 
 
-def generate() -> tuple[dict, str]:
+def generate(*, include_apim: bool = False) -> tuple[dict, str]:
     network = ipaddress.ip_network(VNET)
-    subnets = [ipaddress.ip_network(prefix) for prefix in SUBNETS]
+    prefixes = (*SUBNETS, APIM_SUBNET) if include_apim else SUBNETS
+    subnets = [ipaddress.ip_network(prefix) for prefix in prefixes]
     assert all(subnet.subnet_of(network) for subnet in subnets)
     assert not any(a.overlaps(b) for i, a in enumerate(subnets) for b in subnets[i + 1 :])
+    rows = ROWS if include_apim else [row for row in ROWS if row[1] not in ("Gateway", "account")]
+    offset = (len(ROWS) - len(rows)) * 83
+    height = 1760 - offset
+    gateway_description = (
+        "Includes optional co-located APIM."
+        if include_apim
+        else "No co-located APIM or APIM subnet."
+    )
     elements: list[dict] = []
     svg = [
-        '<svg xmlns="http://www.w3.org/2000/svg" width="1720" height="1760" '
-        'viewBox="0 0 1720 1760" role="img" aria-labelledby="title description">',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="1720" height="{height}" '
+        f'viewBox="0 0 1720 {height}" role="img" aria-labelledby="title description">',
         '<title id="title">MOSAIC administrator-managed private networking reference</title>',
-        '<desc id="description">Illustrative /24 VNet, three CIDR-labeled subnets, '
-        "ten service private endpoints and their DNS zones. "
+        f'<desc id="description">Illustrative /24 VNet, {len(subnets)} CIDR-labeled subnets, '
+        f"{len(rows)} service private endpoints and their DNS zones. "
+        f"{gateway_description} "
         "Public Bicep and Terraform do not deploy this topology.</desc>",
         '<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" '
         'orient="auto" markerUnits="strokeWidth">'
         '<path d="M0,0 L0,6 L8,3 z" fill="context-stroke"/></marker></defs>',
-        '<rect width="1720" height="1760" fill="#ffffff"/>',
+        f'<rect width="1720" height="{height}" fill="#ffffff"/>',
     ]
 
     def base(kind: str, x: int, y: int, width: int, height: int, color: str) -> dict:
@@ -186,7 +197,12 @@ def generate() -> tuple[dict, str]:
             f'stroke-width="1.5"{dash} marker-end="url(#arrow)"/>'
         )
 
-    text(35, 18, "MOSAIC | Private connectivity reference", 29)
+    title = (
+        "Private hosting + optional APIM"
+        if include_apim
+        else "Private hosting (no co-located APIM)"
+    )
+    text(35, 18, f"MOSAIC | {title}", 29)
     text(
         35,
         62,
@@ -194,9 +210,9 @@ def generate() -> tuple[dict, str]:
         "Supported azd/Bicep and Terraform deployments remain PUBLIC ONLY.",
         18,
     )
-    box(20, 110, 1680, 1530)
+    box(20, 110, 1680, 1530 - offset)
     text(40, 122, "Azure Commercial reference context", 20)
-    box(40, 160, 1640, 1460)
+    box(40, 160, 1640, 1460 - offset)
     text(60, 170, "MOSAIC deployment and external dependencies (logical grouping)", 18)
 
     box(65, 225, 440, 170, "#0078D4", "#CFE4FA")
@@ -218,25 +234,26 @@ def generate() -> tuple[dict, str]:
         16,
     )
 
-    box(555, 225, 540, 1330)
+    box(555, 225, 540, 1330 - offset)
     text(575, 240, f"MOSAIC VNet | {VNET}", 23)
     text(575, 278, "Illustrative ranges; size for your scale and region.", 16)
-    box(575, 315, 240, 150, "#107C10")
-    text(590, 330, "App integration\n10.42.0.0/26", 19)
+    box(575, 315, 240 if include_apim else 500, 150, "#107C10")
+    text(590, 330, f"App integration\n{SUBNETS[0]}", 19)
     text(
         590,
         388,
         "Microsoft.Web/serverFarms\nAPI + console + portal\nOutbound, not Private Link",
         14,
     )
-    box(835, 315, 240, 150, "#107C10")
-    text(850, 330, "APIM integration\n10.42.0.64/26", 19)
-    text(
-        850,
-        388,
-        "Standard v2; dedicated\nMicrosoft.Web/serverFarms\nOutbound, not Private Link",
-        14,
-    )
+    if include_apim:
+        box(835, 315, 240, 150, "#107C10")
+        text(850, 330, f"Optional APIM\n{APIM_SUBNET}", 19)
+        text(
+            850,
+            388,
+            "Standard v2; dedicated\nMicrosoft.Web/serverFarms\nOutbound, not Private Link",
+            14,
+        )
 
     box(1155, 225, 480, 170, "#495057", "#F3F2F1")
     text(1175, 240, "Required public / Azure service endpoints", 19)
@@ -244,6 +261,7 @@ def generate() -> tuple[dict, str]:
         1175,
         280,
         "Entra ID, Microsoft Graph, Azure ARM\n"
+        "Existing APIMs can remain in their own networks\n"
         "Build/package sources and optional integrations\nNot an air-gapped architecture",
         16,
     )
@@ -255,16 +273,17 @@ def generate() -> tuple[dict, str]:
         17,
     )
 
-    box(575, 500, 500, 1030)
-    text(595, 514, "Private endpoint subnet | 10.42.0.128/25", 20)
+    box(575, 500, 500, 1030 - offset)
+    text(595, 514, f"Private endpoint subnet | {SUBNETS[1]}", 20)
     text(595, 547, "Endpoint NICs only; PaaS services remain outside the VNet.", 14)
     text(1165, 512, "Azure services (not subnet-hosted)", 20)
 
-    for i, (name, group, dns, service) in enumerate(ROWS):
+    for i, (name, group, dns, service) in enumerate(rows):
         y = 585 + i * 83
-        height = 152 if i == 9 else 66
+        is_monitor = group == "azuremonitor"
+        height = 152 if is_monitor else 66
         box(65, y, 440, height, "#0078D4", "#CFE4FA")
-        text(80, y + 10, dns, 15 if i == 9 else 16)
+        text(80, y + 10, dns, 15 if is_monitor else 16)
         box(645, y, 355, height, "#0078D4", "#CFE4FA")
         text(660, y + 9, f"{name}\nPrivate endpoint: {group}", 17)
         box(1155, y, 480, height, "#495057", "#F3F2F1")
@@ -273,34 +292,44 @@ def generate() -> tuple[dict, str]:
         arrow([(1000, y + 33), (1153, y + 33)], "#0078D4")
 
     arrow([(695, 465), (695, 482), (1040, 482), (1040, 575)], "#107C10")
-    arrow([(955, 465), (955, 472), (1055, 472), (1055, 575)], "#107C10")
+    if include_apim:
+        arrow([(955, 465), (955, 472), (1055, 472), (1055, 575)], "#107C10")
     text(
         1160,
-        1498,
+        1498 - offset,
         "Private Link does not replace identity/RBAC.\n"
-        "APIM private endpoint covers gateway traffic only.",
+        + (
+            "APIM private endpoint covers gateway traffic only."
+            if include_apim
+            else "No local APIM subnet or endpoint is required."
+        ),
         17,
     )
     arrow([(1635, 784), (1655, 784), (1655, 310), (1637, 310)], "#495057", True)
     text(
         70,
-        1570,
-        "Example only: /26 APIM subnet exceeds /27 minimum, but /24 is recommended "
-        "for APIM growth. Enlarge the VNet as needed.",
+        1570 - offset,
+        (
+            "Optional APIM: /26 exceeds /27 minimum, but /24 is recommended for APIM growth. "
+            "Enlarge the VNet as needed."
+            if include_apim
+            else "MOSAIC-only hosting: no APIM address space reserved. "
+            "Add gateway subnets, endpoints and DNS only if your design needs them."
+        ),
         16,
     )
 
-    arrow([(40, 1680), (110, 1680)], "#0078D4")
-    text(120, 1665, "Private Link / private client path", 16)
-    arrow([(490, 1680), (560, 1680)], "#0078D4", True)
-    text(570, 1665, "DNS mapping", 16)
-    arrow([(800, 1680), (870, 1680)], "#107C10")
-    text(880, 1665, "Outbound VNet integration", 16)
-    arrow([(1230, 1680), (1300, 1680)], "#495057", True)
-    text(1310, 1665, "Management / identity", 16)
+    arrow([(40, 1680 - offset), (110, 1680 - offset)], "#0078D4")
+    text(120, 1665 - offset, "Private Link / private client path", 16)
+    arrow([(490, 1680 - offset), (560, 1680 - offset)], "#0078D4", True)
+    text(570, 1665 - offset, "DNS mapping", 16)
+    arrow([(800, 1680 - offset), (870, 1680 - offset)], "#107C10")
+    text(880, 1665 - offset, "Outbound VNet integration", 16)
+    arrow([(1230, 1680 - offset), (1300, 1680 - offset)], "#495057", True)
+    text(1310, 1665 - offset, "Management / identity", 16)
     text(
         40,
-        1710,
+        1710 - offset,
         "Purple: platform telemetry. Each service row maps DNS -> private endpoint -> service, "
         "not an extra inference-time hop.",
         17,
@@ -317,9 +346,11 @@ def generate() -> tuple[dict, str]:
 
 
 if __name__ == "__main__":
-    scene, svg_content = generate()
     DESTINATION.mkdir(parents=True, exist_ok=True)
-    (DESTINATION / "mosaic-private-networking.excalidraw").write_text(
-        json.dumps(scene, indent=2) + "\n", encoding="utf-8"
-    )
-    (DESTINATION / "mosaic-private-networking.svg").write_text(svg_content, encoding="utf-8")
+    for with_apim in (False, True):
+        scene, svg_content = generate(include_apim=with_apim)
+        name = "mosaic-private-networking-with-apim" if with_apim else "mosaic-private-networking"
+        (DESTINATION / f"{name}.excalidraw").write_text(
+            json.dumps(scene, indent=2) + "\n", encoding="utf-8"
+        )
+        (DESTINATION / f"{name}.svg").write_text(svg_content, encoding="utf-8")

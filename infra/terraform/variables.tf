@@ -35,13 +35,15 @@ variable "apim_sku_name" {
 }
 
 variable "deploy_apim" {
-  type    = bool
-  default = true
+  description = "Opt in to creating a co-located gateway. MOSAIC-only hosting is the default."
+  type        = bool
+  default     = false
 }
 
 variable "external_bootstrap_apim_resource_id" {
-  type    = string
-  default = ""
+  description = "Optional existing gateway to bootstrap; leave empty to register gateways after deployment."
+  type        = string
+  default     = ""
   validation {
     condition = var.external_bootstrap_apim_resource_id == "" || can(regex(
       "(?i)^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft.ApiManagement/service/[^/]+$",
@@ -52,14 +54,16 @@ variable "external_bootstrap_apim_resource_id" {
 }
 
 variable "publisher_name" {
-  type = string
+  type    = string
+  default = ""
 }
 
 variable "publisher_email" {
-  type = string
+  type    = string
+  default = ""
   validation {
-    condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.publisher_email))
-    error_message = "Supply a publisher email address."
+    condition     = var.publisher_email == "" || can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.publisher_email))
+    error_message = "Supply a valid publisher email address or leave it empty when not creating APIM."
   }
 }
 
