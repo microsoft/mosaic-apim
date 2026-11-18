@@ -243,6 +243,15 @@ existing publications still work.
 Use this path only for reviewed infrastructure/configuration/identity changes, not as the default
 image update. Review [`infra\main.bicep`](../infra/main.bicep), its parameters/modules,
 [`azure.yaml`](../azure.yaml), and [`scripts\mosaic_entra.py`](../scripts/mosaic_entra.py).
+
+**Preserve the gateway choice explicitly.** APIM creation now defaults to off. If this environment
+already owns a provisioned gateway, set `azd env set MOSAIC_DEPLOY_APIM true` before provisioning
+(native Bicep: `deployApim=true`) to retain its bootstrap/permission/telemetry configuration.
+For an existing Terraform deployment, persist `"deploy_apim": true` before planning; otherwise
+the new default plans destruction of the owned APIM and its gateway-specific resources.
+Switching to an external reference is not an ownership migration. See
+[gateway deployment choices](deployment.md#gateway-deployment-choices) before changing this flag.
+
 Authorize the specific resource and permission effects before executing:
 
 ```powershell

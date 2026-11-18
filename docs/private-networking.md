@@ -7,7 +7,13 @@ Terraform paths create the **public** reference deployment. Neither creates this
 Administrators can implement it through their own reviewed Terraform/IaC or the Azure portal,
 and must own its validation, changes, and recovery.
 
-![MOSAIC private-network reference: service endpoints, DNS zones, VNet and subnet CIDRs](images/architecture/mosaic-private-networking.svg)
+**APIM is optional to deploy, including in a private design.** Both public deployment paths
+default to MOSAIC-only hosting. Existing APIMs can remain in their own networks and be registered
+afterward; they do not have to occupy MOSAIC's VNet. The primary example below therefore has
+**no APIM integration subnet, APIM private endpoint or APIM private DNS zone**. Those are additions
+only for an explicitly selected gateway design, not prerequisites or reserved capacity.
+
+![MOSAIC-only private hosting: service endpoints, DNS zones, a /24 VNet and two subnet CIDRs; no co-located APIM](images/architecture/mosaic-private-networking.svg)
 
 The diagram maps each service to a private endpoint and DNS configuration, while distinguishing
 outbound integration and Azure platform services. All addresses are fictional design examples,
@@ -17,25 +23,53 @@ or resource-group membership: clients and shared/global services are external de
 
 ## Address plan and boundaries
 
+### MOSAIC-only hosting (primary example)
+
 | Network | Example CIDR | Purpose and constraints |
 | --- | --- | --- |
 | MOSAIC VNet | `10.42.0.0/24` | Total example address space, not a production sizing recommendation |
 | App integration | `10.42.0.0/26` | Outbound integration for API, console and portal; delegate to `Microsoft.Web/serverFarms` |
-| APIM integration | `10.42.0.64/26` | Dedicated Standard v2 outbound integration subnet; delegate to `Microsoft.Web/serverFarms`; associate required NSG |
 | Private endpoints | `10.42.0.128/25` | Private endpoint NICs for individual services; do not use an integration subnet |
+
+`10.42.0.64/26` is **unallocated**, not a required or reserved APIM subnet. The `/24` is just a
+total-space example: choose a different non-overlapping VNet/subnet plan if it better fits the
+hosting services, service minimums, scaling and expected growth. No local gateway capacity needs
+to be budgeted when you are only managing existing gateways elsewhere.
 
 Azure reserves five addresses in each subnet. Private endpoints can consume multiple addresses:
 ACR has registry and regional data endpoints; Azure Monitor's endpoint has multiple IP
 configurations. Budget for those, service scale, upgrades, and future endpoints, not just the
 number of endpoint resources. Integration also needs capacity during scale operations.
+Do not overlap corporate, peered, VPN, or other Azure ranges. Regional App Service integration
+must meet its region requirements; do not carry the public template's optional separate App
+Service region into this one-VNet design without redesigning it.
 
-APIM Standard v2 requires at least `/27` for outbound integration and recommends `/24` for
-growth. This compact `/26` example exceeds the minimum but deliberately does **not** meet that
-growth recommendation. Use a larger VNet/address plan for that requirement. Do not overlap
-corporate, peered, VPN, or other Azure ranges. APIM's VNet must be in the same subscription and
-region as the instance; regional App Service integration must also meet its region requirements.
-Do not carry the public template's optional separate App Service region into this one-VNet
-design without redesigning it.
+### Optional co-located APIM example
+
+Only if choosing Standard v2 with private inbound gateway access and outbound integration,
+add a **dedicated** APIM integration subnet and an APIM endpoint/DNS record:
+
+| Optional network addition | Example CIDR | Purpose and constraints |
+| --- | --- | --- |
+| APIM integration | `10.42.0.64/26` | Dedicated Standard v2 outbound integration; delegate to `Microsoft.Web/serverFarms`; associate required NSG |
+| APIM private endpoint | Address(es) in `10.42.0.128/25` | Allocate endpoint capacity only when this gateway is part of the design |
+
+<details>
+<summary>Show the optional co-located gateway, its subnet, endpoint and DNS</summary>
+
+![Optional APIM private design: a third integration subnet, gateway private endpoint and DNS, and an optional external AI backend](images/architecture/mosaic-private-networking-with-apim.svg)
+
+This expanded example adds Standard v2 APIM integration and a gateway-only private endpoint,
+plus an optional externally provisioned Azure OpenAI backend. Neither is required for MOSAIC
+hosting. [Editable Excalidraw source](images/architecture/mosaic-private-networking-with-apim.excalidraw).
+
+</details>
+
+For **this optional design**, APIM Standard v2 requires at least `/27` for outbound integration
+and recommends `/24` for growth. This compact `/26` example exceeds the minimum but deliberately
+does **not** meet that growth recommendation. Use a larger VNet/address plan for that requirement. APIM's integration
+VNet must be in the same subscription and region as the instance. Other existing APIM tiers
+and topologies have different requirements; do not retrofit this subnet plan onto them.
 
 PaaS service boxes sit outside the VNet: **their endpoint NICs**, not the services themselves,
 are in the private-endpoint subnet. An inbound private endpoint does not supply outbound
@@ -55,9 +89,15 @@ and multi-region registries need their own verified contracts.
 | Cosmos DB for NoSQL | `Microsoft.DocumentDB/databaseAccounts` / `Sql` | `privatelink.documents.azure.com`; account/region records provided by the endpoint |
 | Backend Key Vault | Its own `Microsoft.KeyVault/vaults` / `vault` | `privatelink.vaultcore.azure.net` |
 | Management Key Vault | A separate vault / `vault` | Same zone, separate endpoint and records |
-| APIM managed gateway | `Microsoft.ApiManagement/service` / `Gateway` | `privatelink.azure-api.net` |
+| **Optional** co-located APIM managed gateway | `Microsoft.ApiManagement/service` / `Gateway` | `privatelink.azure-api.net`; omit this endpoint/zone from MOSAIC-only hosting |
 | Azure Monitor Private Link Scope (AMPLS) | `Microsoft.Insights/privateLinkScopes` / `azuremonitor` | `privatelink.monitor.azure.com`, `privatelink.oms.opinsights.azure.com`, `privatelink.ods.opinsights.azure.com`, `privatelink.agentsvc.azure-automation.net`, `privatelink.blob.core.windows.net` |
-| Optional Azure OpenAI backend | `Microsoft.CognitiveServices/accounts` / `account` | `privatelink.openai.azure.com`; other Foundry/AI service kinds may also require different zones |
+| **Optional** Azure OpenAI backend (expanded example only) | `Microsoft.CognitiveServices/accounts` / `account` | `privatelink.openai.azure.com`; omit when not using this backend; other Foundry/AI service kinds may also require different zones |
+
+The APIM and AI-backend rows are optional additions to the primary inventory. Do not allocate
+their endpoint addresses or create their zones merely because MOSAIC manages an existing gateway.
+Management through ARM does not require the existing APIM's runtime gateway endpoint to be
+inside MOSAIC's VNet. Arrange routes, DNS and access to an existing gateway/backend only where
+your actual runtime or operational paths need them.
 
 Create approved endpoint connections and private DNS zone groups. Link zones to the VNet(s)
 whose clients need them; disable auto-registration for these private-link zone links.
@@ -101,9 +141,14 @@ does not implement that private build path.
 
 ### Runtime gateway and AI backend
 
-The pictured APIM topology uses **Standard v2** with an inbound gateway private endpoint and
-separate outbound VNet integration. The public reference defaults to **Developer**; classic
-VNet injection and v2 integration are different designs. Do not copy v2 delegation/configuration
+**Skip local gateway networking when deploying MOSAIC only.** Model/MCP runtime calls still need
+an APIM, but that can be an existing service in another network, with its own client/backend
+connectivity. Registering it does not deploy or move it.
+
+The **optional expanded** APIM topology uses **Standard v2** with an inbound gateway private
+endpoint and separate outbound VNet integration. If explicitly enabled, the public reference
+creates **Developer**; classic VNet injection and v2 integration are different designs.
+Do not copy v2 delegation/configuration
 onto a classic injected service. Verify tier availability, capacity and any required replacement
 before changing an existing instance.
 
@@ -162,15 +207,17 @@ Before attempting private changes, arrange:
 Implement in this order using your own Terraform or the matching service pages in the Azure portal:
 
 1. Establish connectivity, CIDRs, subnets/delegations, NSGs/routes, DNS zones/links/forwarding,
-   and planned SKU changes. Account for UDRs, return routes, service tags and DNS TCP/UDP 53.
+   and planned SKU changes **for the selected services only**. Omit local APIM integration,
+   endpoint and DNS when not deploying a gateway alongside MOSAIC. Account for UDRs, return
+   routes, service tags and DNS TCP/UDP 53.
 2. Create and approve per-service endpoints and zone groups; configure outbound integration,
    image-pull routing, AMPLS membership and monitoring modes. Preserve service identities/RBAC.
-3. From the actual browser/client, runner, API and gateway paths, validate normal-hostname DNS
-   resolution to intended private IPs, TLS, authenticated operations, fresh image pulls, and
-   actual telemetry ingestion/query. Keep management access available.
-4. Only then disable the relevant public access. APIM requires an established private endpoint
-   before public gateway access can be disabled. A private endpoint's existence alone does not
-   disable any service's public access.
+3. From the actual browser/client, runner, API and any configured gateway paths, validate
+   normal-hostname DNS resolution to intended private IPs, TLS, authenticated operations, fresh
+   image pulls, and actual telemetry ingestion/query. Keep management access available.
+4. Only then disable the relevant public access. If privatizing an APIM gateway, it requires an
+   established private endpoint before public gateway access can be disabled. A private
+   endpoint's existence alone does not disable any service's public access.
 5. Test allowed and disallowed networks, sign-in/callbacks, model calls, health probes, log
    freshness, deployment updates and recovery. Confirm failures are network restrictions rather
    than merely unauthenticated responses. Retain the successful configuration/evidence in your

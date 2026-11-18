@@ -1,8 +1,11 @@
 subscription_id  = "00000000-0000-0000-0000-000000000000"
 environment_name = "mosaic-dev"
 location         = "eastus2"
-publisher_name   = "MOSAIC administrator"
-publisher_email  = "admin@example.com"
+
+# Optional co-located APIM; omitted by default. Existing gateways can be registered later.
+# deploy_apim     = true
+# publisher_name  = "MOSAIC administrator"
+# publisher_email = "admin@example.com"
 
 # Supply real IDs from the standalone bootstrap, not these illustrative values.
 tenant_id               = "11111111-1111-1111-1111-111111111111"
