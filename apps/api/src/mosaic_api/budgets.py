@@ -611,6 +611,8 @@ def evaluate(
         state.forecast = None if spend_is_lower_bound else forecast
         state.through = through
         state.unpriced_tokens = unpriced_tokens
+    if spend_is_lower_bound:
+        state.forecast = None
     state.crossed = sorted(state.crossed)
     if (spent is not None and not spend_is_lower_bound) or not changed:
         # A new amount judged without figures stays pending, so the next check that can price the

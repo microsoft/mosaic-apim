@@ -15,8 +15,10 @@ from mosaic_api.services.analytics.consumers import (
     on_behalf_key,
 )
 from mosaic_api.services.analytics.cost import (
+    BEDROCK_UNOBSERVABLE,
     HOURS_NOTE,
     CostBook,
+    CostTally,
     Priced,
     add_cost,
     part_of,
@@ -34,6 +36,7 @@ from mosaic_api.services.analytics.views import (
     Context,
     api_costs,
     bucket_costs,
+    deployment_tallies,
     window_cost,
 )
 from mosaic_api.services.analytics.window import add_months, bucket_known
@@ -68,7 +71,7 @@ def spend_report(
     start = datetime(first.year, first.month, first.day, tzinfo=UTC)
     elapsed = max(0.0, (through - start).total_seconds() / 86_400) if through else 0.0
     so_far = tally.total
-    incomplete = any(item.unpriced.reason == "incompleteUsage" for item in tally.left.values())
+    incomplete = tally.incomplete_usage
     forecast: float | None = None
     if so_far is not None and elapsed >= 1 and not incomplete:
         metered = so_far - tally.reserved
@@ -226,7 +229,9 @@ def cost_report(
         cost = unrounded.cost_centers.get(center.key)
         by_cost_center[center.key] = (center.label, center.code, "costCenter", metrics, cost)
 
-    deployment_rows = _deployment_rows(context, deployments, costs, now, tally.total)
+    deployment_rows = _deployment_rows(
+        context, deployments, costs, now, tally.total, deployment_tallies(costs, scope, api)
+    )
     notes = [HOURS_NOTE] if hourly else []
     summary = tally.summary(
         [*notes, *costs.notes, CHARGEBACK_NOTE],
@@ -251,21 +256,15 @@ def _deployment_rows(
     costs: CostBook,
     now: datetime,
     total: float | None,
+    tallies: Mapping[str, CostTally],
 ) -> list[AnalyticsCostDeploymentRow]:
     scope, window = context.scope, context.window
     metrics_by_key: dict[str, UsageMetrics] = defaultdict(UsageMetrics)
-    cost_by_key: dict[str, float | None] = {}
     reached: dict[str, set[str]] = defaultdict(set)
     for item, entry in entries(deployments, scope, "deployment"):
         key = entry.key.casefold()
         metrics_by_key[key].add(entry.metrics)
         reached[key].add(item.gateway_id)
-        cost_by_key[key] = add_cost(
-            cost_by_key.get(key),
-            costs.price(
-                entry.key, item.period, date.fromisoformat(item.period_start), entry.metrics
-            ).amount,
-        )
     idle_keys = {key.casefold() for key in costs.idle_keys()}
     names = {key.casefold(): key for key in [*metrics_by_key, *costs.idle_keys()]}
     minutes = max(0.0, (min(window.end, now) - window.start).total_seconds() / 60)
@@ -276,9 +275,14 @@ def _deployment_rows(
         metrics = metrics_by_key.get(folded, UsageMetrics())
         facts = costs.pricer.facts_for(key)
         rate = costs.pricer.rate(key, today)
+        tally = tallies.get(folded)
+        unpriced = (
+            BEDROCK_UNOBSERVABLE
+            if tally is not None and tally.incomplete_usage else rate.unpriced
+        )
         price = rate.entry
         idle = costs.idle(key, window.first_day, window.last_day) if folded in idle_keys else 0.0
-        cost = add_cost(cost_by_key.get(folded), idle if idle > 0 else None)
+        cost = add_cost(tally.total if tally else None, idle if idle > 0 else None)
         endpoint_id, _, deployment_name = key.partition("/")
         rows.append(
             AnalyticsCostDeploymentRow(
@@ -314,8 +318,8 @@ def _deployment_rows(
                     else None
                 ),
                 idle_cost=round_cost(idle) if idle > 0 else None,
-                unpriced_reason=rate.unpriced.reason if rate.unpriced else None,
-                unpriced_message=rate.unpriced.message if rate.unpriced else None,
+                unpriced_reason=unpriced.reason if unpriced else None,
+                unpriced_message=unpriced.message if unpriced else None,
                 requests=metrics.requests,
                 prompt_tokens=metrics.prompt_tokens,
                 completion_tokens=metrics.completion_tokens,

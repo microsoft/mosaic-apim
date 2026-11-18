@@ -93,7 +93,7 @@ def _checked_policy(xml: str | None, scope: str) -> str:
 
 
 async def inherited_policy_digest(
-    client: ApimClient, publication: Publication, *, expected_api_policy: str
+    client: ApimClient, publication: Publication, *, expected_api_policies: tuple[str, ...]
 ) -> str:
     """Re-read actual scopes at plan/apply; failures never become 'no policy'."""
 
@@ -104,10 +104,12 @@ async def inherited_policy_digest(
     if api_policy is not None:
         try:
             canonical = ET.canonicalize(xml_data=api_policy, strip_text=True)
-            expected = ET.canonicalize(xml_data=expected_api_policy, strip_text=True)
+            expected = {
+                ET.canonicalize(xml_data=xml, strip_text=True) for xml in expected_api_policies
+            }
         except ET.ParseError:
             raise ValidationError("Cannot inspect the current Bedrock API policy.") from None
-        if canonical != expected:
+        if canonical not in expected:
             raise ValidationError(
                 "The Bedrock API has a custom or changed policy. Reconcile it before reviewing "
                 "or applying; MOSAIC will not silently replace unrecognized runtime behavior."

@@ -191,6 +191,7 @@ class CostTally:
     priced_tokens: int = 0
     unpriced_tokens: int = 0
     unpriced_requests: int = 0
+    incomplete_usage: bool = False
     left: dict[str, _Left] = field(default_factory=dict)
     origins: set[PriceOrigin] = field(default_factory=set)
 
@@ -226,6 +227,7 @@ class CostTally:
             left_tokens <= 0 and not (incomplete and left_requests > 0)
         ):
             return
+        self.incomplete_usage |= incomplete
         self.unpriced_tokens += left_tokens
         self.unpriced_requests += left_requests
         item = self.left.setdefault(

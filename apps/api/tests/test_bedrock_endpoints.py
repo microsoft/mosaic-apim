@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 from aoai_double import AI_RESOURCE_ID
+from conftest import reviewed_unpublish
 from key_vault_double import SECRET_URI, VAULT_NAME, FakeKeyStore
 from mosaic_api.deployment_capacity import CapacityType, ProcessingScope, classify_bedrock_model
 from mosaic_api.domain import (
@@ -51,8 +52,15 @@ from mosaic_api.integrations.key_vault import (
     MODEL_ENDPOINT_TAG,
     STORED_KEY_PREFIX,
 )
+from mosaic_api.repositories.memory import InMemoryDirectoryRepository
+from mosaic_api.repositories.memory_entitlements import InMemoryEntitlementRepository
+from mosaic_api.repositories.memory_usage import InMemoryUsageRollupRepository
+from mosaic_api.services.analytics import AnalyticsService
+from mosaic_api.services.analytics.models import AnalyticsFilters
 from mosaic_api.services.model_endpoints import BEDROCK_ENDPOINT_NOTES
+from mosaic_api.services.publishing import DENY_ALL_POLICY
 from mosaic_api.services.telemetry import governed_apis
+from mosaic_api.services.usage_rollup import merge_apis
 from pydantic import ValidationError as SchemaError
 from test_key_endpoints import ACTOR, KEY, PROJECT_URL, KeyWorld, keyed
 from test_key_publishing import TOKENS, KeyHarness
@@ -628,6 +636,92 @@ async def test_standalone_bedrock_uses_existing_reviewed_governed_apply() -> Non
     [lineage] = tracked[harness.gateway_id]
     assert lineage.publication_id == publication.id
     assert lineage.cost_telemetry == "aggregateOnly"
+
+
+async def test_deleted_standalone_publication_keeps_remembered_usage_identity() -> None:
+    harness, publication_id = await _standalone()
+    assert (await harness.apply(publication_id)).status == PublishRunStatus.SUCCEEDED
+    repository = harness.world.gateway_repository
+    before = (await governed_apis(repository, ACTOR.tenant_id))[harness.gateway_id]
+    [original] = before
+    rollups = InMemoryUsageRollupRepository()
+    await rollups.update_rollup_state(
+        ACTOR.tenant_id, harness.gateway_id, lambda state: state.model_copy(update={"apis": before})
+    )
+    analytics = AnalyticsService(
+        rollups, gateway_repository=repository,
+        entitlement_repository=InMemoryEntitlementRepository(),
+        directory_repository=InMemoryDirectoryRepository(),
+    )
+    run = await reviewed_unpublish(harness.service, ACTOR, publication_id)
+    await harness.service.wait_for_idle()
+    assert (await harness.service.get_run(ACTOR, run.id)).status == PublishRunStatus.SUCCEEDED
+    await harness.service.delete(ACTOR, publication_id)
+    current = (await governed_apis(repository, ACTOR.tenant_id))[harness.gateway_id]
+    assert current[0].cost_telemetry is None
+    for _ in range(2):
+        scope = await analytics._scope(ACTOR, AnalyticsFilters())
+        remembered = scope.apis[(harness.gateway_id, original.api_name)]
+        assert remembered.cost_telemetry == "aggregateOnly"
+        assert remembered.deployment_key == original.deployment_key
+        assert remembered.publication_id == original.publication_id
+        merged = merge_apis(before, current, utc_now())
+        assert merged[0].cost_telemetry == "aggregateOnly"
+        assert merged[0].deployment_key == original.deployment_key
+        assert merged[0].subscription_name == original.subscription_name
+        await rollups.update_rollup_state(
+            ACTOR.tenant_id, harness.gateway_id,
+            lambda state, merged=merged: state.model_copy(update={"apis": merged}),
+        )
+        before = merged
+    # Reusing a name for a different resource or publication does not inherit the old marker.
+    for update in ({"resource_id": "replacement"}, {"publication_id": "replacement"}):
+        replacement = current[0].model_copy(update=update)
+        assert merge_apis(before, [replacement], utc_now())[0].cost_telemetry is None
+
+
+async def test_explicit_recovery_can_be_reviewed_and_retried_without_accepting_custom_policy(
+) -> None:
+    harness, publication_id = await _standalone()
+    assert (await harness.apply(publication_id)).status == PublishRunStatus.SUCCEEDED
+    publication = await harness.service.get_publication(ACTOR, publication_id)
+    path = f"apis/{publication.api_name}/policies/policy"
+    # Denial cannot be confirmed until the operator explicitly recovers the interrupted run.
+    harness.apim.fail_write(path, 403)
+    harness.apim.fail_write(f"policyFragments/{publication.fragment_name}", 403)
+    interrupted = await harness.apply(publication_id)
+    assert interrupted.status == PublishRunStatus.INTERRUPTED
+    harness.apim.write_failures.clear()
+    await harness.service.recover_interrupted(
+        ACTOR, publication_id, run_id=interrupted.id, confirm_quiesced=True,
+    )
+    recovered = await harness.service.get_publication(ACTOR, publication_id)
+    assert recovered.access_state == "failed"
+    assert recovered.applied_access and not recovered.applied_access.settings.keys_enabled
+    assert harness.apim.written[path]["properties"]["value"] == DENY_ALL_POLICY
+    reviewed = await harness.service.plan(ACTOR, publication_id)
+    harness.apim.written[path]["properties"]["value"] = (
+        "<policies><inbound><return-response /></inbound><backend/><outbound/><on-error/>"
+        "</policies>"
+    )
+    with pytest.raises(ValidationError, match="custom or changed policy"):
+        await harness.service.plan(ACTOR, publication_id)
+    harness.apim.written[path]["properties"]["value"] = harness.service._policy(
+        recovered, recovered.applied_access
+    ).api_policy_xml
+    await harness.service.plan(ACTOR, publication_id)
+    # Even switching between two recognized recovery policies invalidates the old review.
+    with pytest.raises(ConflictError):
+        await harness.service.apply(ACTOR, publication_id, reviewed.id)
+    harness.apim.written[path]["properties"]["value"] = DENY_ALL_POLICY
+    reviewed = await harness.service.plan(ACTOR, publication_id)
+    run = await harness.service.apply(ACTOR, publication_id, reviewed.id)
+    await harness.service.wait_for_idle()
+    assert (await harness.service.get_run(ACTOR, run.id)).status == PublishRunStatus.SUCCEEDED
+    # An otherwise healthy publication cannot use the recovery exception.
+    harness.apim.written[path]["properties"]["value"] = DENY_ALL_POLICY
+    with pytest.raises(ValidationError, match="custom or changed policy"):
+        await harness.service.plan(ACTOR, publication_id)
 
 
 async def test_standalone_refuses_custom_inheritance_and_plan_drift() -> None:

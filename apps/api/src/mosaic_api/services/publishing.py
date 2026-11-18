@@ -1251,11 +1251,19 @@ class PublishingService:
         declared = endpoint.declared(publication.deployment_name)
         if declared is None or declared.api_shape != ApiShape.ANTHROPIC_MESSAGES:
             raise ValidationError("Declare the Bedrock model with the Anthropic Messages shape.")
-        expected = (
-            self._policy(publication, publication.applied_access).api_policy_xml
-            if publication.applied_access else DENY_ALL_POLICY
+        snapshot = publication.applied_access
+        expected: tuple[str, ...] = (
+            self._policy(publication, snapshot).api_policy_xml if snapshot else DENY_ALL_POLICY,
         )
-        return await inherited_policy_digest(client, publication, expected_api_policy=expected)
+        if (
+            publication.access_state == "failed"
+            and snapshot is not None
+            and not snapshot.settings.keys_enabled
+            and not snapshot.settings.entra_enabled
+            and not any(grant.enabled for grant in snapshot.grants)
+        ):
+            expected += (DENY_ALL_POLICY,)
+        return await inherited_policy_digest(client, publication, expected_api_policies=expected)
 
     async def _access_snapshot(
         self, publication: Publication, gateway: Gateway, *,

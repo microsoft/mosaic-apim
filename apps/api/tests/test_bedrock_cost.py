@@ -7,11 +7,20 @@ from mosaic_api.budgets import Budget, BudgetState, evaluate
 from mosaic_api.domain import Entitlement, EntitlementResource, EntitlementSubject
 from mosaic_api.pricing import UNKNOWN_DEPLOYMENT, PriceBook, Pricer
 from mosaic_api.services.analytics.cost import CostBook, CostTally, Priced
+from mosaic_api.services.analytics.cost_report import cost_report, spend_report
 from mosaic_api.services.analytics.models import AnalyticsFilters, AnalyticsSpend
 from mosaic_api.services.analytics.scope import Scope
+from mosaic_api.services.analytics.views import Context, models_report
+from mosaic_api.services.analytics.window import resolve_window
 from mosaic_api.services.budgets import _spent
 from mosaic_api.services.usage import DailyUsage, _MeasuredPricing
-from mosaic_api.usage_telemetry import MemberUsage, RolledUpApi, UsageMetrics
+from mosaic_api.usage_telemetry import (
+    MemberUsage,
+    RolledUpApi,
+    UsageMetrics,
+    UsageSummary,
+    UsageSummaryEntry,
+)
 from test_pricing import _entry, _facts
 
 DAY = date(2026, 3, 18)
@@ -161,3 +170,130 @@ def test_incomplete_subtotal_below_cap_cannot_prove_a_block() -> None:
     )
     assert not result.state.blocked and result.blocked is False
     assert 100 not in result.state.crossed and result.state.forecast is None
+
+
+@pytest.mark.parametrize("incomplete", [False, True])
+def test_missing_subtotal_clears_a_previous_forecast_only_when_usage_is_incomplete(
+    incomplete: bool,
+) -> None:
+    budget = Budget(id="b", tenant_id="test", cost_center_id="c", amount=1000, action="block")
+    state = BudgetState(
+        id="s", tenant_id="test", budget_id="b", month="2026-03", amount=1000,
+        month_to_date=500, forecast=1500, blocked=True, crossed=[50, 80, 100],
+    )
+    result = evaluate(
+        budget, state, spent=None, forecast=None, through=NOW, unpriced_tokens=0,
+        now=NOW, spend_is_lower_bound=incomplete,
+    )
+    assert result.state.forecast == (None if incomplete else 1500)
+    assert result.state.month_to_date == 500
+    assert result.state.blocked and result.state.crossed == [50, 80, 100]
+
+
+@pytest.mark.parametrize("standalone_first", [False, True])
+@pytest.mark.parametrize("shared_price", [False, True])
+def test_reports_keep_shared_deployment_lineage_and_completeness_in_either_order(
+    standalone_first: bool, shared_price: bool,
+) -> None:
+    facts = _facts(provider="awsBedrock", cloud="aws")
+    scope = _scope()
+    costs = CostBook(Pricer(PriceBook([_entry("aws", cloud="aws")]), {facts.key: facts}),
+                     scope, DAY, {})
+    shared = facts.key if shared_price else "unknown/shared"
+    endpoint_id, _, deployment = shared.partition("/")
+    metrics = UsageMetrics(
+        requests=1, ok=1, prompt_tokens=1_000_000, completion_tokens=500_000,
+        total_tokens=1_500_000,
+    )
+    pool = RolledUpApi(
+        api_name="pool", resource_id="pool", kind="pool", display_name="Pool",
+        first_seen_at=NOW,
+    )
+    standalone = RolledUpApi(
+        api_name="standalone", resource_id="standalone", kind="model", display_name="Standalone",
+        model_endpoint_id=endpoint_id, deployment_name=deployment,
+        cost_telemetry="aggregateOnly", first_seen_at=NOW,
+    )
+    neighbor = RolledUpApi(
+        api_name="neighbor", resource_id="neighbor", kind="model", display_name="Neighbor",
+        model_endpoint_id=facts.endpoint_id, deployment_name=facts.deployment_name,
+        first_seen_at=NOW,
+    )
+    scope.apis = {("gateway", api.api_name): api for api in (pool, standalone, neighbor)}
+    pool_metrics = metrics.model_copy(update={"members": {
+        shared: MemberUsage(
+            requests=1, prompt_tokens=metrics.prompt_tokens,
+            completion_tokens=metrics.completion_tokens, total_tokens=metrics.total_tokens,
+        ),
+    }})
+    rows = [
+        UsageSummaryEntry(key="pool", metrics=pool_metrics),
+        UsageSummaryEntry(key="standalone", metrics=metrics),
+    ]
+    if standalone_first:
+        rows.reverse()
+    rows.append(UsageSummaryEntry(key="neighbor", metrics=metrics))
+    api = UsageSummary(
+        id="api", tenant_id="test", gateway_id="gateway", period="day",
+        period_start=DAY.isoformat(), bucket="2026-03", dimension="api", entries=rows,
+    )
+    combined: dict[str, UsageMetrics] = {}
+    for key in (shared, shared, facts.key):
+        combined.setdefault(key, UsageMetrics()).add(metrics)
+    deployments = api.model_copy(update={
+        "id": "deployments", "dimension": "deployment",
+        "entries": [UsageSummaryEntry(key=key, metrics=value) for key, value in combined.items()],
+    })
+    window = resolve_window(AnalyticsFilters(range="30d"), NOW)
+    context = Context(scope=scope, window=window, coverage=None, base={
+        "data_source": "logAnalytics", "generated_at": NOW, "window": window.model(),
+        "freshness": {
+            "status": "notLinked", "updated_at": None, "data_from": None,
+            "gateways": 0, "interval_minutes": 15,
+        },
+        "notes": [],
+    })
+    spend = spend_report(costs, scope, [api], DAY, NOW)
+    expected = 4.0 if shared_price else 2.0
+    assert spend.month_to_date == expected
+    assert spend.incomplete_usage and spend.forecast is None
+    # A missing pool price must not hide the later standalone contribution under the same key.
+    budget = Budget(id="b", tenant_id="test", cost_center_id="c", amount=2000, action="block")
+    state = BudgetState(
+        id="s", tenant_id="test", budget_id="b", month="2026-03", amount=1000,
+        blocked=True, crossed=[50, 80, 100],
+    )
+    evaluated = evaluate(
+        budget, state, spent=_spent(spend), forecast=spend.forecast, through=NOW,
+        unpriced_tokens=spend.unpriced_tokens, now=NOW,
+        spend_is_lower_bound=spend.incomplete_usage,
+    )
+    assert evaluated.state.blocked and evaluated.state.amount == 1000
+    report = cost_report(
+        context, api=[api], models=[], deployments=[deployments], callers=[],
+        costs=costs, spend=spend, now=NOW,
+    )
+    assert report.cost.total == expected
+    assert sum(row.cost or 0 for row in report.deployments) == expected
+    shared_row = next(row for row in report.deployments if row.key == shared)
+    assert shared_row.cost == (expected if shared_price else None)
+    assert shared_row.unpriced_reason == "incompleteUsage"
+    assert all(row.cost_share is None or row.cost_share <= 1 for row in report.deployments)
+    models = models_report(
+        context, api=[api], models=[], deployments=[deployments], observed={}, costs=costs,
+    )
+    assert models.cost.total == expected
+    assert sum(row.cost or 0 for row in models.deployments) == expected
+
+    only_standalone = api.model_copy(update={"entries": [
+        UsageSummaryEntry(key="standalone", metrics=metrics),
+    ]})
+    deployment = deployments.model_copy(update={"entries": [
+        UsageSummaryEntry(key=shared, metrics=metrics),
+    ]})
+    unknown = cost_report(
+        context, api=[only_standalone], models=[], deployments=[deployment], callers=[],
+        costs=costs, spend=None, now=NOW,
+    )
+    assert unknown.cost.total is None and unknown.deployments[0].cost is None
+    assert unknown.deployments[0].unpriced_reason == "incompleteUsage"

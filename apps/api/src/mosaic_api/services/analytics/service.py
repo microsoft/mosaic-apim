@@ -274,8 +274,9 @@ class AnalyticsService:
                 apis[(state.gateway_id, api.api_name)] = api
         for gateway_id, current in governed.items():
             for api in current:
+                remembered = apis.get((gateway_id, api.api_name))
                 apis[(gateway_id, api.api_name)] = _with_past_members(
-                    api, apis.get((gateway_id, api.api_name))
+                    api.with_publication_history(remembered), remembered
                 )
         allowed_apis: set[tuple[str, str]] | None = None
         resource_ids: set[str] | None = None

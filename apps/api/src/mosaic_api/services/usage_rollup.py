@@ -665,6 +665,7 @@ def merge_apis(
                 api if api.removed_at else api.model_copy(update={"removed_at": now})
             )
         else:
+            fresh = fresh.with_publication_history(api)
             update: dict[str, Any] = {"first_seen_at": api.first_seen_at, "removed_at": None}
             if fresh.kind == "pool":
                 update["members"] = _merge_members(fresh.members, api.members, now)
