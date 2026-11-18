@@ -11,6 +11,7 @@ from mosaic_api.billing_pricing import (
 from mosaic_api.budget_notifications import BudgetNotificationOutbox
 from mosaic_api.budgets import Budget, BudgetState, EmailSettings, GateState
 from mosaic_api.clouds import AzureCloud
+from mosaic_api.cost_center_delegation import ReviewItem, ReviewKind, ReviewPosition
 from mosaic_api.cost_center_directory import (
     CostCenterDirectoryOperation,
     CostCenterGroupReservation,
@@ -518,6 +519,11 @@ class McpEndpointRepository(EndpointStateRepository, Protocol):
 
 
 class EntitlementRepository(Protocol):
+    async def list_review_items(
+        self, tenant_id: str, center_id: str, reviewer_id: str, state: str, kind: ReviewKind,
+        *, before: ReviewPosition | None, limit: int,
+    ) -> list[ReviewItem]: ...
+
     """Persistence for entitlements and access requests.
 
     Both live in ``desired-state`` alongside the directory and gateway records they reference, so

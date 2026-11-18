@@ -4,6 +4,7 @@ from typing import Any, TypeVar
 from azure.cosmos import exceptions
 
 from mosaic_api.approvals import ApprovalDecisionProvenance, ApprovalPolicy
+from mosaic_api.cost_center_delegation import ReviewItem, ReviewKind, ReviewPosition
 from mosaic_api.cost_center_membership_requests import (
     MembershipRequest,
     MembershipRequestGuard,
@@ -59,6 +60,71 @@ class CosmosEntitlementRepository(CosmosRepositoryBase):
         if center.tenant_id != tenant_id or center.id != center_id or not center.etag:
             raise ValueError("The delegated decision requires its exact center version")
         return [self._replace_operation(center)]
+
+    async def list_review_items(
+        self, tenant_id: str, center_id: str, reviewer_id: str, state: str, kind: ReviewKind,
+        *, before: ReviewPosition | None, limit: int,
+    ) -> list[ReviewItem]:
+        resource = kind == "resourceAccess"
+        center = "c.costCenterId" if resource else "c.costCenter.id"
+        fields = "c.id, c.state, c.createdAt, c.requesterName"
+        if resource:
+            fields += ", c.requesterUsername, c.resourceSnapshot.displayName AS resourceName"
+        common = (
+            f"{fields} FROM c WHERE c.tenantId = @tenant AND c.entityType = @type "
+            f"AND {center} = @center AND c.state = @state "
+            "AND NOT STRINGEQUALS(c.requesterObjectId, @reviewer, true)"
+        )
+        scope: dict[str, Any] = {
+            "@tenant": tenant_id, "@type": "accessRequest" if resource
+            else "costCenterMembershipRequest",
+            "@center": center_id, "@state": state, "@reviewer": reviewer_id,
+        }
+
+        async def read(
+            count: int, condition: str, order: str, **bounds: str,
+        ) -> list[dict[str, Any]]:
+            parameters = {**scope, "@limit": count, **{f"@{k}": v for k, v in bounds.items()}}
+            return [row async for row in self._desired.query_items(
+                query=f"SELECT TOP @limit {common}{condition} ORDER BY c.{order} DESC",
+                parameters=[{"name": name, "value": value} for name, value in parameters.items()],
+                partition_key=tenant_id,
+            )]
+
+        # Use the existing single-field indexes. Limit timestamp ties separately by id so
+        # boundary rows are deterministic without requiring a new composite index.
+        rows: list[dict[str, Any]] = []
+        prior: dict[str, str] = {}
+        if before is not None:
+            moment = before.model_dump(mode="json", by_alias=True)["createdAt"]
+            if kind < before.kind:
+                rows = await read(limit, " AND c.createdAt = @at", "id", at=moment)
+            elif kind == before.kind:
+                rows = await read(
+                    limit, " AND c.createdAt = @at AND c.id < @id", "id", at=moment, id=before.id,
+                )
+            prior["at"] = moment
+        remaining = limit - len(rows)
+        if remaining:
+            older = await read(
+                remaining, " AND c.createdAt < @at" if prior else "", "createdAt", **prior,
+            )
+            if len(older) == remaining:
+                boundary = older[-1]["createdAt"]
+                prefix = [row for row in older if row["createdAt"] != boundary]
+                older = prefix + await read(
+                    remaining - len(prefix), " AND c.createdAt = @at", "id", at=boundary,
+                )
+            rows.extend(older)
+        return [
+            ReviewItem(
+                id=row["id"], kind=kind, state=row["state"], created_at=row["createdAt"],
+                title=(row.get("resourceName") or "Resource access")
+                if resource else "Cost center membership",
+                requester=row.get("requesterName") or row.get("requesterUsername"),
+            )
+            for row in rows
+        ]
 
     async def list_entitlements(
         self,

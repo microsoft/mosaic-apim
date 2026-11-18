@@ -1,5 +1,6 @@
 import asyncio
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
+from copy import deepcopy
 from typing import Any, cast
 from uuid import UUID
 
@@ -13,7 +14,7 @@ from mosaic_api.auth import AuthContext
 from mosaic_api.config import AuthMode, Environment, RepositoryBackend, Settings
 from mosaic_api.cost_center_delegation import ReviewDecision
 from mosaic_api.cost_center_delegation_api import delegation_router
-from mosaic_api.cost_center_membership_requests import MembershipRequestCreate
+from mosaic_api.cost_center_membership_requests import MembershipRequest, MembershipRequestCreate
 from mosaic_api.cost_center_membership_requests_api import membership_requests_router
 from mosaic_api.cost_center_requests import (
     CostCenterRequestApproval,
@@ -23,9 +24,27 @@ from mosaic_api.cost_center_requests import (
     requested_cost_center_id,
 )
 from mosaic_api.cost_center_requests_api import cost_center_requests_router
-from mosaic_api.cost_centers import CostCenterCreate, CostCenterPoc
-from mosaic_api.domain import AccessRequestApproval, AccessRequestCreate, DirectoryObject
-from mosaic_api.errors import ConflictError, DomainError, NotFoundError, domain_error_handler
+from mosaic_api.cost_centers import CostCenter, CostCenterCreate, CostCenterPoc
+from mosaic_api.domain import (
+    AccessRequest,
+    AccessRequestApproval,
+    AccessRequestCreate,
+    AccessRequestState,
+    AuditEvent,
+    DirectoryObject,
+    Entitlement,
+    EntitlementResource,
+    EntitlementSubject,
+    new_id,
+    utc_now,
+)
+from mosaic_api.errors import (
+    ChangeNotRecordedError,
+    ConflictError,
+    DomainError,
+    NotFoundError,
+    domain_error_handler,
+)
 from mosaic_api.repositories import InMemoryCostCenterRepository, InMemoryModelEndpointRepository
 from mosaic_api.repositories.cosmos_entitlements import CosmosEntitlementRepository
 from mosaic_api.services.cost_center_delegation import CostCenterDelegationService
@@ -33,11 +52,12 @@ from mosaic_api.services.cost_center_membership_requests import CostCenterMember
 from mosaic_api.services.cost_center_requests import CostCenterRequestService
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.entitlements import EntitlementService
+from mosaic_api.services.notification_events import membership_request_event
 from test_cost_center_membership_requests import published
 from test_cost_center_requests_api import RequestAuthenticator
 from test_entra_cost_center_runtime import CALLER, CENTER, Estate, audit, estate
 from test_governed_lifecycle import ACTOR
-from test_model_access_repositories import Cosmos
+from test_model_access_repositories import Container, Cosmos
 
 __all__ = ["estate"]
 REVIEWER = "90000000-0000-4000-8000-000000000009"
@@ -74,9 +94,13 @@ def api() -> Iterator[Any]:
     auth = RequestAuthenticator()
     app = FastAPI()
     app.state.settings = Settings(
-        _env_file=None, environment=Environment.TEST, auth_mode=AuthMode.LOCAL,
-        tenant_id=TENANT, repository_backend=RepositoryBackend.MEMORY,
-        required_role="Admin", portal_role="User",
+        _env_file=None,
+        environment=Environment.TEST,
+        auth_mode=AuthMode.LOCAL,
+        tenant_id=TENANT,
+        repository_backend=RepositoryBackend.MEMORY,
+        required_role="Admin",
+        portal_role="User",
     )
     app.state.authenticator = auth
     app.state.cost_center_service = h.service
@@ -162,6 +186,15 @@ def test_membership_review_shares_admin_outcome_and_revocation(api: Any, role: s
         "reason": "Reviewed",
         "acknowledgeMembershipChanges": True,
     }
+    without_ack = {
+        key: value for key, value in payload.items() if key != "acknowledgeMembershipChanges"
+    }
+    for unacknowledged in (without_ack, {**without_ack, "acknowledgeMembershipChanges": False}):
+        response = client.post(f"{path}/approve", json=unacknowledged)
+        assert response.status_code == 422
+        assert "Acknowledge the real group membership impact" in response.text
+        assert client.get(path).json()["state"] == "pending"
+    assert h.graph.writes == []
     assert client.post(f"{path}/approve", json=payload).json()["membershipState"] == "succeeded"
     assert client.post(f"{path}/approve", json=payload).status_code == 200
     assert client.post(f"{path}/deny", json=payload).status_code == 409
@@ -175,6 +208,42 @@ def test_membership_review_shares_admin_outcome_and_revocation(api: Any, role: s
     sign_in(auth, REVIEWER, "User")
     assert client.get(path).status_code == 404
     assert client.post(f"{path}/approve", json=payload).status_code == 404
+
+
+def test_delegated_detail_and_retry_read_the_durable_membership_outcome(
+    api: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    h, membership, _, auth, client = api
+    record = asyncio.run(
+        membership.submit(
+            Actor(USER, TENANT),
+            MembershipRequestCreate(
+                cost_center_id="center",
+                justification="Join team",
+                idempotency_key=TRACKING_KEY,
+            ),
+        )
+    )
+    assign(h, auth, client, "technical")
+    sign_in(auth, REVIEWER, "User")
+    path = f"/api/v1/portal/approvals/costCenterMembership/{record.id}"
+    revision = client.get(path).json()["revision"]
+    payload = {"revision": revision, "reason": "Reviewed", "acknowledgeMembershipChanges": True}
+    save = h.entitlements.save_membership_request
+
+    async def fail_result(item: MembershipRequest, *args: Any, **kwargs: Any) -> Any:
+        if item.membership_state == "succeeded":
+            raise ChangeNotRecordedError("Fictional result persistence failure")
+        return await save(item, *args, **kwargs)
+
+    monkeypatch.setattr(h.entitlements, "save_membership_request", fail_result)
+    assert client.post(f"{path}/approve", json=payload).status_code >= 400
+    persisted = asyncio.run(h.entitlements.get_membership_request(TENANT, record.id))
+    assert persisted.state == "approved" and persisted.membership_state == "pending"
+    assert client.get(path).json()["membershipState"] == "succeeded"
+    assert client.post(f"{path}/approve", json=payload).json()["membershipState"] == "succeeded"
+    assert len(h.graph.writes) == 1
 
 
 def test_own_request_and_owner_email_do_not_authorize_review(api: Any) -> None:
@@ -310,10 +379,14 @@ async def test_resource_approval_without_person_limits_and_revocation_fence(
 async def test_resource_approval_without_limits_uses_one_shared_grant(estate: Estate) -> None:
     center = await estate.center(
         mode="requestOnly",
-        pocs=[CostCenterPoc(
-            role="technical", object_id=REVIEWER, display_name="Fictional Reviewer",
-            approved_by=ACTOR.object_id,
-        )],
+        pocs=[
+            CostCenterPoc(
+                role="technical",
+                object_id=REVIEWER,
+                display_name="Fictional Reviewer",
+                approved_by=ACTOR.object_id,
+            )
+        ],
     )
     assert center.id == CENTER
     assert isinstance(estate.cost_center_records, InMemoryCostCenterRepository)
@@ -325,7 +398,8 @@ async def test_resource_approval_without_limits_uses_one_shared_grant(estate: Es
         None,  # type: ignore[arg-type]  # Resource decisions do not use the membership port.
     )
     record = await estate.grants.create_catalog_access_request(
-        CALLER, AccessRequestCreate(cost_center_id=CENTER, resource=estate.resources[2]),
+        CALLER,
+        AccessRequestCreate(cost_center_id=CENTER, resource=estate.resources[2]),
     )
     actor = Actor(REVIEWER, CALLER.tenant_id)
     view = await service.detail(actor, "resourceAccess", record.id)
@@ -347,27 +421,274 @@ async def test_resource_approval_without_limits_uses_one_shared_grant(estate: Es
     [
         ("resourceAccess", "accessRequest", {"costCenterId": "foreign-center"}),
         (
-            "costCenterMembership", "costCenterMembershipRequest",
+            "costCenterMembership",
+            "costCenterMembershipRequest",
             {"costCenter": {"id": "foreign-center"}},
         ),
     ],
 )
 async def test_malformed_foreign_cosmos_request_is_hidden_before_validation(
-    estate: Estate, kind: Any, entity_type: str, scope: dict[str, Any],
+    estate: Estate,
+    kind: Any,
+    entity_type: str,
+    scope: dict[str, Any],
 ) -> None:
-    await estate.center(pocs=[CostCenterPoc(
-        role="technical", object_id=REVIEWER, display_name="Fictional Reviewer",
-        approved_by=ACTOR.object_id,
-    )])
+    await estate.center(
+        pocs=[
+            CostCenterPoc(
+                role="technical",
+                object_id=REVIEWER,
+                display_name="Fictional Reviewer",
+                approved_by=ACTOR.object_id,
+            )
+        ]
+    )
     cosmos = Cosmos()
     requests = CosmosEntitlementRepository(cast(CosmosClient, cosmos), "db", "desired", "audit")
-    await cosmos.containers["desired"].create_item({
-        "id": "foreign-request", "tenantId": CALLER.tenant_id, "entityType": entity_type,
-        "requesterObjectId": CALLER.object_id, "state": "not-a-valid-state", **scope,
-    })
+    await cosmos.containers["desired"].create_item(
+        {
+            "id": "foreign-request",
+            "tenantId": CALLER.tenant_id,
+            "entityType": entity_type,
+            "requesterObjectId": CALLER.object_id,
+            "state": "not-a-valid-state",
+            **scope,
+        }
+    )
     service = CostCenterDelegationService(
-        estate.cost_center_records, requests, estate.grants,
+        estate.cost_center_records,
+        requests,
+        estate.grants,
         None,  # type: ignore[arg-type]  # The scope check precedes request execution.
     )
     with pytest.raises(NotFoundError, match="Approval not found"):
         await service.detail(Actor(REVIEWER, CALLER.tenant_id), kind, "foreign-request")
+
+
+@pytest.mark.parametrize(
+    "operation", ["approve-resource", "deny-resource", "approve-member", "deny-member"]
+)
+@pytest.mark.parametrize("guard", ["current", "stale", "deleted"])
+async def test_cosmos_decision_fences_center_version(operation: str, guard: str) -> None:
+    cosmos = Cosmos()
+    repo = CosmosEntitlementRepository(cast(CosmosClient, cosmos), "db", "desired", "audit")
+    desired = cosmos.containers["desired"]
+    center_doc = await desired.create_item(
+        {
+            "id": "center",
+            "entityType": "costCenter",
+            "tenantId": TENANT,
+            "name": "Fictional",
+            "code": "FAKE",
+        }
+    )
+    center = repo._model(CostCenter, center_doc)
+    approve = operation.startswith("approve")
+    member = operation.endswith("member")
+    resource = EntitlementResource(kind="modelApi", id="fictional-model")
+    grant = Entitlement(
+        id="fictional-grant",
+        tenant_id=TENANT,
+        cost_center_id=center.id,
+        resource=resource,
+        subject=EntitlementSubject(kind="user", id="fictional-requester"),
+    )
+    row: AccessRequest | MembershipRequest
+    if member:
+        row = MembershipRequest(
+            id="membership",
+            tenant_id=TENANT,
+            requester_object_id=USER,
+            cost_center=center.ref(),
+            directory_tenant_id=TENANT,
+            group_object_id=UUID(int=42).hex,
+            justification="Fictional request",
+        )
+    else:
+        row = AccessRequest(
+            id="access",
+            tenant_id=TENANT,
+            requester_object_id=USER,
+            cost_center_id=center.id,
+            resource=resource,
+        )
+    audit_type = "costCenterMembershipRequest" if member else "accessRequest"
+    submitted = AuditEvent(
+        id=new_id("audit"),
+        tenant_id=TENANT,
+        actor_object_id=USER,
+        action=f"{audit_type}.submitted",
+        resource_type=audit_type,
+        resource_id=row.id,
+    )
+    if isinstance(row, MembershipRequest):
+        existing = await repo.create_membership_request(
+            row,
+            submitted,
+            [membership_request_event(row)],
+        )
+    else:
+        await repo.create_access_request(row, submitted)
+        existing = await repo.get_access_request(TENANT, row.id)
+    assert existing is not None and existing.etag
+    updated = existing.model_copy(
+        update={
+            "state": AccessRequestState.APPROVED if approve else AccessRequestState.DENIED,
+            "decided_by_object_id": REVIEWER,
+            "decided_at": utc_now(),
+            "decision_note": "Reviewed",
+            **({"membership_state": "pending"} if member and approve else {}),
+            **({"granted_entitlement_id": grant.id} if not member and approve else {}),
+        }
+    )
+    decision = submitted.model_copy(
+        update={
+            "id": new_id("audit"),
+            "actor_object_id": REVIEWER,
+            "action": f"{audit_type}.{updated.state}",
+        }
+    )
+    grant_audit = decision.model_copy(
+        update={"id": new_id("audit"), "action": "entitlement.created"}
+    )
+    key = (TENANT, center.id)
+    if guard == "stale":
+        desired.items[key]["_etag"] = "revoked"
+    elif guard == "deleted":
+        del desired.items[key]
+    original_rows = deepcopy(desired.items)
+    original_audit = deepcopy(cosmos.containers["audit"].items)
+
+    async def decide() -> None:
+        if isinstance(updated, MembershipRequest):
+            await repo.save_membership_request(
+                updated,
+                decision,
+                [membership_request_event(updated)],
+                center_guard=center,
+            )
+        elif approve:
+            await repo.approve_access_request(
+                updated,
+                grant,
+                [grant_audit, decision],
+                center_guard=center,
+            )
+        else:
+            await repo.save_access_request(updated, decision, center_guard=center)
+
+    if guard == "current":
+        await decide()
+        assert desired.items[(TENANT, row.id)]["state"] == updated.state
+        assert (TENANT, decision.id) in cosmos.containers["audit"].items
+        assert ((TENANT, grant.id) in desired.items) == (approve and not member)
+        assert any(
+            item.get("entityType") == "notificationEvent"
+            for entry, item in desired.items.items()
+            if entry not in original_rows
+        )
+    else:
+        with pytest.raises(ConflictError):
+            await decide()
+        assert desired.items == original_rows
+        assert cosmos.containers["audit"].items == original_audit
+
+
+class ReviewQueueContainer(Container):
+    async def query_items(
+        self,
+        *,
+        query: str,
+        parameters: list[dict[str, Any]],
+        partition_key: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        args = {parameter["name"]: parameter["value"] for parameter in parameters}
+        assert query.startswith("SELECT TOP @limit c.id, c.state, c.createdAt")
+        assert "NOT STRINGEQUALS(c.requesterObjectId, @reviewer, true)" in query
+        assert 1 <= args["@limit"] <= 3
+        resource = args["@type"] == "accessRequest"
+        assert ("c.costCenterId = @center" if resource else "c.costCenter.id = @center") in query
+        rows = [
+            row
+            for (tenant, _), row in self.items.items()
+            if tenant == partition_key == args["@tenant"]
+            and row["entityType"] == args["@type"]
+            and row["state"] == args["@state"]
+            and row["requesterObjectId"].casefold() != args["@reviewer"].casefold()
+            and (row["costCenterId"] if resource else row["costCenter"]["id"]) == args["@center"]
+        ]
+        if "c.createdAt = @at" in query:
+            rows = [row for row in rows if row["createdAt"] == args["@at"]]
+        if "c.createdAt < @at" in query:
+            rows = [row for row in rows if row["createdAt"] < args["@at"]]
+        if "c.id < @id" in query:
+            rows = [row for row in rows if row["id"] < args["@id"]]
+        key = "id" if query.endswith("ORDER BY c.id DESC") else "createdAt"
+        # Match Cosmos's ability to pick arbitrary ties for a single-field timestamp query.
+        rows.sort(key=lambda row: row[key], reverse=True)
+        for row in rows[: args["@limit"]]:
+            yield {
+                **{field: row[field] for field in ("id", "state", "createdAt", "requesterName")},
+                **({"resourceName": row["resourceSnapshot"]["displayName"]} if resource else {}),
+            }
+
+
+async def test_cosmos_queue_pages_projected_rows_across_request_kinds(estate: Estate) -> None:
+    center = await estate.center(
+        pocs=[
+            CostCenterPoc(
+                role="technical",
+                object_id=REVIEWER,
+                display_name="Fictional Reviewer",
+                approved_by=ACTOR.object_id,
+            )
+        ]
+    )
+    cosmos = Cosmos()
+    container = cosmos.containers["desired"] = ReviewQueueContainer()
+    repo = CosmosEntitlementRepository(cast(CosmosClient, cosmos), "db", "desired", "audit")
+    moment = "2026-03-01T12:00:00Z"
+    for kind, prefix in (("costCenterMembershipRequest", "join"), ("accessRequest", "access")):
+        for index in range(5):
+            await container.create_item(
+                {
+                    "id": f"{prefix}-{index}",
+                    "tenantId": CALLER.tenant_id,
+                    "entityType": kind,
+                    "createdAt": moment if index else "2026-01-01T12:00:00Z",
+                    "state": "pending",
+                    "requesterName": "Fictional requester",
+                    "requesterObjectId": CALLER.object_id if index != 2 else REVIEWER.upper(),
+                    "costCenterId": center.id,
+                    "costCenter": {"id": center.id},
+                    "resourceSnapshot": {"displayName": "Fictional model"},
+                    "requestForm": {"intentionally": "not a valid request-form snapshot"},
+                }
+            )
+    service = CostCenterDelegationService(
+        estate.cost_center_records,
+        repo,
+        estate.grants,
+        None,  # type: ignore[arg-type]  # The queue does not run membership operations.
+    )
+    actor = Actor(REVIEWER, CALLER.tenant_id)
+    state = AccessRequestState.PENDING
+    expected = [
+        "access-4",
+        "access-3",
+        "access-1",
+        "join-4",
+        "join-3",
+        "join-1",
+        "access-0",
+        "join-0",
+    ]
+    cursor = None
+    for start in range(0, len(expected), 2):
+        page = await service.queue(actor, center.id, state, cursor, 2)
+        assert [row.id for row in page.items] == expected[start : start + 2]
+        cursor = page.next_cursor
+        if cursor:
+            with pytest.raises(ConflictError):
+                await service.queue(actor, center.id, AccessRequestState.DENIED, cursor, 2)
+    assert cursor is None

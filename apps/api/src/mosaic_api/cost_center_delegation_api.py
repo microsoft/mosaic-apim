@@ -46,7 +46,7 @@ async def review_queue(
     auth: PortalUser,
     center_id: str = Query(alias="centerId", max_length=128),
     state: AccessRequestState = AccessRequestState.PENDING,
-    cursor: str | None = Query(default=None, max_length=128),
+    cursor: str | None = Query(default=None, max_length=512),
     limit: int = Query(default=30, ge=1, le=100),
 ) -> ReviewPage:
     return await _review(request).queue(_actor(auth), center_id, state, cursor, limit)

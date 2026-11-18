@@ -612,12 +612,10 @@ class CostCenterMembershipService:
             "membership_error": operation.error_message,
         }
 
-    async def _view(
-        self,
-        request: MembershipRequest,
-        *,
-        administrator: bool,
-    ) -> PortalMembershipRequest:
+    async def _membership_outcome(
+        self, request: MembershipRequest,
+    ) -> tuple[DirectoryOperationState | None, str | None, str | None]:
+        """Resolve the directory operation even when request progress could not be saved."""
         state = request.membership_state
         error = request.membership_error
         operation_id = request.operation_id
@@ -644,6 +642,21 @@ class CostCenterMembershipService:
             elif error is None:
                 error = "Approval is saved, but no directory operation is recorded. "
                 "Resume this request."
+        return state, error, operation_id
+
+    async def membership_outcome(
+        self, request: MembershipRequest,
+    ) -> DirectoryOperationState | None:
+        state, _, _ = await self._membership_outcome(request)
+        return state
+
+    async def _view(
+        self,
+        request: MembershipRequest,
+        *,
+        administrator: bool,
+    ) -> PortalMembershipRequest:
+        state, error, operation_id = await self._membership_outcome(request)
         values = {
             **request.model_dump(by_alias=False),
             "membership_state": state,

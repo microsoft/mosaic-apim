@@ -1,6 +1,13 @@
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
+from heapq import nlargest
 
 from mosaic_api.approvals import ApprovalDecisionProvenance, ApprovalPolicy
+from mosaic_api.cost_center_delegation import (
+    ReviewItem,
+    ReviewKind,
+    ReviewPosition,
+    review_sort_key,
+)
 from mosaic_api.cost_center_membership_requests import MembershipRequest, membership_guard_id
 from mosaic_api.cost_center_requests import CostCenterRequest
 from mosaic_api.cost_centers import CostCenter
@@ -71,6 +78,37 @@ class InMemoryEntitlementRepository:
 
     async def ready(self) -> bool:
         return True
+
+    async def list_review_items(
+        self, tenant_id: str, center_id: str, reviewer_id: str, state: str, kind: ReviewKind,
+        *, before: ReviewPosition | None, limit: int,
+    ) -> list[ReviewItem]:
+        records: Iterable[AccessRequest | MembershipRequest] = (
+            self.access_requests.values()
+            if kind == "resourceAccess"
+            else self.membership_requests.values()
+        )
+        return nlargest(limit, (
+            ReviewItem(
+                id=item.id, kind=kind, state=item.state, created_at=item.created_at,
+                requester=(
+                    item.requester_name or item.requester_username
+                    if isinstance(item, AccessRequest) else item.requester_name
+                ),
+                title=(
+                    (item.resource_snapshot and item.resource_snapshot.display_name)
+                    or "Resource access"
+                    if isinstance(item, AccessRequest) else "Cost center membership"
+                ),
+            )
+            for item in records
+            if item.tenant_id == tenant_id
+            and (item.cost_center_id if isinstance(item, AccessRequest) else item.cost_center.id)
+            == center_id
+            and item.state == state
+            and item.requester_object_id.casefold() != reviewer_id.casefold()
+            and (before is None or (item.created_at, kind, item.id) < before.key)
+        ), key=review_sort_key)
 
     async def close(self) -> None:
         return None

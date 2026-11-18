@@ -10,6 +10,7 @@ from mosaic_api.domain import (
     MosaicModel,
     RequestFormSnapshotView,
 )
+from mosaic_api.scheduling import UtcInstant
 
 ReviewKind = Literal["resourceAccess", "costCenterMembership"]
 ReviewOutcome = Literal["approve", "deny"]
@@ -37,6 +38,24 @@ class ReviewItem(MosaicModel):
 class ReviewPage(MosaicModel):
     items: list[ReviewItem]
     next_cursor: str | None = None
+
+
+class ReviewPosition(MosaicModel):
+    created_at: UtcInstant
+    kind: ReviewKind
+    id: str = Field(min_length=1, max_length=128)
+
+    @classmethod
+    def at(cls, item: ReviewItem) -> "ReviewPosition":
+        return cls(created_at=item.created_at, kind=item.kind, id=item.id)
+
+    @property
+    def key(self) -> tuple[datetime, ReviewKind, str]:
+        return self.created_at, self.kind, self.id
+
+
+def review_sort_key(item: ReviewItem) -> tuple[datetime, ReviewKind, str]:
+    return item.created_at, item.kind, item.id
 
 
 class ReviewDetail(ReviewItem):

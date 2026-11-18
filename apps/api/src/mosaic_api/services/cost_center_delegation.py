@@ -1,3 +1,5 @@
+from base64 import b64decode, urlsafe_b64encode
+
 from mosaic_api.approvals import ApprovalContextRevision
 from mosaic_api.cost_center_delegation import (
     ReviewCenter,
@@ -7,6 +9,8 @@ from mosaic_api.cost_center_delegation import (
     ReviewKind,
     ReviewOutcome,
     ReviewPage,
+    ReviewPosition,
+    review_sort_key,
 )
 from mosaic_api.cost_center_membership_requests import (
     MembershipApproval,
@@ -20,7 +24,7 @@ from mosaic_api.domain import (
     AccessRequestState,
     deterministic_id,
 )
-from mosaic_api.errors import ConflictError, NotFoundError
+from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
 from mosaic_api.repositories.base import CostCenterRepository, EntitlementRepository
 from mosaic_api.request_forms import snapshot_view
 from mosaic_api.services.cost_center_membership_requests import CostCenterMembershipService
@@ -121,47 +125,48 @@ class CostCenterDelegationService:
         limit: int,
     ) -> ReviewPage:
         await self._assigned(actor, center_id)
-        access = await self._requests.list_access_requests(
+        scope = deterministic_id(
+            "reviewPage",
             actor.tenant_id,
-            cost_center_id=center_id,
-            state=str(state),
+            actor.object_id,
+            center_id,
+            str(state),
         )
-        memberships = await self._requests.list_membership_requests(
-            actor.tenant_id,
-            cost_center_id=center_id,
-            state=str(state),
-        )
-        await self._assigned(actor, center_id)
-        records: list[ReviewRecord] = [*access, *memberships]
-        items = sorted(
-            (
-                self._item(record)
-                for record in records
-                if record.requester_object_id.casefold() != actor.object_id.casefold()
-            ),
-            key=lambda item: (item.created_at, item.kind, item.id),
-            reverse=True,
-        )
-
-        def cursor_for(item: ReviewItem) -> str:
-            return deterministic_id(
-                "reviewPage",
-                actor.tenant_id,
-                actor.object_id,
-                center_id,
-                str(state),
-                item.kind,
-                item.id,
-            )
-
+        before = None
         if cursor is not None:
-            index = next((i for i, item in enumerate(items) if cursor_for(item) == cursor), None)
-            if index is None:
-                raise ConflictError("The approval queue changed; reload its first page")
-            items = items[index + 1 :]
+            cursor_scope, _, encoded = cursor.partition(".")
+            try:
+                if cursor_scope != scope:
+                    raise ValueError("Cursor scope mismatch")
+                before = ReviewPosition.model_validate_json(
+                    b64decode(encoded, altchars=b"-_", validate=True),
+                )
+            except ValueError:
+                raise ConflictError("The approval queue changed; reload its first page") from None
+        items = []
+        for kind in ("resourceAccess", "costCenterMembership"):
+            items.extend(
+                await self._requests.list_review_items(
+                    actor.tenant_id,
+                    center_id,
+                    actor.object_id,
+                    str(state),
+                    kind,
+                    before=before,
+                    limit=limit + 1,
+                )
+            )
+        await self._assigned(actor, center_id)
+        items.sort(key=review_sort_key, reverse=True)
         page = items[:limit]
+        token = (
+            urlsafe_b64encode(ReviewPosition.at(page[-1]).model_dump_json().encode()).decode()
+            if len(items) > limit
+            else None
+        )
         return ReviewPage(
-            items=page, next_cursor=cursor_for(page[-1]) if len(items) > limit else None
+            items=page,
+            next_cursor=f"{scope}.{token}" if token is not None else None,
         )
 
     async def _load(
@@ -176,11 +181,15 @@ class CostCenterDelegationService:
         record: ReviewRecord | None
         if kind == "resourceAccess":
             record = await self._requests.get_access_request(
-                actor.tenant_id, request_id, review_center_ids=center_ids,
+                actor.tenant_id,
+                request_id,
+                review_center_ids=center_ids,
             )
         else:
             record = await self._requests.get_membership_request(
-                actor.tenant_id, request_id, review_center_ids=center_ids,
+                actor.tenant_id,
+                request_id,
+                review_center_ids=center_ids,
             )
         if record is None or record.tenant_id != actor.tenant_id:
             raise NotFoundError("Approval not found")
@@ -214,14 +223,16 @@ class CostCenterDelegationService:
             or preview.revision.cost_center_etag != center.etag
         ):
             raise ConflictError("The approval changed; reload its details")
+        membership_state = (
+            await self._membership.membership_outcome(record)
+            if isinstance(record, MembershipRequest)
+            else None
+        )
         fresh_center = await self._assigned(actor, center.id)
         if fresh_center.etag != center.etag:
             raise ConflictError("The cost center changed; reload the approval")
         item = self._item(record)
         limit = center.limit_for(record.resource) if isinstance(record, AccessRequest) else None
-        membership_state = (
-            record.membership_state if isinstance(record, MembershipRequest) else None
-        )
         return ReviewDetail(
             **item.model_dump(by_alias=False),
             scope=self._scope(actor, center),
@@ -301,12 +312,14 @@ class CostCenterDelegationService:
                     reviewed_etag=record.etag,
                 )
         elif outcome == "approve":
+            if not decision.acknowledge_membership_changes:
+                raise ValidationError("Acknowledge the real group membership impact")
             await self._membership.approve(
                 actor,
                 request_id,
                 MembershipApproval(
                     note=decision.reason,
-                    acknowledge_membership_changes=decision.acknowledge_membership_changes,
+                    acknowledge_membership_changes=True,
                 ),
                 center_guard=center,
                 reviewed_etag=record.etag,
