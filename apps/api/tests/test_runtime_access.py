@@ -839,14 +839,19 @@ class TestRecommendation:
             role_assignment(remediation.role_definition_id, remediation.scope, APIM_PRINCIPAL_ID)
         ]
 
-        # Accepted now, still accepted once MOSAIC learns the kind, and accepted by the fallback
-        # when definitions cannot be read. Anything else would be MOSAIC contradicting itself.
+        # The role is sufficient even before the kind is known; runtime remains unconfirmed
+        # until the account kind is observed. Unreadable definitions use the same fallback.
         later_kinds = [kind] if kind else [None, "OpenAI", "AIServices"]
         for readable in (True, False):
             fake.role_definitions_status = 200 if readable else 403
             for later in later_kinds:
                 after = await _check(fake, kind=later, resource_id=resource_id)
-                assert after.can_invoke is True, (kind, later, readable, after.message)
+                assert after.can_invoke is (later is not None), (
+                    kind, later, readable, after.message
+                )
+                if later is None:
+                    assert after.reason == RuntimeAccessReason.ACCOUNT_KIND_UNCONFIRMED
+                    assert after.evaluation == RuntimeAccessEvaluation.NOT_EVALUATED
                 assert after.remediation is None
 
 

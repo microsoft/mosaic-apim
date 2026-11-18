@@ -13,6 +13,11 @@ and complete-group-read results are simulated, not evidence of live Graph connec
 This is a screenshot-only fixture arrangement: normal local-authentication deployments disable
 Graph lookup and complete group checks.
 
+The endpoint-evidence shot adds a fictional development account whose ARM read returns `403`.
+Its saved check is deliberately dated under an earlier readiness-rule revision, while its URL
+and provider remain unconfirmed. This fixture-only historical record demonstrates provenance
+and stale evidence, not a real account, production build history, or model availability.
+
 The User-only console handoff shots render the real access gate and theme in the isolated
 `scripts/screenshots/console-access` fixture. Only that tooling aliases MSAL to the fictional demo
 user and intercepts the role check; neither product build gains a preview route or authentication
@@ -39,6 +44,13 @@ Customer Support join and an approved Finance join show manual review and confir
 directory membership separately; Claims Operations remains available for the join form.
 The demonstration does not change the production defaults: creation requests are on and
 membership requests are off until an administrator enables them.
+
+Governance-form examples use only two exact existing Production model offerings. All other
+estate requests are seeded first through normal admission; the two designated pending examples
+are then submitted with explicit validated v3 answers, before publishing v4. No missing answers
+are filled in, no guard is bypassed, and catalog/grant/request counts are not inflated for the
+screenshots. New request-form captures only navigate or edit local drafts; they never publish,
+submit a request, approve a grant, enable a worker, or apply a plan.
 
 Billing screenshots use only generated fictional Azure Cost Details rows, normalized through
 the production pricing service. One deployment-bound list is approved on the capture's UTC date
@@ -116,6 +128,11 @@ python -m scripts.screenshots.capture
 With `--check-navigation`, handoff shots also verify the configured same-tab link, absence of
 administrator content, keyboard order, 320px reflow and action fit, and missing/invalid-address
 recovery with Sign out. These checks use the isolated fictional fixture, not a live Entra session.
+
+When a selected shot includes `request-form`, navigation checks also exercise the real guided
+author/requester steps in both themes at 1440, 390, and 320 pixels. They verify actual heading
+focus, Back/discard draft retention, exact charging-context return, forced colors, absence of
+answers from URLs/browser storage, and no publication/submission/approval mutations.
 
 The focused port-validation regression checks do not start browsers or servers:
 
@@ -403,6 +420,7 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-catalog-summary-review` | Console | `/models`, GPT-4o mini **Edit catalog summary > Review summary**, before/after copy and exact-offering preview; never saved | Light | Review catalog copy |
 | `console-register-key-endpoint` | Console | `/models?register=1`, **Azure AI with an API key** tab with a pasted, masked key, filled in and never submitted | Light | Register with an API key |
 | `console-key-endpoint` | Console | `/models?tab=endpoints`, Fabrikam partner Foundry selected, scrolled to its **Access** card with **Replace API key** | Dark | Endpoint reached with an API key |
+| `console-endpoint-evidence` | Console | `/models?tab=endpoints`, fictional Contoso AI Lab selected, with unconfirmed URL/provider facts and a dated check saved under an older readiness-rule revision | Light | Endpoint facts and saved access evidence |
 | `console-deploy-model` | Console | `/models?tab=endpoints`, **Deploy model** on the fictional Azure OpenAI account; explicit deployment-management opt-in, fresh version/SKU/quota configuration, no Azure create | Light | Deploy an Azure model |
 | `console-deploy-model-review` | Console | The same workflow's **Review deployment** step with exact target, native capacity, quota, billing/residency warnings, and unsubmitted **Deploy to Azure** action | Dark | Review before Azure creation |
 | `console-pools` | Console | `/pools`, compact list with Anthropic Claude selected, **Overview** detail and separate Suggestions navigation | Light | Model pools |
@@ -441,6 +459,9 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-analytics-filters` | Console | `/analytics`, grouped draft **Filters** open, never applied | Light | Analytics filters |
 | `console-request-notifications` | Console | `/dashboard`, pending-approvals popover open, separate from unread inbox bell | Light | Pending approvals |
 | `console-bulk-approval` | Console | `/entitlements?tab=requests`, two explicit pending requests with requester provenance and a draft shared Weekly call quota in **Review bulk approvals**; shared override never applied and approvals never submitted | Dark | Bulk approval review |
+| `console-request-form-authoring` | Console | `/entitlements?tab=requestForm`, Questions step of the full-workspace editor based on active v4, never published | Light | Request-form authoring |
+| `console-request-form-review` | Console | `/entitlements?tab=requests`, recorded v3 questions, original help and answers in Evidence despite active v4, never approved | Light | Recorded answer review |
+| `console-request-form-bulk` | Console | `/entitlements?tab=requests`, two explicit form-bearing requests in bulk Evidence with requester identities and separate recorded questions, help and answers, never approved | Dark | Guided bulk evidence |
 | `console-approval-policy` | Console | `/entitlements?tab=approvalPolicies`, disabled **Development office hours** policy with a draft Weekly call quota and decision summary in the full-workspace editor; never saved or enabled | Light | Scheduled approval policy |
 | `console-notification-inbox` | Console | `/notifications`, category/unread filters and selected exact notification | Dark | Administrator inbox |
 | `console-notification-preferences` | Console | `/profile`, **Edit preferences** workspace with independent administrator channel/cadence and digest controls, never saved | Light | Administrator preferences |
@@ -464,13 +485,14 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-teams-shared` | Console | `/settings?tab=notifications&notificationView=teams`, selected fictional Workflow with denied vault access, correction guidance and saved test | Light | Shared Teams access |
 | `console-teams-private` | Console | `/settings?tab=notifications&notificationView=personalTeams`, saved bot registration, caller-scoped runtime access check, installation, opt-in and test | Dark | Private Teams access |
 | `portal-request-access` | Portal | `/catalog`, GPT-4o mini's exact Commercial offering with its administrator-authored summary selected in the access drawer, never submitted | Light | Request access |
+| `portal-request-form` | Portal | `/catalog`, exact Commercial GPT-4o mini under General in Offering/Questions/Review, fictional v4 question help and draft answers reviewed but never submitted | Light | Guided request form |
 | `portal-access` | Portal | `/access`, grouped model rows and an exact grant's **Connection details** open in a drawer | Light | My access |
 | `portal-connection-cost-center` | Portal | `/access`, the GPT-4o grant under General with **Connection details** open, scrolled to **Cost center header** | Light | Choosing a cost center |
 | `portal-pool-connection` | Portal | `/access`, Claude Sonnet 4.5 selected, **Connection details** drawer scrolled to **Authentication** and the shared-key note | Dark | Models that share a key |
 | `portal-mcp-connection` | Portal | `/access`, Automatic Customer Insights MCP access with token-only **Connection details** open | Dark | MCP connection |
 | `portal-government-connection` | Portal | `/access`, exact AzGov GPT-4o mini direct grant under General, **Connection details** open | Light | Government key access |
 | `portal-government-mcp-connection` | Portal | `/access`, exact AzGov MCP direct grant under General, custom-header **Connection details** open | Dark | Government MCP connection |
-| `portal-requests` | Portal | `/requests?status=pending`, mixed resource, cost-center creation, and membership requests | Dark | My requests |
+| `portal-requests` | Portal | `/requests?status=pending`, mixed request kinds with caller-owned recorded v3 governance answers expanded while v4 is active | Dark | My requests |
 | `portal-my-cost-centers` | Portal | `/cost-centers`, own memberships and General charging option with creation entry point | Light | My cost centers |
 | `portal-find-cost-centers` | Portal | `/cost-centers?view=discover`, administrator-published centers with public purposes and caller membership states | Dark | Find cost centers |
 | `portal-cost-center-join` | Portal | Published Claims Operations join form with justification filled in, never submitted | Light | Request to join |

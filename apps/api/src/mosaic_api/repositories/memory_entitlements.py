@@ -3,9 +3,21 @@ from collections.abc import Sequence
 from mosaic_api.approvals import ApprovalDecisionProvenance, ApprovalPolicy
 from mosaic_api.cost_center_membership_requests import MembershipRequest, membership_guard_id
 from mosaic_api.cost_center_requests import CostCenterRequest
-from mosaic_api.domain import AccessRequest, AccessRequestState, AuditEvent, Entitlement, new_id
+from mosaic_api.domain import (
+    AccessRequest,
+    AccessRequestState,
+    AuditEvent,
+    Entitlement,
+    RequestFormHead,
+    RequestFormRevision,
+    new_id,
+)
 from mosaic_api.errors import ConflictError
 from mosaic_api.notifications import NotificationEvent, NotificationEventType
+from mosaic_api.repositories.access_request_writes import (
+    require_human_form_review,
+    require_unchanged_form,
+)
 from mosaic_api.repositories.base import DirectoryRepository
 from mosaic_api.repositories.cost_center_request_writes import (
     REQUEST_CHANGED,
@@ -30,6 +42,8 @@ class InMemoryEntitlementRepository:
     ) -> None:
         self.entitlements: dict[str, Entitlement] = {}
         self.access_requests: dict[str, AccessRequest] = {}
+        self.request_form_heads: dict[str, RequestFormHead] = {}
+        self.request_form_revisions: dict[tuple[str, int], RequestFormRevision] = {}
         self.cost_center_requests: dict[tuple[str, str], CostCenterRequest] = {}
         self.membership_requests: dict[tuple[str, str], MembershipRequest] = {}
         self.membership_guards: dict[tuple[str, str], str] = {}
@@ -140,17 +154,63 @@ class InMemoryEntitlementRepository:
             and (requester_object_id is None or item.requester_object_id == requester_object_id)
             and (state is None or str(item.state) == state)
         ]
-        return sorted(items, key=lambda item: item.created_at, reverse=True)
+        return [
+            item.model_copy(deep=True)
+            for item in sorted(items, key=lambda item: item.created_at, reverse=True)
+        ]
 
-    async def get_access_request(self, tenant_id: str, request_id: str) -> AccessRequest | None:
+    async def get_access_request(
+        self, tenant_id: str, request_id: str, *, requester_object_id: str | None = None,
+    ) -> AccessRequest | None:
         access_request = self.access_requests.get(request_id)
-        return access_request if access_request and access_request.tenant_id == tenant_id else None
+        return (
+            access_request.model_copy(deep=True)
+            if access_request and access_request.tenant_id == tenant_id
+            and (
+                requester_object_id is None
+                or access_request.requester_object_id == requester_object_id
+            )
+            else None
+        )
+
+    async def get_request_form_head(self, tenant_id: str) -> RequestFormHead | None:
+        head = self.request_form_heads.get(tenant_id)
+        return head.model_copy(deep=True) if head else None
+
+    async def get_request_form_revision(
+        self, tenant_id: str, revision: int,
+    ) -> RequestFormRevision | None:
+        record = self.request_form_revisions.get((tenant_id, revision))
+        return record.model_copy(deep=True) if record else None
+
+    async def publish_request_form(
+        self, head: RequestFormHead, revision: RequestFormRevision, audit: AuditEvent,
+    ) -> RequestFormRevision:
+        current = self.request_form_heads.get(head.tenant_id)
+        if (
+            (current.etag if current else None) != head.etag
+            or head.revision != (current.revision if current else 0) + 1
+            or revision.revision != head.revision
+            or revision.tenant_id != head.tenant_id
+            or audit.tenant_id != head.tenant_id
+            or (head.tenant_id, revision.revision) in self.request_form_revisions
+        ):
+            raise ConflictError("The request form changed; reload before publishing.")
+        saved = revision.model_copy(update={"etag": new_id("etag")}, deep=True)
+        self.request_form_revisions[(head.tenant_id, revision.revision)] = saved
+        self.request_form_heads[head.tenant_id] = head.model_copy(
+            update={"etag": new_id("etag")}, deep=True
+        )
+        self.audit_events[audit.id] = audit
+        return saved.model_copy(deep=True)
 
     async def create_access_request(
-        self, access_request: AccessRequest, audit_event: AuditEvent
+        self, access_request: AccessRequest, audit_event: AuditEvent,
+        *, form_guard: RequestFormHead | None = None,
     ) -> AccessRequest:
         return await self.create_access_request_with_events(
-            access_request, audit_event, [access_request_event(access_request)]
+            access_request, audit_event, [access_request_event(access_request)],
+            form_guard=form_guard,
         )
 
     async def create_access_request_with_events(
@@ -158,10 +218,27 @@ class InMemoryEntitlementRepository:
         request: AccessRequest,
         audit_event: AuditEvent,
         events: Sequence[NotificationEvent],
+        *, form_guard: RequestFormHead | None = None,
     ) -> AccessRequest:
         if request.id in self.access_requests:
             raise ConflictError("You already have an open request for this resource")
-        return self._save_request_events(request, audit_event, events)
+        if form_guard is not None:
+            current = self.request_form_heads.get(request.tenant_id)
+            if (
+                form_guard.tenant_id != request.tenant_id
+                or (current.etag if current else None) != form_guard.etag
+                or (current.revision if current else 0) != form_guard.revision
+            ):
+                raise ConflictError(
+                    "The request form changed during submission. Reload and review it.",
+                    details={"reason": "requestFormWriteConflict"},
+                )
+        saved = self._save_request_events(request, audit_event, events)
+        if form_guard is not None:
+            self.request_form_heads[request.tenant_id] = form_guard.model_copy(
+                update={"etag": new_id("etag")}, deep=True
+            )
+        return saved
 
     async def save_access_request(
         self, access_request: AccessRequest, audit_event: AuditEvent
@@ -189,6 +266,7 @@ class InMemoryEntitlementRepository:
         events: Sequence[NotificationEvent],
     ) -> AccessRequest:
         stored = self.access_requests.get(request.id)
+        require_unchanged_form(stored, request)
         if request.etag and (stored is None or stored.etag != request.etag):
             raise ConflictError("The access request changed; reload it and try again")
         return self._save_request_events(request, audit_event, events)
@@ -360,6 +438,9 @@ class InMemoryEntitlementRepository:
         provenance: ApprovalDecisionProvenance | None = None,
         policy_guard: ApprovalPolicy | None = None,
     ) -> AccessRequest:
+        require_human_form_review(
+            request, policy=bool(policy_guard or (provenance and provenance.origin == "policy"))
+        )
         access_request = request
         if provenance:
             access_request = request.model_copy(
@@ -386,6 +467,7 @@ class InMemoryEntitlementRepository:
         # all-or-nothing in a single event loop. It stands in for the Cosmos batch's etag and
         # create preconditions.
         stored = self.access_requests.get(access_request.id)
+        require_unchanged_form(stored, access_request)
         if (
             stored is None
             or stored.tenant_id != access_request.tenant_id

@@ -47,6 +47,10 @@ Start with the [architecture](docs/architecture.md), [workflow diagrams](docs/wo
   administrator-published discovery, and creation/join requests. Administrator Settings controls
   those request capabilities; discovery is opt-in for each center. Approval
   saves intent; a separate gateway apply makes resource access effective.
+- **Collect governance context:** publish bounded, versioned request questions and review immutable
+  answers in guided portal/admin workflows. Charge references stay informational, form-bearing
+  requests remain human-reviewed, and existing eligibility and gateway-apply safeguards still apply.
+  See [request forms](docs/access.md#governance-questions-on-access-requests).
 - **Operate the estate:** pool compatible model deployments, inspect health, and report usage,
   sourced price estimates, cost-center spend, and asynchronous budget alerts or blocking.
 - **Review billing-derived rates:** import supported USD Azure, AWS, or GCP billing extracts or
@@ -141,9 +145,14 @@ The [full gallery](docs/gallery.md) includes publishing reviews, model pools, En
 lookups, grants, cost centers, budgets, analytics, notifications, Government connections, and
 [billing-rate review](docs/gallery.md#billing-data-and-rate-review) and
 [public-catalog maintenance](docs/gallery.md#public-catalog-refresh-and-review).
+The gallery's [endpoint evidence](docs/gallery.md#endpoint-evidence) distinguishes unconfirmed
+account facts from dated access checks recorded under older readiness rules.
 It also shows [cost-center requests and Automatic access](docs/gallery.md#cost-center-requests-and-automatic-access),
 including membership discovery and requests, administrator controls, and incomplete setup
 rather than treating approval as usable access.
+
+[Governance request forms](docs/gallery.md#governance-request-forms) show guided authoring,
+requester review, and historical single/bulk answer evidence without equating answers with authority.
 [Screenshot maintenance](docs/screenshots.md) explains capture, redaction, and the shot inventory.
 
 [Gateway policy feedback](docs/gallery.md#gateway-policy-capability-feedback) shows refused

@@ -41,7 +41,9 @@ from mosaic_api.domain import (
     deterministic_id,
     general_cost_center_id,
     new_id,
+    utc_now,
 )
+from mosaic_api.endpoint_readiness import ENDPOINT_READINESS_RULES_REVISION
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
 from mosaic_api.integrations.apim.client import ApimClient
 from mosaic_api.integrations.apim.policy_semantics import content_digest
@@ -83,7 +85,7 @@ from mosaic_api.repositories import (
 from mosaic_api.repositories.cosmos import CosmosRepositoryBase
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.model_endpoints import ModelEndpointService
-from mosaic_api.services.model_pools import intent_digest
+from mosaic_api.services.model_pools import _gateway_readiness, intent_digest
 from pydantic import ValidationError as SchemaError
 
 # A tenant ID like Entra's: a governed pool's Entra policy names the tenant whose tokens it takes.
@@ -232,7 +234,30 @@ def _granted(gateway_id: str) -> GatewayRuntimeAccess:
         can_invoke=True,
         evaluation=RuntimeAccessEvaluation.ROLE_ASSIGNMENTS,
         reason=RuntimeAccessReason.GRANTED,
+        checked_at=utc_now(),
+        rules_revision=ENDPOINT_READINESS_RULES_REVISION,
     )
+
+
+@pytest.mark.parametrize("can_invoke", [True, False])
+def test_legacy_readiness_is_not_a_current_success_or_denial(can_invoke: bool) -> None:
+    saved = _granted("gateway").model_copy(update={
+        "can_invoke": can_invoke,
+        "reason": RuntimeAccessReason.GRANTED if can_invoke else RuntimeAccessReason.MISSING_ROLE,
+        "rules_revision": None,
+    })
+    endpoint = ModelEndpoint(
+        id="endpoint", tenant_id=TENANT, name="Endpoint",
+        endpoint="https://models.example.test", provider=ModelProvider.AZURE_OPENAI,
+        runtime_access=[saved],
+    )
+    before = endpoint.model_dump_json()
+
+    readiness, message = _gateway_readiness(endpoint, "gateway")
+
+    assert readiness == "notConfirmed"
+    assert message is not None and "Run Check access" in message
+    assert endpoint.model_dump_json() == before
 
 
 def _policy(fake: FakeApim, suffix: str) -> str:
@@ -921,6 +946,8 @@ async def test_a_member_the_gateway_cant_call_blocks_the_plan(estate: Estate) ->
                 can_invoke=False,
                 evaluation=RuntimeAccessEvaluation.ROLE_ASSIGNMENTS,
                 reason=RuntimeAccessReason.MISSING_ROLE,
+                checked_at=utc_now(),
+                rules_revision=ENDPOINT_READINESS_RULES_REVISION,
             )
         ],
     )
@@ -1019,6 +1046,8 @@ async def test_summaries_list_the_active_members_with_problems(estate: Estate) -
         can_invoke=False,
         evaluation=RuntimeAccessEvaluation.ROLE_ASSIGNMENTS,
         reason=RuntimeAccessReason.MISSING_ROLE,
+        checked_at=utc_now(),
+        rules_revision=ENDPOINT_READINESS_RULES_REVISION,
     )
     await estate.update_endpoint("aoai-sweden", runtime_access=[denied])
     await estate.update_endpoint("aoai-ptu", runtime_access=[denied])
@@ -1173,6 +1202,8 @@ async def test_suggestions_count_only_deployments_the_gateway_can_use_and_skip_o
                 can_invoke=False,
                 evaluation=RuntimeAccessEvaluation.ROLE_ASSIGNMENTS,
                 reason=RuntimeAccessReason.MISSING_ROLE,
+                checked_at=utc_now(),
+                rules_revision=ENDPOINT_READINESS_RULES_REVISION,
             )
         ],
     )

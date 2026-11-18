@@ -2,6 +2,7 @@
 
 import asyncio
 
+import pytest
 from aoai_double import (
     AI_PROJECT_ID,
     AI_RESOURCE_ID,
@@ -18,7 +19,7 @@ from mosaic_api.domain import (
     PublishedResource,
     PublishedResourceKind,
 )
-from mosaic_api.repositories import InMemoryGatewayRepository
+from mosaic_api.repositories import InMemoryGatewayRepository, InMemoryModelEndpointRepository
 
 
 def _register(client: TestClient, **overrides: object) -> dict:
@@ -30,6 +31,87 @@ def _register(client: TestClient, **overrides: object) -> dict:
 
 
 class TestModelEndpointApi:
+    def test_unsupported_preflight_is_not_reported_as_a_completed_check(
+        self,
+        endpoint_client: TestClient,
+        endpoint_repository: InMemoryModelEndpointRepository,
+        fake_aoai: FakeCognitiveServices,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        created = _register(
+            endpoint_client,
+            azureResourceId=None, endpoint="https://models.example.com/v1",
+            credentialSecretUri="https://kv-contoso.vault.azure.net/secrets/model-key",
+        )
+        before = endpoint_repository.endpoints[created["id"]].model_dump_json()
+        fake_aoai.requests.clear()
+
+        async def unexpected_write(*args: object, **kwargs: object) -> None:
+            pytest.fail("An unsupported check must not record a completed evaluation")
+
+        monkeypatch.setattr(endpoint_repository, "record_endpoint_state", unexpected_write)
+
+        response = endpoint_client.post(
+            f"/api/v1/model-endpoints/{created['id']}/preflight"
+        )
+
+        assert response.status_code == 409
+        assert response.json()["details"]["reason"] == "accessCheckUnsupported"
+        assert fake_aoai.requests == []
+        assert endpoint_repository.endpoints[created["id"]].model_dump_json() == before
+
+    def test_clients_cannot_supply_endpoint_verification_evidence(
+        self, endpoint_client: TestClient
+    ) -> None:
+        evidence = {"detailEvidence": {"endpointSource": "account"}}
+        response = endpoint_client.post(
+            "/api/v1/model-endpoints",
+            json={"azureResourceId": AI_RESOURCE_ID, **evidence},
+        )
+        assert response.status_code == 422
+        created = _register(endpoint_client)
+        response = endpoint_client.patch(
+            f"/api/v1/model-endpoints/{created['id']}", json=evidence,
+        )
+        assert response.status_code == 422
+
+    def test_reads_project_stale_evidence_without_cloud_calls_or_writes(
+        self,
+        endpoint_client: TestClient,
+        endpoint_repository: InMemoryModelEndpointRepository,
+        fake_aoai: FakeCognitiveServices,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        created = _register(endpoint_client)
+        stored = endpoint_repository.endpoints[created["id"]]
+        legacy = stored.model_copy(update={
+            "detail_evidence": None,
+            "access": stored.access.model_copy(update={"rules_revision": None}),
+        })
+        endpoint_repository.endpoints[stored.id] = legacy
+        before = legacy.model_dump_json()
+        fake_aoai.requests.clear()
+        fake_aoai.account_status = 403
+
+        async def unexpected_write(*args: object, **kwargs: object) -> None:
+            pytest.fail("A saved-evidence GET attempted to record a check")
+
+        monkeypatch.setattr(endpoint_repository, "record_endpoint_state", unexpected_write)
+        for _ in range(2):
+            listed = endpoint_client.get("/api/v1/model-endpoints")
+            detail = endpoint_client.get(f"/api/v1/model-endpoints/{stored.id}")
+            runtime = endpoint_client.get(f"/api/v1/model-endpoints/{stored.id}/runtime-access")
+            assert listed.status_code == detail.status_code == runtime.status_code == 200
+            assert detail.json()["access"]["freshness"] == "stale"
+            assert detail.json()["access"]["checkedAt"] == created["access"]["checkedAt"]
+            assert detail.json()["endpoint"] == created["endpoint"]
+            assert runtime.json() == []
+        assert endpoint_client.get(
+            "/api/v1/model-endpoints/missing/runtime-access"
+        ).status_code == 404
+        assert fake_aoai.requests == []
+        assert endpoint_repository.endpoints[stored.id].model_dump_json() == before
+
     def test_registers_and_lists(self, endpoint_client: TestClient) -> None:
         created = _register(endpoint_client, name="Contoso models")
 

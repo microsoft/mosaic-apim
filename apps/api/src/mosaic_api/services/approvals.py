@@ -41,6 +41,7 @@ from mosaic_api.integrations.apim.policy_capabilities import (
     required_limit_policies,
 )
 from mosaic_api.repositories.approvals import ApprovalRepository
+from mosaic_api.request_forms import MANUAL_FORM_REVIEW
 from mosaic_api.scheduling import WeeklySchedule
 from mosaic_api.services.directory import Actor
 from mosaic_api.services.entitlements import EntitlementService
@@ -335,6 +336,10 @@ class ApprovalService:
             )
             outcome = "notMatched"
             explanation = "The policy is disabled or its scope does not match."
+            if preview.request.request_form is not None:
+                explanation += (
+                    " Recorded governance answers were not evaluated; human review is required."
+                )
             blockers = [
                 value
                 for value in preview.blockers
@@ -383,7 +388,9 @@ class ApprovalService:
                 evaluated_at=now,
                 next_eligible_at=ready_at if now < ready_at else None,
                 explanation=explanation,
-                blockers=blockers if matched else [],
+                blockers=blockers if matched else [
+                    item for item in blockers if item.code == MANUAL_FORM_REVIEW
+                ],
             )
             evaluations.append(evaluation)
         # Equal outcomes mean the same actual grant template, not a coincidental policy order.

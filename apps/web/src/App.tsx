@@ -140,6 +140,7 @@ function AdminShell() {
     { label: 'Entitlements · Requests', to: '/entitlements?tab=requests' },
     { label: 'Entitlements · Model access settings', to: '/entitlements?tab=settings' },
     { label: 'Entitlements · Approval policies', to: '/entitlements?tab=approvalPolicies' },
+    { label: 'Entitlements · Request form', to: '/entitlements?tab=requestForm' },
     { label: 'Settings · AI approval assistance', to: '/settings?tab=approvalAi' },
     { label: 'Settings · Notifications', to: '/settings?tab=notifications' },
     { label: 'Settings · Cost centers', to: '/settings?tab=costCenters' },
