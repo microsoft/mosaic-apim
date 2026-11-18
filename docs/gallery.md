@@ -733,3 +733,22 @@ resource lists, forms, and connection drawers remain solid for readability.
     </td>
   </tr>
 </table>
+
+## Public catalog refresh and review
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/console-pricing-catalog.png" alt="Public catalog overview with source-read dates and trust labels, deployed coverage, acquisition attempts, and dated activation history">
+      <p><b>Public catalog.</b> Inspect the active reference catalog separately from the latest
+      attempt, source freshness and supplied-versus-fetched evidence. Dated history offers recovery
+      as a new reviewed activation, rather than erasing the intervening timeline.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/console-pricing-catalog-review.png" alt="Guided public-catalog review showing exact Commercial and Government rate scopes, source evidence, retained manual and billing rates, and unpriced deployments">
+      <p><b>Review public prices.</b> Follow Acquire, Validate, and Review &amp; activate to inspect
+      source assertions, unit-aware changes, protected rates, and remaining gaps. The fictional
+      future-dated approval is prepared but never submitted by capture actions.</p>
+    </td>
+  </tr>
+</table>

@@ -61,6 +61,7 @@ from mosaic_api.integrations.graph.notifications import GraphNotificationDirecto
 from mosaic_api.integrations.key_vault import KeyVaultSecretWriter
 from mosaic_api.integrations.loganalytics import LogAnalyticsClient
 from mosaic_api.integrations.mcp import EntraTokenProvider, KeyVaultSecretReader
+from mosaic_api.integrations.retail_prices import RetailPricesAdapter
 from mosaic_api.integrations.teams import (
     BotTokenSource,
     ManagedIdentityBotTokenSource,
@@ -791,6 +792,7 @@ def create_app(
             secret_store=management_vault_writer,
             secret_reader=management_vault_reader,
             scheduled_workers_always_on=app_settings.scheduled_workers_always_on,
+            retail_prices=RetailPricesAdapter(feature_http_client),
         )
         billing_pricing_scheduler = BillingPricingScheduler(
             pricing_repository,

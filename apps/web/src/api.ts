@@ -144,6 +144,12 @@ import type {
   PriceHistoryView,
   PriceListView,
   PriceView,
+  PublicCatalogActivation,
+  PublicCatalogApproval,
+  PublicCatalogDraft,
+  PublicCatalogPreview,
+  PublicCatalogStatus,
+  PublicCatalogTemplate,
   PricingOverview,
   Principal,
   PrincipalKind,
@@ -170,6 +176,7 @@ export class ApiError extends Error {
 interface RequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   body?: unknown
+  rawBody?: string
   cache?: RequestCache
   signal?: AbortSignal
   ifMatch?: number
@@ -230,6 +237,14 @@ export interface MosaicApi extends AdminApi {
   getAnalyticsCost(filters?: AnalyticsFilters): Promise<AnalyticsCost>
   exportAnalytics(view: ExportView, filters?: AnalyticsFilters): Promise<DownloadedFile>
   getPricingOverview(): Promise<PricingOverview>
+  getPublicCatalog(offset?: number): Promise<PublicCatalogStatus>
+  getPublicCatalogTemplate(): Promise<PublicCatalogTemplate>
+  importPublicCatalog(content: string, baseRevision: string | null): Promise<PublicCatalogDraft>
+  refreshPublicCatalog(baseRevision: string | null, draftId?: string): Promise<PublicCatalogDraft>
+  getPublicCatalogDraft(id: string): Promise<PublicCatalogDraft>
+  previewPublicCatalog(id: string, effectiveFrom: string, offset?: number): Promise<PublicCatalogPreview>
+  activatePublicCatalog(id: string, approval: PublicCatalogApproval): Promise<PublicCatalogActivation>
+  recoverPublicCatalog(revision: string): Promise<PublicCatalogDraft>
   listPrices(cloud: string): Promise<PriceListView>
   addPrice(payload: PriceCreate): Promise<PriceView>
   getPriceHistory(lineId: string): Promise<PriceHistoryView>
@@ -608,12 +623,12 @@ export function useMosaicApi(): MosaicApi {
     }
 
     async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-      const headers = await requestHeaders(options.body !== undefined)
+      const headers = await requestHeaders(options.body !== undefined || options.rawBody !== undefined)
       if (options.ifMatch !== undefined) headers.set('If-Match', String(options.ifMatch))
       if (options.idempotencyKey) headers.set('Idempotency-Key', options.idempotencyKey)
       const response = await fetch(`${runtimeConfig.apiBaseUrl}${path}`, {
         method: options.method ?? 'GET',
-        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+        body: options.rawBody ?? (options.body === undefined ? undefined : JSON.stringify(options.body)),
         headers,
         cache: options.cache,
         signal: options.signal,
@@ -718,6 +733,35 @@ export function useMosaicApi(): MosaicApi {
       exportAnalytics: (view, filters) =>
         requestBlob(`/api/v1/analytics/export${analyticsQuery(filters, { view })}`),
       getPricingOverview: () => request<PricingOverview>('/api/v1/pricing'),
+      getPublicCatalog: (offset = 0) =>
+        request<PublicCatalogStatus>(`/api/v1/pricing/catalog?offset=${offset}`),
+      getPublicCatalogTemplate: () =>
+        request<PublicCatalogTemplate>('/api/v1/pricing/catalog/template'),
+      importPublicCatalog: (content, baseRevision) =>
+        request<PublicCatalogDraft>(
+          `/api/v1/pricing/catalog/imports${baseRevision ? `?baseRevision=${encodeURIComponent(baseRevision)}` : ''}`,
+          { method: 'POST', rawBody: content },
+        ),
+      refreshPublicCatalog: (baseRevision, draftId) =>
+        request<PublicCatalogDraft>('/api/v1/pricing/catalog/refreshes', {
+          method: 'POST', body: { baseRevision, draftId },
+        }),
+      getPublicCatalogDraft: (id) =>
+        request<PublicCatalogDraft>(`/api/v1/pricing/catalog/drafts/${encodeURIComponent(id)}`),
+      previewPublicCatalog: (id, effectiveFrom, offset = 0) =>
+        request<PublicCatalogPreview>(
+          `/api/v1/pricing/catalog/drafts/${encodeURIComponent(id)}/preview?offset=${offset}`,
+          { method: 'POST', body: { effectiveFrom } },
+        ),
+      activatePublicCatalog: (id, approval) =>
+        request<PublicCatalogActivation>(
+          `/api/v1/pricing/catalog/drafts/${encodeURIComponent(id)}/activate`,
+          { method: 'POST', body: approval },
+        ),
+      recoverPublicCatalog: (revision) =>
+        request<PublicCatalogDraft>('/api/v1/pricing/catalog/recoveries', {
+          method: 'POST', body: { revision },
+        }),
       listPrices: (cloud) =>
         request<PriceListView>(`/api/v1/pricing/prices?cloud=${encodeURIComponent(cloud)}`),
       addPrice: (payload) =>

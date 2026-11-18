@@ -213,3 +213,35 @@ counts tokens only for calls the model deployment answered with a 2xx status.
   its API, and counted under the model MOSAIC knows the API's deployment serves, or under
   **Unknown model**. Cost by model and cost by API each add up to the total, apart from reserved
   capacity nobody called.
+
+## Extension 2026-11-17: Reviewed runtime public catalogs
+
+Issue #145 adds public-catalog maintenance without replacing this ADR's dated shared pricer or
+[ADR 0031's](0031-billing-derived-pricing.md) reviewed billing-derived rates. The original seed
+and historical decisions above remain the baseline; runtime catalogs are a separate layer.
+
+- Use administrator-initiated Commercial Retail acquisition or a bounded versioned JSON import.
+  The documented Retail source scope is Commercial-only. Preserve legacy Government rates and
+  provenance; new Government numeric rates require explicit Government price evidence.
+  Availability-only references do not establish numeric rates or end-user offerings.
+- Keep server acquisition time, claimed source-read date and source effective/application dates
+  separate. Supplied evidence is not independently fetched or verified. Do not fetch arbitrary
+  source URLs, add a scheduler, or introduce a credential/billing connector.
+- Persist tenant-scoped immutable manifests/chunks and a versioned active head. A transaction
+  commits the head, draft, activation and audit event only after the complete content verifies.
+  Failed/incomplete acquisitions and preparations leave the last usable catalog untouched.
+- Pin the tenant's baseline on first activation. Resolve applicable existing manual/committed
+  billing winners under their original specificity/date rules before the new public layer.
+  Billing publication visibility still requires the exact committed version IDs.
+- Preserve regional history and reviewed application dates even for unchanged amounts. Default
+  to the approval UTC day; earlier corrections require an explicit historical/budget
+  acknowledgement. Restore earlier public content as a new dated activation, never a hidden
+  pointer rollback or automatic substitution of the packaged seed.
+- Give new billing normalizations the active tenant/revision lookup, retaining earlier meter
+  mappings for late data. Do not silently rederive saved billing runs or rewrite endpoint facts.
+
+First activation is a reader-compatibility boundary: old binaries can ignore these new entities
+and still produce wrong costs. Follow the existing
+[upgrade compatibility/quiescence protocol](../upgrades.md#check-durable-state-compatibility-and-backup-prerequisites),
+not a new migration or deployment tool. [Pricing operations](../pricing.md#public-catalog-maintenance-without-redeployment)
+documents the import contract, limits, conflicts, source qualifications and recovery procedure.

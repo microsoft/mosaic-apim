@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MOSAIC public model and meter definitions",
+  "$defs": {
+    "CatalogDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "cloud": {
+          "enum": [
+            "commercial",
+            "government"
+          ],
+          "title": "Cloud",
+          "type": "string"
+        },
+        "publisher": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Publisher",
+          "type": "string"
+        },
+        "model": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        },
+        "aliases": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Aliases",
+          "type": "array"
+        },
+        "deploymentType": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deploymenttype"
+        },
+        "regions": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 80,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Regions"
+        },
+        "kind": {
+          "default": "tokens",
+          "enum": [
+            "tokens",
+            "ptu"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "meters": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetailMeters"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "availabilitySource": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PriceSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "requiresOutput": {
+          "default": true,
+          "title": "Requiresoutput",
+          "type": "boolean"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Notes"
+        }
+      },
+      "required": [
+        "cloud",
+        "publisher",
+        "model"
+      ],
+      "title": "CatalogDefinition",
+      "type": "object"
+    },
+    "PriceSource": {
+      "additionalProperties": false,
+      "description": "Where a price came from: a query of the Retail Prices API, or a documentation page.",
+      "properties": {
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,79}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "url": {
+          "maxLength": 2000,
+          "pattern": "^https://",
+          "title": "Url",
+          "type": "string"
+        },
+        "retrievedOn": {
+          "format": "date",
+          "title": "Retrievedon",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "url",
+        "retrievedOn"
+      ],
+      "title": "PriceSource",
+      "type": "object"
+    },
+    "RetailMeters": {
+      "additionalProperties": false,
+      "description": "The Retail Prices API meters a seeded price was read from, so a refresh can find them.",
+      "properties": {
+        "product": {
+          "title": "Product",
+          "type": "string"
+        },
+        "input": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input"
+        },
+        "cachedInput": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cachedinput"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output"
+        },
+        "provisioned": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provisioned"
+        }
+      },
+      "required": [
+        "product"
+      ],
+      "title": "RetailMeters",
+      "type": "object"
+    }
+  },
+  "items": {
+    "$ref": "#/$defs/CatalogDefinition"
+  },
+  "type": "array"
+}

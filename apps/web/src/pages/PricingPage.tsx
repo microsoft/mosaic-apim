@@ -73,12 +73,14 @@ import type {
   UnpricedReason,
 } from '../types'
 import styles from './PricingPage.module.css'
+import { PricingCatalogWorkspace } from './PricingCatalogWorkspace'
 
-type PricingTab = 'prices' | 'billing' | 'unpriced' | 'endpoints' | 'sources'
+type PricingTab = 'prices' | 'catalog' | 'billing' | 'unpriced' | 'endpoints' | 'sources'
 type PriceKind = 'tokens' | 'ptu' | 'monthly'
 
 const tabs: Array<{ key: PricingTab; label: string }> = [
   { key: 'prices', label: 'Prices' },
+  { key: 'catalog', label: 'Public catalog' },
   { key: 'billing', label: 'Billing data' },
   { key: 'unpriced', label: 'Unpriced deployments' },
   { key: 'endpoints', label: 'Endpoint facts' },
@@ -3010,6 +3012,7 @@ export function PricingPage() {
   const overview = useQuery({ queryKey: ['pricing', 'overview'], queryFn: api.getPricingOverview })
   const unpriced = useQuery({ queryKey: ['pricing', 'unpriced'], queryFn: api.getUnpricedDeployments })
   const [draft, setDraft] = useState<PriceDraft | null>(null)
+  const [catalogEditing, setCatalogEditing] = useState(false)
   const clouds = overview.data?.clouds ?? []
 
   function update(next: Record<string, string | null>) {
@@ -3028,9 +3031,9 @@ export function PricingPage() {
     <section className={styles.page}>
       <PageHeader
         title="Pricing"
-        description="The list prices MOSAIC turns measured usage into cost with, each with its source. Add prices for other clouds and providers, or override one from a date."
+        description="Public, manual, and approved billing-derived rates with dated history and source evidence. Review public-catalog changes before activating them."
         actions={
-          <Button appearance="primary" icon={<AddRegular />} onClick={() => setDraft(emptyDraft(cloud))}>
+          <Button appearance="primary" icon={<AddRegular />} disabled={tab === 'catalog' && catalogEditing} onClick={() => setDraft(emptyDraft(cloud))}>
             Add price
           </Button>
         }
@@ -3042,7 +3045,9 @@ export function PricingPage() {
             {`${overview.data.pricedDeployments} of ${plural(overview.data.deployments, 'deployment')} priced today.`}
           </Text>
           <Text className={styles.muted}>
-            {overview.data.pricingBasis === 'billingDerived'
+            {overview.data.publicCatalogRevision
+              ? 'US dollar estimates use the active public reference catalog and applicable protected manual/billing rates. Public catalog shows each source’s date and trust.'
+              : overview.data.pricingBasis === 'billingDerived'
               ? `US dollars from published billing-derived rates${overview.data.lastBillingSourceMonth ? ` (${overview.data.lastBillingSourceMonth})` : ''}. Seeded list prices from the Azure Retail Prices API on ${formatDate(overview.data.seedLastUpdated)} remain as fallback.`
               : overview.data.pricingBasis === 'customManual'
                 ? `US dollars using administrator overrides and seeded list prices from the Azure Retail Prices API (${formatDate(overview.data.seedLastUpdated)}).`
@@ -3077,7 +3082,7 @@ export function PricingPage() {
                 : undefined,
         }))}
         active={tab}
-        onSelect={(value) => update({ tab: value, endpoint: null, run: null })}
+        onSelect={(value) => update({ tab: value, endpoint: null, run: null, catalogDraft: null, catalogStage: null })}
       >
         {tab === 'prices' && (
           <PricesTab
@@ -3086,6 +3091,14 @@ export function PricingPage() {
             onCloud={(value) => update({ cloud: value })}
             onOverride={(price) => setDraft(overrideDraft(price))}
             onOpenBillingRun={(runId) => update({ tab: 'billing', run: runId, endpoint: null })}
+          />
+        )}
+        {tab === 'catalog' && (
+          <PricingCatalogWorkspace
+            draftId={params.get('catalogDraft')}
+            stage={params.get('catalogStage') === 'review' ? 'review' : 'validate'}
+            onSelectDraft={(id, stage) => update({ tab: 'catalog', catalogDraft: id, catalogStage: id ? stage ?? 'validate' : null })}
+            onWorkspaceChange={setCatalogEditing}
           />
         )}
         {tab === 'billing' && (
@@ -3107,7 +3120,7 @@ export function PricingPage() {
         {tab === 'sources' && overview.data && (
           <div className={styles.stack}>
             <Text className={styles.muted}>
-              Every price MOSAIC ships names where it came from. An administrator&apos;s price names the source they gave.
+              Public reference prices retain their source-read dates. Price history also names administrator and billing evidence; a source date is not a guarantee of current provider coverage.
             </Text>
             <ul className={styles.sourceList} aria-label="Price sources">
               {overview.data.sources.map((source, idx) => (

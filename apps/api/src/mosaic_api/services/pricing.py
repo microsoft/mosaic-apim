@@ -55,6 +55,7 @@ from mosaic_api.domain import (
 from mosaic_api.errors import ConflictError, DomainError, NotFoundError, ValidationError
 from mosaic_api.integrations.key_vault import MANAGED_BY, MANAGED_BY_TAG, KeyStore
 from mosaic_api.integrations.mcp.credentials import KeyVaultSecretReader
+from mosaic_api.integrations.retail_prices import RetailPricesAdapter
 from mosaic_api.observed import ObservedModelDeployment
 from mosaic_api.pricing import (
     BUILT_IN_CLOUDS,
@@ -107,6 +108,7 @@ from mosaic_api.services.billing_leases import (
     with_billing_lease_heartbeat,
 )
 from mosaic_api.services.directory import Actor
+from mosaic_api.services.pricing_catalog import PublicCatalogService, catalog_book
 from mosaic_api.services.telemetry import governed_apis
 from mosaic_api.usage_telemetry import RolledUpApi
 
@@ -224,6 +226,8 @@ class PricingOverview(MosaicModel):
     currency: Literal["USD"]
     as_of: date
     seed_last_updated: date
+    public_catalog_revision: str | None = None
+    public_catalog_updated_on: date | None = None
     sources: list[PriceSourceView]
     clouds: list[CloudView]
     deployment_types: list[str]
@@ -300,7 +304,9 @@ class EndpointPricingView(MosaicModel):
     version: str | None = None
 
 
-def _status(entry: PriceEntry, versions: list[PriceEntry], today: date) -> PriceStatus:
+def _status(
+    entry: PriceEntry, versions: list[PriceEntry], today: date, book: PriceBook | None = None
+) -> PriceStatus:
     later_same_day = [
         other
         for other in versions
@@ -309,20 +315,36 @@ def _status(entry: PriceEntry, versions: list[PriceEntry], today: date) -> Price
     if later_same_day:
         return "corrected"
     if entry.effective_from > today:
+        if book is not None and book.catalog_revision and entry.origin == "seed":
+            selected = book.line_current(versions, entry.effective_from)
+            if selected is not None and selected.origin in {"admin", "billing"}:
+                return "past"
         return "upcoming"
-    current = _current(versions, today)
+    current = _current(versions, today, book)
     return "current" if current is not None and current.id == entry.id else "past"
 
 
-def _current(versions: list[PriceEntry], today: date) -> PriceEntry | None:
+def _current(
+    versions: list[PriceEntry], today: date, book: PriceBook | None = None
+) -> PriceEntry | None:
+    if book is not None:
+        return book.line_current(versions, today)
     effective = [entry for entry in versions if entry.in_effect(today)]
     if not effective:
         return None
     return max(effective, key=lambda entry: entry.precedence)
 
 
-def _upcoming(versions: list[PriceEntry], today: date) -> PriceEntry | None:
+def _upcoming(
+    versions: list[PriceEntry], today: date, book: PriceBook | None = None
+) -> PriceEntry | None:
     future = [entry for entry in versions if entry.effective_from > today]
+    if book is not None and book.catalog_revision:
+        for entry in sorted(future, key=lambda value: value.effective_from):
+            selected = book.line_current(versions, entry.effective_from)
+            if selected is not None and selected.id == entry.id:
+                return selected
+        return None
     if not future:
         return None
     first = min(entry.effective_from for entry in future)
@@ -436,6 +458,7 @@ class PricingService:
         secret_store: KeyStore | None = None,
         secret_reader: KeyVaultSecretReader | Callable[[str], Awaitable[str]] | None = None,
         scheduled_workers_always_on: bool = False,
+        retail_prices: RetailPricesAdapter | None = None,
     ) -> None:
         self._repository = repository
         self._endpoints = endpoint_repository
@@ -451,6 +474,7 @@ class PricingService:
         self._secret_reader = secret_reader
         self._default_secret_store = default_store
         self._scheduled_workers_always_on = scheduled_workers_always_on
+        self.catalog = PublicCatalogService(repository, self, self._seed, retail_prices)
 
     @property
     def scheduled_workers_always_on(self) -> bool:
@@ -501,11 +525,17 @@ class PricingService:
                 "A published pricing list is not fully readable. Retry before using its rates.",
                 details={"missingPriceVersionIds": sorted(missing_ids)},
             )
-        return build_book(
+        legacy = build_book(
             visible_versions,
             self._seed,
             published_ids={publication.id for publication in publications},
         )
+        revision, content = await self.catalog.active_content(tenant_id)
+        if content is not None:
+            return catalog_book(
+                content, [entry for entry in legacy.entries if entry.origin != "seed"], revision
+            )
+        return legacy
 
     async def deployments(
         self, tenant_id: str, endpoint_ids: Iterable[str] | None = None
@@ -649,7 +679,7 @@ class PricingService:
         non_seed_origins = {
             current.origin
             for versions in lines.values()
-            if (current := _current(versions, today)) is not None and current.origin != "seed"
+            if (current := _current(versions, today, book)) is not None and current.origin != "seed"
         }
         pricing_basis: Literal["publicSeed", "customManual", "billingDerived", "mixed"] = (
             "publicSeed"
@@ -687,11 +717,17 @@ class PricingService:
             currency=CURRENCY,
             as_of=today,
             seed_last_updated=self._seed.last_updated,
+            public_catalog_revision=book.catalog_revision,
+            public_catalog_updated_on=(
+                book.public_seed.last_updated
+                if book.catalog_revision and book.public_seed
+                else None
+            ),
             sources=[
                 PriceSourceView(
                     title=source.title, url=source.url, retrieved_on=source.retrieved_on
                 )
-                for source in self._seed.sources
+                for source in (book.public_seed or self._seed).sources
             ],
             clouds=[
                 CloudView(
@@ -702,7 +738,7 @@ class PricingService:
                         1
                         for versions in lines.values()
                         if versions[0].cloud == cloud
-                        and (_current(versions, today) or _upcoming(versions, today))
+                        and (_current(versions, today, book) or _upcoming(versions, today, book))
                     ),
                     endpoints=len(endpoint_clouds.get(cloud, set())),
                 )
@@ -733,8 +769,8 @@ class PricingService:
         for line_id, versions in self._lines(book).items():
             if versions[0].cloud != cloud:
                 continue
-            current = _current(versions, today)
-            upcoming = _upcoming(versions, today)
+            current = _current(versions, today, book)
+            upcoming = _upcoming(versions, today, book)
             if current is None and upcoming is None:
                 # A replaced seeded price that has ended. It still prices the days it covered.
                 continue
@@ -777,7 +813,9 @@ class PricingService:
         ordered = sorted(versions, key=lambda entry: entry.precedence, reverse=True)
         return PriceHistoryView(
             line_id=line_id,
-            versions=[price_view(entry, _status(entry, versions, today)) for entry in ordered],
+            versions=[
+                price_view(entry, _status(entry, versions, today, book)) for entry in ordered
+            ],
         )
 
     async def add_price(self, actor: Actor, request: PriceCreate) -> PriceView:
@@ -849,7 +887,7 @@ class PricingService:
         book = await self.book(actor.tenant_id)
         entry = next(item for item in book.entries if item.id == saved.id)
         versions = self._lines(book)[entry.line_id]
-        return price_view(entry, _status(entry, versions, self._today()))
+        return price_view(entry, _status(entry, versions, self._today(), book))
 
     # -- what isn't priced ----------------------------------------------------------------------
 
@@ -1309,6 +1347,7 @@ class PricingService:
                     "sourceMonth": resolved_month,
                     "sourceFileName": cleaned_file_name,
                     "contentFingerprint": fingerprint,
+                    "catalogRevision": book.catalog_revision,
                     "rawRowCount": ingested.raw_row_count,
                     "eligibleRowCount": ingested.eligible_row_count,
                     "candidateCount": len(ingested.candidates),
@@ -2371,6 +2410,7 @@ class PricingService:
                     "provider": connection.provider,
                     "pricingCloud": connection.pricing_cloud,
                     "sourceMonth": base_run.source_month,
+                    "catalogRevision": book.catalog_revision,
                     "rawRowCount": ingested.raw_row_count,
                     "eligibleRowCount": 0,
                     "candidateCount": 0,

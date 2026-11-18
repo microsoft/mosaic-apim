@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from functools import cache
-from typing import Any
+from typing import Any, cast
 
 from mosaic_api.billing_pricing import (
     BillingCandidateMapping,
@@ -208,6 +208,65 @@ class _SeedMeterMatch:
     version: str | None
     deployment_type: str | None
     usage_category: BillingUsageCategory
+
+
+type _MeterLookup = tuple[
+    Mapping[tuple[str, str], _SeedMeterMatch | None],
+    Mapping[str, _SeedMeterMatch | None],
+    Sequence[tuple[str, str | None, str | None]],
+]
+
+
+def _catalog_meter_lookup(book: PriceBook, cloud: str) -> _MeterLookup:
+    by_product: dict[tuple[str, str], _SeedMeterMatch | None] = {}
+    by_meter: dict[str, _SeedMeterMatch | None] = {}
+    names: dict[str, set[tuple[str, str | None, str | None]]] = defaultdict(set)
+    for definition in book.catalog_definitions:
+        if definition.cloud != cloud:
+            continue
+        if definition.model != "*":
+            for name in (definition.model, *definition.aliases):
+                names[name.casefold()].add(
+                    (definition.model, definition.publisher, definition.version)
+                )
+        if definition.meters is None:
+            continue
+        for category, meter in (
+            ("inputTokens", definition.meters.input),
+            ("cachedInputTokens", definition.meters.cached_input),
+            ("outputTokens", definition.meters.output),
+            ("ptuHours", definition.meters.provisioned),
+        ):
+            if not meter:
+                continue
+            match = _SeedMeterMatch(
+                definition.publisher,
+                definition.model,
+                definition.version,
+                definition.deployment_type,
+                cast(BillingUsageCategory, category),
+            )
+            product_key = (definition.meters.product.strip().casefold(), meter.strip().casefold())
+            meter_key = meter.strip().casefold()
+            if product_key not in by_product:
+                by_product[product_key] = match
+            elif by_product[product_key] != match:
+                by_product[product_key] = None
+            if meter_key not in by_meter:
+                by_meter[meter_key] = match
+            elif by_meter[meter_key] != match:
+                by_meter[meter_key] = None
+    known = [
+        next(iter(values))
+        if len(values) == 1
+        else (
+            next(iter(values))[0],
+            next(iter(values))[1] if len({item[1] for item in values}) == 1 else None,
+            None,
+        )
+        for values in names.values()
+    ]
+    return by_product, by_meter, sorted(known, key=lambda item: len(item[0]), reverse=True)
 
 
 @dataclass
@@ -792,10 +851,11 @@ def _parse_azure_meter_and_model(
     meter_name: str,
     unit_of_measure: str,
     additional_info: str,
+    catalog_lookup: _MeterLookup | None = None,
 ) -> tuple[str | None, str | None, str | None, str | None, BillingUsageCategory]:
     """Resolve ``(publisher, model, version, deployment_type, usage_category)`` for an Azure row."""
 
-    by_prod_meter, by_meter, known_models = _seed_meter_lookup()
+    by_prod_meter, by_meter, known_models = catalog_lookup or _seed_meter_lookup()
 
     info_model: str | None = None
     info_version: str | None = None
@@ -823,7 +883,15 @@ def _parse_azure_meter_and_model(
 
     prod_key = product.strip().casefold()
     meter_key = meter_name.strip().casefold()
-    seed_match = by_prod_meter.get((prod_key, meter_key)) or by_meter.get(meter_key)
+    exact_key = (prod_key, meter_key)
+    if (exact_key in by_prod_meter and by_prod_meter[exact_key] is None) or (
+        exact_key not in by_prod_meter and meter_key in by_meter and by_meter[meter_key] is None
+    ):
+        raise ValidationError(
+            "The active catalog maps this billing meter ambiguously. Correct its scoped "
+            "model/version/type mapping or import an explicitly attributed extraction."
+        )
+    seed_match = by_prod_meter.get(exact_key) or by_meter.get(meter_key)
     if seed_match is not None:
         return (
             info_publisher or seed_match.publisher,
@@ -1377,6 +1445,7 @@ def _normalize_azure_rows(
     *,
     source_month: str,
     source_scope: str | None,
+    catalog_lookup: _MeterLookup | None = None,
 ) -> tuple[list[_NormalizedRowRecord], list[BillingReviewIssue]]:
     header_set = {h.strip().casefold() for h in headers}
     has_cost = bool(header_set & {"costinbillingcurrency", "cost", "pretaxcost"})
@@ -1583,6 +1652,7 @@ def _normalize_azure_rows(
             meter_name=meter_name,
             unit_of_measure=unit_of_measure,
             additional_info=additional_info,
+            catalog_lookup=catalog_lookup,
         )
         norm_qty, norm_unit, unknown_unit, unsupported_cap = _normalize_unit_scale(
             usage_category, unit_of_measure, quantity
@@ -3503,6 +3573,9 @@ def ingest_billing_parts(
     total_raw_rows = 0
     all_records: list[_NormalizedRowRecord] = []
     all_issues: list[BillingReviewIssue] = []
+    catalog_lookup = (
+        _catalog_meter_lookup(book, pricing_cloud) if book and book.catalog_definitions else None
+    )
 
     for part in parts_list:
         file_name = part.name or "upload.csv"
@@ -3630,6 +3703,7 @@ def ingest_billing_parts(
                 csv_rows,
                 source_month=source_month,
                 source_scope=source_scope,
+                catalog_lookup=catalog_lookup,
             )
         elif provider == "aws":
             part_records, part_issues = _normalize_aws_rows(

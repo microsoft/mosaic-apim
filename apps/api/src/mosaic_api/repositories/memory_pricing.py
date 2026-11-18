@@ -10,6 +10,14 @@ from mosaic_api.billing_pricing import (
 from mosaic_api.domain import AuditEvent
 from mosaic_api.errors import ConflictError
 from mosaic_api.pricing import EndpointPricing, PriceVersion
+from mosaic_api.pricing_catalog import (
+    CatalogActivation,
+    CatalogChunk,
+    CatalogDraft,
+    CatalogHead,
+    CatalogManifest,
+    content_hash,
+)
 
 ENDPOINT_PRICING_CHANGED = "Pricing for this endpoint changed; reload it and try again"
 BILLING_CONNECTION_CHANGED = "The billing connection changed; reload it and try again"
@@ -27,12 +35,130 @@ class InMemoryPricingRepository:
         self.billing_evidence_chunks: dict[tuple[str, str], BillingEvidenceChunk] = {}
         self.billing_publications: dict[tuple[str, str], BillingPublication] = {}
         self.audit_events: dict[str, AuditEvent] = {}
+        self.catalog_heads: dict[str, CatalogHead] = {}
+        self.catalog_manifests: dict[tuple[str, str], CatalogManifest] = {}
+        self.catalog_chunks: dict[tuple[str, str], CatalogChunk] = {}
+        self.catalog_drafts: dict[tuple[str, str], CatalogDraft] = {}
+        self.catalog_activations: dict[tuple[str, str], CatalogActivation] = {}
 
     async def ready(self) -> bool:
         return True
 
     async def close(self) -> None:
         return None
+
+    async def get_catalog_head(self, tenant_id: str) -> CatalogHead | None:
+        head = self.catalog_heads.get(tenant_id)
+        return head.model_copy(deep=True) if head else None
+
+    async def has_catalog_activation(self, tenant_id: str) -> bool:
+        return any(tenant == tenant_id for tenant, _ in self.catalog_activations)
+
+    async def get_catalog_manifest(
+        self, tenant_id: str, manifest_id: str
+    ) -> CatalogManifest | None:
+        item = self.catalog_manifests.get((tenant_id, manifest_id))
+        return item.model_copy(deep=True) if item else None
+
+    async def get_catalog_chunk(self, tenant_id: str, chunk_id: str) -> CatalogChunk | None:
+        item = self.catalog_chunks.get((tenant_id, chunk_id))
+        return item.model_copy(deep=True) if item else None
+
+    async def prepare_catalog(
+        self, manifest: CatalogManifest, chunks: Sequence[CatalogChunk]
+    ) -> None:
+        for chunk in chunks:
+            if chunk.tenant_id != manifest.tenant_id or content_hash(chunk.content) != chunk.digest:
+                raise ValueError("Catalog chunk does not match its tenant or content hash")
+            key = (chunk.tenant_id, chunk.id)
+            existing = self.catalog_chunks.get(key)
+            if existing and existing.digest != chunk.digest:
+                raise ConflictError("Immutable catalog chunk changed")
+            self.catalog_chunks.setdefault(key, chunk.model_copy(deep=True))
+        key = (manifest.tenant_id, manifest.id)
+        existing_manifest = self.catalog_manifests.get(key)
+        if existing_manifest and existing_manifest.digest != manifest.digest:
+            raise ConflictError("Immutable catalog manifest changed")
+        self.catalog_manifests.setdefault(key, manifest.model_copy(deep=True))
+
+    async def list_catalog_drafts(self, tenant_id: str) -> list[CatalogDraft]:
+        return sorted(
+            [
+                item.model_copy(deep=True)
+                for (tenant, _), item in self.catalog_drafts.items()
+                if tenant == tenant_id
+            ],
+            key=lambda item: (item.created_at, item.id),
+            reverse=True,
+        )
+
+    async def get_catalog_draft(self, tenant_id: str, draft_id: str) -> CatalogDraft | None:
+        item = self.catalog_drafts.get((tenant_id, draft_id))
+        return item.model_copy(deep=True) if item else None
+
+    async def create_catalog_draft(
+        self, draft: CatalogDraft, audit_event: AuditEvent
+    ) -> CatalogDraft:
+        key = (draft.tenant_id, draft.id)
+        if key in self.catalog_drafts:
+            raise ConflictError("That catalog draft already exists")
+        stored = draft.model_copy(update={"etag": uuid4().hex}, deep=True)
+        self.catalog_drafts[key] = stored
+        self.audit_events[audit_event.id] = audit_event.model_copy(deep=True)
+        return stored.model_copy(deep=True)
+
+    async def list_catalog_activations(self, tenant_id: str) -> list[CatalogActivation]:
+        return sorted(
+            [
+                item.model_copy(deep=True)
+                for (tenant, _), item in self.catalog_activations.items()
+                if tenant == tenant_id
+            ],
+            key=lambda item: (item.created_at, item.id),
+            reverse=True,
+        )
+
+    async def get_catalog_activation(
+        self, tenant_id: str, revision: str
+    ) -> CatalogActivation | None:
+        item = self.catalog_activations.get((tenant_id, revision))
+        return item.model_copy(deep=True) if item else None
+
+    async def activate_catalog(
+        self,
+        head: CatalogHead,
+        draft: CatalogDraft,
+        activation: CatalogActivation,
+        audit_event: AuditEvent,
+    ) -> CatalogActivation:
+        current_head = self.catalog_heads.get(head.tenant_id)
+        current_draft = self.catalog_drafts.get((draft.tenant_id, draft.id))
+        if (
+            head.tenant_id != draft.tenant_id
+            or activation.tenant_id != head.tenant_id
+            or activation.draft_id != draft.id
+            or activation.id != head.revision
+        ):
+            raise ValueError("Catalog activation must use one tenant and draft")
+        if (
+            (current_head.etag if current_head else None) != head.etag
+            or current_draft is None
+            or current_draft.etag != draft.etag
+            or not draft.etag
+            or current_draft.status != "readyForReview"
+            or (activation.tenant_id, activation.id) in self.catalog_activations
+        ):
+            raise ConflictError("The catalog or draft changed; reload and review")
+        stored = activation.model_copy(update={"etag": uuid4().hex}, deep=True)
+        self.catalog_heads[head.tenant_id] = head.model_copy(
+            update={"etag": uuid4().hex}, deep=True
+        )
+        self.catalog_drafts[(draft.tenant_id, draft.id)] = draft.model_copy(
+            update={"etag": uuid4().hex}, deep=True
+        )
+        self.catalog_activations[(activation.tenant_id, activation.id)] = stored
+        self.audit_events[audit_event.id] = audit_event.model_copy(deep=True)
+        return stored.model_copy(deep=True)
 
     async def list_price_versions(self, tenant_id: str) -> list[PriceVersion]:
         return [

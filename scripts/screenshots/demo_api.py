@@ -24,7 +24,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from io import BytesIO, StringIO
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import UUID
 
 import httpx
@@ -156,8 +156,19 @@ from mosaic_api.notifications import (
 from mosaic_api.pricing import (
     DeploymentPricingUpdate,
     EndpointPricingUpdate,
+    ModelPrice,
     PriceCreate,
     PriceMatch,
+    PriceSeed,
+    PriceSource,
+    RetailMeters,
+)
+from mosaic_api.pricing_catalog import (
+    CatalogActivateRequest,
+    CatalogDefinition,
+    CatalogEvidence,
+    CatalogPackage,
+    canonical_json,
 )
 from mosaic_api.repositories import GatewayRepository, InMemoryEntitlementRepository
 from mosaic_api.services import (
@@ -3443,6 +3454,132 @@ async def seed_billing(services: DemoServices, estate: Estate, tenant_id: str) -
     )
 
 
+async def seed_public_catalog(services: DemoServices, tenant_id: str) -> None:
+    """Activate equal fictional rates, then leave future public changes in an unsubmitted draft."""
+
+    admin = Actor(ADMIN.object_id, tenant_id)
+    pricing = services.pricing
+    today = utc_now().date()
+    original = next(
+        price
+        for price in pricing._seed.prices
+        if price.cloud == "commercial"
+        and price.model == "gpt-4o"
+        and price.version == "2024-11-20"
+        and price.deployment_type == "GlobalStandard"
+        and price.regions is None
+        and price.effective_until is None
+    )
+    if original.input_per_million is None or original.output_per_million is None:
+        raise SeedError("The fictional public catalog needs a complete token rate")
+
+    def price_cloud(price: ModelPrice) -> Literal["commercial", "government"]:
+        if price.cloud == "commercial":
+            return "commercial"
+        if price.cloud == "government":
+            return "government"
+        raise SeedError("The fictional public catalog has an unsupported pricing cloud")
+
+    def package(prices: list[ModelPrice]) -> CatalogPackage:
+        sources = [
+            PriceSource(
+                id=f"fictional-{cloud}-public",
+                title=f"Fictional {cloud} public-price evidence (not a provider quote)",
+                url=f"https://example.invalid/{cloud}-public-prices",
+                retrieved_on=today,
+            )
+            for cloud in sorted({price.cloud for price in prices})
+        ]
+        return CatalogPackage(
+            catalog=[
+                CatalogDefinition(
+                    cloud=price_cloud(price),
+                    publisher=price.publisher or "OpenAI",
+                    model=price.model,
+                    version=price.version,
+                    aliases=price.aliases,
+                    deployment_type=price.deployment_type,
+                    regions=price.regions,
+                    meters=price.retail_meters,
+                )
+                for price in prices
+            ],
+            price_list=PriceSeed(
+                schema_version=1,
+                last_updated=today,
+                currency="USD",
+                sources=sources,
+                prices=[
+                    price.model_copy(update={"source_ids": [f"fictional-{price.cloud}-public"]})
+                    for price in prices
+                ],
+            ),
+            evidence=[
+                CatalogEvidence(
+                    source_id=f"fictional-{price.cloud}-public",
+                    cloud=price_cloud(price),
+                    price_ids=[price.id],
+                    excerpt=(
+                        f"Fictional {price.cloud} example only: "
+                        f"USD {price.input_per_million} input "
+                        f"and {price.output_per_million} output per million tokens. "
+                        "Generated demo evidence, not an actual provider price quotation."
+                    ),
+                )
+                for price in prices
+            ],
+        )
+
+    same = original.model_copy(update={"id": "fictional.commercial.public"})
+    active = await pricing.catalog.import_bytes(
+        admin, canonical_json(package([same])).encode(), None
+    )
+    preview = await pricing.catalog.preview(admin, active.id, today)
+    await pricing.catalog.activate(
+        admin,
+        active.id,
+        CatalogActivateRequest(
+            draft_version=preview.draft.version,
+            base_revision=None,
+            preview_digest=preview.preview_digest,
+            effective_from=today,
+            note="Fictional demo reference data; unchanged active rates, no provider calls.",
+            acknowledge_source_and_gaps=True,
+        ),
+    )
+    tomorrow = today + timedelta(days=1)
+    proposed = same.model_copy(
+        update={
+            "id": "fictional.commercial.proposed",
+            "effective_from": tomorrow,
+            "input_per_million": original.input_per_million * 0.9,
+            "output_per_million": original.output_per_million * 0.9,
+        }
+    )
+    government = proposed.model_copy(
+        update={
+            "id": "fictional.government.proposed",
+            "cloud": "government",
+            "deployment_type": "Standard",
+            "regions": ["usgovvirginia"],
+            "input_per_million": 3.6,
+            "output_per_million": 14.4,
+            "cached_input_per_million": None,
+            "retail_meters": RetailMeters(
+                product="Fictional Government public price card",
+                input="Fictional Government input tokens",
+                output="Fictional Government output tokens",
+            ),
+        }
+    )
+    head = await pricing._repository.get_catalog_head(tenant_id)
+    if head is None:
+        raise SeedError("The fictional catalog activation did not persist")
+    await pricing.catalog.import_bytes(
+        admin, canonical_json(package([proposed, government])).encode(), head.revision
+    )
+
+
 def _budget_amount(spent: float, used: float) -> float:
     """The amount, to two significant figures, of which ``spent`` is the share ``used``."""
 
@@ -3562,6 +3699,7 @@ def build_demo_app(console_port: int, portal_port: int) -> FastAPI:
             try:
                 estate = await seed_estate(services, TENANT_ID)
                 await seed_billing(services, estate, TENANT_ID)
+                await seed_public_catalog(services, TENANT_ID)
                 center = await services.cost_centers.get_cost_center(
                     Actor(ADMIN.object_id, TENANT_ID), estate.cost_centers["CI-204"]
                 )

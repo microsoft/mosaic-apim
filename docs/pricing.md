@@ -2,7 +2,8 @@
 
 This guide is for administrators who run MOSAIC. It explains where MOSAIC's prices come from, how
 it finds the price of each deployment, how to add and correct prices, how provisioned throughput is
-charged, and how to refresh the prices MOSAIC ships. The README's
+charged, how to maintain the public catalog without redeployment, and how maintainers refresh the
+packaged baseline. The README's
 [Usage and analytics](analytics-reference.md#usage-and-analytics) section lists the views and routes,
 [Usage analytics](usage-analytics.md) explains the usage that's priced, and
 [ADR 0020](adr/0020-price-list.md) records the original design.
@@ -41,6 +42,14 @@ lists with the day each was read:
   source, with its URL.
 - **Microsoft Learn's provisioned throughput guidance**, for how PTUs are billed and how many
   tokens a minute one PTU serves for each model.
+
+The package is a baseline, not a freshness service. **Pricing > Public catalog** can extend its
+model/meter definitions and activate reviewed public rates at runtime. The existing Government
+rates and their provenance remain intact. Microsoft's current
+[Retail API reference](https://learn.microsoft.com/rest/api/cost-management/retail-prices/azure-retail-prices#api-property-details)
+documents Commercial regional support only, so the runtime fetch is deliberately Commercial-only.
+New Government numbers need their own authoritative Government price evidence; a Commercial
+meter or an availability table is not that evidence.
 
 The seed covers Azure Commercial and Azure Government. In Azure Commercial it prices GPT-3.5
 Turbo, the GPT-4o, GPT-4.1, and GPT-5 families, o1, o3, o3-mini, o4-mini, the text embedding
@@ -413,6 +422,11 @@ override that took effect before then. After upgrading, check **History** on the
 overridden, and enter your price again from the new date if it should still apply. An approved
 deployment-bound billing rate is more specific than the global seed and is not displaced by it.
 
+That release-seed behavior describes installations without a runtime public catalog. After first
+activation, the tenant's baseline and public timeline are pinned. A public refresh cannot displace
+the manual or committed billing rate that wins under the existing baseline matching rules;
+explicit manual/billing changes still use their existing approval and correction paths.
+
 ## Provisioned throughput
 
 A provisioned deployment costs its capacity whether or not anyone calls it:
@@ -490,10 +504,122 @@ calls an MCP server's application made for the people who called that MCP server
   what each part's calls cost, and what rounding leaves over goes to the largest remainders, so a
   person's row can differ from their figure in Analytics by a ten-thousandth of a dollar.
 
-## Refreshing the seed
+## Public catalog maintenance without redeployment
 
-Azure's list prices change. Between releases, enter newer prices as versions. To refresh the seed
-itself, run this from the repository root, with the workspace's virtual environment:
+This is separate from **Billing data**. It maintains public reference definitions and USD prices;
+it does not acquire invoices, change an endpoint's cloud/region/provider, deploy a model, or
+publish an end-user offering. The existing pricer supplies administrator analytics, forecasts,
+portal usage, cost-center reports, exports and budgets.
+
+### Acquire, validate, review and activate
+
+1. Open **Pricing > Public catalog**. Inspect the active catalog separately from acquisition
+   attempts, source-read dates, trust labels, deployed coverage and dated activation history.
+2. Choose **Fetch Commercial prices** or **Import pricing package**, then explicitly acquire.
+   The fixed Retail adapter needs no Azure credential and has no schedule. Import accepts the
+   versioned JSON described below, not a billing export or arbitrary download URL.
+3. **Validate** shows source/mapping counts, supplied evidence and missing newly sourced prices.
+   A failed or incomplete retrieval never replaces the last usable catalog. A known missing
+   public rate retains a usable prior rate with its old provenance, or remains **No price**.
+   Availability-only definitions explicitly say **No public meter mapping**; they do not
+   establish a price. The bundled definitions add separately sourced GPT-5.1 and Government
+   GPT-5.6 availability references without inventing their numeric rates or meter names.
+4. **Review changes** compares exact cloud/model/version/publisher/type/region and token/PTU
+   scopes, deployed coverage, retained manual/billing rates and remaining gaps. Inspect supplied
+   source excerpts, not just a plausible URL. Imported source-read dates are **administrator
+   assertions**, never independently fetched/verified dates; actual acquisition time is separate.
+5. Review the **UTC effective date**, enter an **Activation note**, acknowledge source evidence
+   and gaps, then explicitly choose **Activate catalog**. No earlier checkpoint activates data.
+   The default is the UTC approval day: today's whole-day estimates can change. A future date
+   keeps today and earlier days unchanged. Each price applies no earlier than its reviewed and
+   source effective dates, even when its amount is unchanged.
+
+Backdating is a separate acknowledged correction: it can revise earlier reports and current
+budget status. Superseded retained price windows are shortened for the corrected scopes without
+extending existing expiry bounds. Existing billing publication markers remain the authority for exact prepared
+billing-version IDs; a public catalog is never a billing approval. No public refresh implicitly
+replaces a negotiated/manual or applicable approved billing rate, and no Government gap receives
+a Commercial price. A source-read date alone is not proof of complete or current provider coverage.
+
+An immutable manifest identifies hashed 256 KiB chunks. Activation atomically commits the
+tenant head, versioned draft, activation and audit outbox event. Other API replicas read the head
+on their next book snapshot; no restart, rebuild or package-file replacement is required.
+`pricing.catalogAcquired`, `pricing.catalogAcquisitionFailed`, `pricing.catalogActivated` and
+`pricing.catalogRecovered` record source/method fingerprints, actor, date and revision context.
+Historical public versions and source receipts remain available in the retained snapshots.
+
+### JSON package and bounds
+
+The acquisition workspace downloads a fictional example and the current JSON schema from
+`GET /api/v1/pricing/catalog/template`. Replace the fictional assertions with evidence you have
+reviewed; never upload credentials, signed URLs, personal invoice data or unrelated account data.
+
+| Field | Meaning |
+| --- | --- |
+| `format`, `schemaVersion` | `mosaicPublicCatalog`, `1`; unknown fields/versions are refused. |
+| `catalog` | Explicit Commercial/Government model, publisher, aliases, version, deployment type, region scope, token/PTU kind and exact meter names. A definition without meters needs an `availabilitySource`, which is not numeric price evidence. |
+| `priceList` | Existing `PriceSeed` v1 shape: USD, source IDs/URLs/read dates, effective-dated per-million-token or PTU-hour prices. Empty prices allow a mappings-only update. |
+| `evidence` | Source ID, explicit pricing cloud, referenced price IDs and a bounded source excerpt. Every new Government price requires Government numeric evidence. Existing legacy Government seed entries are not revalidated as new imports. |
+
+Input is **15 MiB uncompressed UTF-8 JSON**, at most **2,000 definitions**, **20,000 prices** and
+**256 sources**. No archives, scripts, FX, unknown units, mixed token/PTU rates, non-finite amounts,
+missing required output dimension, ambiguous scope, credential-bearing URL or future claimed
+source-read date is accepted. Rates use the existing 100,000 USD per stated token/PTU-unit bound.
+Rate fields require literal JSON numbers, not booleans, numeric strings, arrays or objects.
+Missing is distinct from a substantiated numeric zero, which remains valid. PTU sizing/throughput
+changes need a separately reviewed application change; this workflow activates numeric rates,
+not new telemetry.
+
+Commercial fetches are bounded to **16 product queries**, **100 pages / 100,000 rows**,
+**50 MiB response data**, and a **120-second total budget**. Requests time out after 10 seconds;
+at most two transient retries fit within that budget. Unsafe continuation URLs, loops, malformed
+or unfinished pages, conflicting meters, unsupported units, and incomplete required input/output
+regional pairs fail closed. Fully absent public rates are visible gaps, not guessed candidates.
+
+All catalog routes require `Admin`. In addition to status/template, the API provides:
+
+| Route under `/api/v1/pricing/catalog` | Effect |
+| --- | --- |
+| `POST /imports?baseRevision=...` | Bounded JSON body; creates a validated or explicitly failed attempt, never activation. |
+| `POST /refreshes` | Explicit Commercial acquisition; `baseRevision` and an optional validated `draftId` select mapping context. No Government numeric fetch is implied. |
+| `GET /drafts/{id}` | Saved status, version, source trust, evidence and mappings; reconcile an uncertain activation here. |
+| `POST /drafts/{id}/preview` | Recompute against the reviewed date, catalog, explicit prices and deployment facts; return a digest. |
+| `POST /drafts/{id}/activate` | Require exact draft/base versions, digest, date, note and acknowledgements. |
+| `POST /recoveries` | Create a reviewable recovery draft from a prior committed revision. |
+
+Status/preview pages default to 100 and cap at 500 rows; totals cover the complete validated
+dataset. Changed meter names retain prior mappings for late billing normalization through the
+tenant's pinned book; saved billing runs are never silently rederived.
+
+### Conflicts, recovery and rollout
+
+- **Invalid source/prepare/commit:** the last usable head, rates and history stay unchanged.
+  Correct the source or retry explicitly. A 15 MiB overflow is HTTP 413; schema/dimension errors
+  are 422. There is no truncated-success fallback.
+- **Stale review (409):** load and review the current preview. If another catalog changed the
+  base revision, return to Public catalog and create a draft against that revision. Do not retry
+  an old digest or quietly replace another administrator's catalog.
+- **Unknown activation response:** choose **Check activation status**. An identical reviewed
+  activation is idempotent; changed dates/content/acknowledgements are not the same operation.
+  The UI locks the uncertain approval and never automatically resubmits it.
+- **Wrong but readable activated rates:** select **Restore as new activation** on a prior
+  revision. Review the new date and effects; restoring does not erase the intervening timeline.
+  A historical correction still needs its separate acknowledgement.
+- **Unreadable/corrupt committed snapshot:** pricing fails explicitly rather than substitute the
+  package or return successful-looking stale costs. Retry the exact immutable content; if it is
+  lost, use the operator's consistent backup/restore procedure, preserving manifests, chunks,
+  head, activations and audit relationships. Do not hand-edit a head to hide missing history.
+
+Use the existing [durable-state compatibility and quiescence protocol](upgrades.md#check-durable-state-compatibility-and-backup-prerequisites).
+**First runtime-catalog activation is the compatibility boundary:** all API readers must support
+the head before that activation. An old binary can ignore the new entity types yet still price
+incorrectly from its bundled seed; additive deserialization is not mixed-reader or downgrade
+safety. No new migration, deployment, backup service, role or permission is provisioned here.
+
+## Refreshing the packaged seed
+
+For ordinary administration use Public catalog above. To maintain the release's packaged baseline,
+run this from the repository root with the workspace's virtual environment:
 
 ```powershell
 python -m scripts.price_seed --check   # what would change, without writing anything
@@ -511,8 +637,10 @@ region, so each region keeps the old price until the day the API dates its own c
 the API no longer lists is kept without an end. If the API dates a replacement before the day the
 old price was last read, the refresh follows the API, which is the record, and prints a warning.
 
-The script decides which meters make up each price from a catalog at its top. To add a model, add
-its meters there and rebuild. Review the diff, and run the API's tests, which check that every price
+The script loads declarative mappings from `data/model_catalog.json`; its schema is
+`data/model_catalog.schema.json`. Runtime imports do not edit either package file. To maintain the
+release baseline, update its reviewed mappings and rebuild. Review the diff and source/cloud
+evidence, and run the API's tests, which check that every price
 cites a source the seed lists and that the file matches its schema.
 
 ## Limits
@@ -528,5 +656,5 @@ cites a source the seed lists and that the file matches its schema.
 - MOSAIC prices tokens, not images, audio, or fine-tuning, and only for deployments it knows. Calls
   through an adopted API have no price.
 - Ranges by the hour show no cost.
-- Seeded prices are only as current as the release. Check the **Sources** tab for the day they were
-  read.
+- Packaged prices are only as current as the release. Runtime catalog sources retain their own read
+  dates and trust labels; there is no automatic freshness guarantee or public-price schedule.

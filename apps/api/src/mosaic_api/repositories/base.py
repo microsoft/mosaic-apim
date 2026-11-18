@@ -45,6 +45,13 @@ from mosaic_api.model_pools import ModelPool
 from mosaic_api.notifications import NotificationEvent
 from mosaic_api.observed import ObservedEndpointEntity, ObservedEntity
 from mosaic_api.pricing import EndpointPricing, PriceVersion
+from mosaic_api.pricing_catalog import (
+    CatalogActivation,
+    CatalogChunk,
+    CatalogDraft,
+    CatalogHead,
+    CatalogManifest,
+)
 from mosaic_api.usage_telemetry import (
     AttributionRecord,
     SummaryDimension,
@@ -727,6 +734,42 @@ class PricingRepository(Protocol):
     async def ready(self) -> bool: ...
 
     async def close(self) -> None: ...
+
+    async def get_catalog_head(self, tenant_id: str) -> CatalogHead | None: ...
+
+    async def has_catalog_activation(self, tenant_id: str) -> bool: ...
+
+    async def get_catalog_manifest(
+        self, tenant_id: str, manifest_id: str
+    ) -> CatalogManifest | None: ...
+
+    async def get_catalog_chunk(self, tenant_id: str, chunk_id: str) -> CatalogChunk | None: ...
+
+    async def prepare_catalog(
+        self, manifest: CatalogManifest, chunks: Sequence[CatalogChunk]
+    ) -> None: ...
+
+    async def list_catalog_drafts(self, tenant_id: str) -> list[CatalogDraft]: ...
+
+    async def get_catalog_draft(self, tenant_id: str, draft_id: str) -> CatalogDraft | None: ...
+
+    async def create_catalog_draft(
+        self, draft: CatalogDraft, audit_event: AuditEvent
+    ) -> CatalogDraft: ...
+
+    async def list_catalog_activations(self, tenant_id: str) -> list[CatalogActivation]: ...
+
+    async def get_catalog_activation(
+        self, tenant_id: str, revision: str
+    ) -> CatalogActivation | None: ...
+
+    async def activate_catalog(
+        self,
+        head: CatalogHead,
+        draft: CatalogDraft,
+        activation: CatalogActivation,
+        audit_event: AuditEvent,
+    ) -> CatalogActivation: ...
 
     async def list_price_versions(self, tenant_id: str) -> list[PriceVersion]: ...
 
