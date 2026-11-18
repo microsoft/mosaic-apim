@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-query'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, type LoaderFunction, RouterProvider, useLocation, useNavigate } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -225,6 +225,7 @@ const api = {
   assignEnvironments: vi.fn(),
   syncModelEndpoint: vi.fn(),
   preflightModelEndpoint: vi.fn(),
+  getModelEndpointRuntimeAccess: vi.fn(),
   deleteModelEndpoint: vi.fn(),
   listModelDeployments: vi.fn(),
   getDeployableModels: vi.fn(),
@@ -1038,6 +1039,12 @@ const AI_RESOURCE_ID =
   '/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-contoso-ai' +
   '/providers/Microsoft.CognitiveServices/accounts/contoso-aoai'
 
+const CURRENT_CHECK = {
+  rulesRevision: 'test-rules/1',
+  currentRulesRevision: 'test-rules/1',
+  freshness: 'current',
+} as const
+
 function modelEndpoint(overrides: Partial<ModelEndpoint> = {}): ModelEndpoint {
   return {
     id: 'endpoint_1',
@@ -1045,6 +1052,12 @@ function modelEndpoint(overrides: Partial<ModelEndpoint> = {}): ModelEndpoint {
     name: 'Contoso models',
     provider: 'azureOpenAi',
     endpoint: 'https://contoso-aoai.openai.azure.com/',
+    detailEvidence: {
+      endpointSource: 'account', providerSource: 'accountKind',
+      endpointConfirmedAt: '2026-09-01T12:00:00Z',
+      providerConfirmedAt: '2026-09-01T12:00:00Z',
+      accountReadAt: '2026-09-01T12:00:00Z',
+    },
     azureResourceId: AI_RESOURCE_ID,
     subscriptionId: '00000000-0000-0000-0000-000000000000',
     resourceGroup: 'rg-contoso-ai',
@@ -1057,6 +1070,7 @@ function modelEndpoint(overrides: Partial<ModelEndpoint> = {}): ModelEndpoint {
     credentialReferenceId: null,
     status: 'connected',
     access: {
+      ...CURRENT_CHECK,
       canRead: true,
       evaluation: 'effectivePermissions',
       checkedAt: '2026-09-01T12:00:00Z',
@@ -1093,6 +1107,7 @@ function runtimeAccess(
   overrides: Partial<GatewayRuntimeAccess> = {},
 ): GatewayRuntimeAccess {
   return {
+    ...CURRENT_CHECK,
     gatewayId: 'gateway_1',
     gatewayName: 'Development gateway',
     apimPrincipalId: '11111111-1111-1111-1111-111111111111',
@@ -1299,6 +1314,75 @@ describe('ModelsPage model endpoints', () => {
       await screen.findByText(/deploy new models to opted-in Azure accounts/i),
     ).toBeVisible()
     expect(screen.getByText(/publishing through API Management remains a separate action/i)).toBeVisible()
+  })
+
+  it('qualifies placeholders and keeps superseded advice explicitly historical without checking on read', async () => {
+    const user = userEvent.setup()
+    const original = modelEndpoint()
+    api.listModelEndpoints.mockResolvedValue([modelEndpoint({
+      provider: 'azureAiFoundry',
+      endpoint: 'https://contoso-aoai.cognitiveservices.azure.com/',
+      detailEvidence: { endpointSource: 'resourceIdPlaceholder', providerSource: 'default' },
+      access: { ...original.access, rulesRevision: 'older', freshness: 'stale',
+        remediation: runtimeAccess().remediation },
+    })])
+    renderPage()
+
+    expect(await screen.findByText('MOSAIC access check out of date')).toBeVisible()
+    expect(screen.getAllByText('Unconfirmed')).toHaveLength(2)
+    expect(screen.getByText('Placeholder generated from the resource ID.')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Copy historical command' })).not.toBeVisible()
+    await user.click(screen.getByText('Previous MOSAIC access check and role advice — historical, not current'))
+    expect(screen.getByRole('button', { name: 'Copy historical command' })).toBeVisible()
+    expect(api.preflightModelEndpoint).not.toHaveBeenCalled()
+    expect(api.getModelEndpointRuntimeAccess).not.toHaveBeenCalled()
+  })
+
+  it('distinguishes a never-checked record from legacy facts whose confirmation was not recorded', async () => {
+    api.listModelEndpoints.mockResolvedValue([modelEndpoint({
+      detailEvidence: null,
+      access: { canRead: false, evaluation: 'notEvaluated', missingActions: [] },
+    })])
+    renderPage()
+
+    expect(await screen.findByText('No access check recorded for MOSAIC access')).toBeVisible()
+    expect(screen.getAllByText('Confirmation not recorded')).toHaveLength(2)
+    expect(screen.queryByText('MOSAIC access check out of date')).not.toBeInTheDocument()
+    expect(api.preflightModelEndpoint).not.toHaveBeenCalled()
+  })
+
+  it('runs explicit preflight with pending and unchanged-result feedback while retaining action focus', async () => {
+    const user = userEvent.setup()
+    const endpoint = modelEndpoint()
+    api.listModelEndpoints.mockResolvedValue([endpoint])
+    let finish!: (value: ModelEndpoint) => void
+    api.preflightModelEndpoint.mockImplementation(() => new Promise<ModelEndpoint>(resolve => { finish = resolve }))
+    renderPage()
+
+    const button = await screen.findByRole('button', { name: 'Check access' })
+    await user.click(button)
+    expect(screen.getByRole('button', { name: 'Checking access…' })).toHaveAttribute('aria-disabled', 'true')
+    expect(button).toHaveFocus()
+    expect(api.preflightModelEndpoint).toHaveBeenCalledExactlyOnceWith(endpoint.id)
+    expect(api.getModelEndpointRuntimeAccess).not.toHaveBeenCalled()
+
+    await act(async () => finish(endpoint))
+
+    expect(await screen.findByText(/Access check completed at/)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Check access' })).toHaveFocus()
+    expect(screen.queryByText('Access granted')).not.toBeInTheDocument()
+  })
+
+  it('shows a failed explicit check without discarding the previous evidence', async () => {
+    const user = userEvent.setup()
+    api.listModelEndpoints.mockResolvedValue([modelEndpoint()])
+    api.preflightModelEndpoint.mockRejectedValue(new Error('The saved check could not be updated.'))
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: 'Check access' }))
+
+    expect(await screen.findByText('MOSAIC could not complete this access check')).toBeVisible()
+    expect(screen.getByText('MOSAIC can enumerate models on this endpoint.')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Check access' })).toHaveFocus()
   })
 
   it('invites registration when nothing is onboarded', async () => {
@@ -1899,7 +1983,7 @@ describe('ModelsPage model endpoints', () => {
 
     const settings = await screen.findByRole('region', { name: 'Endpoint settings' })
     expect(
-      within(settings).getByText('Not known yet. MOSAIC cannot read this resource.'),
+      within(settings).getByText('Not confirmed by an account read.'),
     ).toBeVisible()
   })
 
@@ -2151,6 +2235,7 @@ describe('ModelsPage model endpoints', () => {
       modelEndpoint({
         status: 'unauthorized',
         access: {
+          ...CURRENT_CHECK,
           canRead: false,
           evaluation: 'effectivePermissions',
           checkedAt: '2026-09-01T12:00:00Z',
@@ -2467,6 +2552,7 @@ describe('ModelsPage model endpoints', () => {
           },
         ],
         access: {
+          ...CURRENT_CHECK,
           canRead: true,
           evaluation: 'probe',
           checkedAt: '2026-09-01T12:00:00Z',
@@ -2494,6 +2580,7 @@ describe('ModelsPage model endpoints', () => {
           }),
         ],
         capabilities: { managementApiVersion: '2024-10-01', notes: [] },
+        detailEvidence: { endpointSource: 'registeredUrl', providerSource: 'urlInference' },
         inventory: {
           deployments: 0,
           availableModels: 0,
@@ -2976,6 +3063,7 @@ describe('ModelsPage model endpoints', () => {
           },
         ],
         access: {
+          ...CURRENT_CHECK,
           canRead: false,
           evaluation: 'notEvaluated',
           checkedAt: '2026-09-01T12:00:00Z',
@@ -2986,6 +3074,7 @@ describe('ModelsPage model endpoints', () => {
             'check them, so the first request through a pool is what tells whether AWS accepts it.',
         },
         runtimeAccess: [],
+        detailEvidence: { endpointSource: 'registeredUrl', providerSource: 'registrationHint' },
         capabilities: { managementApiVersion: '2024-10-01', notes: [] },
         inventory: {
           deployments: 0,
@@ -3234,6 +3323,7 @@ describe('ModelsPage model endpoints', () => {
           keyStoredByMosaic: false,
           status: 'degraded',
           access: {
+            ...CURRENT_CHECK,
             canRead: false,
             evaluation: 'probe',
             checkedAt: '2026-09-01T12:00:00Z',
@@ -3265,6 +3355,7 @@ describe('ModelsPage model endpoints', () => {
           keyStoredByMosaic: false,
           status: 'unauthorized',
           access: {
+            ...CURRENT_CHECK,
             canRead: false,
             evaluation: 'notEvaluated',
             checkedAt: '2026-09-01T12:00:00Z',

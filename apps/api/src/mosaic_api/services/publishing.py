@@ -60,6 +60,7 @@ from mosaic_api.domain import (
     PublishRunStatus,
     PublishStepResult,
     PublishStepStatus,
+    ReadinessFreshness,
     TokenEnforcement,
     grant_precedence_key,
     model_access_subscription_name,
@@ -69,6 +70,7 @@ from mosaic_api.domain import (
     subject_kind_for,
     utc_now,
 )
+from mosaic_api.endpoint_readiness import readiness_freshness, runtime_access_view
 from mosaic_api.environments import (
     VerdictLevel,
     compatibility_fingerprint,
@@ -1010,7 +1012,9 @@ class PublishingService:
                         publication_status=existing.status if existing else None,
                         suggested_api_name=api_name,
                         suggested_api_path=api_path,
-                        runtime_access=runtime,
+                        runtime_access=(
+                            runtime_access_view(runtime) if runtime is not None else None
+                        ),
                         environment_verdict=verdict,
                         declared=observed is None,
                     )
@@ -1683,6 +1687,11 @@ class PublishingService:
             warnings.append(
                 "MOSAIC has not evaluated whether this gateway can call the model endpoint. "
                 "Re-check the endpoint's runtime access to find out before relying on this API."
+            )
+        elif readiness_freshness(runtime) != ReadinessFreshness.CURRENT:
+            warnings.append(
+                "The saved gateway access check is not current. Run Check access on the "
+                "endpoint before relying on its recorded result."
             )
         elif not runtime.can_invoke:
             warnings.append(

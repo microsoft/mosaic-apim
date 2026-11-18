@@ -53,8 +53,10 @@ from mosaic_api.domain import (
     RuntimeAccessReason,
     RuntimeRoleFinding,
     RuntimeRoleFindingKind,
+    account_kind_provider,
     utc_now,
 )
+from mosaic_api.endpoint_readiness import ENDPOINT_READINESS_RULES_REVISION
 from mosaic_api.errors import ValidationError
 from mosaic_api.integrations.aoai.client import CognitiveServicesClient
 from mosaic_api.integrations.apim.client import JsonObject
@@ -795,6 +797,7 @@ def _result(
         evaluation=evaluation,
         reason=reason,
         checked_at=utc_now(),
+        rules_revision=ENDPOINT_READINESS_RULES_REVISION,
         required_role_name=context.role_name,
         required_role_definition_id=context.role_definition_id,
         granted_role_name=winner.role_name if winner else None,
@@ -1005,6 +1008,21 @@ async def verify_gateway_runtime_access(
             assessed=assessed,
         )
 
+    if account_kind_provider(kind) is None:
+        return _result(
+            context,
+            can_invoke=False,
+            evaluation=RuntimeAccessEvaluation.NOT_EVALUATED,
+            reason=RuntimeAccessReason.ACCOUNT_KIND_UNCONFIRMED,
+            message=_join(
+                role_message,
+                "MOSAIC has not confirmed a supported Azure AI account kind. Run Check access "
+                "after MOSAIC can read the account. A provider label and role assignments alone "
+                "do not verify runtime or API-schema support.",
+            ),
+            principal_id=principal_id,
+            assessed=assessed,
+        )
     return _result(
         context,
         can_invoke=True,

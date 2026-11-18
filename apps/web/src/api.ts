@@ -560,6 +560,7 @@ export interface MosaicApi extends AdminApi {
   ): Promise<ModelEndpoint>
   removeDeclaredModelDeployment(endpointId: string, deploymentName: string): Promise<ModelEndpoint>
   listAvailableModels(endpointId: string): Promise<ObservedAvailableModel[]>
+  /** Read recorded evidence only. Use preflightModelEndpoint for an intentional access check. */
   getModelEndpointRuntimeAccess(endpointId: string): Promise<GatewayRuntimeAccess[]>
   listSuggestedModelEndpoints(context?: { azureCloud?: AzureCloud; azureConnectionId?: string | null }): Promise<ModelEndpointSuggestionView>
   listMcpEndpoints(): Promise<McpEndpoint[]>

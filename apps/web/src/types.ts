@@ -1401,6 +1401,7 @@ export type RuntimeAccessReason =
   | 'assignmentsUnreadable'
   | 'noGatewayIdentity'
   | 'identityNotObserved'
+  | 'accountKindUnconfirmed'
 
 export type RuntimeRoleFindingKind =
   | 'sufficient'
@@ -1424,7 +1425,15 @@ export type NetworkReachability = 'reachable' | 'unreachable' | 'unverified' | '
 export type SuggestionSource = 'bootstrap' | 'gatewayBackend' | 'subscriptionScan'
 
 /** Whether MOSAIC's own identity can enumerate models on an endpoint. */
-export interface EndpointAccess {
+export type ReadinessFreshness = 'neverChecked' | 'stale' | 'current'
+
+export interface ReadinessCheckEvidence {
+  rulesRevision?: string | null
+  currentRulesRevision?: string | null
+  freshness?: ReadinessFreshness
+}
+
+export interface EndpointAccess extends ReadinessCheckEvidence {
   canRead: boolean
   evaluation: AccessEvaluation
   checkedAt?: string | null
@@ -1434,7 +1443,7 @@ export interface EndpointAccess {
 }
 
 /** Whether one gateway's managed identity can call an endpoint at runtime. */
-export interface GatewayRuntimeAccess {
+export interface GatewayRuntimeAccess extends ReadinessCheckEvidence {
   gatewayId: string
   gatewayName: string
   apimPrincipalId?: string | null
@@ -1501,6 +1510,14 @@ export interface DeclaredDeploymentInput {
   apiShape: ApiShape
 }
 
+export interface EndpointDetailEvidence {
+  endpointSource?: 'resourceIdPlaceholder' | 'registeredUrl' | 'account' | null
+  endpointConfirmedAt?: string | null
+  providerSource?: 'default' | 'registrationHint' | 'urlInference' | 'accountKind' | null
+  providerConfirmedAt?: string | null
+  accountReadAt?: string | null
+}
+
 export interface ModelEndpoint {
   azureCloud?: AzureCloud
   azureConnectionId?: string | null
@@ -1509,6 +1526,7 @@ export interface ModelEndpoint {
   name: string
   provider: ModelProvider
   endpoint: string
+  detailEvidence?: EndpointDetailEvidence | null
   azureResourceId?: string | null
   subscriptionId?: string | null
   resourceGroup?: string | null

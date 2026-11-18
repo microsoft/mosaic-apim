@@ -25,7 +25,9 @@ from mosaic_api.domain import (
     PublishRunStatus,
     RuntimeAccessEvaluation,
     RuntimeAccessReason,
+    utc_now,
 )
+from mosaic_api.endpoint_readiness import ENDPOINT_READINESS_RULES_REVISION
 from mosaic_api.errors import ConflictError
 from mosaic_api.integrations.backend_keys import backend_key_name
 from mosaic_api.integrations.pool_policy import (
@@ -484,6 +486,8 @@ async def test_a_gateway_that_cant_read_the_key_is_a_problem(keyed: Estate) -> N
             can_invoke=False,
             evaluation=RuntimeAccessEvaluation.ROLE_ASSIGNMENTS,
             reason=RuntimeAccessReason.MISSING_ROLE,
+            checked_at=utc_now(),
+            rules_revision=ENDPOINT_READINESS_RULES_REVISION,
         ),
     )
     pool = await keyed.create("OpenAI", _gpt4o("aoai-east", "aoai-key"))
@@ -510,6 +514,8 @@ async def test_a_gateway_that_cant_read_the_key_is_a_problem(keyed: Estate) -> N
                 gateway_id="",
                 gateway_name="apim-contoso-dev",
                 evaluation=RuntimeAccessEvaluation.NOT_EVALUATED,
+                checked_at=utc_now(),
+                rules_revision=ENDPOINT_READINESS_RULES_REVISION,
             )
         ],
     ],

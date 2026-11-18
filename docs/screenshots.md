@@ -13,6 +13,11 @@ and complete-group-read results are simulated, not evidence of live Graph connec
 This is a screenshot-only fixture arrangement: normal local-authentication deployments disable
 Graph lookup and complete group checks.
 
+The endpoint-evidence shot adds a fictional development account whose ARM read returns `403`.
+Its saved check is deliberately dated under an earlier readiness-rule revision, while its URL
+and provider remain unconfirmed. This fixture-only historical record demonstrates provenance
+and stale evidence, not a real account, production build history, or model availability.
+
 The User-only console handoff shots render the real access gate and theme in the isolated
 `scripts/screenshots/console-access` fixture. Only that tooling aliases MSAL to the fictional demo
 user and intercepts the role check; neither product build gains a preview route or authentication
@@ -404,6 +409,7 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-catalog-summary-review` | Console | `/models`, GPT-4o mini **Edit catalog summary > Review summary**, before/after copy and exact-offering preview; never saved | Light | Review catalog copy |
 | `console-register-key-endpoint` | Console | `/models?register=1`, **Azure AI with an API key** tab with a pasted, masked key, filled in and never submitted | Light | Register with an API key |
 | `console-key-endpoint` | Console | `/models?tab=endpoints`, Fabrikam partner Foundry selected, scrolled to its **Access** card with **Replace API key** | Dark | Endpoint reached with an API key |
+| `console-endpoint-evidence` | Console | `/models?tab=endpoints`, fictional Contoso AI Lab selected, with unconfirmed URL/provider facts and a dated check saved under an older readiness-rule revision | Light | Endpoint facts and saved access evidence |
 | `console-deploy-model` | Console | `/models?tab=endpoints`, **Deploy model** on the fictional Azure OpenAI account; explicit deployment-management opt-in, fresh version/SKU/quota configuration, no Azure create | Light | Deploy an Azure model |
 | `console-deploy-model-review` | Console | The same workflow's **Review deployment** step with exact target, native capacity, quota, billing/residency warnings, and unsubmitted **Deploy to Azure** action | Dark | Review before Azure creation |
 | `console-pools` | Console | `/pools`, compact list with Anthropic Claude selected, **Overview** detail and separate Suggestions navigation | Light | Model pools |

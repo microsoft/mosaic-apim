@@ -163,7 +163,11 @@ from mosaic_api.pricing import (
     PriceCreate,
     PriceMatch,
 )
-from mosaic_api.repositories import GatewayRepository, InMemoryEntitlementRepository
+from mosaic_api.repositories import (
+    GatewayRepository,
+    InMemoryEntitlementRepository,
+    ModelEndpointRepository,
+)
 from mosaic_api.services import (
     DirectoryService,
     EntitlementService,
@@ -210,6 +214,7 @@ from scripts.screenshots.demo_fakes import (
     GOV_GATEWAY_RESOURCE_ID,
     KEY_VAULT_ID,
     PARTNER_GATEWAY_RESOURCE_ID,
+    UNCONFIRMED_AI_RESOURCE_ID,
     DemoApim,
     DemoBotTokens,
     DemoLogs,
@@ -721,6 +726,7 @@ class DemoServices:
     # The seed dates its grants in the past, which only the in-memory store lets it do.
     entitlement_repository: InMemoryEntitlementRepository
     gateway_repository: GatewayRepository
+    endpoint_repository: ModelEndpointRepository
     logs: DemoLogs
     telemetry: TelemetryService
     usage_rollups: UsageRollupService
@@ -1077,6 +1083,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         entitlement_repository=entitlement_repository,
         gateway_repository=state.gateway_repository,
         logs=logs,
+        endpoint_repository=state.model_endpoint_repository,
         telemetry=telemetry,
         usage_rollups=usage_rollups,
         pricing=pricing,
@@ -1699,6 +1706,33 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
     estate.foundry_west_endpoint_id = foundry_west.id
     for endpoint in (aoai, foundry, foundry_north_central, foundry_west):
         _require_synced(await services.endpoints.sync_now(admin, endpoint.id), endpoint.name)
+
+    unconfirmed = await services.endpoints.register(
+        admin,
+        ModelEndpointCreate(
+            azure_resource_id=UNCONFIRMED_AI_RESOURCE_ID,
+            name="Contoso AI Lab",
+            environment="development",
+        ),
+    )
+    # A fictional persisted result from an earlier ruleset, not a current evaluator output.
+    historical_stamp = {
+        "rules_revision": "model-endpoint-readiness/0",
+        "checked_at": utc_now() - timedelta(days=30),
+    }
+    await services.endpoint_repository.save_endpoint(
+        unconfirmed.model_copy(update={
+            "access": unconfirmed.access.model_copy(update=historical_stamp),
+            "runtime_access": [
+                row.model_copy(update=historical_stamp) for row in unconfirmed.runtime_access
+            ],
+        }),
+        AuditEvent(
+            id=deterministic_id("audit", tenant_id, "endpoint-evidence"), tenant_id=tenant_id,
+            action="demo.historicalEndpointEvidence", resource_type="modelEndpoint",
+            resource_id=unconfirmed.id, actor_object_id=admin.object_id,
+        ),
+    )
 
     # A partner's Foundry resource in its own Microsoft Entra tenant, which MOSAIC's managed
     # identity can't reach. It is registered by URL with its API key, which MOSAIC keeps in the

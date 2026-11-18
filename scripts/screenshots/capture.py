@@ -69,7 +69,10 @@ RESOURCE_NAMES = [
     "Contoso AI Dev Gateway",
     "Partner Gateway",
     "Contoso AI Foundry",
+    "Contoso AI Foundry North Central",
+    "Contoso AI Foundry West",
     "Contoso Azure OpenAI",
+    "Contoso AI Lab",
     "Fabrikam partner Foundry",
     "Contoso Docs Search",
     "IT Service Desk",
@@ -92,6 +95,7 @@ RESOURCE_NAMES = [
     "rg-contoso-partners",
     "rg-contoso-ai",
     "contoso-aoai",
+    "contoso-evidence-lab",
     "contoso-gpt-41-eval",
     # Longer names first, so a suffix of a regional account's name is never left showing.
     "contoso-foundry-ncus",
@@ -830,8 +834,20 @@ SHOTS: list[Shot] = [
             wait_for_text("The endpoint accepts the key"),
             scroll_to_text("The endpoint accepts the key", margin=140),
         ),
-        # Include the key check, gateway verdicts, and declared deployments.
-        height=1650,
+        # Include dated key/gateway evidence and the declared deployments.
+        height=1950,
+    ),
+    Shot(
+        "console-endpoint-evidence",
+        "console",
+        "/models?tab=endpoints",
+        "light",
+        "Contoso AI Lab",
+        actions=(
+            click_button("Contoso AI Lab"),
+            wait_for_text("MOSAIC access check out of date"),
+        ),
+        height=1700,
     ),
     Shot(
         "console-deploy-model",
