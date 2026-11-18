@@ -120,10 +120,13 @@ def test_success_without_token_counts_remains_unknown_only_for_standalone() -> N
     assert tally.summary().unpriced_requests == 1
 
 
-def test_refreshed_inventory_cannot_erase_remembered_aggregate_cost_lineage() -> None:
+@pytest.mark.parametrize("publication_id", [None, "publication-1"])
+def test_refreshed_inventory_cannot_erase_remembered_aggregate_cost_lineage(
+    publication_id: str | None,
+) -> None:
     remembered = RolledUpApi(
         api_name="bedrock", resource_id="model-1", kind="model", display_name="Claude",
-        cost_telemetry="aggregateOnly", first_seen_at=NOW,
+        publication_id=publication_id, cost_telemetry="aggregateOnly", first_seen_at=NOW,
     )
     [merged] = merge_apis(
         [remembered], [remembered.model_copy(update={"cost_telemetry": None})], NOW,
@@ -132,6 +135,37 @@ def test_refreshed_inventory_cannot_erase_remembered_aggregate_cost_lineage() ->
     [(_, _, priced)] = book.priced_parts(merged, "day", DAY, UsageMetrics(requests=1, ok=1))
     assert merged.cost_telemetry == "aggregateOnly"
     assert priced.amount is None and priced.unpriced.reason == "incompleteUsage"
+
+
+@pytest.mark.parametrize("fresh_marker", [None, "aggregateOnly"])
+@pytest.mark.parametrize("replacement", [
+    {"resource_id": "model-2"},
+    {"publication_id": "publication-2"},
+    {"publication_id": None},
+    {"kind": "pool"},
+    {
+        "kind": "pool", "resource_id": "pool-2", "publication_id": "pool-2",
+        "model_endpoint_id": None, "deployment_name": None,
+    },
+    {
+        "resource_id": "model-2", "publication_id": "publication-2",
+        "model_endpoint_id": "endpoint-2", "deployment_name": "replacement-model",
+    },
+])
+def test_reused_api_name_does_not_inherit_a_replaced_models_cost_lineage(
+    replacement: dict[str, object], fresh_marker: str | None,
+) -> None:
+    remembered = RolledUpApi(
+        api_name="shared-name", resource_id="model-1", publication_id="publication-1",
+        kind="model", display_name="Old standalone", model_endpoint_id="endpoint-1",
+        deployment_name="old-model", cost_telemetry="aggregateOnly", first_seen_at=NOW,
+    )
+    fresh = remembered.model_copy(update={**replacement, "cost_telemetry": fresh_marker})
+    [merged] = merge_apis([remembered], [fresh], NOW)
+    assert merged.cost_telemetry == fresh_marker
+    assert merged.kind == fresh.kind
+    assert merged.resource_id == fresh.resource_id
+    assert merged.publication_id == fresh.publication_id
 
 
 @pytest.mark.parametrize("subtotal", [1000.0, 1100.0])
