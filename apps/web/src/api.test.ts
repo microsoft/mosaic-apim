@@ -17,6 +17,27 @@ describe('useMosaicApi', () => {
     vi.unstubAllGlobals()
   })
 
+  it('sends a JSON object when registering an existing self-hosted runtime', async () => {
+    const registration = {
+      gatewayName: 'plant-edge',
+      ingressOrigin: 'https://plant.edge.example.test',
+      imageVersion: '2.13.2',
+    }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ id: 'runtime_1' }), { status: 201 },
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useMosaicApi())
+
+    await result.current.registerSelfHostedGateway('gateway/one', registration)
+
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toContain('/api/v1/gateways/gateway%2Fone/self-hosted')
+    expect(options.method).toBe('POST')
+    expect(new Headers(options.headers).get('Content-Type')).toBe('application/json')
+    expect(JSON.parse(String(options.body))).toEqual(registration)
+  })
+
   it('uploads a pricing package as bounded raw JSON without double encoding or activation', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(
       JSON.stringify({ id: 'catalog-draft', status: 'readyForReview' }), { status: 201 },

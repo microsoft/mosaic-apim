@@ -227,7 +227,8 @@ desired state.
 
 For a self-hosted publication, recovery must also confirm local ingress is fenced. If a
 completed creation reached the run journal before the publication record was saved, recovery
-can reconcile the exact owned discovery operation and policy before validating the shared API.
+can reconcile an exact owned shared API, discovery operation, or operation policy before
+validating the shared API.
 Unconfirmed writes and foreign operations leave recovery blocked; MOSAIC does not restore grants.
 If the exact shared API is already gone after interrupted unpublish, a newly reviewed unpublish
 can finish the remaining cleanup. An incomplete operation inventory on an existing API never

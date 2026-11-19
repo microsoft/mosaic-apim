@@ -53,6 +53,22 @@ RUNTIME_ACTIONS = (
 )
 
 
+def _is_dns_hostname(host: str) -> bool:
+    labels = host.split(".")
+    return (
+        len(labels) >= 2
+        and labels[-1][:1].isalpha()
+        and all(
+            1 <= len(label) <= 63
+            and label.isascii()
+            and label[0].isalnum()
+            and label[-1].isalnum()
+            and label.replace("-", "").isalnum()
+            for label in labels
+        )
+    )
+
+
 def ingress_origin(value: str) -> str:
     try:
         parsed = urlsplit(value)
@@ -64,10 +80,7 @@ def ingress_origin(value: str) -> str:
         re.search(r"[\x00-\x20\\%?#@]", value)
         or parsed.scheme != "https"
         or parsed.path not in {"", "/"}
-        or not re.fullmatch(
-            r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?",
-            host,
-        )
+        or not _is_dns_hostname(host)
         or host.endswith(".localhost")
         or (port is not None and not 1 <= port <= 65535)
         or parsed.netloc.lower() != host + (f":{port}" if port is not None else "")

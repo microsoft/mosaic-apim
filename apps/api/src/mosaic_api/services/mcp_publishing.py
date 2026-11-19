@@ -1147,8 +1147,9 @@ class McpPublishingService:
         client = self._client_factory(gateway.arm_resource())
         writer = self._writer_factory(gateway.arm_resource())
         resources = list(publication.resources)
-        if publication.is_self_hosted():
-            resources = await self._recover_discovery_operations(publication, client, run)
+        self_hosted = publication.is_self_hosted()
+        if self_hosted:
+            resources = await self._recover_discovery_resources(publication, client, run)
             publication = publication.model_copy(update={"resources": resources})
         runtime = await self._teardown_runtime(publication, gateway, client)
         for step in run.steps:
@@ -1159,8 +1160,11 @@ class McpPublishingService:
                     publication, runtime, client, writer, step, run, resources,
                 )
                 continue
-            if publication.is_self_hosted() and step.kind in _DISCOVERY_OPERATION_KINDS:
-                # The discovery gate admits only operations confirmed by the durable journal.
+            if self_hosted and (
+                step.kind in _DISCOVERY_OPERATION_KINDS
+                or _is_shared_metadata_api(step.kind, step.name)
+            ):
+                # Do not let generic recovery adopt a resource without confirmed ownership.
                 continue
             if not step.created_by_mosaic or step.action == PublishAction.DELETE:
                 continue
@@ -1231,7 +1235,7 @@ class McpPublishingService:
         await self._release_run(publication, run)
         return recovered
 
-    async def _recover_discovery_operations(
+    async def _recover_discovery_resources(
         self, publication: McpPublication, client: ApimClient, run: PublishRun,
     ) -> list[PublishedResource]:
         # Progress saves the run before the publication. Recover this gap in memory only;
@@ -1244,17 +1248,22 @@ class McpPublishingService:
         }
         recovered: list[PublishedResource] = []
         for item in _desired_resources(publication):
-            if (
-                item.target_api != MCP_METADATA_API_NAME
-                or item.kind not in _DISCOVERY_OPERATION_KINDS
-                or self._owns(publication, item.kind, item.name)
+            shared_root = _is_shared_metadata_api(item.kind, item.name)
+            shared_operation = (
+                item.target_api == MCP_METADATA_API_NAME and item.kind in _DISCOVERY_OPERATION_KINDS
+            )
+            if not (shared_root or shared_operation) or self._owns(
+                publication, item.kind, item.name,
             ):
                 continue
             resource_id = f"{client.resource.canonical}/{item.segment}"
             if (item.kind, item.name, resource_id) not in completed_creates:
                 continue
-            if item.kind == PublishedResourceKind.API_OPERATION:
-                live = await client.get_api_operation(MCP_METADATA_API_NAME, item.name)
+            if shared_root or item.kind == PublishedResourceKind.API_OPERATION:
+                live = (
+                    await client.get_api(item.name) if shared_root
+                    else await client.get_api_operation(MCP_METADATA_API_NAME, item.name)
+                )
                 if live is None:
                     continue
                 observed_id = live.get("id")
@@ -1265,7 +1274,8 @@ class McpPublishingService:
                         or observed_id.casefold() != resource_id.casefold()
                     )
                 ):
-                    raise ConflictError("The live MCP discovery operation identity has changed.")
+                    kind = "API" if shared_root else "operation"
+                    raise ConflictError(f"The live MCP discovery {kind} identity has changed.")
             elif await client.get_operation_policy(
                 MCP_METADATA_API_NAME, item.name, strict=True,
             ) is None:

@@ -216,11 +216,13 @@ async def test_existing_or_ambiguous_mcp_discovery_link_is_not_adopted(uncertain
 
 @pytest.mark.parametrize(
     "evidence",
-    ["confirmed", "pending", "wrong-parent", "foreign-operation", "unfenced"],
+    ["confirmed", "pending", "wrong-parent", "foreign-resource", "unfenced"],
 )
-async def test_mcp_recovery_after_discovery_operation_split_save(
+@pytest.mark.parametrize("resource", ["root", "operation"])
+async def test_mcp_recovery_after_discovery_split_save(
     monkeypatch: pytest.MonkeyPatch,
     evidence: str,
+    resource: str,
 ) -> None:
     harness, choice = await prepare()
     await local_endpoint(harness)
@@ -231,8 +233,13 @@ async def test_mcp_recovery_after_discovery_operation_split_save(
     user = await harness.principal("caller", "11111111-1111-1111-1111-111111111111")
     await harness.entitlement("grant", "user", user.id, publication.mcp_server_id)
     plan = await service.plan(ACTOR, publication_id)
-    operation = f"apis/{MCP_METADATA_API_NAME}/operations/{publication.metadata_api_name}"
-    resource_id = f"{RESOURCE_ID}/{operation}"
+    root = f"apis/{MCP_METADATA_API_NAME}"
+    operation = f"{root}/operations/{publication.metadata_api_name}"
+    segment = root if resource == "root" else operation
+    expected_kind = (
+        PublishedResourceKind.API if resource == "root" else PublishedResourceKind.API_OPERATION
+    )
+    resource_id = f"{RESOURCE_ID}/{segment}"
     repository = harness.gateway_repository
     save_state = repository.record_mcp_publication_state
     interrupted = False
@@ -252,7 +259,7 @@ async def test_mcp_recovery_after_discovery_operation_split_save(
     step = next(item for item in journal.steps if item.resource_id == resource_id)
     assert interrupted and journal.status == PublishRunStatus.INTERRUPTED
     assert step.status == PublishStepStatus.SUCCEEDED and step.created_by_mosaic
-    assert operation in harness.apim.written
+    assert segment in harness.apim.written
     assert not any(item.resource_id == resource_id for item in record.resources)
     metadata_lock = service._metadata_lock_id(record)
     if evidence != "confirmed":
@@ -260,16 +267,18 @@ async def test_mcp_recovery_after_discovery_operation_split_save(
             step.status = PublishStepStatus.PENDING
         elif evidence == "wrong-parent":
             step.resource_id = step.resource_id.replace("/service/", "/service/other-")
-        elif evidence == "foreign-operation":
-            harness.apim.written[operation]["id"] = f"{RESOURCE_ID}/apis/unowned/{step.name}"
+        elif evidence == "foreign-resource":
+            harness.apim.written[segment]["id"] = f"{RESOURCE_ID}/apis/unowned/{step.name}"
         else:
             service._self_hosted_evidence = None
         await repository.save_publish_run(journal)
         writes_before = list(harness.apim.writes)
+        kind = "API" if resource == "root" else "operation"
+        unowned = "no MOSAIC MCP publication" if resource == "root" else "unknown MCP operation"
         expected = {
             "unfenced": "not confirmed fenced",
-            "foreign-operation": "operation identity has changed",
-        }.get(evidence, "unknown MCP operation")
+            "foreign-resource": f"{kind} identity has changed",
+        }.get(evidence, unowned)
         with pytest.raises(ConflictError, match=expected):
             await service.recover_interrupted(
                 ACTOR,
@@ -295,14 +304,19 @@ async def test_mcp_recovery_after_discovery_operation_split_save(
     assert saved.applied_access and saved.applied_access.grants
     assert not any(grant.enabled for grant in saved.applied_access.grants)
     assert any(
-        item.kind == PublishedResourceKind.API_OPERATION
+        item.kind == expected_kind
         and item.resource_id == resource_id
         and item.created_by_mosaic
         for item in saved.resources
     )
-    assert harness.apim.written[f"{operation}/policies/policy"]["properties"]["value"] == (
+    assert harness.apim.written[f"apis/{SERVER}/policies/policy"]["properties"]["value"] == (
         DENY_ALL_POLICY
     )
+    if resource == "operation":
+        assert harness.apim.written[f"{operation}/policies/policy"]["properties"]["value"] == (
+            DENY_ALL_POLICY
+        )
+    assert harness.apim.write_paths("PUT").count(segment) == 1
     assert await repository.get_publication_lock(ACTOR.tenant_id, publication_id) is None
     assert await repository.get_publication_lock(ACTOR.tenant_id, metadata_lock) is None
 

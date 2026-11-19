@@ -1060,7 +1060,7 @@ export function useMosaicApi(): MosaicApi {
       listSelfHostedGateways: (id) => request<SelfHostedGateway[]>(`/api/v1/gateways/${encodeURIComponent(id)}/self-hosted`),
       listSelfHostedGatewayCandidates: (id) => request<SelfHostedGatewayCandidate[]>(`/api/v1/gateways/${encodeURIComponent(id)}/self-hosted/candidates`),
       registerSelfHostedGateway: (id, value) => request<SelfHostedGateway>(`/api/v1/gateways/${encodeURIComponent(id)}/self-hosted`, {
-        method: 'POST', body: JSON.stringify(value),
+        method: 'POST', body: value,
       }),
       removeSelfHostedGateway: (id, runtimeId) => request<void>(`/api/v1/gateways/${encodeURIComponent(id)}/self-hosted/${encodeURIComponent(runtimeId)}`, { method: 'DELETE' }),
       registerGateway: (payload) =>
