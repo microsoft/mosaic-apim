@@ -10,6 +10,7 @@ import re
 import unittest
 from collections.abc import Iterator
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -127,6 +128,40 @@ class SpaNginxConfigTests(unittest.TestCase):
                 self.assertEqual(len(headers), len(added), "A header is added more than once")
                 for name, value in SECURITY_HEADERS.items():
                     self.assertEqual(headers.get(name), [value, "always"], name)
+
+    def test_asset_policy_matches_development_and_limits_only_assets(self) -> None:
+        class PolicyMeta(HTMLParser):
+            policy = ""
+
+            def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+                values = dict(attrs)
+                if tag == "meta" and values.get("http-equiv") == "Content-Security-Policy":
+                    self.policy = values.get("content") or ""
+
+        for app in APPS:
+            with self.subTest(app=app):
+                server = self.one(load(app).children("server"), "server")
+                header = self.one(
+                    server.children("add_header", "Content-Security-Policy"), "asset policy"
+                )
+                self.assertEqual(header.args[-1], "always")
+                parser = PolicyMeta()
+                parser.feed(ROOT.joinpath("apps", app, "index.html").read_text())
+                self.assertEqual(parser.policy, header.args[1])
+                directives = {
+                    parts[0]: parts[1:]
+                    for directive in parser.policy.split(";")
+                    if (parts := directive.split())
+                }
+                for kind in ("script", "style", "font", "img", "worker", "media", "manifest"):
+                    sources = directives[f"{kind}-src"]
+                    self.assertIn("'self'", sources)
+                    self.assertFalse(any("http" in source or "*" in source for source in sources))
+                # Inline theme bootstrap/Fluent styles and API/sign-in calls keep working.
+                self.assertIn("'unsafe-inline'", directives["script-src"])
+                self.assertIn("'unsafe-inline'", directives["style-src"])
+                self.assertNotIn("connect-src", directives)
+                self.assertNotIn("default-src", directives)
 
     def test_only_content_hashed_assets_are_cached(self) -> None:
         for app in APPS:
