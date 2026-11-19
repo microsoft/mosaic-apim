@@ -24,6 +24,7 @@ from typing import Literal
 
 from mosaic_api.domain import EntitlementResourceKind
 from mosaic_api.pricing import (
+    BEDROCK_COST_NOTE,
     UNKNOWN_DEPLOYMENT,
     DayRate,
     PriceOrigin,
@@ -113,6 +114,7 @@ POOL_UNPLACED = Unpriced(
     "MOSAIC couldn't tell which of the pool's deployments served these calls, so it can't price "
     "them.",
 )
+BEDROCK_UNOBSERVABLE = Unpriced("incompleteUsage", BEDROCK_COST_NOTE)
 
 
 def add_cost(current: float | None, value: float | None) -> float | None:
@@ -189,6 +191,7 @@ class CostTally:
     priced_tokens: int = 0
     unpriced_tokens: int = 0
     unpriced_requests: int = 0
+    incomplete_usage: bool = False
     left: dict[str, _Left] = field(default_factory=dict)
     origins: set[PriceOrigin] = field(default_factory=set)
 
@@ -218,9 +221,13 @@ class CostTally:
             self.add_amount(priced.amount, priced.reserved, key if kind == "deployment" else None)
             self.priced_tokens += tokens - left_tokens
             self.origins.update(priced.origins)
-        if left_tokens <= 0 or priced.unpriced is None:
+        incomplete = priced.unpriced is not None and priced.unpriced.reason == "incompleteUsage"
+        left_requests = round((metrics.ok if incomplete else metrics.requests) * share)
+        if priced.unpriced is None or (
+            left_tokens <= 0 and not (incomplete and left_requests > 0)
+        ):
             return
-        left_requests = round(metrics.requests * share)
+        self.incomplete_usage |= incomplete
         self.unpriced_tokens += left_tokens
         self.unpriced_requests += left_requests
         item = self.left.setdefault(
@@ -494,7 +501,7 @@ class CostBook:
 
         if api is None or api.kind != "pool":
             key = api.deployment_key if api else None
-            return [(key, metrics, self.price(key, period, start, metrics))]
+            return [(key, metrics, self.price_part(api, key, period, start, metrics))]
         parts: list[tuple[str | None, UsageMetrics, Priced]] = []
         for key in sorted(metrics.members or {}):
             part = part_of(api, key, metrics)
@@ -514,6 +521,11 @@ class CostBook:
     ) -> Priced:
         """What calls in the part ``key`` of :meth:`priced_parts` cost, priced as the part is."""
 
+        if api is not None and api.cost_telemetry == "aggregateOnly":
+            if not _has_tokens(metrics) and metrics.ok <= 0:
+                return Priced(0.0)
+            self.note(BEDROCK_COST_NOTE)
+            return Priced(None, unpriced=BEDROCK_UNOBSERVABLE, unpriced_share=1.0)
         if api is not None and api.kind == "pool" and key is None:
             if _has_tokens(metrics):
                 return Priced(None, unpriced=POOL_UNPLACED, unpriced_share=1.0)

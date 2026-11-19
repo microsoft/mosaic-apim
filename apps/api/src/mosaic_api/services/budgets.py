@@ -66,6 +66,7 @@ from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
 from mosaic_api.integrations.email import EmailSender
 from mosaic_api.integrations.graph.notifications import NotificationDirectory
 from mosaic_api.notifications import CapabilityCheck, CapabilityRemediation
+from mosaic_api.pricing import BEDROCK_COST_NOTE
 from mosaic_api.repositories import BudgetRepository, CostCenterRepository, GatewayRepository
 from mosaic_api.services.analytics import AnalyticsService
 from mosaic_api.services.analytics.models import AnalyticsSpend, BudgetSpend
@@ -486,6 +487,8 @@ class BudgetService:
     ) -> Evaluation:
         spent = _spent(figures)
         note = error if error is not None else (NO_FIGURES if spent is None else None)
+        if note is None and figures is not None and figures.incomplete_usage:
+            note = f"{BEDROCK_COST_NOTE} Known priced spend is a lower bound, not complete spend."
         decided: list[Evaluation] = []
         sources: list[BudgetNotificationOutbox] = []
 
@@ -502,6 +505,7 @@ class BudgetService:
                 forecast=figures.forecast if figures is not None else None,
                 through=figures.through if figures is not None else None,
                 unpriced_tokens=figures.unpriced_tokens if figures is not None else 0,
+                spend_is_lower_bound=figures.incomplete_usage if figures is not None else False,
                 now=now,
                 error=note,
             )

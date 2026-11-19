@@ -184,9 +184,15 @@ The demo API keeps its state in memory. If a shot's actions submit anything, res
 get the original estate back. Before committing, refresh every affected shot without
 `--reuse-servers`; changes to shared navigation require the full gallery.
 
-Browser contexts isolate each shot's UI state, not the shared demo API. Keep
-`console-model-change-review` last in `SHOTS`: it saves unapplied access intent that would
-otherwise make later connection shots show pending changes instead of the applied baseline.
+Browser contexts isolate each shot's UI state, not the shared demo API. Keep mutation shots at
+the end of `SHOTS`. The Bedrock review pair saves one fictional endpoint and publication through
+the loopback demo API, and reviews without applying or granting access. The self-hosted shots run
+after it so their fictional parent and publication drafts do not appear in the Bedrock views. The
+`console-model-change-review` stays last: it saves unapplied GPT-4o access intent that would
+otherwise make connection shots show pending changes. No connection or estate-overview shots
+follow this terminal mutation block.
+The register shot never submits. The redactor covers visible sensitive input placeholders as
+well as values, including Bedrock host names.
 
 ### Focused cost-center layout regressions
 
@@ -428,6 +434,9 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-models` | Console | `/models`, compact list with selected publication detail, saved catalog summary, and explicit summary edit action | Dark | Models |
 | `console-catalog-summary-review` | Console | `/models`, GPT-4o mini **Edit catalog summary > Review summary**, before/after copy and exact-offering preview; never saved | Light | Review catalog copy |
 | `console-register-key-endpoint` | Console | `/models?register=1`, **Azure AI with an API key** tab with a pasted, masked key, filled in and never submitted | Light | Register with an API key |
+| `console-register-bedrock` | Console | `/models?register=1`, **AWS Bedrock** declaration-only registration with Guided release stages, never submitted | Light | Register Bedrock |
+| `console-bedrock-release` | Console | `/models`, saved fictional Bedrock publication opened in the real reviewed Guided release workspace; no apply or grant | Light | Review Bedrock publication |
+| `console-bedrock-release-mobile` | Console | The same reviewed fictional publication at 390px, with stacked workspace and release stages | Dark | Review Bedrock on mobile |
 | `console-key-endpoint` | Console | `/models?tab=endpoints`, Fabrikam partner Foundry selected, scrolled to its **Access** card with **Replace API key** | Dark | Endpoint reached with an API key |
 | `console-endpoint-evidence` | Console | `/models?tab=endpoints`, fictional Contoso AI Lab selected, with unconfirmed URL/provider facts and a dated check saved under an older readiness-rule revision | Light | Endpoint facts and saved access evidence |
 | `console-deploy-model` | Console | `/models?tab=endpoints`, **Deploy model** on the fictional Azure OpenAI account; explicit deployment-management opt-in, fresh version/SKU/quota configuration, no Azure create | Light | Deploy an Azure model |

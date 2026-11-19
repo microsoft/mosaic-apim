@@ -128,6 +128,7 @@ const REASON_LABELS: Record<UnpricedReason, string> = {
   notYetEffective: 'Price not yet in effect',
   noOutputPrice: 'No output price',
   beforeDeployment: 'Not yet deployed',
+  incompleteUsage: 'Usage breakdown unavailable',
 }
 
 // Reasons an endpoint's facts fix, rather than a price.
@@ -143,6 +144,7 @@ const REASON_HELP: Record<UnpricedReason, string> = {
   notYetEffective: 'Review the price effective date. Add a price only if a sourced rate covers the usage date.',
   noOutputPrice: 'Add a sourced rate that includes output tokens.',
   beforeDeployment: 'Usage predates the deployment. Adding a price will not fix this date mismatch.',
+  incompleteUsage: 'Standalone Bedrock needs separate cache read, write and uncached input counts. Adding a price alone cannot make this cost complete.',
 }
 
 function typeLabel(value: string | null | undefined, empty = 'Any type') {

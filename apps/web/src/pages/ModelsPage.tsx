@@ -39,6 +39,7 @@ import { ImportFromGatewayDialog } from '../components/ImportFromGatewayDialog'
 import { DeclarationFields, DeclaredDeploymentsCard, StoredKeyActions } from '../components/KeyEndpoint'
 import { DeploymentPoolsCell, EndpointPoolsCard } from '../components/EndpointPools'
 import { poolsByDeployment, useEndpointPools } from '../endpoint-pools'
+import { GuidedReleaseProgress } from '../components/GuidedRelease'
 import {
   blankDeclaration,
   isBedrockHost,
@@ -1670,12 +1671,15 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
       <WorkspaceDialog open={dialogOpen} title="Register model endpoint"
         description={deployAfterRegistration
           ? 'First register the endpoint, then configure and review an Azure model deployment. Registration stays in MOSAIC if you cancel deployment. Nothing is deployed by this registration step.'
+          : mode === 'bedrock'
+          ? 'Registration saves the endpoint and declared models without calling AWS. It does not publish a model, change API Management or grant access.'
           : 'Registration records and discovers the endpoint. It does not publish a model or change API Management.'}
         pending={register.isPending}
         onOpenChange={(_, data) => !data.open && closeDialog()}>
         {(requestClose) => (
           <form onSubmit={submit}>
               <div className={styles.dialogForm}>
+                {mode === 'bedrock' && <GuidedReleaseProgress stage="register" />}
                 <TabList
                   selectedValue={mode}
                   onTabSelect={(_, data) => {
@@ -1789,8 +1793,11 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                       <MessageBarBody>
                         <MessageBarTitle>Requests leave Azure</MessageBarTitle>
                         Prompts and responses for these models go to AWS, which processes them.
-                        MOSAIC serves Bedrock models only through model pools, and reads the key
-                        only to confirm it&apos;s there: it never sends it to AWS.
+                        Save records this endpoint and its declarations only. It does not publish
+                        a model, apply a gateway policy or grant access. MOSAIC reads the key
+                        only to confirm it&apos;s there: registration never sends it to AWS.
+                        Sonnet 5 on Mantle in us-east-1 can be published independently; other
+                        supported declarations remain available through model pools.
                       </MessageBarBody>
                     </MessageBar>
                     <Field
@@ -1825,7 +1832,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                       <Field
                         label="Bedrock API key"
                         required
-                        hint="Use a long-term Bedrock API key: a short-term one expires within 12 hours. MOSAIC stores it as a secret in its own Key Vault, keeps only the secret's URI, and never shows the key again. API Management reads it from Key Vault."
+                        hint="AWS recommends short-term keys for production; long-term keys are for exploration. You own expiry and rotation; MOSAIC does not renew keys. MOSAIC stores the key in Key Vault and never shows it again. API Management may take four hours to refresh a rotated secret."
                         validationMessage={
                           apiKeyTouched && !apiKey.trim() ? 'Paste the Bedrock API key.' : undefined
                         }
@@ -1842,7 +1849,7 @@ function ModelEndpoints({ onMessage }: { onMessage: (message: string) => void })
                       <Field
                         label="Key Vault secret URI"
                         required
-                        hint="The secret you stored a long-term Bedrock API key in. MOSAIC keeps only this URI, and API Management reads the key from Key Vault. MOSAIC and each gateway need Key Vault Secrets User on the vault."
+                        hint="The secret holding your operator-managed Bedrock API key. MOSAIC keeps only this URI. MOSAIC and each gateway need Key Vault Secrets User on the vault. Plan rotation around credential expiry and API Management's refresh delay."
                       >
                         <Input
                           value={secretUri}

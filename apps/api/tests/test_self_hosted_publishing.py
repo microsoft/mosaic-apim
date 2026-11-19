@@ -237,7 +237,7 @@ async def test_rejects_foreign_association_drift_and_invalid_ingress_before_writ
 @pytest.mark.parametrize(
     ("path", "response", "error"),
     [
-        ("policies/policy", {"properties": {}}, "invalid policy"),
+        ("policies/policy", {"properties": {}}, "unreadable policy"),
         ("gateways", {"value": [], "nextLink": 7}, "invalid collection continuation"),
     ],
 )

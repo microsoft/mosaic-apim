@@ -3509,6 +3509,7 @@ export interface AnalyticsSpend {
   projected: boolean
   unpricedTokens: number
   unpricedItems: number
+  incompleteUsage?: boolean
 }
 
 export interface AnalyticsCostTrendPoint {
@@ -3587,6 +3588,7 @@ export type UnpricedReason =
   | 'notYetEffective'
   | 'noOutputPrice'
   | 'beforeDeployment'
+  | 'incompleteUsage'
 
 export type BillingProvider = 'azure' | 'aws' | 'gcp' | 'mosaicTemplate'
 export type ConnectedBillingProvider = 'azure' | 'aws' | 'gcp'

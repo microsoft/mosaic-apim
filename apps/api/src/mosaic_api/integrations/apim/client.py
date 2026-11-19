@@ -601,7 +601,7 @@ class ArmClient:
                 details={"url": url},
             ) from error
         if require_object and not isinstance(payload, dict):
-            raise UpstreamError("Azure Resource Manager returned an invalid object")
+            raise UpstreamError("Azure returned an invalid collection; retry the read")
         return payload if isinstance(payload, dict) else {"value": payload}
 
     async def list(
@@ -612,6 +612,7 @@ class ArmClient:
         allow_not_found: bool = False,
         max_pages: int = 50,
         require_complete: bool = False,
+        allow_initial_absence: bool = False,
     ) -> list[JsonObject]:
         items: list[JsonObject] = []
         next_url: str | None = url
@@ -620,9 +621,11 @@ class ArmClient:
         while next_url and pages < max_pages:
             payload = await self.get(
                 next_url, params=next_params, allow_not_found=allow_not_found,
-                require_object=require_complete,
+                **({"require_object": True} if require_complete else {}),
             )
             if payload is None:
+                if allow_initial_absence and pages == 0:
+                    return []
                 if require_complete:
                     raise UpstreamError("Azure returned an incomplete collection; retry the read")
                 return items
@@ -837,11 +840,16 @@ class ApimClient:
         except (UpstreamAuthorizationError, UpstreamError):
             return None
 
-    async def _collection(self, segment: str, **extra: str) -> list[JsonObject]:
+    async def _collection(
+        self, segment: str, *, strict: bool = False, allow_initial_absence: bool = False,
+        **extra: str,
+    ) -> list[JsonObject]:
         return await self._arm.list(
             f"{self._base}/{segment}",
             params={**self._params, **extra},
-            allow_not_found=True,
+            allow_not_found=not strict or allow_initial_absence,
+            require_complete=strict,
+            allow_initial_absence=allow_initial_absence,
         )
 
     async def list_apis(self) -> list[JsonObject]:
@@ -864,16 +872,18 @@ class ApimClient:
     async def get_gateway_api(self, gateway_name: str, api_name: str) -> JsonObject | None:
         return await self._sub_resource(gateway_api_segment(gateway_name, api_name))
 
-    async def list_operations(self, api_name: str, *, strict: bool = False) -> list[JsonObject]:
-        if strict:
-            return await self._arm.list(
-                f"{self._base}/apis/{api_name}/operations",
-                params=self._params, require_complete=True,
-            )
-        return await self._collection(f"apis/{api_name}/operations")
+    async def list_operations(
+        self, api_name: str, *, strict: bool = False, allow_initial_absence: bool = False,
+    ) -> list[JsonObject]:
+        return await self._collection(
+            f"apis/{api_name}/operations", strict=strict,
+            allow_initial_absence=allow_initial_absence,
+        )
 
-    async def list_api_products(self, api_name: str) -> list[JsonObject]:
-        return await self._collection(f"apis/{api_name}/products")
+    async def list_api_products(self, api_name: str, *, strict: bool = False) -> list[JsonObject]:
+        return await self._collection(
+            f"apis/{api_name}/products", strict=strict, allow_initial_absence=strict,
+        )
 
     async def list_products(self) -> list[JsonObject]:
         return await self._collection("products")
@@ -958,7 +968,7 @@ class ApimClient:
         properties = payload.get("properties")
         value = properties.get("value") if isinstance(properties, dict) else None
         if strict and (not isinstance(value, str) or not value.strip()):
-            raise UpstreamError("API Management returned an invalid policy; retry the read.")
+            raise UpstreamError("API Management returned unreadable policy evidence")
         return value if isinstance(value, str) else None
 
     async def get_service_policy(self, *, strict: bool = False) -> str | None:
@@ -969,8 +979,10 @@ class ApimClient:
             f"{self._base}/apis/{api_name}/policies/policy", strict=strict
         )
 
-    async def get_product_policy(self, product_name: str) -> str | None:
-        return await self._policy_value(f"{self._base}/products/{product_name}/policies/policy")
+    async def get_product_policy(self, product_name: str, *, strict: bool = False) -> str | None:
+        return await self._policy_value(
+            f"{self._base}/products/{product_name}/policies/policy", strict=strict
+        )
 
     async def get_operation_policy(
         self, api_name: str, operation_name: str, *, strict: bool = False

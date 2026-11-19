@@ -209,6 +209,32 @@ See [interrupted-operation recovery](access.md#recovering-an-interrupted-operati
 
 ## Deploy application images
 
+### Rebuild for a base-image security fix
+
+A source-code update, moving base-image tag, or App Service restart does not patch an
+already-built image. Rebuild the affected services from an explicitly reviewed source revision
+and patched image inputs, then deploy the resulting immutable digests. A commit or push is not
+required to perform an operator-controlled remote build, but retain the Dockerfile fix in source
+control so later builds do not reintroduce the affected package.
+
+The console and portal use Node.js only in their build stages; their deployed runtime is nginx
+on Alpine. Their Dockerfiles pin a patched Node.js builder and explicitly upgrade the runtime's
+`brotli-libs` to at least `1.2.1-r0` for
+[CVE-2026-111497](https://github.com/google/brotli/releases/tag/v1.2.1).
+Keep these inputs maintained as newer security updates become available. An npm dependency
+update alone does not patch a native library inherited from the runtime base image.
+
+Inspect the final image's installed package versions, not just its build stage or successful
+build status. On the current Alpine release, require `brotli-libs >= 1.2.1-r0`; confirm the
+distribution's advisory if the base distribution changes. Exercise unprivileged startup,
+generated `config.js`, health, and static/SPA routes before rollout. Update one affected service
+at a time, verify the actual running image and frontend behavior, and preserve the existing
+registry identity and application configuration. A security scanner can take time to refresh:
+record verified package remediation separately from scanner or incident closure. Rolling back
+to an affected image reintroduces the vulnerability and requires explicit risk acceptance.
+
+### Deploy the reviewed services
+
 Proceed only after target, artifact, compatibility, backup, and maintenance decisions are recorded.
 For an application-only change, **skip provisioning and bootstrap**.
 

@@ -4,6 +4,7 @@
 
 - [Publishing models](#publishing-models)
 - [Publication targets](#publication-targets)
+- [Standalone Bedrock](#standalone-bedrock)
 - [Catalog summaries](#catalog-summaries)
 - [Unpublishing](#unpublishing)
 
@@ -104,7 +105,7 @@ and capability ([ADR 0012](adr/0012-format-aware-model-publishing.md)):
 | --- | --- | --- |
 | Azure OpenAI | Azure OpenAI chat, responses, completion, embeddings, image and transcription models | Chat completions, completions, embeddings, image generations, audio transcriptions and translations, and responses |
 | Foundry Models | Foundry (AI Services) chat and embeddings models | The Foundry Models inference routes under `/models` |
-| Anthropic Messages | Claude models on Foundry | `/anthropic/v1/messages` and `/anthropic/v1/messages/count_tokens`, served from the resource's `services.ai.azure.com` host |
+| Anthropic Messages | Claude models on Foundry; the bounded standalone Bedrock tuple below | `/anthropic/v1/messages` and `/anthropic/v1/messages/count_tokens`; governed access exposes Messages only |
 
 Deployments no shape can serve, such as realtime, video and text-to-speech models, are listed as not
 publishable with a reason, and creating a publication for one is refused. A publication also records
@@ -159,6 +160,92 @@ multi-runtime delivery are outside this profile. Required policy, ingress, ident
 and grant/budget attribution evidence is not inferred from ARM writes or parent logs. Streaming
 token counts are estimates, and limits are not shared across gateways. Outside the fictional
 fixtures, the runtime remains ineligible until separate non-production proof qualifies it.
+
+## Standalone Bedrock
+
+The first standalone AWS route is deliberately bounded: explicitly declare
+`anthropic.claude-sonnet-5` at `https://bedrock-mantle.us-east-1.api.aws` with the Anthropic
+Messages shape and an operator-managed API key. It requires a v2 APIM gateway and governed
+access. It does not add discovery, SigV4, inference-profile routing, another grant system or a
+generic-provider adapter. The existing Claude pool path is unchanged.
+
+**Guided release** separates four actions in the full workspace:
+
+1. **Register** saves endpoint declarations and the Key Vault reference, not a model call.
+2. **Save publication draft**, then explicitly **Review publication**, saves publication intent
+   and reads APIM evidence. Neither writes gateway resources or creates usable access.
+3. **Apply reviewed plan** uses the existing ordered, locked writer and recovery. Drift refuses
+   the plan and requires explicit re-review; a failure never silently reviews or applies again.
+4. **Grant and connect** uses the existing entitlements, approval and reviewed access apply.
+   Publication alone creates no caller grant. Connection details use the gateway URL and
+   MOSAIC caller authentication, never an AWS URL, key, signature or workspace.
+
+The owned route accepts only `POST /anthropic/v1/messages`, pins the exact model and
+`anthropic-version: 2023-06-01`, removes caller credentials/signing and provider override headers,
+and discards unmatched query parameters before setting its Key Vault-backed `x-api-key`.
+CountTokens, Converse, InvokeModel, discovery, beta headers, server-executed tools and other
+models/regions are not offered. Omit `service_tier` for this contract; AWS documents omitted
+or `default` as Standard, but this narrow route deliberately accepts omission only.
+
+Native JSON and SSE are not translated. Client tools and results, image blocks, adaptive or
+disabled thinking (including signatures), and explicit prompt-cache controls stay in the native
+body and order. The application executes tools, including the model's documented GA client
+toolsets; MOSAIC does not execute them. The request guard requires a positive integer `max_tokens`
+no greater than the model's documented 128K output bound and a nonempty `messages` array.
+It supplies no generation default and does not disable adaptive thinking when omitted.
+AWS remains authoritative for full native schema, context/tokenization, image size/dimensions,
+cache-checkpoint eligibility and semantic validation; provider errors/refusals remain native.
+The documented context window is 1M tokens; image inputs have AWS's documented size and
+dimension constraints, not a new MOSAIC limit.
+
+Existing aggregate call/token limits, cost-center counters, quotas, budget denial and attribution
+still apply. APIM's streamed/image token accounting can be estimated; thinking consumes output
+tokens. Those safeguards are not a per-request generation cap, exact token counter or hard
+spending ceiling. Administrator and caller cost projections mark this standalone lineage
+incomplete because aggregate logs lack cache read/write counts; unknown cost is not zero.
+An eligible pool using the same deployment retains its own price. A budget's known priced
+subtotal is a lower bound: it can cross a threshold or block at/above the cap, but cannot lift a
+block, re-arm thresholds on a raised amount or produce a comprehensive forecast.
+
+The selected API owns exactly one backend `forward-request` with
+`buffer-response="false"` and `follow-redirects="false"`, rather than inheriting the default
+buffered forward. Review and Apply strictly re-read service, API, product and operation policies,
+including complete referenced collections; 404 absence is allowed for not-yet-created resources,
+but malformed successful reads are inconclusive and refuse before writes. The digest covers this
+evidence. Only recognized compatible parent policies are accepted; custom buffering, retries,
+fragments, response inspection and operation overrides require separate reconciliation.
+Other providers, legacy APIs and pools retain their existing policy inheritance. Redirects are
+returned as a sanitized native-shaped 502, with no `Location` or second credentialed forward.
+
+**Proof boundary.** Offline tests cover compiled policy/evidence, existing fake-backed reviewed
+apply and caller/cost contracts. A loopback HTTP fixture demonstrates ordinary native JSON and
+first SSE data received before the server may complete; it is not an APIM expression emulator
+or live APIM streaming proof. The screenshot script renders only the fictional demo estate.
+The feature is deployable for usable access, not restricted to demo estates. BR3 verification
+requires separate approval of a bounded non-production AWS account, region/model access,
+least-privilege key custody and rotation, an APIM v2 gateway and Key Vault permissions, a
+dedicated bounded MOSAIC grant, permitted inference spend, rollback and cleanup. BR3 must prove
+real ordinary/streamed calls, first-event timing, credential isolation/no redirects, denial and
+limits, and measured caller/grant/cost-center attribution. No live proof is implied by Apply.
+
+For a connection whose grant is applied, this caller-side streaming example uses only MOSAIC
+connection details. Use the complete gateway Messages URL in `MOSAIC_MESSAGES_URL`; remove
+`"stream": true` and `-N` for ordinary JSON. The example's 1024 is an explicit caller choice,
+not a product default:
+
+```sh
+curl -N "$MOSAIC_MESSAGES_URL" \
+  -H "Ocp-Apim-Subscription-Key: $MOSAIC_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"anthropic.claude-sonnet-5","max_tokens":1024,"stream":true,"messages":[{"role":"user","content":"Hello"}]}'
+```
+
+Sources: [AWS native Messages](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-messages-api.html),
+[Sonnet 5 model card](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-5.html),
+[native request/response](https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages-request-response.html),
+[AWS API keys](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys.html),
+[APIM forward-request](https://learn.microsoft.com/azure/api-management/forward-request-policy)
+and [APIM LLM token limits](https://learn.microsoft.com/azure/api-management/llm-token-limit-policy).
 
 ## Catalog summaries
 

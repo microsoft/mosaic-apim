@@ -123,6 +123,8 @@ RESOURCE_NAMES = [
     "Docs search MCP",
     "Orders MCP",
     "IT service desk MCP",
+    "Fictional Bedrock East",
+    "Fictional Claude release",
 ]
 
 # JavaScript regular expressions, matched case-insensitively against every visible text node and
@@ -150,6 +152,7 @@ REDACTION_PATTERNS = [
     r"graph\.microsoft\.us|trafficmanager\.net)\b",
     r"\b(?:graph\.microsoft\.(?:com|us)|dod-graph\.microsoft\.us|"
     r"microsoftgraph\.chinacloudapi\.cn)\b",
+    r"\bbedrock-(?:mantle\.[a-z0-9-]+\.api\.aws|runtime\.[a-z0-9-]+\.amazonaws\.com)\b",
     # IPv4 addresses, such as gateway egress addresses.
     r"\b\d{1,3}(?:\.\d{1,3}){3}\b",
     # MOSAIC record IDs and the APIM names derived from them, such as modelApi_<32 hex>,
@@ -337,7 +340,8 @@ FIND_SENSITIVE_TEXT = """
   }
   for (const field of document.querySelectorAll('input, textarea')) {
     if (collapsed(field)) continue
-    if (field.value && spans(field.value).length > 0) keep(field.getBoundingClientRect(), field)
+    const text = field.value || field.placeholder
+    if (text && spans(text).length > 0) keep(field.getBoundingClientRect(), field)
   }
   // A closed select shows its chosen option without a text node that has a layout box.
   for (const field of document.querySelectorAll('select')) {
@@ -766,6 +770,61 @@ def preview_gateway_limit_refusal(page: Page) -> None:
     page.get_by_text(
         "This resource does not use a documented LLM token API schema.", exact=True
     ).first.wait_for()
+
+
+def review_bedrock_release(page: Page) -> None:
+    """Create only fictional saved intent through the normal API; never apply the review."""
+
+    api_base = page.evaluate("window.__MOSAIC_CONFIG__.apiBaseUrl")
+    if not isinstance(api_base, str) or not re.fullmatch(r"http://127\.0\.0\.1:\d+", api_base):
+        raise CaptureError("The Bedrock fixture requires the injected loopback demo API")
+
+    def get(path: str) -> list[dict[str, object]]:
+        response = page.request.get(api_base + path)
+        if not response.ok:
+            raise CaptureError(f"Fictional Bedrock fixture read failed: {response.status}")
+        return response.json()
+
+    def post(path: str, payload: dict[str, object]) -> dict[str, object]:
+        response = page.request.post(api_base + path, data=payload)
+        if not response.ok:
+            raise CaptureError(f"Fictional Bedrock fixture save failed: {response.status}")
+        return response.json()
+
+    endpoints = get("/api/v1/model-endpoints")
+    endpoint = next((item for item in endpoints if item["name"] == "Fictional Bedrock East"), None)
+    if endpoint is None:
+        endpoint = post("/api/v1/model-endpoints", {
+            "endpoint": "https://bedrock-mantle.us-east-1.api.aws",
+            "credentialSecretUri": "https://kv-contoso-ai.vault.azure.net/secrets/demo-bedrock-key",
+            "name": "Fictional Bedrock East", "environment": "production",
+            "deployments": [{
+                "deploymentName": "anthropic.claude-sonnet-5", "modelName": "claude-sonnet-5",
+                "apiShape": "anthropicMessages",
+            }],
+        })
+    publications = get("/api/v1/publications")
+    if not any(item["displayName"] == "Fictional Claude release" for item in publications):
+        gateways = get("/api/v1/gateways")
+        gateway = next(item for item in gateways if item["name"] == "Contoso AI Gateway")
+        post("/api/v1/publications", {
+            "gatewayId": gateway["id"], "modelEndpointId": endpoint["id"],
+            "deploymentName": "anthropic.claude-sonnet-5",
+            "displayName": "Fictional Claude release",
+            "governedAccess": {"keysEnabled": True, "entraEnabled": True},
+            "enforcement": {
+                "counterKeyExpression": "@(context.Subscription.Id)",
+                "tokensPerMinute": 12000, "estimatePromptTokens": True,
+            },
+        })
+    page.reload()
+    click_button("Fictional Claude release")(page)
+    click_button("Review publish plan")(page)
+    page.get_by_role("button", name="Apply reviewed plan", exact=True).wait_for()
+    if page.get_by_role("navigation", name="Guided release").count() != 1:
+        raise CaptureError("The fictional Bedrock review did not use Guided release")
+    if page.evaluate("document.documentElement.scrollWidth > window.innerWidth"):
+        raise CaptureError("The Bedrock release workspace overflows the document")
 
 
 SHOTS: list[Shot] = [
@@ -1904,6 +1963,20 @@ SHOTS: list[Shot] = [
     # Customer Insights, which Megan charges, has used most of its budget, and blocks at 100%.
     Shot(
         "portal-budget-banner", "portal", "/access", "light", "near its monthly budget", height=720
+    ),
+    Shot(
+        "console-register-bedrock", "console", "/models?register=1", "light",
+        "Register model endpoint",
+        actions=(click_tab("AWS Bedrock"),), height=1500,
+    ),
+    # Keep state-changing shots at the end, before the final legacy change review.
+    Shot(
+        "console-bedrock-release", "console", "/models", "light", "Publish a model",
+        actions=(review_bedrock_release,), height=1700,
+    ),
+    Shot(
+        "console-bedrock-release-mobile", "console", "/models", "dark", "Publish a model",
+        actions=(review_bedrock_release,), width=390, height=1600,
     ),
     # Register the fictional edge parent only after the existing overview and connection shots.
     Shot(
