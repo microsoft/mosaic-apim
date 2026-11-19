@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse, Response
 
 from mosaic_api.analytics_api import analytics_router
 from mosaic_api.api import portal_router, router
+from mosaic_api.api_docs import RUNTIME_ASSET_POLICY, install_api_docs
 from mosaic_api.approvals_api import approvals_router
 from mosaic_api.auth import EntraAuthenticator, LocalAuthenticator
 from mosaic_api.azure_connections import (
@@ -1324,7 +1325,10 @@ def create_app(
         version="0.1.0",
         description="Desired-state control plane for Azure API Management AI gateway governance.",
         lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
     )
+    install_api_docs(app)
     # The instrumentation wraps the middleware stack when it is built, so it is the outermost
     # layer, around the middleware added below, and records the requests they answer themselves.
     instrument_requests(app, app_settings)
@@ -1346,6 +1350,7 @@ def create_app(
     async def correlation_id(request: Request, call_next: Any) -> Any:
         correlation = request.headers.get("X-Correlation-ID")
         response = await call_next(request)
+        response.headers["Content-Security-Policy"] = RUNTIME_ASSET_POLICY
         if request.url.path.startswith("/api/v1/"):
             response.headers["Cache-Control"] = "no-store, private"
         if request.url.path.endswith("/keys/reveal"):

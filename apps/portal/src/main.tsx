@@ -13,6 +13,10 @@ if (runtimeConfig.applicationInsightsConnectionString) {
     config: {
       connectionString: runtimeConfig.applicationInsightsConnectionString,
       enableAutoRouteTracking: true,
+      // Runtime behavior comes from the checked-in application, not the SDK's CDN config.
+      extensionConfig: {
+        AppInsightsCfgSyncPlugin: { blkCdnCfg: true, syncMode: 0 },
+      },
     },
   })
   insights.loadAppInsights()

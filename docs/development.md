@@ -4,6 +4,7 @@
 
 - [Prerequisites](#prerequisites)
 - [Local development](#local-development)
+- [Local runtime assets](#local-runtime-assets)
 - [Cost-center development and old MVP data](#cost-center-development-and-old-mvp-data)
 - [Quality checks](#quality-checks)
 - [Merging into `main`](#merging-into-main)
@@ -159,6 +160,79 @@ skips the console role gate; this value does not redirect anyone or change their
 development must also supply an explicit portal origin. HTTP loopback is accepted only when the
 console itself runs on loopback; a deployed console requires HTTPS. Missing or invalid configuration
 leaves Sign out available and shows guidance instead of a portal link.
+
+## Local runtime assets
+
+MOSAIC serves its runtime application assets from its own deployment, not third-party CDNs.
+This includes JavaScript, CSS, fonts, images, workers, and WebAssembly. Keep an explicit,
+versioned repository copy of any asset that would otherwise be downloaded at runtime.
+Dependencies installed normally through npm or Python and included in the deployed bundles
+do not need a second checked-in copy; do not commit `node_modules`.
+
+The console and portal bundle their dependencies with Vite. Their Application Insights SDK
+has CDN configuration synchronization disabled, so remote configuration cannot change the
+checked-in runtime behavior. Telemetry uploads remain enabled when configured. API calls,
+Entra sign-in redirects and provider-owned sign-in pages, external documentation links, and
+content returned by APIs are not vendored or redirected by this rule.
+
+The API serves Swagger UI at `/docs`, ReDoc at `/redoc`, and their assets at `/docs-assets/`.
+The files live inside `apps/api/src/mosaic_api/static/`, so the API wheel and existing Docker
+build include them without a runtime download. ReDoc's Montserrat and Roboto fonts (weights
+300, 400, and 700, including their language subsets) are vendored from pinned Fontsource
+distributions rather than loaded through Google Fonts. Swagger's remote validator is
+disabled. ReDoc's bundled search worker stays local; its branding image is also vendored.
+
+Both frontends and the API send an asset-source Content Security Policy. The frontend HTML
+also declares it for Vite development/preview. Scripts, styles, fonts, images, and workers
+cannot load from remote origins; media and web manifests are local as well. Local inline
+theme initialization and Fluent UI styles,
+data images/fonts, and locally generated blob images/workers remain supported. There is no
+`connect-src` or `default-src` restriction: this policy does not block legitimate external API
+or telemetry traffic. This is asset-source enforcement, not a complete XSS-hardening policy.
+If adding WebAssembly, bundle its bytes locally and explicitly review CSP execution support;
+do not enable unrestricted evaluation or add a CDN fallback.
+
+### Updating vendored documentation assets
+
+`static/vendor-manifest.json` records upstream versions, archive URLs and SHA-256 digests,
+local file digests, and the sole ReDoc patch. License files, Swagger's NOTICE, and bundled
+dependency/worker license notices are checked in beside the distributions.
+`.gitattributes` preserves the static files' exact bytes across operating systems.
+
+1. Download exact releases with `npm pack swagger-ui-dist@<version> redoc@<version>` into a
+   temporary directory, using the normal configured package registry. Verify archive hashes
+   and upstream license terms before importing; never download at application startup.
+2. From Swagger's `package/`, copy `swagger-ui-bundle.js`, its `.LICENSE.txt`, `swagger-ui.css`,
+   `LICENSE`, and `NOTICE` into a versioned static subdirectory. From ReDoc's `package/bundles/`,
+   copy `redoc.standalone.js`, its `.LICENSE.txt`, and the embedded worker's `.LICENSE.txt`;
+   copy `package/LICENSE` as well. Do not copy upstream example HTML or CDN initializers.
+3. Keep the ReDoc branding SVG locally. Apply the manifest's single URL replacement to the
+   imported standalone bundle, updating the versioned relative path if necessary. Preserve
+   the branding and notices; document any additional necessary patches. Inspect new releases
+   for secondary asset/configuration downloads rather than assuming "standalone" means offline.
+4. Update the manifest's versions, provenance, archive/file hashes, and patch description,
+   along    with the local URLs in `mosaic_api/api_docs.py`. For font updates, import pinned
+   `@fontsource/montserrat` and `@fontsource/roboto` packages: keep their `LICENSE`, `300.css`,
+   `400.css`, `700.css`, and every `files/` font referenced by those stylesheets. Update the
+   local imports in `docs-fonts.css` and record their hashes/provenance too. Remove superseded distributions.
+   The relative branding URL must continue to resolve beneath an API reverse-proxy root path.
+5. Run the focused API tests and nginx checks, build the wheel and confirm all static files
+   are included, then run the production-browser check below. Do not accept a missing local
+   asset or a remote fallback as success.
+
+```powershell
+uv run pytest apps\api\tests\test_api_docs.py
+uv run python -m unittest scripts.tests.test_spa_nginx
+npm run build --prefix apps\web
+npm run build --prefix apps\portal
+uv run --with "playwright>=1.58,<2" python -m playwright install chromium
+uv run --with "playwright>=1.58,<2" python -m pytest apps\web\tests\test_local_runtime_assets_browser.py
+```
+
+The browser check uses only the fictional demo estate and production-built frontends. It
+denies unexpected external requests, exercises both API documentation UIs and ReDoc search,
+enables telemetry with intercepted fictional uploads, checks external API connectivity,
+and proves that injected remote scripts, styles, fonts, and images are blocked.
 
 ## Cost-center development and old MVP data
 

@@ -1,0 +1,2 @@
+# Preserve vendored asset bytes so provenance hashes work on every platform.
+apps/api/src/mosaic_api/static/** -text
