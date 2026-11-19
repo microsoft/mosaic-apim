@@ -46,11 +46,31 @@
   padding-left: 20px;
 }
 
+.offlineFields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.offlineFields dt {
+  font-weight: 600;
+}
+
+.offlineFields dd {
+  margin: 4px 0 0;
+}
+
 .impactList li + li {
   margin-top: 8px;
 }
 
 @media (max-width: 600px) {
+  .offlineFields {
+    grid-template-columns: 1fr;
+  }
+
   .values {
     grid-template-columns: 1fr;
     gap: 8px;

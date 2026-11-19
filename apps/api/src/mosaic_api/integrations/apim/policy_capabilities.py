@@ -45,6 +45,11 @@ _MESSAGES: dict[PolicyBoundary, str] = {
 def policy_support_on_tier(
     policy: GatewayPolicyName, shape: ApiShape | None, tier: GatewayTier
 ) -> CapabilitySupport:
+    if (
+        policy in {"llm-token-limit", "llm-emit-token-metric"}
+        and shape in {ApiShape.VERTEX_GEMINI, ApiShape.OPENAI_CHAT}
+    ):
+        return CapabilitySupport.UNKNOWN
     if tier == GatewayTier.CONSUMPTION and policy != "llm-emit-token-metric":
         return CapabilitySupport.UNAVAILABLE
     if (
@@ -76,7 +81,13 @@ def _capability(
         "This does not verify live policy compilation or applied access."
     )
     token_policy = policy in {"llm-token-limit", "llm-emit-token-metric"}
-    if token_policy and (
+    if token_policy and shape in {ApiShape.VERTEX_GEMINI, ApiShape.OPENAI_CHAT}:
+        support, reason, action = (CapabilitySupport.UNKNOWN, "unknownApiShape", "reviewResource")
+        message = (
+            "The exact external model's APIM token schema, streaming accounting and required "
+            "enforcement are unproved. Saving declarations or reviewing intent is not proof."
+        )
+    elif token_policy and (
         (resource is not None and resource.kind == "mcpServer")
         or schema_support == CapabilitySupport.UNAVAILABLE
     ):

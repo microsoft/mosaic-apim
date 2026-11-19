@@ -244,9 +244,11 @@ async def governed_apis(
             deployment_name=publication.deployment_name if publication else None,
             subscription_name=publication.subscription_name if publication else None,
             cost_telemetry=(
-                "aggregateOnly"
-                if publication is not None and publication.provider == "awsBedrock"
-                else None
+                model_api.cost_telemetry or (
+                    "aggregateOnly"
+                    if publication is not None and publication.provider == "awsBedrock"
+                    else None
+                )
             ),
             first_seen_at=seen_at,
         )

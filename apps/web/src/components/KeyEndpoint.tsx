@@ -59,12 +59,14 @@ export function DeclarationFields({
 }) {
   const shapes = shapesFor(provider)
   const bedrock = provider === 'awsBedrock'
+  const external = provider === 'googleVertex' || provider === 'openAiCompatible'
 
   function update(key: number, change: Partial<DeclarationDraft>) {
     onChange(
       drafts.map((draft) => {
         if (draft.key !== key) return draft
         const next = { ...draft, ...change }
+        if (external && change.deploymentName !== undefined) next.modelName = change.deploymentName
         if (change.modelName !== undefined && !next.shapeChosen) {
           next.apiShape = suggestedShape(next.modelName, provider)
         }
@@ -88,12 +90,18 @@ export function DeclarationFields({
 
   return (
     <fieldset className={styles.declarations}>
-      <legend>{bedrock ? 'Models to serve' : 'Deployments to publish'}</legend>
+      <legend>{bedrock || external ? 'Models to serve' : 'Deployments to publish'}</legend>
       {bedrock ? (
         <Text size={200} className={styles.muted}>
           A Bedrock API key can&apos;t list models, so name the model IDs to serve. Give each the
           model it serves as Azure names it, such as claude-sonnet-4-5, so it pools beside the same
           model on Azure. You can declare more later.
+        </Text>
+      ) : external ? (
+        <Text size={200} className={styles.muted}>
+          Declare exact, case-sensitive model IDs. Registration does not discover models, verify
+          provider support or grant access. Inline images and application-executed functions are
+          the initial capability envelope.
         </Text>
       ) : (
         <Text size={200} className={styles.muted}>
@@ -102,15 +110,15 @@ export function DeclarationFields({
         </Text>
       )}
       {drafts.length > 0 &&
-        (bedrock ? (
+        (bedrock || external ? (
           <div className={styles.bedrockHeader} aria-hidden="true">
             <span>Model ID</span>
-            <span>Model</span>
+            <span>{bedrock ? 'Model' : 'API'}</span>
             <span>Remove</span>
           </div>
         ) : (
           <div className={styles.declarationHeader} aria-hidden="true">
-            <span>Deployment name</span>
+            <span>{external ? 'Model ID' : 'Deployment name'}</span>
             <span>Model</span>
             <span>API</span>
             <span>Remove</span>
@@ -141,16 +149,26 @@ export function DeclarationFields({
               onClick={() => removeDraft(draft.key)}
             />
           </div>
+        ) : external ? (
+          <div key={draft.key} className={styles.bedrockRow}>
+            <Input aria-label={`Model ${index + 1} ID`} value={draft.deploymentName}
+              placeholder="fictional/Exact-Model" spellCheck={false}
+              onChange={(_, data) => update(draft.key, { deploymentName: data.value })} />
+            <Text>{API_SHAPE_SHORT_LABELS[effectiveShape(draft, provider)]}</Text>
+            <Button appearance="subtle" icon={<DismissRegular />}
+              aria-label={`Remove model ${index + 1}`} title="Remove"
+              onClick={() => removeDraft(draft.key)} />
+          </div>
         ) : (
           <div key={draft.key} className={styles.declarationRow}>
             <Input
-              aria-label={`Deployment ${index + 1} name`}
+              aria-label={external ? `Model ${index + 1} ID` : `Deployment ${index + 1} name`}
               value={draft.deploymentName}
               placeholder="claude-sonnet-4-5"
               onChange={(_, data) => update(draft.key, { deploymentName: data.value })}
             />
             <Input
-              aria-label={`Deployment ${index + 1} model`}
+              aria-label={external ? `Model ${index + 1} name` : `Deployment ${index + 1} model`}
               value={draft.modelName}
               placeholder="claude-sonnet-4-5"
               onChange={(_, data) => update(draft.key, { modelName: data.value })}
@@ -184,7 +202,7 @@ export function DeclarationFields({
           icon={<AddRegular />}
           onClick={() => onChange([...drafts, blankDeclaration(provider)])}
         >
-          {bedrock ? 'Add a model' : 'Add a deployment'}
+          {bedrock || external ? 'Add a model' : 'Add a deployment'}
         </Button>
       </div>
     </fieldset>
@@ -217,6 +235,7 @@ function DeclareDeploymentDialog({
   const surfaceRef = useRef<HTMLDivElement>(null)
   const motion = useDialogFocusReturn({ open, surfaceRef })
   const bedrock = endpoint.provider === 'awsBedrock'
+  const external = endpoint.provider === 'googleVertex' || endpoint.compatibleChat === true
   const [deploymentName, setDeploymentName] = useState('')
   const [modelName, setModelName] = useState('')
   const [apiShape, setApiShape] = useState<ApiShape | null>(null)
@@ -273,7 +292,7 @@ function DeclareDeploymentDialog({
         <form onSubmit={submit}>
           <DialogBody>
             <DialogTitle>
-              {`${bedrock ? 'Declare a model on' : 'Declare a deployment on'} ${endpoint.name}`}
+              {`${bedrock || external ? 'Declare a model on' : 'Declare a deployment on'} ${endpoint.name}`}
             </DialogTitle>
             <DialogContent className={styles.form}>
               {declare.isError && (
@@ -319,24 +338,27 @@ function DeclareDeploymentDialog({
               ) : (
                 <>
                   <Text size={200} className={styles.muted}>
-                    Use the deployment&apos;s name exactly as the resource shows it. MOSAIC
-                    can&apos;t confirm it exists without calling the model, so a wrong name shows up
-                    as a 404 when the published API is called.
+                    {external
+                      ? 'Declare an exact model ID. This saves intent only; upstream execution and publication eligibility remain separate.'
+                      : "Use the deployment's name exactly as the resource shows it. MOSAIC can't confirm it exists without calling the model, so a wrong name shows up as a 404 when the published API is called."}
                   </Text>
-                  <Field label="Deployment name" required>
+                  <Field label={external ? 'Model ID' : 'Deployment name'} required>
                     <Input
                       value={deploymentName}
-                      onChange={(_, data) => setDeploymentName(data.value)}
+                      onChange={(_, data) => {
+                        setDeploymentName(data.value)
+                        if (external) setModelName(data.value)
+                      }}
                       placeholder="claude-sonnet-4-5"
                     />
                   </Field>
-                  <Field label="Model" required>
+                  {!external && <Field label="Model" required>
                     <Input
                       value={modelName}
                       onChange={(_, data) => setModelName(data.value)}
                       placeholder="claude-sonnet-4-5"
                     />
-                  </Field>
+                  </Field>}
                   <Field label="API" hint="The API MOSAIC publishes this deployment through.">
                     <Select
                       value={shape}
@@ -357,7 +379,7 @@ function DeclareDeploymentDialog({
                 Cancel
               </Button>
               <Button appearance="primary" type="submit" disabledFocusable={declare.isPending}>
-                {declare.isPending ? 'Declaring…' : bedrock ? 'Declare model' : 'Declare deployment'}
+                {declare.isPending ? 'Declaring…' : bedrock || external ? 'Declare model' : 'Declare deployment'}
               </Button>
             </DialogActions>
           </DialogBody>
@@ -553,6 +575,7 @@ export function DeclaredDeploymentsCard({
   const [status, setStatus] = useState<string | null>(null)
   const declared = endpoint.declaredDeployments ?? []
   const bedrock = endpoint.provider === 'awsBedrock'
+  const external = endpoint.provider === 'googleVertex' || endpoint.compatibleChat === true
   const endpointPools = useEndpointPools(endpoint.id)
   const deploymentPools = useMemo(
     () => (endpointPools.data ? poolsByDeployment(endpointPools.data) : undefined),
@@ -566,7 +589,7 @@ export function DeclaredDeploymentsCard({
     onSuccess: async (_, deploymentName) => {
       setStatus(
         `Removed ${deploymentName} from ${endpoint.name}. Nothing changed in ` +
-          `${bedrock ? 'AWS' : 'Azure'}.`,
+          `${bedrock ? 'AWS' : external ? 'the provider' : 'Azure'}.`,
       )
       await queryClient.invalidateQueries({ queryKey: ['model-endpoints'] })
       await queryClient.invalidateQueries({ queryKey: ['publishable-models'] })
@@ -584,13 +607,19 @@ export function DeclaredDeploymentsCard({
       <div className={styles.panelHeader}>
         <div className={styles.panelText}>
           <Title3 as="h2">
-            {`${bedrock ? 'Models on' : 'Deployments on'} ${endpoint.name}`}
+            {`${bedrock || external ? 'Models on' : 'Deployments on'} ${endpoint.name}`}
           </Title3>
           {bedrock ? (
             <Text size={200} className={styles.muted}>
               You declared these: a Bedrock API key can&apos;t list models. Model pools remain supported.
               Sonnet 5 on Mantle in us-east-1 also supports standalone governed publication.
               Registration does not check model availability with AWS or grant caller access.
+            </Text>
+          ) : external ? (
+            <Text size={200} className={styles.muted}>
+              Exact operator declarations, not discovery or evidence of provider availability.
+              Review publication eligibility separately; unverified authentication, egress and
+              accounting block runtime execution. No new model-pool support is implied.
             </Text>
           ) : (
             <Text size={200} className={styles.muted}>
@@ -606,7 +635,7 @@ export function DeclaredDeploymentsCard({
           onClick={() => setDeclaring(true)}
           {...restoreFocus}
         >
-          {bedrock ? 'Declare a model' : 'Declare a deployment'}
+          {bedrock || external ? 'Declare a model' : 'Declare a deployment'}
         </Button>
       </div>
       {status && (
@@ -638,7 +667,7 @@ export function DeclaredDeploymentsCard({
         <Table aria-label={bedrock ? 'Declared Bedrock models' : 'Declared model deployments'}>
           <TableHeader>
             <TableRow>
-              <TableHeaderCell>{bedrock ? 'Model ID' : 'Deployment'}</TableHeaderCell>
+              <TableHeaderCell>{bedrock || external ? 'Model ID' : 'Deployment'}</TableHeaderCell>
               <TableHeaderCell>Model</TableHeaderCell>
               <TableHeaderCell>API</TableHeaderCell>
               <TableHeaderCell>Source</TableHeaderCell>

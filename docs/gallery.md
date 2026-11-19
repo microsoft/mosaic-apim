@@ -195,6 +195,37 @@ embeddings remain disabled read-only intent, not current save or enforcement pro
   </tr>
   <tr>
     <td width="50%" valign="top">
+      <img src="images/screenshots/console-register-vertex.png" alt="Native Vertex registration with fixed US multi-region, independent authentication choices and explicit execution-evidence limitations">
+      <p><b>Register native Vertex.</b> Declare the exact native Gemini route and authentication
+      intent without contacting Google; registration does not establish gateway readiness or access.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/console-register-custom-chat.png" alt="Governed custom chat registration with an exact model ID, a Key Vault reference and public HTTPS limitations">
+      <p><b>Register governed custom chat.</b> Review the approved origin, exact declared model and
+      external-processing boundary before saving configuration, separate from publication and grants.</p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <img src="images/screenshots/console-register-vertex-mobile.png" alt="Native Vertex registration at 390 pixels in dark mode with wrapped Guided stages and stacked consequence guidance">
+      <p><b>Register on mobile.</b> The same four stages and unresolved execution warnings remain
+      visible in a stacked workspace; no Google call or publication is made.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/console-vertex-review.png" alt="A fictional native Vertex publication reviewed offline with explicit execution blockers and disabled Apply">
+      <p><b>Review Vertex without applying.</b> Inspect saved routing, authentication and access
+      consequences while unproved execution keeps Apply blocked; this is not a usable connection.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/console-vertex-review-mobile.png" alt="The same blocked Vertex review at 390 pixels in dark mode">
+      <p><b>Keep blockers visible on mobile.</b> Review the same exact intent in a stacked workspace
+      without hiding the unavailable execution or creating gateway access.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
       <img src="images/screenshots/console-bedrock-release.png" alt="A fictional Bedrock publication in the full-workspace Guided release review before explicit Apply">
       <p><b>Review Bedrock publication.</b> Inspect pending gateway changes beside the release
       boundaries and native Messages guidance. Only Apply reviewed plan changes the gateway.</p>

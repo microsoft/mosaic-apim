@@ -20,6 +20,7 @@ from mosaic_api.domain import (
     ModelEndpointCapabilities,
     ModelEndpointStatus,
     ModelProvider,
+    VertexConfiguration,
     new_id,
 )
 from mosaic_api.endpoint_readiness import ENDPOINT_READINESS_RULES_REVISION
@@ -452,6 +453,56 @@ async def test_memory_gateway_observation_preserves_authored_fields_and_updates_
     assert stored.environment == "production"
     assert stored.status == GatewayStatus.CONNECTED
     assert stored.azure_environment_tag == "azure-prod"
+
+
+@pytest.mark.parametrize("cosmos_backed", [False, True])
+@pytest.mark.parametrize("provider", [ModelProvider.OPENAI_COMPATIBLE, ModelProvider.GOOGLE_VERTEX])
+async def test_stale_observation_retry_preserves_admin_provider_contract(
+    cosmos_backed: bool, provider: ModelProvider,
+) -> None:
+    cosmos = Cosmos()
+    repo = (
+        CosmosModelEndpointRepository(
+            cast(CosmosClient, cosmos), "db", "desired", "audit", "sync", "observed"
+        )
+        if cosmos_backed else HookedMemoryModelEndpointRepository()
+    )
+    vertex = provider == ModelProvider.GOOGLE_VERTEX
+    original = await repo.create_endpoint(ModelEndpoint(
+        id="external-contract", tenant_id=TENANT_ID, name="External",
+        provider=provider,
+        endpoint=(
+            "https://aiplatform.us.rep.googleapis.com" if vertex else "https://chat.example.com/v1"
+        ),
+        vertex=VertexConfiguration(project_id="fictional-project", auth_mode="apiKey")
+        if vertex else None,
+    ), audit())
+    configured = original.model_copy(update={
+        "compatible_chat": not vertex,
+        "vertex": VertexConfiguration(
+            project_id="fictional-project", auth_mode="serviceAccountKey",
+            service_account="runtime@fictional-project.iam.gserviceaccount.com",
+        ) if vertex else None,
+    })
+
+    async def configure() -> None:
+        await repo.save_endpoint(configured, audit())
+
+    if cosmos_backed:
+        cosmos.containers["desired"].before_replace = configure
+    else:
+        assert isinstance(repo, HookedMemoryModelEndpointRepository)
+        repo.before_replace = configure
+    await repo.record_endpoint_state(original.model_copy(update={
+        "status": ModelEndpointStatus.UNREACHABLE,
+        "access": EndpointAccess(message="The earlier sync failed"),
+    }))
+    stored = await repo.get_endpoint(TENANT_ID, original.id)
+    assert stored is not None
+    assert stored.compatible_chat == configured.compatible_chat
+    assert stored.vertex == configured.vertex
+    assert stored.status == ModelEndpointStatus.UNREACHABLE
+    assert stored.access.message == "The earlier sync failed"
 
 
 async def test_memory_model_endpoint_observation_preserves_authored_fields_and_updates_observed(

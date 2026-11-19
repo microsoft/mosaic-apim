@@ -58,6 +58,8 @@ import { PolicyFacetItem } from './PolicyFacets'
 import { ModelAccessReview } from './ModelAccessReview'
 import { ModelAccessRecovery } from './ModelAccessRecovery'
 import { GuidedRelease } from './GuidedRelease'
+import { ExternalEndpointGuidance } from './ExternalEndpointFields'
+import { isExternalModelProvider } from '../key-endpoint'
 import { WorkspaceDialog, WorkspaceDialogActions, WorkspaceDialogContent } from './WorkspaceDialog'
 import styles from './ImportFromGatewayDialog.module.css'
 
@@ -107,6 +109,8 @@ const shapeLabels: Record<ApiShape, string> = {
   azureOpenAi: 'Azure OpenAI API',
   foundryModels: 'Foundry Models API',
   anthropicMessages: 'Anthropic Messages API',
+  vertexGemini: 'Google Vertex Gemini API',
+  openAiChat: 'OpenAI-compatible Chat Completions',
 }
 
 function tokenCapability(model: PublishableModel | null, gatewayId: string): PolicyCapability | null {
@@ -134,6 +138,10 @@ function isPublishable(model: PublishableModel, gatewayId: string): boolean {
     support === 'available'
     || (support === 'unavailable' && model.tokenLimitsSupported === false)
   )
+}
+
+function isReviewable(model: PublishableModel, gatewayId: string): boolean {
+  return isPublishable(model, gatewayId) || model.reviewable === true
 }
 
 function publicationBlockReason(model: PublishableModel, gatewayId: string): string {
@@ -436,6 +444,15 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
     (model) => `${model.modelEndpointId}:${model.deploymentName}` === modelKey,
   ) ?? null
   const bedrock = (publication?.provider ?? selectedModel?.provider) === 'awsBedrock'
+  const externalProvider = publication?.provider ?? selectedModel?.provider
+  const external = isExternalModelProvider(externalProvider)
+  const guided = bedrock || external
+
+  function canReviewModel(model: PublishableModel): boolean {
+    return isLocal
+      ? selfHostedModel(model) && isPublishable(model, gatewayId)
+      : isReviewable(model, gatewayId)
+  }
 
   const createAndPlan = useMutation({
     mutationKey,
@@ -444,7 +461,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
       if (runtimeUnavailable || (isLocal && !selfHostedModel(selectedModel))) {
         throw new Error('The selected self-hosted runtime or model is unavailable. Choose a supported runtime explicitly.')
       }
-      if (!isPublishable(selectedModel, gatewayId)
+      if (!canReviewModel(selectedModel)
         || form.tokenLimits !== supportsTokenLimits(selectedModel, gatewayId)) {
         throw new Error('Publication support has changed or is not confirmed. Your draft is retained. Return to the model list, refresh models, and select the deployment again.')
       }
@@ -460,9 +477,9 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
         runtimeTarget: runtimeChoice,
         ...(isLocal ? { governedAccess: { keysEnabled: false, entraEnabled: true } } : {}),
         enforcement: form.tokenLimits ? buildEnforcement(form) : null,
-        ...(bedrock ? { governedAccess: { keysEnabled: true, entraEnabled: true } } : {}),
+        ...(guided ? { governedAccess: { keysEnabled: true, entraEnabled: true } } : {}),
       })
-      const createdPlan = bedrock ? null : await api.createPublishPlan(created.id)
+      const createdPlan = guided ? null : await api.createPublishPlan(created.id)
       return { created, createdPlan }
     },
     onSuccess: ({ created, createdPlan }) => {
@@ -505,7 +522,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
       setInvalidPlan(true)
       setRefreshError(null)
       setReviewMessage(error instanceof Error ? error.message : 'The publish plan is stale.')
-      if (publication.provider === 'awsBedrock') {
+      if (publication.provider === 'awsBedrock' || isExternalModelProvider(publication.provider)) {
         setStep('review')
         return
       }
@@ -587,8 +604,8 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
     target?.focus()
   }, [open, step, outcome])
 
-  const canConfigure = Boolean(gatewayId && selectedModel && isPublishable(selectedModel, gatewayId)
-    && !runtimeUnavailable && (!isLocal || selfHostedModel(selectedModel)))
+  const canConfigure = Boolean(gatewayId && selectedModel && !runtimeUnavailable
+    && canReviewModel(selectedModel))
   const tokenLimits = form.tokenLimits
   const capabilityChanged = !canConfigure || tokenLimits !== supportsTokenLimits(selectedModel, gatewayId)
   const selectedCapability = tokenCapability(selectedModel, gatewayId)
@@ -596,8 +613,12 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
     !capabilityChanged && form.apiName.trim() && form.apiPath.trim()
     && (!tokenLimits || form.counterKeyExpression.trim()),
   )
-  const missingAccessReview = Boolean(publication?.governedAccess && !plan?.accessSnapshot)
   const runtimeBlocked = Boolean(plan?.runtimeReview?.blockers.length)
+  const executionBlocked = Boolean(plan && (
+    plan.executable === false || (external && plan.executable !== true)
+    || (plan.executionBlockedReasons?.length ?? 0) > 0
+  ))
+  const missingAccessReview = Boolean(!executionBlocked && publication?.governedAccess && !plan?.accessSnapshot)
   const createEnvironmentBlocked = environmentBlockedVerdict(createAndPlan.error)
   const applyEnvironmentBlocked = environmentBlockedVerdict(apply.error)
   // Applying writes every step, unchanged ones included, so a plan that changes nothing can't be applied.
@@ -605,33 +626,35 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
     plan && plan.steps.length > 0 && plan.steps.every((planStep) => planStep.action === 'noChange'),
   )
 
-  const title = initialReview?.plan.accessSnapshot ? 'Review model access' : initialReview ? 'Review model changes' : 'Publish a model'
+  const title = executionBlocked ? 'Offline review'
+    : initialReview?.plan.accessSnapshot ? 'Review model access' : initialReview ? 'Review model changes' : 'Publish a model'
   const pending = createAndPlan.isPending || reviewSaved.isPending || apply.isPending
     || Boolean(runId && (!currentRun || currentRun.status === 'running'))
   const actions = (requestClose: () => void) => <WorkspaceDialogActions
     className={plan?.runtimeReview ? styles.runtimeReviewActions : undefined}>
     <Button appearance="secondary" disabled={pending} onClick={requestClose}>Close</Button>
     {step === 'configure' && <Button onClick={() => setStep('choose')}>Previous step</Button>}
-    {step === 'review' && !reviewingExistingPlan && !bedrock && <Button onClick={() => setStep('configure')}>Previous step</Button>}
+    {step === 'review' && !reviewingExistingPlan && !guided && <Button onClick={() => setStep('configure')}>Previous step</Button>}
     {step === 'choose' && <Button appearance="primary" disabled={!canConfigure} onClick={() => setStep('configure')}>Configure</Button>}
     {step === 'configure' && <Button appearance="primary" disabled={!canReview} disabledFocusable={createAndPlan.isPending}
-      onClick={() => createAndPlan.mutate()}>{createAndPlan.isPending ? (bedrock ? 'Saving draft…' : 'Creating plan…') : bedrock ? 'Save publication draft' : 'Review plan'}</Button>}
-    {step === 'review' && bedrock && (!plan || invalidPlan) && <Button appearance="primary"
+      onClick={() => createAndPlan.mutate()}>{createAndPlan.isPending ? (guided ? 'Saving draft…' : 'Creating plan…') : guided ? 'Save publication draft' : 'Review plan'}</Button>}
+    {step === 'review' && guided && (!plan || invalidPlan) && <Button appearance="primary"
       disabledFocusable={reviewSaved.isPending} onClick={() => reviewSaved.mutate()}>
       {reviewSaved.isPending ? 'Reviewing…' : 'Review publication'}
     </Button>}
     {step === 'review' && plan?.runtimeReview && <Button disabledFocusable={refreshEvidence.isPending}
       onClick={() => { if (!refreshEvidence.isPending) refreshEvidence.mutate() }}>Refresh evidence</Button>}
-    {step === 'review' && (!bedrock || (plan && !invalidPlan)) && <Button appearance="primary"
-      disabled={invalidPlan || missingAccessReview || nothingToApply || runtimeBlocked || refreshEvidence.isPending} disabledFocusable={apply.isPending}
-      onClick={() => apply.mutate()}>{apply.isPending ? 'Applying…' : bedrock ? 'Apply reviewed plan' : 'Apply all pending changes'}</Button>}
+    {step === 'review' && (!guided || (plan && !invalidPlan)) && <Button appearance="primary"
+      disabled={invalidPlan || missingAccessReview || nothingToApply || executionBlocked
+        || runtimeBlocked || refreshEvidence.isPending} disabledFocusable={apply.isPending}
+      onClick={() => apply.mutate()}>{apply.isPending ? 'Applying…' : guided ? 'Apply reviewed plan' : 'Apply all pending changes'}</Button>}
   </WorkspaceDialogActions>
   const content = (requestClose: () => void) => (
         <>
           <WorkspaceDialogContent>
-            <GuidedRelease enabled={bedrock} stage={step === 'apply'
+            <GuidedRelease enabled={guided} stage={step === 'apply'
               ? currentRun?.status === 'succeeded' ? 'connect' : 'apply' : 'review'}
-              guidance={<>
+              guidance={external ? <ExternalEndpointGuidance vertex={externalProvider === 'googleVertex'} /> : <>
                 <h3>What changes access</h3>
                 <p>Saving registers configuration or publication intent. It does not call AWS,
                   change the gateway or grant access.</p>
@@ -646,12 +669,14 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                   Cache cost is unknown without separate read and write counts.</p>
               </>}>
             <div className={styles.intro}>
-              <Text>Preview the changes MOSAIC would apply. Nothing changes until you apply all pending changes.</Text>
+              <Text>{executionBlocked
+                ? 'Review saved configuration and unresolved execution evidence. This review cannot change the gateway or caller access.'
+                : 'Preview the changes MOSAIC would apply. Nothing changes until you apply all pending changes.'}</Text>
               {runtimeConfig.authMode === 'local' && (
                 <Text>Local development mode: responses may be simulated and do not prove a live APIM change.</Text>
               )}
               <Text ref={stepRef} tabIndex={-1} size={200}>
-                {bedrock ? 'Endpoint registration is saved. Publication and access are separate.'
+                {guided ? 'Endpoint registration is saved. Publication and access are separate.'
                   : `Step ${['choose', 'configure', 'review', 'apply'].indexOf(step) + 1} of 4`}
               </Text>
             </div>
@@ -727,6 +752,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                           const key = `${model.modelEndpointId}:${model.deploymentName}`
                           const localUnsupported = isLocal && !selfHostedModel(model)
                           const publishableRow = isPublishable(model, gatewayId) && !localUnsupported
+                          const reviewableRow = canReviewModel(model)
                           const environmentBlocked = model.environmentVerdict.level === 'blocked'
                           const environmentWarning = model.environmentVerdict.level === 'warning'
                           const blockedReasons = [
@@ -743,7 +769,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                                 <Checkbox
                                   aria-label={`Publish ${model.deploymentName}`}
                                   checked={modelKey === key}
-                                  disabled={!publishableRow || environmentBlocked}
+                                  disabled={!reviewableRow || environmentBlocked}
                                   onChange={(_, data) => {
                                     setModelKey(data.checked ? key : '')
                                     if (data.checked) setForm(initialForm(model, gatewayId))
@@ -763,7 +789,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                                   {model.publicationStatus && <Badge appearance="tint">{model.publicationStatus}</Badge>}
                                   {(!publishableRow || environmentBlocked) && (
                                     <>
-                                      <Badge appearance="tint" color="warning">Not publishable</Badge>
+                                      <Badge appearance="tint" color="warning">{reviewableRow ? 'Review only' : 'Not publishable'}</Badge>
                                       <Text size={200}>
                                         {blockedReasons}
                                       </Text>
@@ -874,7 +900,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
               </div>
             )}
 
-            {step === 'review' && bedrock && (!plan || invalidPlan) && <div role="status"
+            {step === 'review' && guided && (!plan || invalidPlan) && <div role="status"
               ref={outcomeRef} tabIndex={-1}>
               <Title3 as="h3">{invalidPlan ? 'Review required again' : 'Publication draft saved'}</Title3>
               <Text block>{invalidPlan ? reviewMessage : 'No gateway changes or access grants have been applied. Review publication to inspect the exact proposed changes.'}</Text>
@@ -883,16 +909,16 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
               <ErrorState context="action" title="Unable to review publication"
                 error={reviewSaved.error} announcementKey={reviewSaved.submittedAt} />
             </div>}
-            {step === 'review' && plan && (!bedrock || !invalidPlan) && (
-              <div className={styles.nameCell} ref={bedrock ? outcomeRef : undefined}
-                tabIndex={bedrock ? -1 : undefined}>
+            {step === 'review' && plan && (!guided || !invalidPlan) && (
+              <div className={styles.nameCell} ref={guided ? outcomeRef : undefined}
+                tabIndex={guided ? -1 : undefined}>
                 {reviewMessage && (
                   <AnnounceProvider value={announcement}><div ref={applyError ? undefined : outcomeRef} tabIndex={-1}>
                     <MessageBar intent="warning">
                       <MessageBarBody>
                         <MessageBarTitle>MOSAIC didn't apply the plan you reviewed</MessageBarTitle>
                         {reviewMessage}
-                        {!invalidPlan && !bedrock && (
+                        {!invalidPlan && !guided && (
                           <Text block>MOSAIC has already re-planned. Review the fresh plan below before you apply it.</Text>
                         )}
                       </MessageBarBody>
@@ -904,8 +930,21 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                     <MessageBarBody>This plan lists no resource operations. It is not a live verification of gateway behavior.</MessageBarBody>
                   </MessageBar>
                 )}
+                {executionBlocked && (
+                  <MessageBar intent="warning">
+                    <MessageBarBody>
+                      <MessageBarTitle>Offline review only - Apply is blocked</MessageBarTitle>
+                      {(plan.executionBlockedReasons?.length ? plan.executionBlockedReasons
+                        : ['Executable gateway evidence is missing. Request a fresh review.']).map(reason => (
+                        <Text block key={reason}>{reason}</Text>
+                      ))}
+                      <Text block>No APIM changes or caller access result from this review.</Text>
+                    </MessageBarBody>
+                  </MessageBar>
+                )}
                 <ChangeReview plan={plan} context={editContext} />
-                {plan.warnings.map((warning) => (
+                {plan.warnings.filter(warning => !executionBlocked
+                  || !plan.executionBlockedReasons?.includes(warning)).map((warning) => (
                   <MessageBar key={warning} intent="warning" layout="multiline">
                     <MessageBarBody><MessageBarTitle>Plan warning</MessageBarTitle>{warning}</MessageBarBody>
                   </MessageBar>
@@ -915,7 +954,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                     <MessageBarBody>The governed-access snapshot is missing. Close and request a fresh model plan; access changes cannot be applied without reviewing all target grants.</MessageBarBody>
                   </MessageBar>
                 )}
-                <TechnicalExecution plan={plan}>
+                {!executionBlocked && <TechnicalExecution plan={plan}>
                 <ModelAccessReview plan={plan} />
                 <Title3 as="h3">Plan steps</Title3>
                 <div className={styles.tableScroll}>
@@ -953,7 +992,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                     </ul>
                   </>
                 )}
-                </TechnicalExecution>
+                </TechnicalExecution>}
                 {applyEnvironmentBlocked && (
                   <MessageBar intent="error">
                     <MessageBarBody>
@@ -980,7 +1019,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                     <RunResult run={currentRun} />
                   </div></AnnounceProvider>
                 )}
-                {bedrock && currentRun?.status === 'succeeded' && <section>
+                {guided && currentRun?.status === 'succeeded' && <section>
                   <Title3 as="h3">Grant and connect</Title3>
                   <Text block>Publication apply is complete. Review the applied grant snapshot above;
                     it determines who has access. Saving or approving another grant does not apply it.</Text>

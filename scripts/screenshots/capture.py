@@ -153,6 +153,11 @@ REDACTION_PATTERNS = [
     r"\b(?:graph\.microsoft\.(?:com|us)|dod-graph\.microsoft\.us|"
     r"microsoftgraph\.chinacloudapi\.cn)\b",
     r"\bbedrock-(?:mantle\.[a-z0-9-]+\.api\.aws|runtime\.[a-z0-9-]+\.amazonaws\.com)\b",
+    r"//iam\.googleapis\.com/[^\s\"'<>]+",
+    r"\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.googleapis\.com\b",
+    r"\bfictional-vertex-project\b",
+    r"\bFictional (?:Vertex US|Gemini review)\b",
+    r"\bfictional-vertex-us[a-z0-9._/-]*\b",
     # IPv4 addresses, such as gateway egress addresses.
     r"\b\d{1,3}(?:\.\d{1,3}){3}\b",
     # MOSAIC record IDs and the APIM names derived from them, such as modelApi_<32 hex>,
@@ -772,29 +777,47 @@ def preview_gateway_limit_refusal(page: Page) -> None:
     ).first.wait_for()
 
 
+def verify_guided_workspace(page: Page) -> None:
+    if page.get_by_role("navigation", name="Guided release").count() != 1:
+        raise CaptureError("The fictional provider workspace did not use Guided release")
+    if page.evaluate("document.documentElement.scrollWidth > window.innerWidth"):
+        raise CaptureError("The provider workspace overflows the document")
+
+
 def review_bedrock_release(page: Page) -> None:
+    _review_declared_release(page, vertex=False)
+
+
+def review_vertex_release(page: Page) -> None:
+    _review_declared_release(page, vertex=True)
+
+
+def _review_declared_release(page: Page, *, vertex: bool) -> None:
     """Create only fictional saved intent through the normal API; never apply the review."""
 
     api_base = page.evaluate("window.__MOSAIC_CONFIG__.apiBaseUrl")
     if not isinstance(api_base, str) or not re.fullmatch(r"http://127\.0\.0\.1:\d+", api_base):
-        raise CaptureError("The Bedrock fixture requires the injected loopback demo API")
+        raise CaptureError("The provider fixture requires the injected loopback demo API")
 
     def get(path: str) -> list[dict[str, object]]:
         response = page.request.get(api_base + path)
         if not response.ok:
-            raise CaptureError(f"Fictional Bedrock fixture read failed: {response.status}")
+            raise CaptureError(f"Fictional provider fixture read failed: {response.status}")
         return response.json()
 
     def post(path: str, payload: dict[str, object]) -> dict[str, object]:
         response = page.request.post(api_base + path, data=payload)
         if not response.ok:
-            raise CaptureError(f"Fictional Bedrock fixture save failed: {response.status}")
+            raise CaptureError(f"Fictional provider fixture save failed: {response.status}")
         return response.json()
 
     endpoints = get("/api/v1/model-endpoints")
-    endpoint = next((item for item in endpoints if item["name"] == "Fictional Bedrock East"), None)
+    endpoint_name = "Fictional Vertex US" if vertex else "Fictional Bedrock East"
+    publication_name = "Fictional Gemini review" if vertex else "Fictional Claude release"
+    model_id = "gemini-3.8-flash" if vertex else "anthropic.claude-sonnet-5"
+    endpoint = next((item for item in endpoints if item["name"] == endpoint_name), None)
     if endpoint is None:
-        endpoint = post("/api/v1/model-endpoints", {
+        registration: dict[str, object] = {
             "endpoint": "https://bedrock-mantle.us-east-1.api.aws",
             "credentialSecretUri": "https://kv-contoso-ai.vault.azure.net/secrets/demo-bedrock-key",
             "name": "Fictional Bedrock East", "environment": "production",
@@ -802,29 +825,51 @@ def review_bedrock_release(page: Page) -> None:
                 "deploymentName": "anthropic.claude-sonnet-5", "modelName": "claude-sonnet-5",
                 "apiShape": "anthropicMessages",
             }],
-        })
+        }
+        if vertex:
+            registration = {
+                "provider": "googleVertex",
+                "endpoint": "https://aiplatform.us.rep.googleapis.com",
+                "name": endpoint_name, "environment": "production",
+                "vertex": {
+                    "projectId": "fictional-vertex-project", "location": "us",
+                    "apiVersion": "v1", "authMode": "workloadIdentityFederation",
+                    "serviceAccount": "fictional@fictional-vertex-project.iam.gserviceaccount.com",
+                    "workloadIdentityAudience": "//iam.googleapis.com/projects/000000000000/"
+                    "locations/global/workloadIdentityPools/fictional/providers/fictional",
+                },
+                "deployments": [{
+                    "deploymentName": model_id, "modelName": model_id, "apiShape": "vertexGemini",
+                }],
+            }
+        endpoint = post("/api/v1/model-endpoints", registration)
     publications = get("/api/v1/publications")
-    if not any(item["displayName"] == "Fictional Claude release" for item in publications):
+    if not any(item["displayName"] == publication_name for item in publications):
         gateways = get("/api/v1/gateways")
         gateway = next(item for item in gateways if item["name"] == "Contoso AI Gateway")
         post("/api/v1/publications", {
             "gatewayId": gateway["id"], "modelEndpointId": endpoint["id"],
-            "deploymentName": "anthropic.claude-sonnet-5",
-            "displayName": "Fictional Claude release",
+            "deploymentName": model_id,
+            "displayName": publication_name,
             "governedAccess": {"keysEnabled": True, "entraEnabled": True},
-            "enforcement": {
+            "enforcement": None if vertex else {
                 "counterKeyExpression": "@(context.Subscription.Id)",
                 "tokensPerMinute": 12000, "estimatePromptTokens": True,
             },
         })
     page.reload()
-    click_button("Fictional Claude release")(page)
-    click_button("Review publish plan")(page)
-    page.get_by_role("button", name="Apply reviewed plan", exact=True).wait_for()
-    if page.get_by_role("navigation", name="Guided release").count() != 1:
-        raise CaptureError("The fictional Bedrock review did not use Guided release")
-    if page.evaluate("document.documentElement.scrollWidth > window.innerWidth"):
-        raise CaptureError("The Bedrock release workspace overflows the document")
+    click_button(publication_name)(page)
+    selected = page.get_by_role("region", name="Published model details", exact=True).filter(
+        has=page.get_by_role("heading", name=publication_name, exact=True)
+    )
+    selected.get_by_role("button", name="Review publish plan", exact=True).click()
+    title = "Offline review" if vertex else "Review model access"
+    page.get_by_role("heading", name=title, exact=True).wait_for()
+    apply = page.get_by_role("button", name="Apply reviewed plan", exact=True)
+    apply.wait_for()
+    if vertex and apply.is_enabled():
+        raise CaptureError("Unproved Vertex execution must remain blocked")
+    verify_guided_workspace(page)
 
 
 SHOTS: list[Shot] = [
@@ -1969,7 +2014,47 @@ SHOTS: list[Shot] = [
         "Register model endpoint",
         actions=(click_tab("AWS Bedrock"),), height=1500,
     ),
-    # Keep state-changing shots at the end, before the final legacy change review.
+    Shot(
+        "console-register-vertex", "console", "/models?register=1", "light",
+        "Register model endpoint",
+        actions=(
+            click_tab("Google Vertex AI"),
+            fill_textbox("Google Cloud project ID", "fictional-vertex-project"),
+            fill_textbox("Google service account",
+                         "fictional@fictional-vertex-project.iam.gserviceaccount.com"),
+            fill_textbox("Google federation audience",
+                         "//iam.googleapis.com/projects/000000000000/locations/global/"
+                         "workloadIdentityPools/fictional/providers/fictional"),
+            verify_guided_workspace,
+        ),
+        height=1750,
+    ),
+    Shot(
+        "console-register-vertex-mobile", "console", "/models?register=1", "dark",
+        "Register model endpoint",
+        actions=(click_tab("Google Vertex AI"), verify_guided_workspace), width=390, height=2350,
+    ),
+    Shot(
+        "console-register-custom-chat", "console", "/models?register=1", "light",
+        "Register model endpoint",
+        actions=(
+            click_tab("OpenAI compatible"),
+            fill_textbox("Endpoint URL", "https://models.contoso.com/v1"),
+            fill_textbox("Key Vault secret URI",
+                         "https://kv-contoso-ai.vault.azure.net/secrets/demo-custom-key"),
+            fill_text("Model 1 ID", "fictional/Exact-Model"),
+        ),
+        height=1700,
+    ),
+    # Draft-saving reviews share the API. Keep this terminal block after all read-only shots.
+    Shot(
+        "console-vertex-review", "console", "/models", "light",
+        "Publish a model", actions=(review_vertex_release,), height=2200,
+    ),
+    Shot(
+        "console-vertex-review-mobile", "console", "/models", "dark",
+        "Publish a model", actions=(review_vertex_release,), width=390, height=3400,
+    ),
     Shot(
         "console-bedrock-release", "console", "/models", "light", "Publish a model",
         actions=(review_bedrock_release,), height=1700,
@@ -1978,7 +2063,7 @@ SHOTS: list[Shot] = [
         "console-bedrock-release-mobile", "console", "/models", "dark", "Publish a model",
         actions=(review_bedrock_release,), width=390, height=1600,
     ),
-    # Register the fictional edge parent only after the existing overview and connection shots.
+    # Register the fictional edge parent after the provider reviews.
     Shot(
         "console-self-hosted-gateways", "console", "/gateways?tab=self-hosted", "light",
         "Self-hosted gateways",
@@ -2001,7 +2086,7 @@ SHOTS: list[Shot] = [
         "console-self-hosted-mcp-review", "console", "/mcps?tab=published", "light",
         "Published MCP servers", actions=(_review_fictional_edge_mcp,), height=1670,
     ),
-    # This saves an unapplied key-setting change; keep it after all connection screenshots.
+    # Keep the unapplied key-setting change last, after provider reviews and connection shots.
     Shot(
         "console-model-change-review",
         "console",

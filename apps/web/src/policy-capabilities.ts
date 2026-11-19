@@ -19,7 +19,7 @@ export const POLICY_LABELS: Record<GatewayPolicyName, string> = {
 
 const SUPPORT = ['available', 'unavailable', 'unknown']
 const TIERS = ['classic', 'v2', 'consumption', 'unknown']
-const SHAPES = ['azureOpenAi', 'foundryModels', 'anthropicMessages']
+const SHAPES = ['azureOpenAi', 'foundryModels', 'anthropicMessages', 'vertexGemini', 'openAiChat']
 const REASONS = [
   'documentedSupport', 'unsupportedTier', 'unknownTier', 'unverifiedSku',
   'unsupportedApiShape', 'unknownApiShape',

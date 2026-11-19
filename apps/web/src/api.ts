@@ -544,8 +544,10 @@ export interface MosaicApi extends AdminApi {
     azureConnectionId?: string | null
     azureResourceId?: string
     endpoint?: string
-    /** Set only for AWS Bedrock; MOSAIC infers every other kind from the URL. */
+    /** Explicitly selects a provider contract; a URL alone is not publication support. */
     provider?: ModelProvider
+    vertex?: import('./types').VertexConfiguration
+    compatibleChat?: boolean
     name?: string
     environmentLabel?: string
     credentialSecretUri?: string

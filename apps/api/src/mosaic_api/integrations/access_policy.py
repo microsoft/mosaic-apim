@@ -1312,6 +1312,34 @@ def _operation_guard(
             else "This operation is not available with governed token limits."
         ),
     )
+    if publication.api_shape == ApiShape.VERTEX_GEMINI:
+        bindings = " || ".join(
+            f"(context.Operation.Id == {_literal(op.name)} && "
+            f"context.Request.OriginalUrl.Path.EndsWith({_literal(op.url_template)}, "
+            "StringComparison.Ordinal))"
+            for op in operations
+        )
+        _reject(
+            fragment, f"@(!({bindings}))", reason="model", with_caller=True,
+            message="The native operation must match this publication's exact model route.",
+        )
+        _reject(
+            fragment,
+            _expression([
+                "if (context.Request.Body == null) { return true; }",
+                "try {",
+                "    var body = context.Request.Body.As<JObject>(preserveContent: true);",
+                "    if (body == null) { return true; }",
+                '    var model = body["model"];',
+                "    return model != null && (model.Type != JTokenType.String ||",
+                "        !String.Equals((string)model, "
+                f"{_literal(publication.deployment_name)}, StringComparison.Ordinal));",
+                "} catch { return true; }",
+            ]),
+            reason="model", with_caller=True,
+            message="The request must not override this publication's native model binding.",
+        )
+        return
     unscoped = [op for op in operations if not op.url_template.startswith("/openai/deployments/")]
     if unscoped:
         needs_model = " || ".join(f"context.Operation.Id == {_literal(op.name)}" for op in unscoped)
@@ -1826,7 +1854,9 @@ def _facets(
 
 def governed_operations(publication: Publication) -> tuple[OperationSpec, ...]:
     supported = (
-        _ANTHROPIC_OPERATIONS
+        {"generate-content", "stream-generate-content"}
+        if publication.api_shape == ApiShape.VERTEX_GEMINI
+        else _ANTHROPIC_OPERATIONS
         if publication.api_shape == ApiShape.ANTHROPIC_MESSAGES
         else _SUPPORTED_OPERATIONS
     )
@@ -1904,6 +1934,11 @@ def render_governed_policy(
     The supplied snapshot, rather than mutable publication access settings or grants, is the
     authority for this rendering. Only the publication's identity and routing metadata are used.
     """
+    if publication.api_shape in {ApiShape.VERTEX_GEMINI, ApiShape.OPENAI_CHAT}:
+        raise ValidationError(
+            "External model execution policies are unproved. Use offline draft review; "
+            "no forwarding policy can be rendered for this contract."
+        )
     _validate(publication, snapshot)
     if publication.is_self_hosted() != (self_hosted_gateway is not None):
         raise ValidationError("The reviewed policy must name the exact self-hosted runtime.")

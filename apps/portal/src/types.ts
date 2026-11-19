@@ -556,7 +556,7 @@ export interface ConnectionOperation {
 }
 
 /** The API a published model speaks. Claude models use the Anthropic Messages API (ADR 0012). */
-export type ApiShape = 'azureOpenAi' | 'foundryModels' | 'anthropicMessages'
+export type ApiShape = 'azureOpenAi' | 'foundryModels' | 'anthropicMessages' | 'vertexGemini' | 'openAiChat'
 
 export interface ModelConnection {
   selfHosted?: boolean

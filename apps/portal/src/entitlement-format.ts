@@ -32,6 +32,8 @@ const apiStyleLabels: Record<ApiShape, string> = {
   azureOpenAi: 'Azure OpenAI API',
   foundryModels: 'Foundry Models API',
   anthropicMessages: 'Anthropic Messages API',
+  vertexGemini: 'Native Vertex Gemini API',
+  openAiChat: 'OpenAI Chat Completions API',
 }
 
 export function capacityLabel(capacity: ModelCapacity) {
