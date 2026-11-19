@@ -573,6 +573,7 @@ class ArmClient:
         *,
         params: dict[str, str] | None = None,
         allow_not_found: bool = False,
+        require_object: bool = False,
     ) -> JsonObject | None:
         response = await self.request(url, params=params, allow_not_found=allow_not_found)
         if response is None:
@@ -584,6 +585,8 @@ class ArmClient:
                 "Azure Resource Manager returned a response MOSAIC could not parse",
                 details={"url": url},
             ) from error
+        if require_object and not isinstance(payload, dict):
+            raise UpstreamError("Azure returned an invalid collection; retry the read")
         return payload if isinstance(payload, dict) else {"value": payload}
 
     async def list(
@@ -594,6 +597,7 @@ class ArmClient:
         allow_not_found: bool = False,
         max_pages: int = 50,
         require_complete: bool = False,
+        allow_initial_absence: bool = False,
     ) -> list[JsonObject]:
         items: list[JsonObject] = []
         next_url: str | None = url
@@ -601,9 +605,12 @@ class ArmClient:
         pages = 0
         while next_url and pages < max_pages:
             payload = await self.get(
-                next_url, params=next_params, allow_not_found=allow_not_found
+                next_url, params=next_params, allow_not_found=allow_not_found,
+                **({"require_object": True} if require_complete else {}),
             )
             if payload is None:
+                if allow_initial_absence and pages == 0:
+                    return []
                 if require_complete:
                     raise UpstreamError("Azure returned an incomplete collection; retry the read")
                 return items
@@ -804,21 +811,25 @@ class ApimClient:
         except (UpstreamAuthorizationError, UpstreamError):
             return None
 
-    async def _collection(self, segment: str, **extra: str) -> list[JsonObject]:
+    async def _collection(
+        self, segment: str, *, strict: bool = False, **extra: str
+    ) -> list[JsonObject]:
         return await self._arm.list(
             f"{self._base}/{segment}",
             params={**self._params, **extra},
             allow_not_found=True,
+            require_complete=strict,
+            allow_initial_absence=strict,
         )
 
     async def list_apis(self) -> list[JsonObject]:
         return await self._collection("apis")
 
-    async def list_operations(self, api_name: str) -> list[JsonObject]:
-        return await self._collection(f"apis/{api_name}/operations")
+    async def list_operations(self, api_name: str, *, strict: bool = False) -> list[JsonObject]:
+        return await self._collection(f"apis/{api_name}/operations", strict=strict)
 
-    async def list_api_products(self, api_name: str) -> list[JsonObject]:
-        return await self._collection(f"apis/{api_name}/products")
+    async def list_api_products(self, api_name: str, *, strict: bool = False) -> list[JsonObject]:
+        return await self._collection(f"apis/{api_name}/products", strict=strict)
 
     async def list_products(self) -> list[JsonObject]:
         return await self._collection("products")
@@ -892,7 +903,7 @@ class ApimClient:
     async def list_policy_fragments(self) -> list[JsonObject]:
         return await self._collection("policyFragments")
 
-    async def _policy_value(self, path: str) -> str | None:
+    async def _policy_value(self, path: str, *, strict: bool = False) -> str | None:
         payload = await self._arm.get(
             path,
             params={**self._params, "format": "rawxml"},
@@ -902,22 +913,33 @@ class ApimClient:
             return None
         properties = payload.get("properties")
         if not isinstance(properties, dict):
+            if strict:
+                raise UpstreamError("API Management returned unreadable policy evidence")
             return None
         value = properties.get("value")
+        if strict and not isinstance(value, str):
+            raise UpstreamError("API Management returned unreadable policy evidence")
         return value if isinstance(value, str) else None
 
-    async def get_service_policy(self) -> str | None:
-        return await self._policy_value(f"{self._base}/policies/policy")
+    async def get_service_policy(self, *, strict: bool = False) -> str | None:
+        return await self._policy_value(f"{self._base}/policies/policy", strict=strict)
 
-    async def get_api_policy(self, api_name: str) -> str | None:
-        return await self._policy_value(f"{self._base}/apis/{api_name}/policies/policy")
-
-    async def get_product_policy(self, product_name: str) -> str | None:
-        return await self._policy_value(f"{self._base}/products/{product_name}/policies/policy")
-
-    async def get_operation_policy(self, api_name: str, operation_name: str) -> str | None:
+    async def get_api_policy(self, api_name: str, *, strict: bool = False) -> str | None:
         return await self._policy_value(
-            f"{self._base}/apis/{api_name}/operations/{operation_name}/policies/policy"
+            f"{self._base}/apis/{api_name}/policies/policy", strict=strict
+        )
+
+    async def get_product_policy(self, product_name: str, *, strict: bool = False) -> str | None:
+        return await self._policy_value(
+            f"{self._base}/products/{product_name}/policies/policy", strict=strict
+        )
+
+    async def get_operation_policy(
+        self, api_name: str, operation_name: str, *, strict: bool = False
+    ) -> str | None:
+        return await self._policy_value(
+            f"{self._base}/apis/{api_name}/operations/{operation_name}/policies/policy",
+            strict=strict,
         )
 
     async def get_policy_fragment(self, name: str) -> str | None:

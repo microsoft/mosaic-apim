@@ -53,6 +53,7 @@ from mosaic_api.integrations.backend_keys import (
     set_backend_key,
     strip_caller_credentials,
 )
+from mosaic_api.integrations.bedrock import BEDROCK_NOTES, MESSAGES_PATH, is_standalone
 from mosaic_api.integrations.policy import (
     METRIC_NAMESPACE,
     PublicationPolicy,
@@ -1834,6 +1835,57 @@ def governed_operations(publication: Publication) -> tuple[OperationSpec, ...]:
     return operations
 
 
+def _bedrock_request_guard(fragment: ET.Element) -> None:
+    # Sonnet 5's documented 128K provider bound is not a MOSAIC generation default.
+    _reject(
+        fragment,
+        _expression([
+            'var version = context.Request.Headers.GetValueOrDefault("anthropic-version", "");',
+            'if (version != "" && version != "2023-06-01") { return true; }',
+            'if (context.Request.Headers.ContainsKey("anthropic-beta")) { return true; }',
+            "try {",
+            "var body = context.Request.Body.As<JObject>(preserveContent: true);",
+            'if (body["anthropic_beta"] != null || body["anthropic_version"] != null) '
+            "{ return true; }",
+            'var maximum = body["max_tokens"];',
+            "if (maximum == null || maximum.Type != JTokenType.Integer ||",
+            "    (decimal)maximum <= 0 || (decimal)maximum > 128000) { return true; }",
+            'var stream = body["stream"];',
+            "if (stream != null && stream.Type != JTokenType.Boolean) { return true; }",
+            'var thinking = body["thinking"];',
+            'if (thinking != null && (!(thinking is JObject) || '
+            '((string)thinking["type"] != "adaptive" && '
+            '(string)thinking["type"] != "disabled") || '
+            'thinking["budget_tokens"] != null)) { return true; }',
+            'var tier = body["service_tier"];',
+            'if (tier != null) { return true; }',
+            'var messages = body["messages"] as JArray;',
+            "if (messages == null || messages.Count == 0) { return true; }",
+            'var tools = body["tools"] as JArray;',
+            'if (body["tools"] != null && tools == null) { return true; }',
+            "if (tools != null) { foreach (var tool in tools) {",
+            'if (!(tool is JObject)) { return true; }',
+            'var type = (string)tool["type"];',
+            'if (type == null || type == "custom") {',
+            'if (!(tool["input_schema"] is JObject)) { return true; }',
+            '} else if (type != "computer_toolset_20260801" && '
+            'type != "browser_toolset_20260801" && type != "bash_20250124" && '
+            'type != "text_editor_20250728" && type != "memory_20250818") { return true; }',
+            "} }",
+            "return false;",
+            "} catch { return true; }",
+        ]),
+        reason="request",
+        code=400,
+        with_caller=True,
+        message=(
+            "Invalid or unsupported Bedrock Messages request. Use max_tokens from 1 to "
+            "128000, native client tools, adaptive/disabled thinking, omit service_tier "
+            "and anthropic-version 2023-06-01 without beta headers."
+        ),
+    )
+
+
 def render_governed_policy(
     publication: Publication,
     snapshot: ModelAccessSnapshot,
@@ -1865,6 +1917,8 @@ def render_governed_policy(
             application_role=application_role,
         )
         _operation_guard(fragment, publication, operations)
+        if is_standalone(publication):
+            _bedrock_request_guard(fragment)
         _variable(
             fragment,
             "mosaic-mcp-call",
@@ -1905,6 +1959,22 @@ def render_governed_policy(
                 removed_query_parameters=("subscription-key",),
             )
         add_shape_headers(fragment, publication.api_shape)
+        if is_standalone(publication):
+            for header in fragment.findall("set-header[@name='anthropic-version']"):
+                header.set("exists-action", "override")
+            for name in (
+                "X-Amz-Security-Token", "X-Amz-Date", "X-Amz-Content-Sha256",
+                "X-Amz-Algorithm", "X-Amz-Credential", "X-Amz-Signature",
+                "X-Amz-SignedHeaders", "X-Amz-Expires", "Host",
+                "X-Amzn-Bedrock-GuardrailIdentifier", "X-Amzn-Bedrock-GuardrailVersion",
+                "X-Amzn-Bedrock-Trace", "X-Amzn-Bedrock-PerformanceConfig-Latency",
+                "X-Amzn-Bedrock-Service-Tier", "anthropic-workspace-id",
+            ):
+                ET.SubElement(fragment, "set-header", {"name": name, "exists-action": "delete"})
+            ET.SubElement(
+                fragment, "rewrite-uri",
+                {"template": MESSAGES_PATH, "copy-unmatched-params": "false"},
+            )
         if key_name is not None:
             set_backend_key(fragment, shape=publication.api_shape, named_value=key_name)
         else:
@@ -1937,10 +2007,47 @@ def render_governed_policy(
     inbound = ET.SubElement(policies, "inbound")
     ET.SubElement(inbound, "base")
     ET.SubElement(inbound, "include-fragment", {"fragment-id": publication.fragment_name})
-    for section in ("backend", "outbound", "on-error"):
-        ET.SubElement(ET.SubElement(policies, section), "base")
+    if is_standalone(publication):
+        ET.SubElement(
+            ET.SubElement(policies, "backend"), "forward-request",
+            {"buffer-response": "false", "follow-redirects": "false"},
+        )
+        outbound = ET.SubElement(policies, "outbound")
+        ET.SubElement(outbound, "base")
+        for name in ("Location", "x-amzn-requestid", "x-amzn-errortype", "x-amz-request-id"):
+            ET.SubElement(outbound, "set-header", {"name": name, "exists-action": "delete"})
+        redirected = ET.SubElement(
+            ET.SubElement(outbound, "choose"), "when",
+            {"condition": "@(context.Response.StatusCode >= 300 && "
+             "context.Response.StatusCode < 400)"},
+        )
+        response = ET.SubElement(redirected, "return-response")
+        ET.SubElement(response, "set-status", {"code": "502", "reason": "Bad Gateway"})
+        header = ET.SubElement(
+            response, "set-header", {"name": "Content-Type", "exists-action": "override"}
+        )
+        ET.SubElement(header, "value").text = "application/json"
+        ET.SubElement(response, "set-body").text = (
+            '{"type":"error","error":{"type":"api_error",'
+            '"message":"The model backend returned an unsupported redirect."}}'
+        )
+        ET.SubElement(ET.SubElement(policies, "on-error"), "base")
+    else:
+        for section in ("backend", "outbound", "on-error"):
+            ET.SubElement(ET.SubElement(policies, section), "base")
     api_policy_xml = _serialize(policies)
     facets, unrecognized = _facets(publication, snapshot, fragment, policies, operations)
+    if is_standalone(publication):
+        facets.append(PolicyFacet(
+            kind=PolicyFacetKind.AUTHORIZATION,
+            element="forward-request",
+            section=PolicySection.BACKEND,
+            summary="Owns one unbuffered Bedrock inference forward; redirects are refused.",
+            details=list(BEDROCK_NOTES),
+            attributes={"buffer-response": "false", "follow-redirects": "false",
+                        "inherited-backend": "intentionally replaced"},
+            managed_by_mosaic=True,
+        ))
     return PublicationPolicy(
         fragment_xml=fragment_xml,
         api_policy_xml=api_policy_xml,

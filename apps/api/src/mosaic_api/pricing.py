@@ -86,10 +86,15 @@ UnpricedReason = Literal[
     "notYetEffective",
     "noOutputPrice",
     "beforeDeployment",
+    "incompleteUsage",
 ]
 PriceOrigin = Literal["seed", "admin", "billing"]
 PricingBasis = Literal["publicSeed", "customManual", "billingDerived", "mixed"]
 CloudSource = Literal["detected", "override"]
+BEDROCK_COST_NOTE = (
+    "Standalone Bedrock cost is unknown: gateway logs do not distinguish cache reads, cache "
+    "writes and uncached input. Reported spend excludes these calls and is incomplete."
+)
 
 
 def pricing_basis_for_origins(origins: Iterable[PriceOrigin]) -> PricingBasis:

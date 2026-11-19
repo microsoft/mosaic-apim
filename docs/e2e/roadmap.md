@@ -1079,7 +1079,7 @@ C, so they wait for the owner's approval too. Bedrock members wait for Phase 10.
 <a id="phase-10-later-gemini-and-aws-bedrock--deferred-by-the-environment-owner-2026-09-30"></a>
 <a id="phase-10-gemini-and-aws-bedrock"></a>
 
-### Phase 10: Gemini and AWS Bedrock ⬜ tracked/queued, not started
+### Phase 10: Gemini and AWS Bedrock 🔄 Bedrock offline implementation; live proof unrun
 
 **Decision, 9 October 2026.** The environment owner asked to add Gemini and Bedrock to the
 remaining trackable work. The 30 September deferral remains history, not the current tracking
@@ -1093,8 +1093,8 @@ URI exists, but generic Gemini discovery and a curated publishable API shape do 
 [ADR 0021](../adr/0021-keys-mosaic-keeps.md) provide Azure AI backend-key handling to reuse where
 applicable: the gateway reads a Key Vault-backed named value with its own identity.
 [ADR 0024](../adr/0024-model-pools.md#members-reached-with-a-key-phase-3) already supports
-Bedrock API-key Claude **pool members**, with explicitly declared models; it refuses standalone
-Bedrock publication. Preserve that narrow path, do not duplicate it, and do not infer general
+Bedrock API-key Claude **pool members**, with explicitly declared models. The #131 standalone
+amendment preserves that path; it does not duplicate it or imply general
 Bedrock discovery, SigV4 support or provider readiness. R17's Bedrock live checks remain unrun.
 
 #### Gemini: GM1 to GM3
@@ -1119,7 +1119,7 @@ These gates summarize it rather than replace it.
 Persistent acceptance checklist: [#131](https://github.com/microsoft/mosaic-apim/issues/131).
 The existing API-key Claude pool path is prior art, not this workstream's completion.
 
-- [ ] **BR1, design:** inventory the existing path and missing standalone support; choose the first
+- [x] **BR1, design:** inventory the existing path and missing standalone support; choose the first
   API/model family, region, discovery versus declaration and auth route (API key versus proposed
   SigV4). Define the curated, versioned shape, request/stream formats, Key Vault credential
   storage, publication plan and portal guidance. Document unsupported routes and, if signing is
@@ -1133,6 +1133,17 @@ The existing API-key Claude pool path is prior art, not this workstream's comple
   budget and rollback first. Then prove reviewed publication, portal guidance, ordinary/streamed
   calls, authorization negatives and measured grant/actor attribution. Link actual pool-member
   evidence to R17 without marking the other pool checks complete.
+
+**BR1 decision and BR2 evidence:** Guided release A; declared
+`anthropic.claude-sonnet-5`, Mantle `us-east-1`, operator-managed API key and native JSON/SSE.
+The owner change adds strict reviewed inheritance evidence, one unbuffered/no-redirect inference
+forward, existing governed grants and standalone-scoped incomplete cache cost. Focused offline
+tests and actual fictional desktop/mobile captures cover Save/Review/Apply boundaries; loopback
+SSE first-data evidence is not APIM runtime proof. Known priced budget spend remains a lower
+bound capable of blocking, never evidence to unblock. See
+[the route contract and BR3 prerequisites](../model-publishing.md#standalone-bedrock).
+BR2 stays open until the complete immutable source handoff is reviewed; no deployment or
+live AWS/APIM inference, key validation, metering accuracy or rotation timing is claimed.
 
 **Exit, per provider:** distinguish design, code/offline coverage, deployment and actual live
 evidence. Update directly related provider documentation and the issue; record scoped rollback

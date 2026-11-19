@@ -188,6 +188,28 @@ def window_cost(
     return tally
 
 
+def deployment_tallies(
+    costs: CostBook, scope: Scope, api: Iterable[UsageSummary]
+) -> dict[str, CostTally]:
+    """Keep API/member cost lineage when combining calls to the same deployment."""
+
+    tallies: dict[str, CostTally] = {}
+    for summary, entry in entries(api, scope, "api"):
+        known = scope.apis.get((summary.gateway_id, entry.key))
+        if known is not None and known.kind == "mcp":
+            continue
+        for key, metrics, priced in costs.priced_parts(
+            known, summary.period, date.fromisoformat(summary.period_start), entry.metrics
+        ):
+            if key is not None:
+                label, detail = costs.describe(key, summary.gateway_id, entry.key)
+                tallies.setdefault(key.casefold(), CostTally()).record(
+                    priced, metrics, key=key.casefold(), kind="deployment",
+                    label=label, detail=detail,
+                )
+    return tallies
+
+
 def bucket_costs(
     costs: CostBook, scope: Scope, window: Window, api: Iterable[UsageSummary]
 ) -> dict[int, float | None]:
@@ -548,7 +570,7 @@ def models_report(
     model_rows.sort(key=lambda row: (-row.total_tokens, -row.requests, row.model))
 
     by_deployment: dict[str, UsageMetrics] = defaultdict(UsageMetrics)
-    deployment_costs: dict[str, float | None] = {}
+    deployment_costs = deployment_tallies(costs, scope, api) if costs is not None else {}
     deployment_clouds: dict[str, set[AzureCloud]] = defaultdict(set)
     reached: dict[str, set[str]] = defaultdict(set)
     hourly: dict[str, list[int]] = {}
@@ -556,16 +578,6 @@ def models_report(
         by_deployment[entry.key].add(entry.metrics)
         deployment_clouds[entry.key].add(summary.azure_cloud)
         reached[entry.key].add(summary.gateway_id)
-        if costs is not None:
-            deployment_costs[entry.key] = add_cost(
-                deployment_costs.get(entry.key),
-                costs.price(
-                    entry.key,
-                    summary.period,
-                    date.fromisoformat(summary.period_start),
-                    entry.metrics,
-                ).amount,
-            )
         if entry.hourly_peak_tokens and summary.period == "day":
             peaks = hourly.setdefault(entry.key, [0] * 24)
             for hour, value in enumerate(entry.hourly_peak_tokens[:24]):
@@ -587,7 +599,8 @@ def models_report(
                     metrics,
                     deployment_total.requests,
                     deployment_total.total_tokens,
-                    deployment_costs.get(key),
+                    deployment_costs[key.casefold()].total
+                    if key.casefold() in deployment_costs else None,
                 ),
                 key=key,
                 endpoint_id=endpoint_id,

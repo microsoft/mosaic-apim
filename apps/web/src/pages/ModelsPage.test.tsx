@@ -3105,8 +3105,8 @@ describe('ModelsPage model endpoints', () => {
       const key = within(dialog).getByLabelText(/^Bedrock API key/)
       expect(key).toHaveAttribute('type', 'password')
       expect(key).toHaveAttribute('autocomplete', 'new-password')
-      expect(within(dialog).getByText(/a short-term one expires within 12 hours/)).toBeVisible()
-      expect(within(dialog).getByText('Models to pool')).toBeVisible()
+      expect(within(dialog).getByText(/AWS recommends short-term keys for production/)).toBeVisible()
+      expect(within(dialog).getByText('Models to serve')).toBeVisible()
       // Bedrock is reached only through the Anthropic Messages API, so there's no API to choose.
       expect(within(dialog).queryByRole('combobox', { name: /API/ })).not.toBeInTheDocument()
 
@@ -3155,7 +3155,7 @@ describe('ModelsPage model endpoints', () => {
       await user.click(within(dialog).getByRole('radio', { name: 'Use a key already in Key Vault' }))
       expect(within(dialog).queryByLabelText(/^Bedrock API key/)).not.toBeInTheDocument()
       expect(
-        within(dialog).getByText(/The secret you stored a long-term Bedrock API key in/),
+        within(dialog).getByText(/The secret holding your operator-managed Bedrock API key/),
       ).toBeVisible()
       await user.click(within(dialog).getByLabelText(/Endpoint URL/))
       await user.paste('https://bedrock-mantle.us-west-2.api.aws')
@@ -3481,7 +3481,7 @@ describe('ModelsPage model endpoints', () => {
       expect(
         await screen.findByText(
           "Stored the new key for Bedrock us-east-1. MOSAIC doesn't check keys with AWS, so " +
-            'the next request through a model pool tells whether AWS accepts it. API ' +
+            'the next authorized request through a publication or model pool tells whether AWS accepts it. API ' +
             'Management picks it up within four hours.',
         ),
       ).toBeVisible()

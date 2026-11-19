@@ -172,6 +172,25 @@ embeddings remain disabled read-only intent, not current save or enforcement pro
   </tr>
   <tr>
     <td colspan="2" valign="top">
+      <img src="images/screenshots/console-register-bedrock.png" alt="Bedrock declaration-only registration with four Guided release stages and operator-managed key guidance">
+      <p><b>Register Bedrock.</b> Save an endpoint and explicitly declared models without calling
+      AWS. Registration is separate from reviewed publication, access grants and usable connections.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/console-bedrock-release.png" alt="A fictional Bedrock publication in the full-workspace Guided release review before explicit Apply">
+      <p><b>Review Bedrock publication.</b> Inspect pending gateway changes beside the release
+      boundaries and native Messages guidance. Only Apply reviewed plan changes the gateway.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/console-bedrock-release-mobile.png" alt="The same fictional Bedrock Guided release review stacked at a mobile width in dark mode">
+      <p><b>Review on mobile.</b> The same release stages and explicit Apply action remain available
+      in a stacked workspace; this fictional review does not grant caller access.</p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
       <a id="endpoint-evidence"></a>
       <img src="images/screenshots/console-endpoint-evidence.png" alt="Inline unconfirmed endpoint URL and provider labels beside a dated, out-of-date access check">
       <p><b>Endpoint facts and saved access evidence.</b> See which details MOSAIC has not
