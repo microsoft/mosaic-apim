@@ -199,6 +199,15 @@ embeddings remain disabled read-only intent, not current save or enforcement pro
     </td>
   </tr>
   <tr>
+    <td colspan="2" valign="top">
+      <a id="model-discovery"></a>
+      <img src="images/screenshots/console-model-discovery.png" alt="Discovery workbench with exact model versions beside the selected catalog-only version, source evidence, and intended onboarding context">
+      <p><b>Discover model changes.</b> Review an exact version against the Azure account catalog,
+      deployments, and recorded publications. Save intended environment, gateway, and cost center
+      without deploying, publishing, or granting access.</p>
+    </td>
+  </tr>
+  <tr>
     <td width="50%" valign="top">
       <img src="images/screenshots/console-deploy-model.png" alt="The Azure model deployment workspace with explicit management opt-in, a live model version, deployment type, native capacity, quota, and content-filter selection">
       <p><b>Deploy an Azure model.</b> Query an existing account's live model catalogue and configure

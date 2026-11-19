@@ -3,6 +3,7 @@
 [Documentation](README.md) | [MOSAIC](../README.md)
 
 - [Model endpoints](#model-endpoints)
+- [Discover model changes](#discover-model-changes)
 - [Deploy a new Azure model](#deploy-a-new-azure-model)
 - [Endpoint and gateway access](#endpoint-and-gateway-access)
 - [Endpoints reached with an API key](#endpoints-reached-with-an-api-key)
@@ -73,6 +74,46 @@ How the gateway's access is judged:
   known yet, MOSAIC says so, and granting it `Reader` first lets it recommend the exact role.
 
 [ADR 0013](adr/0013-runtime-readiness-by-data-actions.md) records these rules.
+
+## Discover model changes
+
+Select a registered endpoint under **Models > Model endpoints**, then choose **Model discovery**.
+**Discover changes** reads the account catalog and deployments on demand. Opening the workbench
+only reads saved MOSAIC records; **Sync models** refreshes a separate inventory. Discovery supports
+Commercial Azure OpenAI and Azure AI Foundry ARM registrations using their stored management
+connection. A Foundry project uses its parent account. Azure Government, API-key, and other
+provider registrations are not supported by this workflow.
+
+The first complete discovery establishes the baseline. Later complete reads distinguish new or
+changed exact model versions, deployed versions, and versions no longer listed. A partial or failed
+read keeps the last complete evidence with its original observation times; it cannot establish a
+removal. If a deployment can't be tied to an exact catalog identity, its match is unconfirmed.
+Discovery never replaces, upgrades, or retires a deployment. Account catalog entries and public
+prices prove neither capacity nor permission to invoke. The workbench shows catalog listing,
+observed deployment, recorded publication state, and caller eligibility separately.
+
+**Review proposal** saves intended environment, gateway, and cost center, including incomplete
+drafts. Context is not an environment assignment, publication, grant, or executable plan. Evidence
+has its own discovery-rules revision; a newer discovery does not refresh the endpoint's separately
+recorded runtime access check. Recheck stale or incomplete evidence before saving an updated draft.
+Existing qualified deployments, exact-resource grants, limits, and pools stay unchanged. There
+is no automatic detection, deployment, publication, grant, or model invocation.
+
+For administrators integrating the API, use
+`POST /api/v1/model-endpoints/{id}/model-lifecycle/discoveries` with a UUID `requestId`.
+Retry the same token to retrieve that attempt without re-reading Azure; use a new token to start
+another read. Discovery runs echo the request ID so clients can match a saved run to a request
+whose response was lost. A running attempt can be checked with `GET /discoveries/{runId}` under
+the same prefix.
+An interrupted attempt does not replace the complete baseline. Proposal reads and context writes
+under `/proposals` refer to exact versions of the registered endpoint. Context saves are conditional
+on the reviewed evidence and the expected draft revision.
+
+Discovery records are additive; they do not change existing endpoint or publication documents.
+Removing a registration makes its discovery records inaccessible through the API. A new
+registration of that account starts a new baseline. Existing deployment and publication workflows
+still require their own current evidence, production and access checks, and explicit reviewed
+apply; a discovery proposal does not authorize either workflow.
 
 ## Deploy a new Azure model
 

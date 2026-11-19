@@ -7,6 +7,7 @@ import {
   MenuPopover,
   MenuTrigger,
   makeStyles,
+  mergeClasses,
   useRestoreFocusTarget,
 } from '@fluentui/react-components'
 import { MoreHorizontalRegular } from '@fluentui/react-icons'
@@ -27,6 +28,7 @@ export interface RowActionsProps {
   label: string
   /** Keep the frequent action's existing Button and its permission/focus props intact. */
   primary?: ReactNode
+  wrap?: boolean
   actions?: readonly RowAction[]
   destructiveActions?: readonly RowAction[]
 }
@@ -38,13 +40,17 @@ const useStyles = makeStyles({
     gap: '10px',
     whiteSpace: 'nowrap',
   },
+  wrap: {
+    flexWrap: 'wrap',
+    minWidth: 0,
+  },
   destructive: {
     color: 'var(--mosaic-danger)',
   },
 })
 
 /** Secondary actions restore dialog focus to the persistent overflow trigger, not a menu item. */
-export function RowActions({ label, primary, actions = [], destructiveActions = [] }: RowActionsProps) {
+export function RowActions({ label, primary, wrap = false, actions = [], destructiveActions = [] }: RowActionsProps) {
   const styles = useStyles()
   const restoreFocus = useRestoreFocusTarget()
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -71,7 +77,7 @@ export function RowActions({ label, primary, actions = [], destructiveActions = 
     )
   }
   return (
-    <div className={styles.root}>
+    <div className={mergeClasses(styles.root, wrap && styles.wrap)}>
       {primary}
       {hasMenu && (
         <Menu open={open} onOpenChange={(_, data) => setOpen(data.open)}>

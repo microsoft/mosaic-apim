@@ -113,6 +113,10 @@ import type {
   ModelEndpointSuggestionView,
   ModelEndpointSyncRun,
   DeploymentCatalogue,
+  ModelDiscoveryRun,
+  ModelProposalContextUpdate,
+  ModelProposalDetail,
+  ModelProposalList,
   DeploymentRecoveryRequest,
   ModelDeploymentCreate,
   ModelDeploymentPlan,
@@ -564,6 +568,10 @@ export interface MosaicApi extends AdminApi {
   getModelEndpointSyncRun(endpointId: string, runId: string): Promise<ModelEndpointSyncRun>
   listModelDeployments(endpointId: string): Promise<ObservedModelDeployment[]>
   getDeployableModels(endpointId: string): Promise<DeploymentCatalogue>
+  discoverModelChanges(endpointId: string, requestId: string): Promise<ModelDiscoveryRun>
+  listModelProposals(endpointId: string): Promise<ModelProposalList>
+  getModelProposal(endpointId: string, proposalId: string): Promise<ModelProposalDetail>
+  saveModelProposalContext(endpointId: string, proposalId: string, context: ModelProposalContextUpdate): Promise<ModelProposalDetail>
   planModelDeployment(endpointId: string, payload: ModelDeploymentCreate): Promise<ModelDeploymentPlan>
   applyModelDeployment(endpointId: string, planId: string): Promise<ModelDeploymentRun>
   listModelDeploymentRuns(endpointId: string): Promise<ModelDeploymentRun[]>
@@ -1437,6 +1445,18 @@ export function useMosaicApi(): MosaicApi {
         request<ObservedModelDeployment[]>(`/api/v1/model-endpoints/${id}/deployments`),
       getDeployableModels: (id) =>
         request<DeploymentCatalogue>(`/api/v1/model-endpoints/${encodeURIComponent(id)}/deployable-models`),
+      discoverModelChanges: (id, requestId) =>
+        request<ModelDiscoveryRun>(`/api/v1/model-endpoints/${encodeURIComponent(id)}/model-lifecycle/discoveries`, {
+          method: 'POST', body: { requestId },
+        }),
+      listModelProposals: (id) =>
+        request<ModelProposalList>(`/api/v1/model-endpoints/${encodeURIComponent(id)}/model-lifecycle/proposals`),
+      getModelProposal: (id, proposalId) =>
+        request<ModelProposalDetail>(`/api/v1/model-endpoints/${encodeURIComponent(id)}/model-lifecycle/proposals/${encodeURIComponent(proposalId)}`),
+      saveModelProposalContext: (id, proposalId, context) =>
+        request<ModelProposalDetail>(`/api/v1/model-endpoints/${encodeURIComponent(id)}/model-lifecycle/proposals/${encodeURIComponent(proposalId)}/context`, {
+          method: 'PUT', body: context,
+        }),
       planModelDeployment: (id, payload) =>
         request<ModelDeploymentPlan>(`/api/v1/model-endpoints/${encodeURIComponent(id)}/deployment-plans`, {
           method: 'POST', body: payload,

@@ -43,6 +43,10 @@ Repeat permission, quota, catalogue, target, and name checks immediately before 
 
 ## Execution and recovery
 
+Manual model lifecycle discovery and its context-only drafts are separate from this decision;
+see [Discover model changes](../model-endpoints.md#discover-model-changes). Discovery does not
+enable deployment management or produce an executable deployment plan.
+
 Persist the plan and run in the existing sync-operations container, separate from inventory sync
 history. A plan has one deterministic run ID. Conditional run updates use etags. Record the
 attempt before PUT; never replay an uncertain PUT, including transport retries or after restart.

@@ -1,6 +1,9 @@
+from typing import cast
+
 from mosaic_api.domain import AuditEvent, ModelEndpoint, ModelEndpointSyncRun
 from mosaic_api.errors import ConflictError
 from mosaic_api.model_deployments import ModelDeploymentPlan, ModelDeploymentRun
+from mosaic_api.model_lifecycle import DiscoveryRow, LifecycleRecord, SavedProposalContext
 from mosaic_api.repositories.memory_endpoint_state import InMemoryEndpointStateBase
 from mosaic_api.repositories.observation_writes import (
     MODEL_ENDPOINT_AUTHORED_FIELDS,
@@ -19,6 +22,7 @@ class InMemoryModelEndpointRepository(InMemoryEndpointStateBase):
         self._endpoint_versions: dict[str, int] = {}
         self.deployment_plans: dict[str, ModelDeploymentPlan] = {}
         self.deployment_runs: dict[str, ModelDeploymentRun] = {}
+        self._lifecycle: dict[tuple[str, str], LifecycleRecord] = {}
 
     async def list_endpoints(self, tenant_id: str) -> list[ModelEndpoint]:
         return sorted(
@@ -167,3 +171,38 @@ class InMemoryModelEndpointRepository(InMemoryEndpointStateBase):
             if run.tenant_id == tenant_id and run.endpoint_id == endpoint_id
         ]
         return sorted(runs, key=lambda run: run.started_at, reverse=True)[:limit]
+
+    async def get_lifecycle[R: LifecycleRecord](
+        self, record_type: type[R], tenant_id: str, record_id: str
+    ) -> R | None:
+        record = self._lifecycle.get((tenant_id, record_id))
+        return cast(R, record.model_copy(deep=True)) if isinstance(record, record_type) else None
+
+    async def list_discovery_rows(self, tenant_id: str, run_id: str) -> list[DiscoveryRow]:
+        return [
+            row.model_copy(deep=True) for row in self._lifecycle.values()
+            if isinstance(row, DiscoveryRow) and row.tenant_id == tenant_id and row.run_id == run_id
+        ]
+
+    async def list_proposal_contexts(
+        self, tenant_id: str, endpoint_id: str
+    ) -> list[SavedProposalContext]:
+        return [
+            row.model_copy(deep=True) for row in self._lifecycle.values()
+            if isinstance(row, SavedProposalContext)
+            and row.tenant_id == tenant_id and row.endpoint_id == endpoint_id
+        ]
+
+    async def save_lifecycle(
+        self, records: list[LifecycleRecord], audit: AuditEvent | None = None
+    ) -> None:
+        for record in records:
+            current = self._lifecycle.get((record.tenant_id, record.id))
+            if (current.etag if current else None) != record.etag:
+                raise ConflictError("Model discovery changed; reload the saved evidence")
+        for record in records:
+            self._lifecycle[(record.tenant_id, record.id)] = record.model_copy(
+                update={"etag": str(int(record.etag or "0") + 1)}, deep=True
+            )
+        if audit is not None:
+            self.audit_events[audit.id] = audit

@@ -50,6 +50,29 @@ describe('useMosaicApi', () => {
     expect(fetchMock.mock.calls[1][1].method).toBe('POST')
   })
 
+  it('sends discovery and context updates as JSON objects', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('{}'))
+      .mockResolvedValueOnce(new Response('{}'))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useMosaicApi())
+    const context = {
+      environment: null, gatewayId: null, costCenterId: null,
+      evidenceRunId: 'run', evidenceDigest: 'a'.repeat(64), expectedRevision: 0,
+    }
+
+    await result.current.discoverModelChanges('endpoint/one', 'request-id')
+    await result.current.saveModelProposalContext('endpoint/one', 'proposal/two', context)
+
+    const [[postUrl, post], [putUrl, put]] = fetchMock.mock.calls
+    expect(postUrl).toContain('/endpoint%2Fone/model-lifecycle/discoveries')
+    expect(post.method).toBe('POST')
+    expect(JSON.parse(post.body)).toEqual({ requestId: 'request-id' })
+    expect(putUrl).toContain('/endpoint%2Fone/model-lifecycle/proposals/proposal%2Ftwo/context')
+    expect(put.method).toBe('PUT')
+    expect(JSON.parse(put.body)).toEqual(context)
+  })
+
   it('reads policy support for the exact encoded pool scope without a caller shape hint', async () => {
     const body = {
       gatewayId: 'gateway/one', skuName: null, tier: 'unknown', apiShape: null,

@@ -48,9 +48,10 @@ class CognitiveServicesClient:
     async def get_account(self) -> JsonObject | None:
         return await self._arm.get(self._account, params=self._params, allow_not_found=True)
 
-    async def list_deployments(self) -> list[JsonObject]:
+    async def list_deployments(self, *, strict: bool = False) -> list[JsonObject]:
         return await self._arm.list(
-            f"{self._account}/deployments", params=self._params, allow_not_found=True
+            f"{self._account}/deployments", params=self._params, allow_not_found=not strict,
+            require_complete=strict,
         )
 
     async def list_models(self, *, strict: bool = False) -> list[JsonObject]:
