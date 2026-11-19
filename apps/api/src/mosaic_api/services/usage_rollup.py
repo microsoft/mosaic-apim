@@ -667,6 +667,13 @@ def merge_apis(
         else:
             fresh = fresh.with_publication_history(api)
             update: dict[str, Any] = {"first_seen_at": api.first_seen_at, "removed_at": None}
+            if (
+                fresh.cost_telemetry is None
+                and fresh.kind == api.kind == "model"
+                and fresh.resource_id == api.resource_id
+                and fresh.publication_id == api.publication_id
+            ):
+                update["cost_telemetry"] = api.cost_telemetry
             if fresh.kind == "pool":
                 update["members"] = _merge_members(fresh.members, api.members, now)
             merged[api.api_name] = fresh.model_copy(update=update)

@@ -1079,7 +1079,7 @@ C, so they wait for the owner's approval too. Bedrock members wait for Phase 10.
 <a id="phase-10-later-gemini-and-aws-bedrock--deferred-by-the-environment-owner-2026-09-30"></a>
 <a id="phase-10-gemini-and-aws-bedrock"></a>
 
-### Phase 10: Gemini and AWS Bedrock 🔄 Bedrock offline implementation; live proof unrun
+### Phase 10: Gemini and AWS Bedrock 🔄 Offline implementation; usable external runtime and live proof unrun
 
 **Decision, 9 October 2026.** The environment owner asked to add Gemini and Bedrock to the
 remaining trackable work. The 30 September deferral remains history, not the current tracking
@@ -1102,13 +1102,19 @@ Bedrock discovery, SigV4 support or provider readiness. R17's Bedrock live check
 Persistent acceptance checklist: [#130](https://github.com/microsoft/mosaic-apim/issues/130).
 These gates summarize it rather than replace it.
 
-- [ ] **GM1, design:** choose the first API and auth route (OpenAI-compatible versus native/Vertex),
+- [x] **GM1, design:** choose the first API and auth route (OpenAI-compatible versus native/Vertex),
   model discovery versus explicit declaration, URL/version mapping and capability limits. Define
   the curated, versioned API shape, approved Key Vault credential storage and gateway retrieval,
   readiness, publication-plan review/apply and portal connection guidance. Name unsupported routes.
+  Selected native Vertex v1 `gemini-3.8-flash`, fixed `us` multi-region, plus separately opted-in
+  approved-public-HTTPS custom chat. Federation, service-account signing and conditional Google
+  authorization keys retain separate evidence. Both paths reuse Guided release A from #131.
 - [ ] **GM2, implementation/offline:** reuse the existing patterns and prove exact host/path/body/auth
   translation, ordinary and streamed responses and errors, credential stripping, and
   untrusted-host, scope and environment protections without live calls or committed secrets.
+  Registration and no-write review are bounded offline work, **not completion of usable runtime**.
+  Gateway signer/federation/key acceptance, constrained egress, native streaming/token counters
+  and complete accounting remain unproved; unresolved execution blocks Apply, not draft Save.
 - [ ] **GM3, separately approved live proof:** approve the exact non-production account/project,
   region, model, least-privilege auth/storage and dedicated MOSAIC grant, bounded call budget and
   rollback first. Then prove discovery/declaration, reviewed publication, portal guidance,

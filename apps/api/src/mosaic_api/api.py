@@ -783,7 +783,7 @@ async def declare_model_endpoint_deployment(
 
 
 @router.delete(
-    "/model-endpoints/{endpoint_id}/declared-deployments/{deployment_name}",
+    "/model-endpoints/{endpoint_id}/declared-deployments/{deployment_name:path}",
     response_model=ModelEndpointView,
 )
 async def remove_model_endpoint_declared_deployment(

@@ -92,6 +92,8 @@ def deployment_policy_capabilities(
             if shape_fits_provider(shape, endpoint.provider)
             else CapabilitySupport.UNAVAILABLE
         )
+        if endpoint.is_governed_external():
+            support = CapabilitySupport.UNKNOWN
     else:
         shape, support = _observed_schema(endpoint, deployment)
     return assess_gateway_policy_capabilities(
@@ -116,7 +118,7 @@ async def _deployment_schema(
     endpoint = await endpoints.get_endpoint(tenant_id, endpoint_id)
     if endpoint is None:
         return expected_shape, CapabilitySupport.UNKNOWN
-    if endpoint.uses_backend_key():
+    if endpoint.uses_backend_key() or endpoint.is_governed_external():
         declared = endpoint.declared(deployment_name)
         if declared is None:
             return expected_shape, CapabilitySupport.UNKNOWN
@@ -126,6 +128,8 @@ async def _deployment_schema(
             if shape_fits_provider(shape, endpoint.provider)
             else CapabilitySupport.UNAVAILABLE
         )
+        if endpoint.is_governed_external():
+            support = CapabilitySupport.UNKNOWN
     else:
         deployments = await endpoints.list_observed_for_endpoint(
             ObservedModelDeployment, tenant_id, endpoint_id, "observedModelDeployment"

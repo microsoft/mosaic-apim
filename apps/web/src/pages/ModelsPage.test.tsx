@@ -3030,6 +3030,122 @@ describe('ModelsPage model endpoints', () => {
     })
   })
 
+  describe('native Vertex and governed custom chat', () => {
+    const secret = 'https://fictional-vault.vault.azure.net/secrets/fictional-reference'
+    const account = 'fictional@fictional-proof-project.iam.gserviceaccount.com'
+    const audience = '//iam.googleapis.com/projects/000000000000/locations/global/workloadIdentityPools/fictional/providers/fictional'
+
+    async function pasteField(user: ReturnType<typeof userEvent.setup>, workspace: HTMLElement, name: string, value: string) {
+      await user.click(within(workspace).getByRole('textbox', { name }))
+      await user.paste(value)
+    }
+
+    async function openExternal(user: ReturnType<typeof userEvent.setup>, tab: string) {
+      renderPage('/models?register=1')
+      const workspace = await screen.findByRole('region', { name: 'Register model endpoint' })
+      await user.click(within(workspace).getByRole('tab', { name: tab }))
+      return workspace
+    }
+
+    it('saves explicit Vertex federation intent without credentials, discovery or publication', async () => {
+      const user = userEvent.setup()
+      const saved = modelEndpoint({
+        provider: 'googleVertex',
+        vertex: {
+          projectId: 'fictional-proof-project', location: 'us', apiVersion: 'v1',
+          authMode: 'workloadIdentityFederation', serviceAccount: account,
+          workloadIdentityAudience: audience,
+        },
+      })
+      api.registerModelEndpoint.mockResolvedValue(saved)
+      api.listModelEndpoints.mockResolvedValueOnce([]).mockResolvedValue([saved])
+      const workspace = await openExternal(user, 'Google Vertex AI')
+      expect(within(workspace).getByRole('navigation', { name: 'Guided release' })).toBeVisible()
+      await pasteField(user, workspace, 'Google Cloud project ID', 'fictional-proof-project')
+      await user.click(within(workspace).getByRole('textbox', { name: 'Google service account' }))
+      await user.paste(account)
+      await user.click(within(workspace).getByRole('textbox', { name: 'Google federation audience' }))
+      await user.paste(audience)
+      expect(within(workspace).queryByLabelText('Key Vault secret URI')).not.toBeInTheDocument()
+      await user.click(within(workspace).getByRole('button', { name: 'Register' }))
+      await waitFor(() => expect(api.registerModelEndpoint).toHaveBeenCalledOnce())
+      expect(api.registerModelEndpoint.mock.calls[0][0]).toEqual({
+        provider: 'googleVertex', endpoint: 'https://aiplatform.us.rep.googleapis.com',
+        vertex: {
+          projectId: 'fictional-proof-project', location: 'us', apiVersion: 'v1',
+          authMode: 'workloadIdentityFederation', serviceAccount: account,
+          workloadIdentityAudience: audience,
+        },
+        name: undefined, environment: 'development',
+        deployments: [{
+          deploymentName: 'gemini-3.8-flash', modelName: 'gemini-3.8-flash', apiShape: 'vertexGemini',
+        }],
+      })
+      expect(api.createPublication).not.toHaveBeenCalled()
+      expect(api.createPublishPlan).not.toHaveBeenCalled()
+      expect(api.applyPublishPlan).not.toHaveBeenCalled()
+      expect(api.syncModelEndpoint).not.toHaveBeenCalled()
+      expect(await screen.findByRole('button', { name: 'Review publication eligibility' })).toBeVisible()
+      expect(api.listModelDeployments).not.toHaveBeenCalled()
+      expect(screen.getByTestId('location').textContent).not.toContain('fictional-proof-project')
+    })
+
+    it.each(['serviceAccountKey', 'apiKey'])('keeps Vertex %s references distinct from federation', async (authMode) => {
+      const user = userEvent.setup()
+      api.registerModelEndpoint.mockResolvedValue(modelEndpoint({ provider: 'googleVertex' }))
+      const workspace = await openExternal(user, 'Google Vertex AI')
+      await pasteField(user, workspace, 'Google Cloud project ID', 'fictional-proof-project')
+      await user.selectOptions(within(workspace).getByLabelText('Google authentication'), authMode)
+      if (authMode === 'serviceAccountKey') {
+        await pasteField(user, workspace, 'Google service account', account)
+      }
+      const label = authMode === 'serviceAccountKey' ? 'Signing credential Key Vault secret URI' : 'Key Vault secret URI'
+      await pasteField(user, workspace, label, secret)
+      expect(within(workspace).getByText(/Gateway authentication, native streaming and accounting remain unverified/)).toBeVisible()
+      await user.click(within(workspace).getByRole('button', { name: 'Register' }))
+      await waitFor(() => expect(api.registerModelEndpoint).toHaveBeenCalledOnce())
+      const payload = api.registerModelEndpoint.mock.calls[0][0]
+      expect(payload.vertex).toMatchObject({ authMode, location: 'us', apiVersion: 'v1' })
+      expect(payload.vertex.workloadIdentityAudience).toBeUndefined()
+      expect(payload.credentialSecretUri).toBe(secret)
+      expect(payload.apiKey).toBeUndefined()
+      expect(api.createPublishPlan).not.toHaveBeenCalled()
+    })
+
+    it('opts custom chat in explicitly and preserves slash-qualified model IDs as JSON values', async () => {
+      const user = userEvent.setup()
+      api.registerModelEndpoint.mockResolvedValue(modelEndpoint({ provider: 'openAiCompatible', compatibleChat: true }))
+      const workspace = await openExternal(user, 'OpenAI compatible')
+      await pasteField(user, workspace, 'Endpoint URL', 'https://fictional-models.example.com/v1')
+      await pasteField(user, workspace, 'Key Vault secret URI', secret)
+      await pasteField(user, workspace, 'Model 1 ID', 'fictional/Exact-Model')
+      await user.click(within(workspace).getByRole('button', { name: 'Register' }))
+      await waitFor(() => expect(api.registerModelEndpoint).toHaveBeenCalledOnce())
+      expect(api.registerModelEndpoint.mock.calls[0][0]).toMatchObject({
+        provider: 'openAiCompatible', compatibleChat: true, environment: 'development',
+        endpoint: 'https://fictional-models.example.com/v1', credentialSecretUri: secret,
+        deployments: [{ deploymentName: 'fictional/Exact-Model', modelName: 'fictional/Exact-Model', apiShape: 'openAiChat' }],
+      })
+      expect(api.createPublishPlan).not.toHaveBeenCalled()
+      expect(api.preflightModelEndpoint).not.toHaveBeenCalled()
+      expect(api.applyPublishPlan).not.toHaveBeenCalled()
+    })
+
+    it('clears credential references when changing provider or Google authentication mode', async () => {
+      const user = userEvent.setup()
+      const workspace = await openExternal(user, 'OpenAI compatible')
+      await pasteField(user, workspace, 'Key Vault secret URI', secret)
+      await user.click(within(workspace).getByRole('tab', { name: 'Google Vertex AI' }))
+      await user.selectOptions(within(workspace).getByLabelText('Google authentication'), 'apiKey')
+      expect(within(workspace).getByRole('textbox', { name: 'Key Vault secret URI' })).toHaveValue('')
+      await pasteField(user, workspace, 'Key Vault secret URI', secret)
+      await user.selectOptions(within(workspace).getByLabelText('Google authentication'), 'serviceAccountKey')
+      expect(within(workspace).getByRole('textbox', { name: 'Signing credential Key Vault secret URI' })).toHaveValue('')
+      expect(api.registerModelEndpoint).not.toHaveBeenCalled()
+      expect(screen.getByTestId('location').textContent).not.toContain('fictional-reference')
+    })
+  })
+
   describe('an AWS Bedrock endpoint', () => {
     const BEDROCK_URL = 'https://bedrock-runtime.us-east-1.amazonaws.com'
     const SECRET_URI = 'https://kv-contoso-ai.vault.azure.net/secrets/bedrock-us-west-2-key'

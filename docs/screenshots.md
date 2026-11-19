@@ -65,6 +65,14 @@ configurations have no credentials, remain **Untested**, and make no provider ca
 worker and all source schedules stay disabled. This demonstrates review and evidence, not live
 provider connectivity, automatic activation, or a markup feature.
 
+Vertex and custom-chat registration shots fill fictional drafts in the real console and never
+submit them. The fixed native route, three distinct Google authentication choices, public-HTTPS
+boundary and unresolved execution warnings are design/configuration evidence, not proof of Google
+or APIM interoperability. Their mobile capture uses the same Guided release shell as Bedrock.
+Vertex review shots additionally save fictional endpoint/publication intent through the normal
+loopback demo API, generate an offline plan and require Apply to be disabled. They never apply it,
+fetch a credential or grant access.
+
 Public-catalog captures also use the production pricing service, with generated fictional JSON
 and explicit **Administrator supplied** evidence. One catalog activation preserves the existing
 active amounts; a separate future Commercial/Government draft is reviewed but never activated
@@ -185,8 +193,8 @@ get the original estate back. Before committing, refresh every affected shot wit
 `--reuse-servers`; changes to shared navigation require the full gallery.
 
 Browser contexts isolate each shot's UI state, not the shared demo API. Keep mutation shots at
-the end of `SHOTS`. The Bedrock review pair saves one fictional endpoint and publication through
-the loopback demo API, and reviews without applying or granting access. The unrelated
+the end of `SHOTS`. The Vertex and Bedrock review pairs save fictional endpoints and publications
+through the loopback demo API, and review without applying or granting access. The unrelated
 `console-model-change-review` stays last: it saves unapplied GPT-4o access intent that would
 otherwise make connection shots show pending changes. No connection or estate-overview shots
 follow this terminal mutation block.
@@ -430,6 +438,11 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-catalog-summary-review` | Console | `/models`, GPT-4o mini **Edit catalog summary > Review summary**, before/after copy and exact-offering preview; never saved | Light | Review catalog copy |
 | `console-register-key-endpoint` | Console | `/models?register=1`, **Azure AI with an API key** tab with a pasted, masked key, filled in and never submitted | Light | Register with an API key |
 | `console-register-bedrock` | Console | `/models?register=1`, **AWS Bedrock** declaration-only registration with Guided release stages, never submitted | Light | Register Bedrock |
+| `console-register-vertex` | Console | `/models?register=1`, explicit **Google Vertex AI**, fixed native US multi-region and fictional federation fields; never submitted | Light | Register native Vertex |
+| `console-register-vertex-mobile` | Console | The same Vertex registration at 390px, wrapped stages and stacked unresolved-execution guidance | Dark | Register on mobile |
+| `console-register-custom-chat` | Console | `/models?register=1`, **OpenAI compatible**, public HTTPS origin, exact slash-qualified model and Key Vault reference; never submitted | Light | Register governed custom chat |
+| `console-vertex-review` | Console | `/models`, saved fictional native Vertex publication, no-write Review, explicit execution blockers and disabled Apply | Light | Review Vertex without applying |
+| `console-vertex-review-mobile` | Console | The same blocked Vertex review at 390px with stacked release guidance | Dark | Keep blockers visible on mobile |
 | `console-bedrock-release` | Console | `/models`, saved fictional Bedrock publication opened in the real reviewed Guided release workspace; no apply or grant | Light | Review Bedrock publication |
 | `console-bedrock-release-mobile` | Console | The same reviewed fictional publication at 390px, with stacked workspace and release stages | Dark | Review Bedrock on mobile |
 | `console-key-endpoint` | Console | `/models?tab=endpoints`, Fabrikam partner Foundry selected, scrolled to its **Access** card with **Replace API key** | Dark | Endpoint reached with an API key |

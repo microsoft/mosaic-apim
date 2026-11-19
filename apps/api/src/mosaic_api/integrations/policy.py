@@ -11,6 +11,7 @@ from mosaic_api.domain import (
     Publication,
     TokenEnforcement,
 )
+from mosaic_api.errors import ValidationError
 from mosaic_api.integrations.apim.policy_semantics import analyze_policy
 from mosaic_api.integrations.backend_keys import (
     describe_backend_key,
@@ -154,6 +155,11 @@ def render_publication_policy(publication: Publication) -> PublicationPolicy:
     from the publication's Key Vault-backed named value (ADR 0018).
     """
 
+    if publication.api_shape in {ApiShape.VERTEX_GEMINI, ApiShape.OPENAI_CHAT}:
+        raise ValidationError(
+            "External model execution policies are unproved. Use offline draft review; "
+            "no forwarding policy can be rendered for this contract."
+        )
     fragment = ET.Element("fragment")
     key_name = publication.backend_key_name
     if key_name is not None:

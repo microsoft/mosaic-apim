@@ -102,6 +102,12 @@ identifiers and secrets blurred. Directory data and checks are simulated, not li
 **Guided Bedrock release.** Review pending gateway changes before an explicit apply, with
 registration, publication and usable caller access kept separate.
 
+<img src="docs/images/screenshots/console-register-vertex.png" width="720" alt="Native Vertex registration with fixed US multi-region and explicit unresolved execution warnings">
+
+**Explicit native Vertex registration.** Save exact Gemini routing and authentication intent
+without calling Google; reviewed publication, executable gateway evidence and caller access remain
+separate.
+
 <a id="light-and-dark"></a>
 <a id="administrator-console"></a>
 <a id="end-user-portal"></a>

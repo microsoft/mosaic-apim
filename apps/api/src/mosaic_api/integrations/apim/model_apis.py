@@ -15,6 +15,7 @@ capability no shape covers is reported as not publishable rather than offered a 
 serve it; see ADR 0012.
 """
 
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -60,7 +61,8 @@ class OperationSpec:
     Microsoft.CognitiveServices`` lists it. It is required rather than defaulted so that a shape
     gaining a route cannot be published without declaring what the gateway needs to call it; the
     runtime check in ``integrations/aoai/runtime_access.py`` is derived from these, not maintained
-    beside them. It is not rendered into API Management.
+    beside them. Non-Azure contracts explicitly use None, never a fictional Azure permission.
+    It is not rendered into API Management.
     """
 
     name: str
@@ -68,7 +70,7 @@ class OperationSpec:
     method: str
     url_template: str
     description: str
-    data_action: str
+    data_action: str | None
 
 
 def _azure_openai_operations(deployment: str) -> tuple[OperationSpec, ...]:
@@ -192,10 +194,34 @@ def _anthropic_operations(deployment: str) -> tuple[OperationSpec, ...]:
     )
 
 
+def _vertex_operations(deployment: str) -> tuple[OperationSpec, ...]:
+    if not re.fullmatch(r"[a-zA-Z0-9._-]+", deployment):
+        raise ValidationError("Native Vertex operations require an exact model route segment")
+    return tuple(
+        OperationSpec(
+            name, display, "POST", f"/models/{deployment}:{operation}",
+            "Native Vertex v1 contract metadata; gateway execution remains blocked.", None,
+        )
+        for name, display, operation in (
+            ("generate-content", "Generate content", "generateContent"),
+            ("stream-generate-content", "Stream content (SSE)", "streamGenerateContent"),
+        )
+    )
+
+
+def _custom_chat_operations(deployment: str) -> tuple[OperationSpec, ...]:
+    return (OperationSpec(
+        "chat-completions", "Chat completions", "POST", "/v1/chat/completions",
+        "Exact declared body.model; inline images and application function calls only.", None,
+    ),)
+
+
 _SHAPE_OPERATIONS: dict[str, Callable[[str], tuple[OperationSpec, ...]]] = {
     ApiShape.AZURE_OPENAI: _azure_openai_operations,
     ApiShape.FOUNDRY_MODELS: _ai_services_operations,
     ApiShape.ANTHROPIC_MESSAGES: _anthropic_operations,
+    ApiShape.VERTEX_GEMINI: _vertex_operations,
+    ApiShape.OPENAI_CHAT: _custom_chat_operations,
 }
 
 
@@ -241,7 +267,9 @@ def required_data_actions(shape: str) -> tuple[str, ...]:
     """
 
     operations = shape_operations(shape, "deployment")
-    return tuple(dict.fromkeys(operation.data_action for operation in operations))
+    return tuple(dict.fromkeys(
+        operation.data_action for operation in operations if operation.data_action is not None
+    ))
 
 
 def is_azure_openai_host(endpoint: str) -> bool:
@@ -571,6 +599,14 @@ def assess_declared_deployment(
     deployment still needs a gateway whose tier MOSAIC knows, exactly as a discovered one does.
     """
 
+    if provider in {ModelProvider.GOOGLE_VERTEX, ModelProvider.OPENAI_COMPATIBLE}:
+        from mosaic_api.integrations.generative_protocols import publication_blockers
+
+        return DeploymentFit(
+            DeploymentCapability.CHAT,
+            ApiShape(shape) if shape_fits_provider(shape, provider) else None,
+            " ".join(publication_blockers(provider)),
+        )
     if not shape_fits_provider(shape, provider):
         if provider == ModelProvider.AWS_BEDROCK:
             reason = (

@@ -1945,6 +1945,11 @@ class ModelPoolService:
                 endpoint = entry.endpoint
                 label = f"{member_spec.deployment_name} on {endpoint.name}"
                 details = {"endpointId": endpoint.id, "deployment": member_spec.deployment_name}
+                if endpoint.is_governed_external():
+                    raise ValidationError(
+                        f"{label}: external Gemini/custom chat contracts do not support pools.",
+                        details=details,
+                    )
                 if endpoint.provider == ModelProvider.OPENAI_COMPATIBLE:
                     raise ValidationError(
                         f"{label}: pools can't use OpenAI-compatible endpoints yet.",

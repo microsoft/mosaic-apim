@@ -584,3 +584,20 @@
     gap: 4px;
   }
 }
+.registrationTabs.registrationTabs {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.vertexAuthSelect.vertexAuthSelect {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.vertexAuthSelect select {
+  min-width: 0;
+  max-width: 100%;
+}

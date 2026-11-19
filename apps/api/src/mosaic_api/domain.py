@@ -912,6 +912,7 @@ class ModelProvider(StrEnum):
     AZURE_OPENAI = "azureOpenAi"
     AZURE_AI_FOUNDRY = "azureAiFoundry"
     OPENAI_COMPATIBLE = "openAiCompatible"
+    GOOGLE_VERTEX = "googleVertex"
     # Amazon Bedrock's Anthropic Messages API, reached with a Bedrock API key. MOSAIC serves it only
     # as a member of a model pool (ADR 0024).
     AWS_BEDROCK = "awsBedrock"
@@ -927,6 +928,8 @@ class ApiShape(StrEnum):
     AZURE_OPENAI = "azureOpenAi"
     FOUNDRY_MODELS = "foundryModels"
     ANTHROPIC_MESSAGES = "anthropicMessages"
+    VERTEX_GEMINI = "vertexGemini"
+    OPENAI_CHAT = "openAiChat"
 
 
 def account_kind_provider(kind: str | None) -> ModelProvider | None:
@@ -1172,16 +1175,49 @@ class DeclaredDeployment(MosaicModel):
 
 
 class DeclaredDeploymentCreate(MosaicModel):
-    deployment_name: str = Field(min_length=1, max_length=64)
+    deployment_name: str = Field(min_length=1, max_length=120)
     model_name: str = Field(min_length=1, max_length=120)
     model_version: str | None = Field(default=None, max_length=64)
     api_shape: ApiShape
+
+    @model_validator(mode="before")
+    @classmethod
+    def preserve_external_identifiers(cls, value: Any) -> Any:
+        if isinstance(value, dict) and value.get("api_shape", value.get("apiShape")) in {
+            ApiShape.OPENAI_CHAT, ApiShape.VERTEX_GEMINI,
+        }:
+            for snake, camel in (
+                ("deployment_name", "deploymentName"), ("model_name", "modelName")
+            ):
+                name = value.get(snake, value.get(camel))
+                if isinstance(name, str) and name != name.strip():
+                    raise ValueError("Declare the exact model ID without surrounding whitespace")
+        return value
+
+    @model_validator(mode="after")
+    def validate_shape_identifiers(self) -> Self:
+        if self.api_shape == ApiShape.OPENAI_CHAT:
+            if any(part in {"", ".", ".."} for part in self.deployment_name.split("/")):
+                raise ValueError("Model ID slash-qualified segments must be nonempty identifiers")
+        else:
+            if not BEDROCK_MODEL_ID_PATTERN.fullmatch(self.deployment_name):
+                raise ValueError(
+                    "A deployment name is up to 64 letters, digits, periods, hyphens and "
+                    "underscores, starting with a letter or digit. A Bedrock model ID can "
+                    "also have colons"
+                )
+            if not _MODEL_NAME_PATTERN.fullmatch(self.model_name):
+                raise ValueError(
+                    "A model name is up to 120 letters, digits, periods, colons, hyphens and "
+                    "underscores, starting with a letter or digit"
+                )
+        return self
 
     @field_validator("deployment_name")
     @classmethod
     def validate_deployment_name(cls, value: str) -> str:
         value = value.strip()
-        if not BEDROCK_MODEL_ID_PATTERN.fullmatch(value):
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}", value):
             raise ValueError(
                 "A deployment name is up to 64 letters, digits, periods, hyphens and underscores, "
                 "starting with a letter or digit. A Bedrock model ID can also have colons"
@@ -1192,7 +1228,7 @@ class DeclaredDeploymentCreate(MosaicModel):
     @classmethod
     def validate_model_name(cls, value: str) -> str:
         value = value.strip()
-        if not _MODEL_NAME_PATTERN.fullmatch(value):
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}", value):
             raise ValueError(
                 "A model name is up to 120 letters, digits, periods, colons, hyphens and "
                 "underscores, starting with a letter or digit"
@@ -1222,6 +1258,12 @@ def shape_fits_provider(shape: str, provider: str) -> bool:
 
     if provider == ModelProvider.AWS_BEDROCK:
         return shape == ApiShape.ANTHROPIC_MESSAGES
+    if provider == ModelProvider.GOOGLE_VERTEX:
+        return shape == ApiShape.VERTEX_GEMINI
+    if provider == ModelProvider.OPENAI_COMPATIBLE:
+        return shape == ApiShape.OPENAI_CHAT
+    if shape in {ApiShape.VERTEX_GEMINI, ApiShape.OPENAI_CHAT}:
+        return False
     if shape == ApiShape.AZURE_OPENAI:
         return provider in {ModelProvider.AZURE_OPENAI, ModelProvider.AZURE_AI_FOUNDRY}
     return provider == ModelProvider.AZURE_AI_FOUNDRY
@@ -1237,10 +1279,25 @@ def validate_declarations(
     seen: set[str] = set()
     for declaration in declarations:
         name = declaration.deployment_name
-        if name.casefold() in seen:
-            raise ValueError(f"Deployment {name} is declared twice")
-        seen.add(name.casefold())
-        if provider != ModelProvider.AWS_BEDROCK and not DEPLOYMENT_NAME_PATTERN.fullmatch(name):
+        exact = provider in {ModelProvider.GOOGLE_VERTEX, ModelProvider.OPENAI_COMPATIBLE}
+        identity = name.casefold()
+        if identity in seen:
+            raise ValueError(
+                f"Deployment {name} is declared twice "
+                "(case-only siblings cannot be accounted for separately)"
+            )
+        seen.add(identity)
+        if exact and name != declaration.model_name:
+            raise ValueError("Declare the exact model ID in both deploymentName and modelName")
+        if provider == ModelProvider.GOOGLE_VERTEX and name != "gemini-3.8-flash":
+            raise ValueError("The native Vertex v1 contract supports exactly gemini-3.8-flash")
+        if provider == ModelProvider.AWS_BEDROCK and not BEDROCK_MODEL_ID_PATTERN.fullmatch(name):
+            raise ValueError("Invalid Bedrock model ID")
+        if not exact and not _MODEL_NAME_PATTERN.fullmatch(declaration.model_name):
+            raise ValueError("Invalid model name for this provider")
+        if provider not in {
+            ModelProvider.AWS_BEDROCK, ModelProvider.GOOGLE_VERTEX, ModelProvider.OPENAI_COMPATIBLE
+        } and not DEPLOYMENT_NAME_PATTERN.fullmatch(name):
             raise ValueError(
                 f"{name} isn't an Azure deployment name, which is up to 64 letters, digits, "
                 "periods, hyphens and underscores, starting with a letter or digit"
@@ -1272,6 +1329,38 @@ class EndpointDetailEvidence(MosaicModel):
     account_read_at: datetime | None = Field(default=None, exclude_if=_unset)
 
 
+class VertexConfiguration(MosaicModel):
+    """Selected native contract, not evidence that gateway authentication has been proved."""
+
+    project_id: str = Field(pattern=r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
+    location: Literal["us"] = "us"
+    api_version: Literal["v1"] = "v1"
+    auth_mode: Literal["workloadIdentityFederation", "serviceAccountKey", "apiKey"]
+    service_account: str | None = Field(default=None, exclude_if=_unset)
+    workload_identity_audience: str | None = Field(default=None, exclude_if=_unset)
+
+    @model_validator(mode="after")
+    def validate_authentication(self) -> Self:
+        if self.service_account is not None and not re.fullmatch(
+            r"[a-zA-Z0-9][a-zA-Z0-9._-]*@[a-z][a-z0-9-]*\.iam\.gserviceaccount\.com",
+            self.service_account,
+        ):
+            raise ValueError("Use a Google service-account email")
+        if self.auth_mode in {"workloadIdentityFederation", "serviceAccountKey"}:
+            if self.service_account is None:
+                raise ValueError("This authentication mode requires a serviceAccount")
+        if self.auth_mode == "workloadIdentityFederation":
+            if self.workload_identity_audience is None or not re.fullmatch(
+                r"//iam\.googleapis\.com/projects/[0-9]+/locations/global/"
+                r"workloadIdentityPools/[a-z0-9-]+/providers/[a-z0-9-]+",
+                self.workload_identity_audience,
+            ):
+                raise ValueError("WIF requires an exact Google workload identity provider audience")
+        elif self.workload_identity_audience is not None:
+            raise ValueError("workloadIdentityAudience applies only to federation")
+        return self
+
+
 class ModelEndpoint(Entity):
     """A registered provider endpoint MOSAIC reads models from.
 
@@ -1290,6 +1379,8 @@ class ModelEndpoint(Entity):
     name: str
     provider: ModelProvider
     endpoint: AnyHttpUrl
+    vertex: VertexConfiguration | None = Field(default=None, exclude_if=_unset)
+    compatible_chat: bool = Field(default=False, exclude_if=_unset)
     detail_evidence: EndpointDetailEvidence | None = Field(default=None, exclude_if=_unset)
     azure_resource_id: str | None = None
     azure_cloud: Literal["commercial", "government"] = "commercial"
@@ -1332,15 +1423,20 @@ class ModelEndpoint(Entity):
         )
 
     def uses_backend_key(self) -> bool:
-        """Whether MOSAIC and its gateways reach this endpoint with an API key from Key Vault.
+        """Whether this endpoint uses a backend secret reference.
 
-        An Azure endpoint registered by URL, or an AWS Bedrock endpoint. An OpenAI-compatible
-        endpoint has a key too, but MOSAIC never publishes it.
+        Legacy generic records remain inactive. External opt-ins still need separately proved
+        runtime execution; service-account signing material is not a Vertex API key.
         """
 
         return (
             self.auth_mode == EndpointAuthMode.API_KEY
-            and self.provider != ModelProvider.OPENAI_COMPATIBLE
+            and (self.provider != ModelProvider.OPENAI_COMPATIBLE or self.compatible_chat)
+        )
+
+    def is_governed_external(self) -> bool:
+        return self.provider == ModelProvider.GOOGLE_VERTEX or (
+            self.provider == ModelProvider.OPENAI_COMPATIBLE and self.compatible_chat
         )
 
     def is_bedrock(self) -> bool:
@@ -1459,6 +1555,7 @@ class ModelApi(Entity):
     selection: ImportSelection = ImportSelection.DETECTED
     imported_from_snapshot_id: str | None = None
     publication_id: str | None = None
+    cost_telemetry: Literal["aggregateOnly"] | None = Field(default=None, exclude_if=_unset)
     imported_at: datetime = Field(default_factory=utc_now)
     imported_by: str | None = None
 
@@ -3758,6 +3855,8 @@ class ModelEndpointCreate(MosaicModel):
     )
     environment: str | None = None
     provider: ModelProvider | None = None
+    vertex: VertexConfiguration | None = Field(default=None, exclude_if=_unset)
+    compatible_chat: bool = Field(default=False, exclude_if=_unset)
     credential_secret_uri: AnyHttpUrl | None = None
     api_key: SecretStr | None = Field(
         default=None,
@@ -3786,6 +3885,42 @@ class ModelEndpointCreate(MosaicModel):
 
     @model_validator(mode="after")
     def validate_identification(self) -> Self:
+        if self.provider == ModelProvider.GOOGLE_VERTEX or self.compatible_chat:
+            from mosaic_api.integrations.generative_protocols import (
+                VERTEX_ORIGIN,
+                admit_custom_chat_url,
+            )
+
+            if (
+                self.azure_resource_id or self.azure_connection_id
+                or self.azure_cloud != "commercial"
+            ):
+                raise ValueError("External registration takes no Azure resource or connection")
+            if self.endpoint is None or self.api_key is not None:
+                raise ValueError("Give an endpoint and secret reference, never inline credentials")
+            if not self.environment:
+                raise ValueError("Governed external registrations require an exact environment")
+            if self.provider == ModelProvider.GOOGLE_VERTEX:
+                if self.vertex is None or self.compatible_chat:
+                    raise ValueError("Native Vertex requires vertex settings, not compatibleChat")
+                if str(self.endpoint).rstrip("/") != VERTEX_ORIGIN:
+                    raise ValueError("Native Vertex uses only https://aiplatform.us.rep.googleapis.com")
+                needs_secret = self.vertex.auth_mode != "workloadIdentityFederation"
+                if needs_secret != (self.credential_secret_uri is not None):
+                    raise ValueError("Key modes require credentialSecretUri; WIF must omit it")
+            else:
+                if self.provider not in {None, ModelProvider.OPENAI_COMPATIBLE} or self.vertex:
+                    raise ValueError("compatibleChat applies only to OpenAI-compatible hosts")
+                self.provider = ModelProvider.OPENAI_COMPATIBLE
+                admit_custom_chat_url(str(self.endpoint))
+                if self.credential_secret_uri is None:
+                    raise ValueError("Custom chat requires credentialSecretUri")
+            if self.credential_secret_uri is not None:
+                KeyVaultSecretId.parse(str(self.credential_secret_uri))
+            validate_declarations(self.deployments or [], self.provider)
+            return self
+        if self.vertex is not None:
+            raise ValueError("vertex settings require provider googleVertex")
         if not self.azure_resource_id and not self.endpoint:
             raise ValueError(
                 "Provide an Azure resource ID for an Azure AI endpoint, or a URL for an AWS "
@@ -3883,6 +4018,7 @@ class ModelEndpointUpdate(MosaicModel):
     # A validation error's text never shows what was sent, which can be a key.
     model_config = ConfigDict(hide_input_in_errors=True)
 
+    compatible_chat: bool | None = Field(default=None, exclude_if=_unset)
     name: str | None = Field(default=None, min_length=1, max_length=120)
     management_mode: ManagementMode | None = None
     environment_label: str | None = Field(
@@ -4299,6 +4435,8 @@ class PublishPlan(Entity):
     pool_access_snapshot: PoolAccessSnapshot | None = None
     previous_access_version: int | None = None
     review: PlanReview | None = None
+    executable: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+    execution_blocked_reasons: list[str] = Field(default_factory=list, exclude_if=_unset)
 
 
 class PublishStepResult(MosaicModel):
@@ -4340,7 +4478,7 @@ class PublishRun(Entity):
 class PublicationCreate(MosaicModel):
     gateway_id: str = Field(min_length=1, max_length=128)
     model_endpoint_id: str = Field(min_length=1, max_length=128)
-    deployment_name: str = Field(min_length=1, max_length=64)
+    deployment_name: str = Field(min_length=1, max_length=120)
     display_name: str | None = Field(default=None, min_length=1, max_length=200)
     api_name: str | None = Field(default=None, min_length=1, max_length=80)
     api_path: str | None = Field(default=None, min_length=1, max_length=200)
@@ -4708,6 +4846,7 @@ class PublishableModel(MosaicModel):
     capability: DeploymentCapability = DeploymentCapability.UNKNOWN
     api_shape: ApiShape | None = None
     publishable: bool = True
+    reviewable: bool = Field(default=False, exclude_if=_unset)
     unpublishable_reason: str | None = None
     token_limits_supported: bool = True
     token_limits_note: str | None = None

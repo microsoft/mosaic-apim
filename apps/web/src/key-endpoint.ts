@@ -1,10 +1,16 @@
-import type { ApiShape, DeclaredDeploymentInput, ModelEndpoint, ModelProvider } from './types'
+import type { ApiShape, DeclaredDeploymentInput, ModelEndpoint, ModelProvider, VertexConfiguration } from './types'
+
+export const initialVertex: VertexConfiguration = {
+  projectId: '', location: 'us', apiVersion: 'v1', authMode: 'workloadIdentityFederation',
+}
 
 /** How each curated API shape is named where an administrator chooses one. */
 export const API_SHAPE_LABELS: Record<ApiShape, string> = {
   azureOpenAi: 'Azure OpenAI API',
   foundryModels: 'Foundry Models API (chat completions)',
   anthropicMessages: 'Anthropic Messages API (Claude)',
+  vertexGemini: 'Google Vertex Gemini API (native v1)',
+  openAiChat: 'OpenAI-compatible Chat Completions',
 }
 
 /** The same names, short enough for a row of fields. */
@@ -12,6 +18,8 @@ export const API_SHAPE_SHORT_LABELS: Record<ApiShape, string> = {
   azureOpenAi: 'Azure OpenAI',
   foundryModels: 'Foundry Models',
   anthropicMessages: 'Anthropic Messages',
+  vertexGemini: 'Vertex Gemini',
+  openAiChat: 'OpenAI chat',
 }
 
 /**
@@ -19,7 +27,16 @@ export const API_SHAPE_SHORT_LABELS: Record<ApiShape, string> = {
  * resource registered with a key, or AWS Bedrock.
  */
 export function usesBackendKey(endpoint: ModelEndpoint): boolean {
-  return endpoint.authMode === 'apiKey' && endpoint.provider !== 'openAiCompatible'
+  return endpoint.authMode === 'apiKey' && endpoint.provider !== 'googleVertex'
+    && (endpoint.provider !== 'openAiCompatible' || endpoint.compatibleChat === true)
+}
+
+export function usesDeclaredModels(endpoint: ModelEndpoint): boolean {
+  return usesBackendKey(endpoint) || endpoint.provider === 'googleVertex'
+}
+
+export function isExternalModelProvider(provider: string | undefined): boolean {
+  return provider === 'googleVertex' || provider === 'openAiCompatible'
 }
 
 /** The resource kind an Azure AI host implies, as the API infers it, or null for any other host. */
@@ -74,6 +91,8 @@ export function bedrockModelName(modelId: string): string {
  * MOSAIC reaches AWS Bedrock only through its Anthropic Messages API.
  */
 export function shapesFor(provider: ModelProvider | null): ApiShape[] {
+  if (provider === 'googleVertex') return ['vertexGemini']
+  if (provider === 'openAiCompatible') return ['openAiChat']
   if (provider === 'awsBedrock') return ['anthropicMessages']
   return provider === 'azureOpenAi'
     ? ['azureOpenAi']
@@ -82,6 +101,8 @@ export function shapesFor(provider: ModelProvider | null): ApiShape[] {
 
 /** The API a model most likely takes, until the administrator chooses one. */
 export function suggestedShape(modelName: string, provider: ModelProvider | null): ApiShape {
+  if (provider === 'googleVertex') return 'vertexGemini'
+  if (provider === 'openAiCompatible') return 'openAiChat'
   if (provider === 'azureOpenAi') return 'azureOpenAi'
   if (provider === 'awsBedrock') return 'anthropicMessages'
   return modelName.trim().toLowerCase().startsWith('claude') ? 'anthropicMessages' : 'foundryModels'
