@@ -17,6 +17,7 @@ from mosaic_api.domain import (
     MCP_METADATA_OPERATION,
     ApimResourceId,
     AppliedCostCenterPool,
+    AppliedSelfHostedRuntime,
     AuditEvent,
     BindingSource,
     CapabilitySupport,
@@ -52,6 +53,8 @@ from mosaic_api.domain import (
     PublishRunStatus,
     PublishStepResult,
     PublishStepStatus,
+    SelfHostedGateway,
+    SelfHostedRuntimeReview,
     apim_slug,
     gateway_tier,
     grant_precedence_key,
@@ -61,6 +64,7 @@ from mosaic_api.domain import (
     mcp_metadata_url_template,
     mcp_publication_id,
     mcp_server_id,
+    mcp_server_url,
     model_access_subscription_name,
     new_id,
     subject_kind_for,
@@ -74,6 +78,7 @@ from mosaic_api.environments import (
 )
 from mosaic_api.errors import ConflictError, NotFoundError, ValidationError
 from mosaic_api.integrations.apim import ApimClient, JsonObject
+from mosaic_api.integrations.apim.client import gateway_api_segment
 from mosaic_api.integrations.apim.policy_capabilities import (
     PolicyBoundary,
     assess_gateway_policy_capabilities,
@@ -86,8 +91,10 @@ from mosaic_api.integrations.mcp_access_policy import (
     McpPolicyDocuments,
     mcp_counter_key_expression,
     mcp_grant_counter_identity,
+    render_mcp_metadata_policy,
     render_mcp_policy,
 )
+from mosaic_api.integrations.rbac import permits as arm_permits
 from mosaic_api.observed import ObservedApi
 from mosaic_api.repositories import (
     CostCenterRepository,
@@ -122,12 +129,33 @@ from mosaic_api.services.policy_capabilities import pooled_limit_policies, refre
 from mosaic_api.services.publishing import _KIND_NOUNS as _KIND_NOUNS
 from mosaic_api.services.publishing import DENY_ALL_FRAGMENT, DENY_ALL_POLICY, STALE_RUN_MESSAGE
 from mosaic_api.services.publishing import _merge_resources as _merge_resources
+from mosaic_api.services.self_hosted import (
+    MCP_CHECKS,
+    MCP_RUNTIME_RULES,
+    RUNTIME_ACTIONS,
+    SELF_HOSTED_IMAGE,
+    EvidenceReader,
+    applied_runtime_snapshot,
+    binding_name,
+    binding_value,
+    child_candidate,
+    fingerprint,
+    matching_binding,
+    missing_evidence,
+    require_runtime,
+    runtime_fingerprint,
+    simple_service_policy,
+)
 
 logger = structlog.get_logger()
 
 ClientFactory = Callable[[ApimResourceId], ApimClient]
 WriterFactory = Callable[[ApimResourceId], ApimWriter]
 RecoveryJournal = Callable[[PublishedResourceKind, str, bool, str], Awaitable[None]]
+_EXACT_KINDS = {PublishedResourceKind.GATEWAY_API, PublishedResourceKind.PUBLICATION_BINDING}
+_DISCOVERY_OPERATION_KINDS = {
+    PublishedResourceKind.API_OPERATION, PublishedResourceKind.API_OPERATION_POLICY
+}
 
 MCP_CREATE_ORDER: tuple[PublishedResourceKind, ...] = (
     PublishedResourceKind.BACKEND,
@@ -290,12 +318,14 @@ def _policy_documents(
     *,
     backend_auth: McpAuthMode,
     backend_audience: str | None,
+    runtime: SelfHostedGateway | None = None,
 ) -> McpPolicyDocuments:
     return render_mcp_policy(
         publication,
         snapshot,
         backend_auth=backend_auth,
         backend_audience=backend_audience,
+        runtime=(runtime.gateway_name, runtime.ingress_origin) if runtime else None,
     )
 
 
@@ -432,10 +462,12 @@ class McpPublishingService:
         environment_repository: EnvironmentRepository | None = None,
         cost_center_repository: CostCenterRepository | None = None,
         blocked_list: BlockedListGate | None = None,
+        self_hosted_evidence: EvidenceReader | None = None,
     ) -> None:
         self._repository = repository
         self._cost_centers = cost_center_repository
         self._blocked_list = blocked_list
+        self._self_hosted_evidence = self_hosted_evidence
         self._endpoints = mcp_endpoint_repository
         self._entitlements = entitlement_repository
         self._directory = directory_repository
@@ -539,6 +571,9 @@ class McpPublishingService:
         if gateway.azure_cloud != endpoint.azure_cloud:
             raise ValidationError("A gateway and its MCP backend must be in the same Azure cloud.")
         self._validate_endpoint(endpoint)
+        if request.runtime_target and request.runtime_target.kind == "selfHosted":
+            runtime = await require_runtime(self._repository, gateway, request.runtime_target)
+            self._require_runtime_profile(gateway, runtime, endpoint)
         catalog = await load_environment_catalog(self._environments, actor.tenant_id)
         verdict = permits(catalog, gateway.environment, endpoint.environment)
         refuse_blocked_pairing(verdict)
@@ -566,6 +601,7 @@ class McpPublishingService:
             fragment_name=api_name,
             metadata_api_name=f"{api_name}-prm",
             mcp_server_id=mcp_server_id(actor.tenant_id, gateway.id, api_name),
+            runtime_target=request.runtime_target,
         )
         existing = await self._repository.get_mcp_publication(actor.tenant_id, publication.id)
         if existing:
@@ -575,6 +611,7 @@ class McpPublishingService:
                 details={"id": existing.id, "status": str(existing.status)},
             )
         await self._reject_desired_collisions(actor, publication, gateway)
+        await self._compatible_runtime(publication)
         saved = await self._repository.save_mcp_publication(
             publication, self._audit(actor, "mcpPublication.created", publication.id)
         )
@@ -622,6 +659,8 @@ class McpPublishingService:
 
         async with publication_lock(self._repository, actor.tenant_id, publication_id):
             publication = await self._editable(actor, publication_id)
+            if publication.is_self_hosted():
+                raise ValidationError("Model bridging is not qualified for self-hosted MCP.")
             principal = await self._directory.get_principal(actor.tenant_id, request.principal_id)
             if principal is None:
                 raise NotFoundError(
@@ -714,6 +753,7 @@ class McpPublishingService:
         gateway = await refresh_policy_gateway(client, gateway)
         endpoint = await self._load_endpoint(actor, publication.mcp_endpoint_id)
         self._validate_endpoint(endpoint)
+        runtime = await self._publication_runtime(publication, gateway, endpoint)
         catalog = await load_environment_catalog(self._environments, actor.tenant_id)
         verdict = permits(catalog, gateway.environment, endpoint.environment)
         refuse_blocked_pairing(verdict)
@@ -730,6 +770,7 @@ class McpPublishingService:
             snapshot,
             backend_auth=endpoint.auth_mode,
             backend_audience=endpoint.resource_audience,
+            runtime=runtime,
         )
         require_supported_limits(
             assess_gateway_policy_capabilities(gateway.id, gateway.capabilities.sku_name),
@@ -741,6 +782,12 @@ class McpPublishingService:
         resource = gateway.arm_resource()
         client = self._client_factory(resource)
         steps = await self._steps(publication, endpoint, client, resource, snapshot=snapshot)
+        runtime_review, runtime_snapshot, runtime_steps = (
+            await self._review_runtime(publication, gateway, runtime, client, endpoint, policy)
+            if runtime else (None, None, [])
+        )
+        if runtime_steps:
+            steps[-1:-1] = runtime_steps
         warnings = [*self._warnings(publication, gateway, endpoint, snapshot)]
         if verdict.level == VerdictLevel.WARNING and verdict.reason not in warnings:
             warnings.append(verdict.reason)
@@ -751,19 +798,21 @@ class McpPublishingService:
             publication_id=publication.id,
             target="mcp",
             gateway_id=gateway.id,
-            digest=mcp_publication_digest(
+            digest=self._target_digest(mcp_publication_digest(
                 publication,
                 endpoint,
                 policy,
                 snapshot,
                 environment_fingerprint=environment_fingerprint,
-            ),
+            ), runtime_snapshot, runtime_steps),
             steps=steps,
             facets=policy.facets,
             policy_content_sha256=policy.content_sha256,
             warnings=warnings,
             actor_object_id=actor.object_id,
             mcp_access_snapshot=snapshot,
+            runtime_review=runtime_review,
+            runtime_snapshot=runtime_snapshot,
             previous_access_version=(
                 publication.applied_access.version if publication.applied_access else None
             ),
@@ -819,6 +868,8 @@ class McpPublishingService:
         client = self._client_factory(gateway.arm_resource())
         gateway = await refresh_policy_gateway(client, gateway)
         endpoint = await self._load_endpoint(actor, publication.mcp_endpoint_id)
+        self._validate_endpoint(endpoint)
+        runtime = await self._publication_runtime(publication, gateway, endpoint)
         resolved = plan_id or publication.last_plan_id
         if not resolved:
             raise ConflictError("Plan this MCP publication before applying it.")
@@ -848,6 +899,7 @@ class McpPublishingService:
             snapshot,
             backend_auth=endpoint.auth_mode,
             backend_audience=endpoint.resource_audience,
+            runtime=runtime,
         )
         require_supported_limits(
             assess_gateway_policy_capabilities(gateway.id, gateway.capabilities.sku_name),
@@ -856,14 +908,27 @@ class McpPublishingService:
             ),
             boundary="apply",
         )
+        runtime_snapshot: AppliedSelfHostedRuntime | None = None
+        runtime_steps: list[PublishPlanStep] = []
+        if runtime:
+            review, runtime_snapshot, runtime_steps = await self._review_runtime(
+                publication, gateway, runtime, client, endpoint, policy
+            )
+            if runtime_snapshot is None or runtime_snapshot != plan.runtime_snapshot:
+                raise ConflictError(
+                    "The selected self-hosted MCP runtime is not verified for this plan.",
+                    details={"blockers": review.blockers, "reason": "localGatewayNotReady"},
+                )
+            if runtime_steps != [step for step in plan.steps if step.kind in _EXACT_KINDS]:
+                raise ConflictError("The reviewed MCP runtime attachments or binding changed.")
         if (
-            mcp_publication_digest(
+            self._target_digest(mcp_publication_digest(
                 publication,
                 endpoint,
                 policy,
                 snapshot,
                 environment_fingerprint=environment_fingerprint,
-            )
+            ), runtime_snapshot, runtime_steps)
             != plan.digest
         ):
             raise ConflictError(
@@ -874,7 +939,9 @@ class McpPublishingService:
         await self._repository.save_publish_run(run)
         await self._mark_applying(publication, run.id)
         resource = gateway.arm_resource()
-        self._spawn(self._run_apply(publication, gateway, endpoint, plan, policy, run, resource))
+        self._spawn(self._run_apply(
+            publication, gateway, endpoint, plan, policy, run, resource, runtime,
+        ))
         return run
 
     async def plan_unpublish(self, actor: Actor, publication_id: str) -> PublishPlan:
@@ -890,6 +957,21 @@ class McpPublishingService:
             gateway = await self._load_gateway(actor, publication.gateway_id)
             self._require_writable(gateway)
             removals = self._unpublish_removals(publication)
+            if publication.is_self_hosted() and publication.runtime_target is not None:
+                runtime = await require_runtime(
+                    self._repository, gateway, publication.runtime_target,
+                )
+                if runtime.mcp_discovery_link and any(
+                    _is_shared_metadata_api(item.kind, item.name) for item in removals
+                ):
+                    index = next(
+                        i for i, item in enumerate(removals)
+                        if _is_shared_metadata_api(item.kind, item.name)
+                    )
+                    removals.insert(index, PublishedResource(
+                        kind=PublishedResourceKind.GATEWAY_API, name=MCP_METADATA_API_NAME,
+                        resource_id=runtime.mcp_discovery_link, created_by_mosaic=True,
+                    ))
             if not removals:
                 raise ConflictError(
                     "MOSAIC did not create gateway resources for this MCP publication, so there "
@@ -936,6 +1018,7 @@ class McpPublishingService:
                 ],
                 actor_object_id=actor.object_id,
                 mcp_access_snapshot=publication.applied_access,
+                runtime_snapshot=publication.applied_runtime,
             )
             plan.review = build_review(publication, plan, publication.applied_access)
             await self._repository.save_publish_plan(plan)
@@ -969,7 +1052,10 @@ class McpPublishingService:
                 or plan.publication_id != publication.id
             ):
                 raise NotFoundError("MCP unpublish plan was not found", details={"id": plan_id})
-            if mcp_unpublish_digest(publication) != plan.digest:
+            if mcp_unpublish_digest(publication) != plan.digest or (
+                publication.is_self_hosted()
+                and plan.runtime_snapshot != publication.applied_runtime
+            ):
                 raise ConflictError(
                     "This MCP publication changed after its unpublish plan was made, so the plan "
                     "no longer says what unpublishing removes or who loses access. Review a new "
@@ -1045,7 +1131,10 @@ class McpPublishingService:
             await self._repository.save_publish_run(diagnostic)
             await self._repository.release_publication_lock(actor.tenant_id, publication_id, run_id)
             return diagnostic
-        if run is None or publication is None or run.target != "mcp":
+        if (
+            run is None or publication is None or run.target != "mcp"
+            or run.publication_id != publication_id or run.gateway_id != publication.gateway_id
+        ):
             raise ConflictError("The retained lock has no matching MCP publication/run evidence")
         if not confirm_quiesced:
             return run
@@ -1058,7 +1147,25 @@ class McpPublishingService:
         client = self._client_factory(gateway.arm_resource())
         writer = self._writer_factory(gateway.arm_resource())
         resources = list(publication.resources)
+        self_hosted = publication.is_self_hosted()
+        if self_hosted:
+            resources = await self._recover_discovery_resources(publication, client, run)
+            publication = publication.model_copy(update={"resources": resources})
+        runtime = await self._teardown_runtime(publication, gateway, client)
         for step in run.steps:
+            if step.kind in _EXACT_KINDS:
+                if runtime is None:
+                    raise ConflictError("Recovery has no matching registered MCP runtime.")
+                await self._recover_runtime_resource(
+                    publication, runtime, client, writer, step, run, resources,
+                )
+                continue
+            if self_hosted and (
+                step.kind in _DISCOVERY_OPERATION_KINDS
+                or _is_shared_metadata_api(step.kind, step.name)
+            ):
+                # Do not let generic recovery adopt a resource without confirmed ownership.
+                continue
             if not step.created_by_mosaic or step.action == PublishAction.DELETE:
                 continue
             item = self._resource_for_step(publication, step)
@@ -1128,6 +1235,89 @@ class McpPublishingService:
         await self._release_run(publication, run)
         return recovered
 
+    async def _recover_discovery_resources(
+        self, publication: McpPublication, client: ApimClient, run: PublishRun,
+    ) -> list[PublishedResource]:
+        # Progress saves the run before the publication. Recover this gap in memory only;
+        # the caller still has to verify the fence and the live shared discovery API.
+        completed_creates = {
+            (step.kind, step.name, step.resource_id)
+            for step in run.steps
+            if step.status == PublishStepStatus.SUCCEEDED
+            and step.action == PublishAction.CREATE and step.created_by_mosaic
+        }
+        recovered: list[PublishedResource] = []
+        for item in _desired_resources(publication):
+            shared_root = _is_shared_metadata_api(item.kind, item.name)
+            shared_operation = (
+                item.target_api == MCP_METADATA_API_NAME and item.kind in _DISCOVERY_OPERATION_KINDS
+            )
+            if not (shared_root or shared_operation) or self._owns(
+                publication, item.kind, item.name,
+            ):
+                continue
+            resource_id = f"{client.resource.canonical}/{item.segment}"
+            if (item.kind, item.name, resource_id) not in completed_creates:
+                continue
+            if shared_root or item.kind == PublishedResourceKind.API_OPERATION:
+                live = (
+                    await client.get_api(item.name) if shared_root
+                    else await client.get_api_operation(MCP_METADATA_API_NAME, item.name)
+                )
+                if live is None:
+                    continue
+                observed_id = live.get("id")
+                if live.get("name") != item.name or (
+                    "id" in live
+                    and (
+                        not isinstance(observed_id, str)
+                        or observed_id.casefold() != resource_id.casefold()
+                    )
+                ):
+                    kind = "API" if shared_root else "operation"
+                    raise ConflictError(f"The live MCP discovery {kind} identity has changed.")
+            elif await client.get_operation_policy(
+                MCP_METADATA_API_NAME, item.name, strict=True,
+            ) is None:
+                continue
+            recovered.append(PublishedResource(
+                kind=item.kind, name=item.name, resource_id=resource_id, created_by_mosaic=True,
+            ))
+        return _merge_resources(publication.resources, recovered)
+
+    async def _recover_runtime_resource(
+        self, publication: McpPublication, runtime: SelfHostedGateway, client: ApimClient,
+        writer: ApimWriter, step: PublishStepResult, run: PublishRun,
+        resources: list[PublishedResource],
+    ) -> None:
+        item = next((
+            item for item in self._runtime_resources(publication, runtime)
+            if item.kind == step.kind and item.name == step.name
+        ), None)
+        if item is None or step.resource_id != writer.resource_id(item.segment):
+            raise ConflictError("The recovery journal names a different MCP runtime resource.")
+        if step.write_outcome not in {"pending", "created"}:
+            return
+        live = await self._live_runtime_resource(client, runtime, item)
+        if live is None:
+            return
+        if step.write_outcome == "pending":
+            raise ConflictError("Resolve the unconfirmed MCP resource before recovering ownership.")
+        if item.kind == PublishedResourceKind.PUBLICATION_BINDING and not matching_binding(
+            live, binding_value(publication, runtime.gateway_name),
+        ):
+            raise ConflictError("The APIM MCP binding has drifted.")
+        if item.kind == PublishedResourceKind.GATEWAY_API and item.name == MCP_METADATA_API_NAME:
+            if runtime.mcp_discovery_link not in {None, step.resource_id}:
+                raise ConflictError("The recorded MCP discovery attachment has changed.")
+            if runtime.mcp_discovery_link is None:
+                await self._record_discovery_link(publication, runtime, step.resource_id, run)
+        else:
+            resources[:] = _merge_resources(resources, [PublishedResource(
+                kind=item.kind, name=item.name, resource_id=step.resource_id,
+                created_by_mosaic=True,
+            )])
+
     async def reap_stale_publish_runs(self, tenant_id: str) -> int:
         stale = await self._repository.list_unfinished_publish_runs(tenant_id)
         active = set(self._active)
@@ -1181,6 +1371,222 @@ class McpPublishingService:
         if endpoint is None:
             raise NotFoundError("MCP endpoint was not found", details={"id": endpoint_id})
         return endpoint
+
+    @staticmethod
+    def _require_runtime_profile(
+        gateway: Gateway, runtime: SelfHostedGateway, endpoint: McpEndpoint
+    ) -> None:
+        if (
+            gateway.azure_cloud != "commercial"
+            or (gateway.capabilities.sku_name or "").casefold() != "developer"
+            or runtime.image_version != SELF_HOSTED_IMAGE
+        ):
+            raise ValidationError(
+                f"Self-hosted MCP requires Commercial Developer APIM and image {SELF_HOSTED_IMAGE}."
+            )
+        if (
+            endpoint.auth_mode != McpAuthMode.MANAGED_IDENTITY
+            or endpoint.capabilities.transport_type != McpTransportType.STREAMABLE
+            or not endpoint.resource_audience
+        ):
+            raise ValidationError(
+                "Choose a confirmed Streamable HTTP MCP backend with a workload identity audience."
+            )
+
+    async def _compatible_runtime(self, publication: McpPublication) -> list[McpPublication]:
+        others = await self._repository.list_mcp_publications(
+            publication.tenant_id, gateway_id=publication.gateway_id
+        )
+        choice = publication.runtime_target
+        local_id = choice.runtime_id if choice is not None else None
+        for other in others:
+            if other.id == publication.id:
+                continue
+            target = other.runtime_target
+            if (target.runtime_id if target else None) != local_id:
+                raise ConflictError(
+                    "This APIM service's MCP sign-in metadata cannot be shared across runtimes. "
+                    "Use a parent whose MCP publications all select this same runtime."
+                )
+        return others
+
+    async def _publication_runtime(
+        self, publication: McpPublication, gateway: Gateway, endpoint: McpEndpoint
+    ) -> SelfHostedGateway | None:
+        await self._compatible_runtime(publication)
+        if not publication.is_self_hosted() or publication.runtime_target is None:
+            return None
+        if _uses_legacy_metadata(publication) or publication.model_caller_id is not None:
+            raise ConflictError("This MCP publication cannot use the bounded self-hosted profile.")
+        runtime = await require_runtime(self._repository, gateway, publication.runtime_target)
+        self._require_runtime_profile(gateway, runtime, endpoint)
+        return runtime
+
+    @staticmethod
+    def _target_digest(
+        digest: str, snapshot: AppliedSelfHostedRuntime | None, steps: list[PublishPlanStep],
+    ) -> str:
+        if not steps:
+            return digest
+        return fingerprint({
+            "intent": digest, "runtime": snapshot.model_dump(mode="json") if snapshot else None,
+            "resources": [step.model_dump(mode="json") for step in steps],
+        })
+
+    @staticmethod
+    def _runtime_resources(
+        publication: McpPublication, runtime: SelfHostedGateway,
+    ) -> tuple[_Resource, _Resource, _Resource]:
+        marker = binding_name(publication)
+        return (
+            _Resource(PublishedResourceKind.PUBLICATION_BINDING, marker, f"namedValues/{marker}"),
+            _Resource(PublishedResourceKind.GATEWAY_API, publication.api_name,
+                      gateway_api_segment(runtime.gateway_name, publication.api_name)),
+            _Resource(PublishedResourceKind.GATEWAY_API, MCP_METADATA_API_NAME,
+                      gateway_api_segment(runtime.gateway_name, MCP_METADATA_API_NAME)),
+        )
+
+    async def _check_runtime_links(
+        self, publication: McpPublication, gateway: Gateway, runtime: SelfHostedGateway,
+        client: ApimClient, *, detached: str | None = None,
+    ) -> None:
+        selected_seen = False
+        for row in await client.list_self_hosted_gateways():
+            candidate = child_candidate(gateway, row)
+            selected = candidate.gateway_name.casefold() == runtime.gateway_name.casefold()
+            selected_seen |= selected
+            for name in (publication.api_name, MCP_METADATA_API_NAME):
+                if selected and detached != name:
+                    continue
+                if await client.get_gateway_api(candidate.gateway_name, name) is not None:
+                    raise ConflictError("Another gateway attachment prevents safe MCP publication.")
+        if not selected_seen:
+            raise ConflictError("APIM inventory does not include the selected MCP runtime.")
+
+    @staticmethod
+    async def _live_runtime_resource(
+        client: ApimClient, runtime: SelfHostedGateway, item: _Resource
+    ) -> JsonObject | None:
+        if item.kind == PublishedResourceKind.PUBLICATION_BINDING:
+            return await client.get_named_value(item.name)
+        return await client.get_gateway_api(runtime.gateway_name, item.name)
+
+    @staticmethod
+    def _runtime_scope(
+        runtime: SelfHostedGateway, publication: McpPublication, endpoint: McpEndpoint,
+        policy: McpPolicyDocuments, inherited: str | None,
+    ) -> str:
+        return fingerprint({
+            "runtime": runtime_fingerprint(runtime), "rules": MCP_RUNTIME_RULES,
+            "publication": publication.id, "path": publication.api_path,
+            "backend": _backend_url(endpoint), "policy": policy.content_sha256,
+            "inherited": inherited, "binding": binding_value(publication, runtime.gateway_name),
+        })
+
+    async def _check_discovery_operations(
+        self, publication: McpPublication, runtime: SelfHostedGateway, client: ApimClient,
+        *, require_own_policy: str | None = None,
+    ) -> None:
+        root = await self._shared_metadata_api(publication, client)
+        if root is None and require_own_policy is None:
+            return
+        if root is None or self._shared_metadata_api_drifted(root):
+            raise ConflictError("The shared MCP discovery API changed outside this review.")
+        peers = await self._compatible_runtime(publication)
+        allowed = {publication.metadata_api_name: publication}
+        allowed.update({
+            item.metadata_api_name: item for item in peers if item.id != publication.id
+        })
+        found = False
+        for row in await client.list_operations(MCP_METADATA_API_NAME, strict=True):
+            name, props = row.get("name"), row.get("properties")
+            owner = allowed.get(name) if isinstance(name, str) else None
+            if (
+                owner is None or not isinstance(props, dict)
+                or not self._owns(
+                    owner, PublishedResourceKind.API_OPERATION, owner.metadata_api_name,
+                )
+                or props.get("method") != "GET"
+                or props.get("urlTemplate") != mcp_metadata_url_template(owner.api_path)
+            ):
+                raise ConflictError("The shared discovery API contains an unknown MCP operation.")
+            if owner.id == publication.id and require_own_policy is None:
+                continue
+            guard = await client.get_operation_policy(
+                MCP_METADATA_API_NAME, owner.metadata_api_name, strict=True,
+            )
+            if owner.id == publication.id:
+                if guard != require_own_policy:
+                    raise ConflictError("The selected MCP discovery policy did not match review.")
+                found = True
+            elif owner.applied_access is None or guard != render_mcp_metadata_policy(
+                owner, owner.applied_access, (runtime.gateway_name, runtime.ingress_origin),
+            ):
+                raise ConflictError("A sibling MCP discovery operation is not verified.")
+        if require_own_policy is not None and not found:
+            raise ConflictError("The selected MCP discovery operation is missing.")
+
+    async def _review_runtime(
+        self, publication: McpPublication, gateway: Gateway, runtime: SelfHostedGateway,
+        client: ApimClient, endpoint: McpEndpoint, policy: McpPolicyDocuments,
+    ) -> tuple[SelfHostedRuntimeReview, AppliedSelfHostedRuntime | None, list[PublishPlanStep]]:
+        child = await client.get_self_hosted_gateway(runtime.gateway_name)
+        if child is None:
+            raise ConflictError("The selected MCP runtime no longer exists in APIM.")
+        child_candidate(gateway, child, expected_name=runtime.gateway_name)
+        await self._check_runtime_links(publication, gateway, runtime, client)
+        await self._check_discovery_operations(publication, runtime, client)
+        resources = self._runtime_resources(publication, runtime)
+        steps = []
+        for item, reason in zip(resources, (
+            "Record the registered MCP endpoint and runtime in APIM.",
+            "Attach the native MCP API to the selected runtime.",
+            "Attach the shared OAuth discovery API to the selected runtime.",
+        ), strict=True):
+            exact = f"{client.resource.canonical}/{item.segment}"
+            live = await self._live_runtime_resource(client, runtime, item)
+            owned = runtime.mcp_discovery_link == exact if item == resources[-1] else any(
+                record.created_by_mosaic and record.kind == item.kind
+                and record.resource_id == exact
+                for record in publication.resources
+            )
+            if (live is not None) != owned or (
+                item == resources[0] and live is not None
+                and not matching_binding(live, binding_value(publication, runtime.gateway_name))
+            ):
+                raise ConflictError("An unowned or missing MCP runtime resource prevents review.")
+            steps.append(PublishPlanStep(
+                kind=item.kind, name=item.name, resource_id=exact, existed=owned,
+                action=PublishAction.NO_CHANGE if owned else PublishAction.CREATE,
+                reason="Retain the existing owned resource." if owned else reason, stage="policy",
+            ))
+        inherited = await client.get_service_policy(strict=True)
+        scope = self._runtime_scope(runtime, publication, endpoint, policy, inherited)
+        blockers = await missing_evidence(
+            self._self_hosted_evidence, scope, MCP_CHECKS, rules=MCP_RUNTIME_RULES,
+        )
+        if not simple_service_policy(inherited):
+            blockers.insert(0, "Custom parent policy is outside the first self-hosted MCP profile.")
+        if not runtime.image_digest:
+            blockers.insert(0, "Record the running image digest before qualifying it.")
+        permissions = await client.effective_permissions()
+        if not all(arm_permits(permissions or [], action) for action in RUNTIME_ACTIONS):
+            blockers.insert(0, "APIM association and binding permissions are unconfirmed.")
+        parent_origin = str(gateway.capabilities.gateway_url).rstrip("/")
+        if parent_origin.lower() == runtime.ingress_origin:
+            blockers.insert(0, "The registered ingress is the parent Azure-managed ingress.")
+        review = SelfHostedRuntimeReview(
+            runtime_id=runtime.id, gateway_name=runtime.gateway_name,
+            image_version=runtime.image_version, ingress_origin=runtime.ingress_origin,
+            parent_name=gateway.name, parent_resource_id=client.resource.canonical,
+            parent_ingress=parent_origin, api_name=publication.api_name,
+            association_id=steps[1].resource_id, binding_id=steps[0].resource_id,
+            discovery_association_id=steps[2].resource_id,
+            operation_path=mcp_server_url("", publication.api_path),
+            discovery_path=f"/{mcp_metadata_path(publication.api_path)}",
+            blockers=blockers,
+        )
+        return review, applied_runtime_snapshot(runtime, scope) if not blockers else None, steps
 
     @staticmethod
     def _require_writable(gateway: Gateway) -> None:
@@ -1397,7 +1803,9 @@ class McpPublishingService:
                 "nothing else needs it, then plan again.",
                 details={"conflictingApi": MCP_METADATA_API_NAME},
             )
-        if await client.get_api_policy(MCP_METADATA_API_NAME) is not None:
+        if await client.get_api_policy(
+            MCP_METADATA_API_NAME, strict=publication.is_self_hosted(),
+        ) is not None:
             raise ConflictError(
                 f"API {MCP_METADATA_API_NAME} has an API-scoped policy. The shared metadata API "
                 "must not have one because it can change metadata responses; remove that policy "
@@ -1817,7 +2225,10 @@ class McpPublishingService:
         ]
         mcp_api = base[(PublishedResourceKind.API, publication.api_name)]
         mcp_policy = base[(PublishedResourceKind.API_POLICY, publication.api_name)]
-        if mcp_api.existed and await self._needs_backend_deny(client, publication, endpoint):
+        if mcp_api.existed and (
+            publication.is_self_hosted()
+            or await self._needs_backend_deny(client, publication, endpoint)
+        ):
             steps.append(
                 mcp_policy.model_copy(
                     update={
@@ -1832,7 +2243,7 @@ class McpPublishingService:
                 update={"stage": "policy"}
             )
         )
-        if not mcp_api.existed:
+        if not mcp_api.existed or publication.is_self_hosted():
             steps.append(
                 mcp_api.model_copy(
                     update={
@@ -2012,6 +2423,7 @@ class McpPublishingService:
             plan_digest=plan.digest,
             actor_object_id=actor.object_id,
             mcp_access_snapshot=plan.mcp_access_snapshot,
+            runtime_snapshot=plan.runtime_snapshot,
         )
 
     def _spawn(self, coroutine: Coroutine[Any, Any, None]) -> None:
@@ -2130,6 +2542,7 @@ class McpPublishingService:
         policy: McpPolicyDocuments,
         run: PublishRun,
         resource: ApimResourceId,
+        runtime: SelfHostedGateway | None = None,
     ) -> None:
         started = utc_now()
         client = self._client_factory(resource)
@@ -2172,7 +2585,19 @@ class McpPublishingService:
                     item = self._resource_for_step(publication, step)
                     write_started = False
                     try:
+                        if step.kind in _EXACT_KINDS:
+                            if runtime is None:
+                                raise ConflictError("MCP runtime was not selected in this plan.")
+                            await self._write_runtime_step(
+                                publication, runtime, client, writer, step, result, run,
+                                results, owned,
+                            )
+                            continue
                         current = publication.model_copy(update={"resources": owned})
+                        if runtime and step.stage == "activate":
+                            await self._require_activation(
+                                current, gateway, endpoint, client, policy, run, prepared=True,
+                            )
                         shared = _is_shared_metadata_api(step.kind, step.name)
                         if shared:
                             # Refuses an API MOSAIC can't vouch for. Every publication that uses
@@ -2199,6 +2624,10 @@ class McpPublishingService:
                                 step,
                                 snapshot=plan.mcp_access_snapshot,
                             )
+                        if runtime and step.stage == "activate":
+                            await self._require_activation(
+                                current, gateway, endpoint, client, policy, run, prepared=False,
+                            )
                         result.status = PublishStepStatus.SUCCEEDED
                         owned = _merge_resources(
                             owned,
@@ -2216,6 +2645,16 @@ class McpPublishingService:
                         result.status = PublishStepStatus.FAILED
                         result.error = str(error)
                         failure = f"{step.kind} {step.name}: {error}"
+                        if result.write_outcome in {"pending", "created"} and (
+                            step.kind in _EXACT_KINDS
+                        ):
+                            await self._progress(publication, run, results, owned)
+                            actual = publication.model_copy(update={"resources": owned})
+                            await self._establish_deny(actual, client, writer)
+                            await self._interrupted(
+                                publication, run, "The MCP runtime resource needs reconciliation."
+                            )
+                            return
                         if write_started and result.created_by_mosaic:
                             try:
                                 if await self._exists(client, publication, item):
@@ -2257,6 +2696,109 @@ class McpPublishingService:
             raise
         finally:
             self._active.discard(publication.id)
+
+    async def _write_runtime_step(
+        self, publication: McpPublication, runtime: SelfHostedGateway, client: ApimClient,
+        writer: ApimWriter, step: PublishPlanStep, result: PublishStepResult, run: PublishRun,
+        results: list[PublishStepResult], owned: list[PublishedResource],
+    ) -> None:
+        binding, native, shared = self._runtime_resources(publication, runtime)
+        item = next((
+            item for item in (binding, native, shared)
+            if item.kind == step.kind and item.name == step.name
+        ), None)
+        if item is None or writer.resource_id(item.segment) != step.resource_id:
+            raise ConflictError("The plan did not identify this exact MCP runtime resource.")
+        stored = await self._repository.get_self_hosted_gateway(publication.tenant_id, runtime.id)
+        if stored is None or runtime_fingerprint(stored) != runtime_fingerprint(runtime):
+            raise ConflictError("The selected MCP runtime changed after review.")
+        live = await self._live_runtime_resource(client, runtime, item)
+        value = binding_value(publication, runtime.gateway_name)
+        if step.action == PublishAction.NO_CHANGE:
+            recorded = stored.mcp_discovery_link == step.resource_id if item == shared else any(
+                row.created_by_mosaic and row.kind == item.kind
+                and row.resource_id == step.resource_id
+                for row in owned
+            )
+            if (
+                not recorded or live is None
+                or (item == binding and not matching_binding(live, value))
+            ):
+                raise ConflictError("The owned MCP runtime resource changed after review.")
+            result.write_outcome = "retained"
+        else:
+            if step.action != PublishAction.CREATE or live is not None:
+                result.write_outcome = "notCreated"
+                raise ConflictError("An unowned MCP runtime resource appeared after review.")
+            result.write_outcome = "pending"
+            await self._progress(publication, run, results, owned)
+            status = (
+                await writer.create_publication_binding(item.name, value) if item == binding
+                else await writer.attach_gateway_api(runtime.gateway_name, item.name)
+            )
+            if status != 201:
+                result.write_outcome = "notCreated"
+                raise ConflictError("APIM reported an existing MCP runtime resource; not adopted.")
+            result.write_outcome = "created"
+            result.created_by_mosaic = True
+            if item != shared:
+                owned[:] = _merge_resources(owned, [
+                    PublishedResource(
+                        kind=item.kind, name=item.name, resource_id=step.resource_id,
+                        created_by_mosaic=True,
+                    )
+                ])
+            await self._progress(publication, run, results, owned)
+            if item == shared:
+                await self._record_discovery_link(publication, stored, step.resource_id, run)
+        result.status = PublishStepStatus.SUCCEEDED
+        await self._progress(publication, run, results, owned)
+
+    async def _record_discovery_link(
+        self, publication: McpPublication, runtime: SelfHostedGateway,
+        resource_id: str | None, run: PublishRun,
+    ) -> None:
+        await self._assert_lock(publication, run)
+        await self._repository.save_self_hosted_gateway(
+            runtime.model_copy(update={"mcp_discovery_link": resource_id}),
+            self._audit(
+                Actor(run.actor_object_id or "system:mcp-publishing", publication.tenant_id),
+                "mcpPublication.discoveryLinkRecorded", runtime.id,
+            ),
+        )
+
+    async def _require_activation(
+        self, publication: McpPublication, gateway: Gateway, endpoint: McpEndpoint,
+        client: ApimClient, policy: McpPolicyDocuments, run: PublishRun, *, prepared: bool,
+    ) -> None:
+        runtime = await self._publication_runtime(publication, gateway, endpoint)
+        if runtime is None:
+            raise ConflictError("MCP runtime no longer matches the plan.")
+        _review, snapshot, _steps = await self._review_runtime(
+            publication, gateway, runtime, client, endpoint, policy,
+        )
+        if snapshot is None or snapshot != run.runtime_snapshot:
+            raise ConflictError("MCP runtime qualification changed before activation.")
+        await self._check_discovery_operations(
+            publication, runtime, client, require_own_policy=policy.metadata_policy_xml,
+        )
+        native = await client.get_mcp_api(publication.api_name)
+        props = native.get("properties") if native else None
+        transport = props.get("mcpProperties") if isinstance(props, dict) else None
+        expected_backend = None if prepared else publication.backend_name
+        if (
+            not isinstance(props, dict) or props.get("type") != "mcp"
+            or props.get("path") != publication.api_path
+            or not isinstance(transport, dict) or transport.get("transportType") != "streamable"
+            or props.get("serviceUrl") or (props.get("backendId") or None) != expected_backend
+            or props.get("subscriptionRequired") is not prepared
+            or await client.list_mcp_api_operations(publication.api_name)
+            or await client.get_mcp_api_policy(publication.api_name, strict=True)
+            != policy.api_policy_xml
+            or await client.get_policy_fragment(publication.fragment_name, strict=True)
+            != policy.fragment_xml
+        ):
+            raise ConflictError("The staged MCP configuration did not match the reviewed guards.")
 
     async def _validate_key_ownership(
         self, publication: McpPublication, snapshot: McpAccessSnapshot, client: ApimClient
@@ -2317,7 +2859,10 @@ class McpPublishingService:
                 publication.api_name,
                 display_name=publication.display_name,
                 path=publication.api_path,
-                backend_name=publication.backend_name,
+                backend_name=(
+                    None if publication.is_self_hosted() and step.stage == "prepare"
+                    else publication.backend_name
+                ),
                 subscription_required=(
                     step.stage != "activate" or publication.azure_cloud == "government"
                 ),
@@ -2421,18 +2966,44 @@ class McpPublishingService:
         journal: RecoveryJournal | None = None,
     ) -> tuple[bool, list[str]]:
         errors: list[str] = []
+        if publication.is_self_hosted() and self._owns(
+            publication, PublishedResourceKind.API_OPERATION, publication.metadata_api_name,
+        ):
+            try:
+                root = MCP_METADATA_API_NAME
+                name = publication.metadata_api_name
+                if await client.get_api_operation(root, name) is not None:
+                    prior = await client.get_operation_policy(root, name, strict=True)
+                    if prior is not None and not self._owns(
+                        publication, PublishedResourceKind.API_OPERATION_POLICY, name,
+                    ):
+                        raise ConflictError("MOSAIC does not own this MCP discovery policy.")
+                    await writer.put_api_operation_policy(root, name, DENY_ALL_POLICY)
+                    if journal:
+                        await journal(
+                            PublishedResourceKind.API_OPERATION_POLICY, name, prior is None,
+                            "policy",
+                        )
+            except Exception as error:
+                errors.append(f"Installing the deny-all MCP discovery policy failed: {error}")
         if not self._owns(publication, PublishedResourceKind.API, publication.api_name):
-            return True, errors
+            return not errors, errors
         try:
             if await client.get_mcp_api(publication.api_name) is None:
-                return True, errors
-            existed = await client.get_mcp_api_policy(publication.api_name) is not None
+                return not errors, errors
+            existed = await client.get_mcp_api_policy(
+                publication.api_name, strict=publication.is_self_hosted(),
+            ) is not None
+            if publication.is_self_hosted() and existed and not self._owns(
+                publication, PublishedResourceKind.API_POLICY, publication.api_name,
+            ):
+                raise ConflictError("MOSAIC does not own this MCP API policy.")
             await writer.put_mcp_api_policy(publication.api_name, DENY_ALL_POLICY)
             if journal:
                 await journal(
                     PublishedResourceKind.API_POLICY, publication.api_name, not existed, "policy"
                 )
-            return True, errors
+            return not errors, errors
         except Exception as error:
             errors.append(f"Installing the deny-all MCP API policy failed: {error}")
         if self._owns(
@@ -2451,7 +3022,7 @@ class McpPublishingService:
                         False,
                         "policy",
                     )
-                return True, errors
+                return not errors or not publication.is_self_hosted(), errors
             except Exception as error:
                 errors.append(f"Installing the deny-all MCP fragment failed: {error}")
         return False, errors
@@ -2526,6 +3097,7 @@ class McpPublishingService:
         )
         try:
             await self._assert_lock(publication, run)
+            runtime = await self._teardown_runtime(publication, gateway, client)
             denied, guard_errors = await self._establish_deny(publication, client, writer)
             errors.extend(guard_errors)
             if not denied:
@@ -2540,7 +3112,23 @@ class McpPublishingService:
                 )
                 try:
                     await self._progress(publication, run, [*results, result], remaining)
-                    removed = await self._remove(client, writer, publication, step.kind, step.name)
+                    if runtime is not None and step.kind in _EXACT_KINDS:
+                        removed = await self._remove_runtime_step(
+                            publication, runtime, client, writer, step, run, remaining,
+                        )
+                    else:
+                        if runtime and step.kind == PublishedResourceKind.API:
+                            if step.name != MCP_METADATA_API_NAME:
+                                await self._check_runtime_links(
+                                    publication, gateway, runtime, client, detached=step.name,
+                                )
+                            elif not await self._shared_metadata_api_in_use(client, publication):
+                                await self._check_runtime_links(
+                                    publication, gateway, runtime, client, detached=step.name,
+                                )
+                        removed = await self._remove(
+                            client, writer, publication, step.kind, step.name,
+                        )
                 except Exception as error:
                     result.status = PublishStepStatus.FAILED
                     result.error = str(error)
@@ -2600,6 +3188,58 @@ class McpPublishingService:
             raise
         finally:
             self._active.discard(publication.id)
+
+    async def _teardown_runtime(
+        self, publication: McpPublication, gateway: Gateway, client: ApimClient,
+    ) -> SelfHostedGateway | None:
+        if not publication.is_self_hosted() or publication.runtime_target is None:
+            return None
+        runtime = await require_runtime(self._repository, gateway, publication.runtime_target)
+        await self._check_runtime_links(publication, gateway, runtime, client)
+        scope = fingerprint({"teardown": publication.id, "runtime": runtime_fingerprint(runtime)})
+        if await missing_evidence(
+            self._self_hosted_evidence, scope, ("ingress", "topology"), rules=MCP_RUNTIME_RULES,
+        ):
+            raise ConflictError("The local MCP routes are not confirmed fenced for cleanup.")
+        await self._check_discovery_operations(publication, runtime, client)
+        return runtime
+
+    async def _remove_runtime_step(
+        self, publication: McpPublication, runtime: SelfHostedGateway, client: ApimClient,
+        writer: ApimWriter, step: PublishPlanStep, run: PublishRun,
+        remaining: list[PublishedResource],
+    ) -> bool:
+        binding, native, shared = self._runtime_resources(publication, runtime)
+        item = next((
+            item for item in (binding, native, shared)
+            if item.kind == step.kind and item.name == step.name
+        ), None)
+        if item is None or step.resource_id != writer.resource_id(item.segment):
+            raise ConflictError("The removal does not match the reviewed MCP resource.")
+        if item == shared:
+            if runtime.mcp_discovery_link != step.resource_id:
+                raise ConflictError("MOSAIC does not own this shared MCP discovery attachment.")
+            if await self._shared_metadata_api_in_use(client, publication):
+                return False
+            await writer.detach_gateway_api(runtime.gateway_name, item.name)
+            await self._record_discovery_link(publication, runtime, None, run)
+            return True
+        if not any(
+            row.created_by_mosaic and row.kind == item.kind and row.resource_id == step.resource_id
+            for row in remaining
+        ):
+            raise ConflictError("MOSAIC does not own this exact MCP resource.")
+        if item == native:
+            await writer.detach_gateway_api(runtime.gateway_name, item.name)
+        else:
+            live = await client.get_named_value(item.name)
+            if live is not None and not matching_binding(
+                live, binding_value(publication, runtime.gateway_name),
+            ):
+                raise ConflictError("The APIM MCP binding changed and will not be removed.")
+            if live is not None:
+                await writer.delete_named_value(item.name)
+        return True
 
     def _recovery_journal(
         self,
@@ -2681,6 +3321,8 @@ class McpPublishingService:
                 and result.action != PublishAction.DELETE
                 # The gateway's blocked list is the gateway's, not this publication's.
                 and not is_blocked_list(result.kind, result.name)
+                and not (result.kind == PublishedResourceKind.GATEWAY_API
+                         and result.name == MCP_METADATA_API_NAME)
             ],
         )
         await self._record_state(
@@ -2692,6 +3334,7 @@ class McpPublishingService:
             applied=True,
             access_snapshot=access_snapshot,
             access_state="applied",
+            applied_runtime=run.runtime_snapshot,
         )
         await self._project_bindings(publication, access_snapshot, run)
         gateway = await self._repository.get_gateway(publication.tenant_id, publication.gateway_id)
@@ -2818,6 +3461,7 @@ class McpPublishingService:
         unpublished: bool = False,
         access_snapshot: McpAccessSnapshot | None = None,
         access_state: str | None = None,
+        applied_runtime: AppliedSelfHostedRuntime | None = None,
     ) -> None:
         current = await self._repository.get_mcp_publication(publication.tenant_id, publication.id)
         if current is None:
@@ -2832,12 +3476,15 @@ class McpPublishingService:
             updates["last_run_id"] = run_id
         if status in {PublicationStatus.FAILED, PublicationStatus.ROLLED_BACK}:
             updates["applied_review"] = None
+            updates["applied_runtime"] = None
         if applied:
             updates["last_applied_at"] = utc_now()
             updates["unpublished_at"] = None
             updates["applied_review"] = review_snapshot(publication, access_snapshot)
+            updates["applied_runtime"] = applied_runtime
         if unpublished:
             updates["applied_review"] = None
+            updates["applied_runtime"] = None
             updates["unpublished_at"] = utc_now()
             updates["key_policy_hashes"] = {}
             updates["key_lifecycle"] = {
@@ -2866,6 +3513,8 @@ class McpPublishingService:
             case PublishedResourceKind.API if name == publication.api_name:
                 await writer.delete_mcp_api(name)
             case PublishedResourceKind.API if name == MCP_METADATA_API_NAME:
+                if publication.is_self_hosted() and await client.get_api(name) is None:
+                    return True
                 if await self._shared_metadata_api_in_use(client, publication):
                     return False
                 await writer.delete_api(name)
@@ -2911,9 +3560,15 @@ class McpPublishingService:
         """
 
         mine = publication.metadata_api_name
-        if any(
+        strict = publication.is_self_hosted()
+        # A previous DELETE can have completed before progress was saved. Only the exact
+        # root GET can establish absence; a collection failure on a known root cannot.
+        root_exists = not strict or await client.get_api(MCP_METADATA_API_NAME) is not None
+        if root_exists and any(
             str(operation.get("name") or "") != mine
-            for operation in await client.list_operations(MCP_METADATA_API_NAME)
+            for operation in await client.list_operations(
+                MCP_METADATA_API_NAME, strict=strict,
+            )
         ):
             return True
         return any(
@@ -2928,13 +3583,18 @@ class McpPublishingService:
         )
 
     def _unpublish_removals(self, publication: McpPublication) -> list[PublishedResource]:
+        discovery = (
+            PublishedResourceKind.API_OPERATION, PublishedResourceKind.API_OPERATION_POLICY,
+        )
+        if not publication.is_self_hosted():
+            discovery = discovery[::-1]
         order = [
+            (PublishedResourceKind.GATEWAY_API, publication.api_name),
             (PublishedResourceKind.API, publication.api_name),
             (PublishedResourceKind.API, publication.metadata_api_name),
             (PublishedResourceKind.API_OPERATION, MCP_METADATA_OPERATION),
             (PublishedResourceKind.API_POLICY, publication.metadata_api_name),
-            (PublishedResourceKind.API_OPERATION_POLICY, publication.metadata_api_name),
-            (PublishedResourceKind.API_OPERATION, publication.metadata_api_name),
+            *((kind, publication.metadata_api_name) for kind in discovery),
             (PublishedResourceKind.API, MCP_METADATA_API_NAME),
             (PublishedResourceKind.POLICY_FRAGMENT, publication.fragment_name),
             (PublishedResourceKind.BACKEND, publication.backend_name),

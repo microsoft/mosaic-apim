@@ -53,6 +53,9 @@ Action = Callable[[Page], None]
 # Resource, account, and host names from the demo estate. The patterns below catch the generic
 # shapes; these catch the bare names wherever the UI shows them on their own.
 RESOURCE_NAMES = [
+    "Field Lab APIM",
+    "field-lab-apim",
+    "plant-edge",
     *(person.label for person in PEOPLE),
     *(person.label.lower().replace(" ", "-") for person in PEOPLE),
     "jordan-rowan",
@@ -399,6 +402,77 @@ def click_button(name: str | re.Pattern[str]) -> Action:
         page.get_by_role("button", name=name).filter(visible=True).first.click()
 
     return act
+
+
+def _fictional_edge(page: Page) -> None:
+    api = page.evaluate("window.__MOSAIC_CONFIG__.apiBaseUrl")
+    if not isinstance(api, str) or not re.fullmatch(r"http://127\.0\.0\.1:\d+", api):
+        raise CaptureError("Self-hosted captures require the local fictional API.")
+    parent = page.request.post(f"{api}/_demo/self-hosted-parent")
+    if not parent.ok:
+        raise CaptureError("The fictional APIM parent was not available.")
+    parent_id = parent.json()["id"]
+    path = f"{api}/api/v1/gateways/{parent_id}/self-hosted"
+    existing = page.request.get(path)
+    if not existing.ok:
+        raise CaptureError("The fictional runtime registry could not be read.")
+    if not existing.json():
+        registered = page.request.post(path, data={
+            "gatewayName": "plant-edge",
+            "ingressOrigin": "https://plant.edge.example.test",
+            "imageVersion": "2.13.2",
+            "imageDigest": f"sha256:{'a' * 64}",
+        })
+        if not registered.ok:
+            raise CaptureError("The fictional existing gateway could not be registered.")
+    page.reload()
+    _settle(page)
+
+
+def _review_fictional_edge(page: Page) -> None:
+    _fictional_edge(page)
+    click_button("Publish a model")(page)
+    page.get_by_role("combobox", name="Gateway", exact=True).select_option(label="Field Lab APIM")
+    page.get_by_role("combobox", name="Gateway runtime", exact=True).select_option(
+        label="plant-edge (self-hosted)"
+    )
+    commercial = page.get_by_role("row").filter(has_text="contoso-azure-")
+    commercial.get_by_role("checkbox", name="Publish gpt-4o-mini", exact=True).check()
+    click_button(re.compile(r"^Configure$"))(page)
+    click_button("Review plan")(page)
+    _assert_fictional_local_review(page)
+
+
+def _review_fictional_edge_mcp(page: Page) -> None:
+    _fictional_edge(page)
+    click_button("Publish an MCP server")(page)
+    page.get_by_role("combobox", name="Gateway", exact=True).select_option(label="Field Lab APIM")
+    page.get_by_role("combobox", name="Gateway runtime", exact=True).select_option(
+        label="plant-edge (self-hosted)"
+    )
+    page.get_by_role("checkbox", name="Publish IT Service Desk", exact=True).check()
+    click_button(re.compile(r"^Configure$"))(page)
+    click_button("Review plan")(page)
+    _assert_fictional_local_review(page)
+    if not page.get_by_text("Attach shared OAuth discovery", exact=True).is_visible():
+        raise CaptureError("The MCP review must show both APIM attachments.")
+
+
+def _assert_fictional_local_review(page: Page) -> None:
+    page.get_by_role("heading", name="Gateway\u2013API association", exact=True).wait_for()
+    if not page.get_by_role("button", name="Apply all pending changes").is_disabled():
+        raise CaptureError("The fictional self-hosted plan must remain blocked.")
+    page.evaluate("window.scrollTo(0, 0)")
+    for locator in (
+        page.get_by_text("Apply blocked", exact=True),
+        page.get_by_role("heading", name="Gateway\u2013API association", exact=True),
+        page.get_by_role("heading", name=re.compile(r"^Caller connection\b")),
+        page.get_by_text("No fallback to Azure ingress.", exact=False),
+    ):
+        box = locator.bounding_box()
+        viewport = page.viewport_size
+        if not box or not viewport or box["y"] < 0 or box["y"] + box["height"] > viewport["height"]:
+            raise CaptureError(f"The publication review is clipped: {locator}: {box}, {viewport}.")
 
 
 def select_first_resource(list_name: str) -> Action:
@@ -785,9 +859,15 @@ def _review_declared_release(page: Page, *, vertex: bool) -> None:
         })
     page.reload()
     click_button(publication_name)(page)
-    click_button("Review publish plan")(page)
-    page.get_by_role("button", name="Apply reviewed plan", exact=True).wait_for()
-    if vertex and page.get_by_role("button", name="Apply reviewed plan", exact=True).is_enabled():
+    selected = page.get_by_role("region", name="Published model details", exact=True).filter(
+        has=page.get_by_role("heading", name=publication_name, exact=True)
+    )
+    selected.get_by_role("button", name="Review publish plan", exact=True).click()
+    title = "Offline review" if vertex else "Review model access"
+    page.get_by_role("heading", name=title, exact=True).wait_for()
+    apply = page.get_by_role("button", name="Apply reviewed plan", exact=True)
+    apply.wait_for()
+    if vertex and apply.is_enabled():
         raise CaptureError("Unproved Vertex execution must remain blocked")
     verify_guided_workspace(page)
 
@@ -1982,6 +2062,29 @@ SHOTS: list[Shot] = [
     Shot(
         "console-bedrock-release-mobile", "console", "/models", "dark", "Publish a model",
         actions=(review_bedrock_release,), width=390, height=1600,
+    ),
+    # Register the fictional edge parent after the provider reviews.
+    Shot(
+        "console-self-hosted-gateways", "console", "/gateways?tab=self-hosted", "light",
+        "Self-hosted gateways",
+        actions=(
+            _fictional_edge,
+            select_option("Parent APIM service", "Field Lab APIM"),
+            click_button(re.compile(r"plant-edge")),
+        ),
+    ),
+    Shot(
+        "console-self-hosted-publication-review", "console", "/models?tab=published", "light",
+        "Published models", actions=(_review_fictional_edge,), height=1450,
+    ),
+    Shot(
+        "console-self-hosted-publication-review-narrow",
+        "console", "/models?tab=published", "light", "Published models",
+        actions=(_review_fictional_edge,), width=430, height=2550,
+    ),
+    Shot(
+        "console-self-hosted-mcp-review", "console", "/mcps?tab=published", "light",
+        "Published MCP servers", actions=(_review_fictional_edge_mcp,), height=1670,
     ),
     # Keep the unapplied key-setting change last, after provider reviews and connection shots.
     Shot(

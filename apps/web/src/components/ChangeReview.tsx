@@ -4,6 +4,7 @@ import { classifyChanges } from '../change-review'
 import type { EditContext } from '../change-review'
 import type { PublishPlan, ReviewChange } from '../types'
 import { plural } from '../labels'
+import { GatewayAssociationReview } from './GatewayAssociationReview'
 import styles from './ChangeReview.module.css'
 
 function ChangeList({ title, changes, replaced }: {
@@ -61,6 +62,7 @@ export function ChangeReview({ plan, context }: { plan: PublishPlan; context?: E
   const { yours, pending, unattributed, replaced } = classifyChanges(review.changes, trustedContext)
   const unpublish = plan.operation === 'unpublish'
   return <div className={styles.section}>
+    <GatewayAssociationReview plan={plan} />
     <Text block>{unpublish
       ? 'Review the access and configuration this unpublish removes.'
       : 'Applies all pending changes for this target, including previously saved changes.'}</Text>

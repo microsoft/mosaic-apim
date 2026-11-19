@@ -18,7 +18,7 @@ from mosaic_api.domain import (
     ApimResourceId,
 )
 from mosaic_api.errors import DomainError, UpstreamError
-from mosaic_api.integrations.apim.client import ArmClient, JsonObject
+from mosaic_api.integrations.apim.client import ArmClient, JsonObject, gateway_api_segment
 from mosaic_api.integrations.apim.diagnostics import AZURE_MONITOR, azure_monitor_logger_payload
 from mosaic_api.integrations.backend_keys import named_value_properties
 
@@ -160,6 +160,24 @@ class ApimWriter:
     async def delete_named_value(self, name: str) -> bool:
         return await self._delete(f"namedValues/{name}")
 
+    async def create_publication_binding(self, name: str, value: str) -> int:
+        return await self._arm.put_create_status(
+            self.resource_id(f"namedValues/{name}"),
+            {"properties": {"displayName": name, "value": value, "secret": False,
+                            "tags": ["mosaic", "publication-binding"]}},
+            params=self._params, create_only=True,
+        )
+
+    async def attach_gateway_api(self, gateway_name: str, api_name: str) -> int:
+        return await self._arm.put_create_status(
+            self.resource_id(gateway_api_segment(gateway_name, api_name)),
+            {"properties": {"provisioningState": "created"}},
+            params=self._params, create_only=False,
+        )
+
+    async def detach_gateway_api(self, gateway_name: str, api_name: str) -> bool:
+        return await self._delete(gateway_api_segment(gateway_name, api_name))
+
     async def put_plain_named_value(self, name: str, value: str) -> JsonObject | None:
         """Create or replace a named value that holds plain text, such as the blocked list.
 
@@ -268,7 +286,7 @@ class ApimWriter:
         *,
         display_name: str,
         path: str,
-        backend_name: str,
+        backend_name: str | None,
         subscription_required: bool,
         description: str,
         use_default_subscription_key_names: bool = False,
@@ -297,7 +315,7 @@ class ApimWriter:
                     "description": description,
                     "path": path,
                     "protocols": ["https"],
-                    "backendId": backend_name,
+                    **({"backendId": backend_name} if backend_name is not None else {}),
                     "subscriptionRequired": subscription_required,
                     **key_properties,
                     "mcpProperties": {"transportType": "streamable"},

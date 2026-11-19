@@ -65,11 +65,11 @@ from mosaic_api.cost_centers import (
     CostCenterLimit,
     CostCenterLimitsUpdate,
     CostCenterResourceAccess,
-    PocAssignmentsUpdate,
-    PocSelection,
     CostCenterResourceAccessMode,
     CostCenterUpdate,
     PersonLimits,
+    PocAssignmentsUpdate,
+    PocSelection,
     PooledQuota,
 )
 from mosaic_api.domain import (
@@ -223,6 +223,7 @@ from pydantic import SecretStr
 from scripts.screenshots.demo_fakes import (
     AI_RESOURCE_ID,
     DEV_GATEWAY_RESOURCE_ID,
+    EDGE_GATEWAY_RESOURCE_ID,
     FOUNDRY_NORTH_CENTRAL_RESOURCE_ID,
     FOUNDRY_RESOURCE_ID,
     FOUNDRY_WEST_RESOURCE_ID,
@@ -806,6 +807,9 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
         raise SeedError("The screenshot estate requires the injected fictional Graph directory")
     apim = DemoApim()
     dev_apim = DemoApim(DEV_GATEWAY_RESOURCE_ID, public_ip="203.0.113.25")
+    edge_apim = DemoApim(EDGE_GATEWAY_RESOURCE_ID, public_ip="203.0.113.27")
+    edge_apim.sku_name = "Developer"
+    edge_apim.seed_self_hosted("plant-edge", resource_id=EDGE_GATEWAY_RESOURCE_ID)
     gov_apim = DemoApim(GOV_GATEWAY_RESOURCE_ID, public_ip="203.0.113.26", azure_cloud="government")
     # Both gateways already send their resource logs to Contoso's workspace, and log every call.
     send_logs_to_workspace(apim)
@@ -814,7 +818,7 @@ def install_demo_services(app: FastAPI, portal_origins: Iterable[str]) -> DemoSe
     log_every_call(dev_apim)
     send_logs_to_workspace(gov_apim)
     log_every_call(gov_apim)
-    gateway_arm, gateway_http = _arm(gateway_handler(apim, dev_apim))
+    gateway_arm, gateway_http = _arm(gateway_handler(apim, dev_apim, edge_apim))
     ai_arm, ai_http = _arm(cognitive_handler(build_cognitive_accounts()))
     gov_gateway_arm, gov_gateway_http = _arm(gateway_handler(gov_apim), "government")
     gov_accounts = [
@@ -3813,6 +3817,23 @@ def build_demo_app(console_port: int, portal_port: int) -> FastAPI:
         ),
     )
     production_lifespan = app.router.lifespan_context
+
+    @app.post("/_demo/self-hosted-parent")
+    async def seed_self_hosted_parent(request: Request) -> dict[str, str]:
+        # Captures add the fictional parent on demand, leaving existing shots' estate unchanged.
+        service: GatewayService = request.app.state.gateway_service
+        admin = Actor(ADMIN.object_id, TENANT_ID)
+        existing = next(
+            (item for item in await service.list_gateways(admin)
+             if item.azure_resource_id == EDGE_GATEWAY_RESOURCE_ID), None,
+        )
+        if existing is None:
+            existing = await service.register(admin, GatewayCreate(
+                azure_resource_id=EDGE_GATEWAY_RESOURCE_ID, name="Field Lab APIM",
+                environment="production",
+            ))
+            await service.update(admin, existing.id, GatewayUpdate(management_mode="manage"))
+        return {"id": existing.id}
 
     @asynccontextmanager
     async def demo_lifespan(demo_app: FastAPI) -> AsyncIterator[None]:

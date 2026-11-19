@@ -2982,6 +2982,8 @@ class ModelPoolService:
                 return any(entry.get("name") == pool.api_name for entry in linked)
             case PublishedResourceKind.SUBSCRIPTION:
                 return await client.get_subscription(name) is not None
+            case _:
+                raise ConflictError("This resource kind is not owned by model pools.")
 
     async def _steps(
         self, client: ApimClient, pool: ModelPool, desired: list[_Resource]

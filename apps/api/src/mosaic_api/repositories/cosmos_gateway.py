@@ -18,6 +18,7 @@ from mosaic_api.domain import (
     PublishPlan,
     PublishRun,
     PublishRunStatus,
+    SelfHostedGateway,
     deterministic_id,
     utc_now,
 )
@@ -77,6 +78,45 @@ class CosmosGatewayRepository(CosmosRepositoryBase):
 
     async def get_gateway(self, tenant_id: str, gateway_id: str) -> Gateway | None:
         return await self._read(Gateway, tenant_id, gateway_id)
+
+    async def list_self_hosted_gateways(
+        self, tenant_id: str, parent_gateway_id: str
+    ) -> list[SelfHostedGateway]:
+        items = await self._query(
+            SelfHostedGateway, tenant_id, "selfHostedGateway", " AND c.parentGatewayId = @parent",
+            [{"name": "@parent", "value": parent_gateway_id}],
+        )
+        return sorted(items, key=lambda item: item.gateway_name.casefold())
+
+    async def get_self_hosted_gateway(
+        self, tenant_id: str, runtime_id: str
+    ) -> SelfHostedGateway | None:
+        return await self._read(SelfHostedGateway, tenant_id, runtime_id)
+
+    async def create_self_hosted_gateway(
+        self, runtime: SelfHostedGateway, audit_event: AuditEvent
+    ) -> SelfHostedGateway:
+        await self._mutate(
+            runtime, None, audit_event, "create",
+            conflict_message="This self-hosted gateway is already registered",
+        )
+        return runtime
+
+    async def delete_self_hosted_gateway(
+        self, runtime: SelfHostedGateway, audit_event: AuditEvent
+    ) -> None:
+        await self._mutate(
+            runtime, runtime.id, audit_event, "delete",
+            conflict_message="The self-hosted gateway changed; reload it and try again",
+        )
+
+    async def save_self_hosted_gateway(
+        self, runtime: SelfHostedGateway, audit_event: AuditEvent
+    ) -> None:
+        await self._mutate(
+            runtime, None, audit_event, "replace",
+            conflict_message="The self-hosted gateway changed; reload it and try again",
+        )
 
     async def find_gateway_by_resource_id(
         self, tenant_id: str, azure_resource_id: str, *, azure_cloud: str = "commercial"

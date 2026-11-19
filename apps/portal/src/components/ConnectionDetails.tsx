@@ -418,6 +418,10 @@ function McpEndpointSection({ connection }: { connection: McpConnection }) {
   return (
     <section className="connection-section" aria-labelledby={headingId}>
       <h3 id={headingId}>Server</h3>
+      {connection.selfHosted && <Text as="p">
+        Connect from a network that can reach the self-hosted gateway. Tools use the server’s
+        gateway; there is no Azure fallback.
+      </Text>}
       <dl className="fact-list">
         <div>
           <dt>Server URL</dt>
@@ -604,11 +608,13 @@ function EndpointSection({ connection }: { connection: ModelConnection }) {
   return (
     <section className="connection-section" aria-labelledby={headingId}>
       <h3 id={headingId}>Endpoint</h3>
+      {connection.selfHosted && <Text as="p">Use the self-hosted ingress from an approved network. There is no Azure gateway fallback.</Text>}
       <dl className="fact-list">
         <div>
           <dt>Base URL</dt>
           <dd><code>{connection.endpoint}</code></dd>
         </div>
+        {connection.apiVersion && <div><dt>API version</dt><dd><code>{connection.apiVersion}</code></dd></div>}
         <div>
           {/* A pool model has no one deployment: callers send the model's name. */}
           <dt>{connection.poolModelId ? 'Model' : 'Deployment'}</dt>
@@ -627,7 +633,7 @@ function EndpointSection({ connection }: { connection: ModelConnection }) {
           {connection.operations.map((operation) => (
             <li key={`${operation.name}:${operation.method}:${operation.path}`}>
               <span className="operation-method">{operation.method.toUpperCase()}</span>
-              <code>{operationUrl(connection.endpoint, operation.path)}</code>
+              <code>{operationUrl(connection.endpoint, operation.path)}{connection.apiVersion ? `?api-version=${connection.apiVersion}` : ''}</code>
               <span className="operation-name">{operation.name}</span>
             </li>
           ))}
@@ -773,7 +779,7 @@ function SamplesSection({ connection }: { connection: ModelConnection }) {
             ) : (
               <>Set <code>MOSAIC_ACCESS_TOKEN</code> to an access token for the scope above</>
             )}
-            {samples.kind === 'messages' ? (
+            {samples.kind === 'messages' || connection.apiVersion ? (
               '.'
             ) : (
               <>

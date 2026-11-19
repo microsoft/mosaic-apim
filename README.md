@@ -112,6 +112,10 @@ separate.
 <a id="administrator-console"></a>
 <a id="end-user-portal"></a>
 
+The [self-hosted gateway registry and publication reviews](docs/gallery.md#estate-administration)
+show the fictional target selection, APIM associations, and evidence required before applying
+model and MCP server publications.
+
 <table>
   <tr>
     <th width="50%">Light</th>

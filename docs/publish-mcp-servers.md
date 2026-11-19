@@ -4,6 +4,25 @@ This guide is for administrators who want MOSAIC to publish a registered MCP ser
 managed API Management gateway and enforce MOSAIC grants at the gateway. Publishing is an APIM write
 operation. MOSAIC records intent first, then changes APIM only when you review and apply a plan.
 
+Azure-managed is the default. To review a self-hosted publication, choose the parent APIM service
+and then a [registered self-hosted runtime](gateways.md#self-hosted-gateways). All tools on the
+published MCP server inherit its gateway; there is no per-tool routing or fallback to Azure.
+
+The bounded self-hosted path is native Streamable HTTP on the same Commercial Developer APIM
+and single-replica `2.13.2` profile as [model publishing](model-publishing.md#publication-targets).
+The backend has a registered workload identity audience; callers use direct Entra grants
+(`Mcp.Invoke` for people or `Mcp.Invoke.Application` for applications). Backend API keys, SSE-only
+backends, model bridging and group grants aren't qualified in this profile. Model and MCP grants
+remain separate.
+
+The Association map reviews the native API and the separate shared OAuth discovery attachment.
+The first self-hosted profile requires all MCP publications on the parent to select the same
+runtime so the gateway doesn't expose another target's discovery operations. Removing one MCP
+server leaves the shared discovery attachment in place while another server uses it. Both the
+OAuth challenge and portal use the verified local ingress. Apply stays blocked unless runtime
+policy, ingress, auth, discovery, metering and budget evidence are current. The local path has
+offline coverage, but still needs a separately approved live non-production qualification.
+
 ## Prerequisites
 
 You need:
@@ -205,6 +224,15 @@ Use the publication's recovery action only after an operator has confirmed that 
 is stopped and every ARM operation it submitted is complete. Confirmed recovery re-establishes
 denial, records the publication as failed, and releases the lock. Then plan again and apply the
 desired state.
+
+For a self-hosted publication, recovery must also confirm local ingress is fenced. If a
+completed creation reached the run journal before the publication record was saved, recovery
+can reconcile an exact owned shared API, discovery operation, or operation policy before
+validating the shared API.
+Unconfirmed writes and foreign operations leave recovery blocked; MOSAIC does not restore grants.
+If the exact shared API is already gone after interrupted unpublish, a newly reviewed unpublish
+can finish the remaining cleanup. An incomplete operation inventory on an existing API never
+establishes that the shared API or its attachment can be removed.
 
 ## Verify OAuth discovery after applying
 

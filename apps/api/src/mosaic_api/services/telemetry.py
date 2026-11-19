@@ -231,6 +231,9 @@ async def governed_apis(
         publication = (
             publications.get(model_api.publication_id) if model_api.publication_id else None
         )
+        # Parent diagnostic settings and logs neither instrument nor prove the local runtime.
+        if publication is not None and publication.is_self_hosted():
+            continue
         apis.setdefault(model_api.gateway_id, {})[name] = RolledUpApi(
             api_name=name,
             resource_id=model_api.id,
@@ -249,7 +252,14 @@ async def governed_apis(
             ),
             first_seen_at=seen_at,
         )
+    local_mcp_ids = {
+        publication.id
+        for publication in await gateway_repository.list_mcp_publications(tenant_id)
+        if publication.is_self_hosted()
+    }
     for server in mcp_servers:
+        if server.publication_id in local_mcp_ids:
+            continue
         name = server.api_name.casefold()
         if not API_NAME.fullmatch(name):
             logger.warning("usage_api_name_skipped", gateway_id=server.gateway_id)

@@ -82,6 +82,9 @@ from mosaic_api.domain import (
     RequestFormResolution,
     RequestFormRevision,
     ResolvedEntitlement,
+    SelfHostedGateway,
+    SelfHostedGatewayCandidate,
+    SelfHostedGatewayCreate,
 )
 from mosaic_api.endpoint_readiness import model_endpoint_view, runtime_access_view
 from mosaic_api.environments import (
@@ -535,6 +538,41 @@ async def suggested_gateways(
 @router.get("/gateways/{gateway_id}", response_model=Gateway)
 async def get_gateway(request: Request, auth: Admin, gateway_id: str) -> Gateway:
     return await _gateways(request).get_gateway(_actor(auth), gateway_id)
+
+
+@router.get("/gateways/{gateway_id}/self-hosted", response_model=list[SelfHostedGateway])
+async def list_self_hosted_gateways(
+    request: Request, auth: Admin, gateway_id: str
+) -> list[SelfHostedGateway]:
+    return await _gateways(request).self_hosted_gateways(_actor(auth), gateway_id)
+
+
+@router.get(
+    "/gateways/{gateway_id}/self-hosted/candidates", response_model=list[SelfHostedGatewayCandidate]
+)
+async def list_self_hosted_gateway_candidates(
+    request: Request, auth: Admin, gateway_id: str
+) -> list[SelfHostedGatewayCandidate]:
+    return await _gateways(request).self_hosted_candidates(_actor(auth), gateway_id)
+
+
+@router.post(
+    "/gateways/{gateway_id}/self-hosted",
+    response_model=SelfHostedGateway,
+    status_code=status.HTTP_201_CREATED,
+)
+async def register_self_hosted_gateway(
+    request: Request, auth: Admin, gateway_id: str, payload: SelfHostedGatewayCreate
+) -> SelfHostedGateway:
+    return await _gateways(request).register_self_hosted(_actor(auth), gateway_id, payload)
+
+
+@router.delete("/gateways/{gateway_id}/self-hosted/{runtime_id}", status_code=204)
+async def remove_self_hosted_gateway(
+    request: Request, auth: Admin, gateway_id: str, runtime_id: str
+) -> Response:
+    await _gateways(request).remove_self_hosted(_actor(auth), gateway_id, runtime_id)
+    return Response(status_code=204)
 
 
 @router.get(

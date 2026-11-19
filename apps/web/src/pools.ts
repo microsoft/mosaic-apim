@@ -82,6 +82,8 @@ export const POOL_VISIBILITY_LABELS: Record<ModelPoolVisibility, string> = {
 }
 
 export const POOL_RESOURCE_KIND_LABELS: Record<PublishedResourceKind, string> = {
+  gatewayApi: 'Gateway–API association',
+  publicationBinding: 'APIM publication binding',
   namedValue: 'Named value',
   policyFragment: 'Policy fragment',
   backend: 'Backend',

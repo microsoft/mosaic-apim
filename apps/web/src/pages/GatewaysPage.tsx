@@ -11,6 +11,7 @@ import { GatewayRegistrationEditor } from '../components/GatewayEditors'
 import { PageHeader } from '../components/PageHeader'
 import { ResourceWorkbench } from '../components/ResourceWorkbench'
 import { SectionLayout, usePageSection } from '../components/SectionLayout'
+import { SelfHostedGateways } from '../components/SelfHostedGateways'
 import { useWorkbenchLocation } from '../components/useWorkbenchLocation'
 import { useEnvironmentCatalog } from '../environments'
 import { MANAGEMENT_MODE_LABELS } from '../labels'
@@ -56,6 +57,7 @@ export function AccessPanel({ gateway }: { gateway: Gateway }) {
 
 const gatewaySections = [
   { value: 'registered', label: 'Registered gateways', icon: <CloudRegular /> },
+  { value: 'self-hosted', label: 'Self-hosted gateways', icon: <CloudRegular /> },
   { value: 'suggestions', label: 'Detected gateways', icon: <LightbulbRegular /> },
 ]
 
@@ -98,7 +100,9 @@ export function GatewaysPage() {
     </Select>
   </Field>
   let body
-  if (workbench.mode === 'new') {
+  if (section === 'self-hosted') {
+    body = <SelfHostedGateways parents={gateways.data ?? []} />
+  } else if (workbench.mode === 'new') {
     body = section === 'suggestions' && workbench.selectedId && !suggestion
       ? suggestions.isPending ? <Loading label="Loading detected gateway" /> : <><Button onClick={() => workbench.close()}>Back to detected gateways</Button>
         {suggestions.isError ? <ErrorState error={suggestions.error} /> : <EmptyState title="Detected gateway no longer available">It may already be registered. Return to the inventory.</EmptyState>}</>

@@ -355,6 +355,7 @@ export type SampleInput = Pick<
   | 'costCenter'
   | 'costCenterHeader'
   | 'azureCloud'
+  | 'apiVersion'
 >
 
 function shellDoubleQuoted(text: string) {
@@ -410,7 +411,10 @@ export function buildSamples(
   const url = operationUrl(connection.endpoint, chosen.operation.path)
   // The Anthropic Messages API takes no api-version; the gateway adds anthropic-version.
   const needsApiVersion = chosen.kind !== 'messages'
-  const query = needsApiVersion ? `${url.includes('?') ? '&' : '?'}api-version=$MOSAIC_API_VERSION` : ''
+  const apiVersion = connection.apiVersion
+  const query = needsApiVersion
+    ? `${url.includes('?') ? '&' : '?'}api-version=${apiVersion ? encodeURIComponent(apiVersion) : '$MOSAIC_API_VERSION'}`
+    : ''
   const fields = sampleFields(chosen.kind, JSON.stringify(connection.deploymentName))
   const jsonBody = `{${fields.join(', ')}}`
   const pythonBody = fields.map((field) => `        ${field},`)
@@ -451,7 +455,7 @@ export function buildSamples(
     '',
     'response = requests.post(',
     `    ${JSON.stringify(url)},`,
-    ...(needsApiVersion ? ['    params={"api-version": os.environ["MOSAIC_API_VERSION"]},'] : []),
+    ...(needsApiVersion ? [`    params={"api-version": ${apiVersion ? JSON.stringify(apiVersion) : 'os.environ["MOSAIC_API_VERSION"]'}},`] : []),
     '    headers={',
     ...pythonHeaders,
     '    },',

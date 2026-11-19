@@ -24,6 +24,7 @@ from mosaic_api.domain import (
     COST_CENTER_CODE_PATTERN,
     COST_CENTER_HEADER,
     ON_BEHALF_HEADER,
+    SELF_HOSTED_CHAT_API_VERSION,
     ApiShape,
     AppliedCostCenterPool,
     EntitlementEnforcement,
@@ -116,7 +117,9 @@ DENIAL_TRACE_PREFIX = "mosaic-deny v=1"
 # client application. API Management refuses an empty one, and with it the whole call.
 TRACE_METADATA_ABSENT = "-"
 _DENIAL_REASON = re.compile(r"[a-z][a-z-]{1,31}")
-_STATUS_REASONS = {401: "Unauthorized", 403: "Forbidden", 503: "Service Unavailable"}
+_STATUS_REASONS = {
+    400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 503: "Service Unavailable",
+}
 _DENIED = "Model access denied."
 _GROUPS_OVERAGE_DENIED = (
     "Model access denied. Your token doesn't list your groups because you belong to too many; "
@@ -1857,6 +1860,8 @@ def governed_operations(publication: Publication) -> tuple[OperationSpec, ...]:
         if publication.api_shape == ApiShape.ANTHROPIC_MESSAGES
         else _SUPPORTED_OPERATIONS
     )
+    if publication.is_self_hosted():
+        supported = frozenset({"chat-completions"})
     operations = tuple(
         op for op in operations_for(publication) if op.name in supported and op.method == "POST"
     )
@@ -1922,6 +1927,7 @@ def render_governed_policy(
     *,
     delegated_scope: str = "Models.Invoke",
     application_role: str = "Models.Invoke.Application",
+    self_hosted_gateway: str | None = None,
 ) -> PublicationPolicy:
     """Return in-process XML and redacted facets; reject unsafe intent with ValidationError.
 
@@ -1934,6 +1940,8 @@ def render_governed_policy(
             "no forwarding policy can be rendered for this contract."
         )
     _validate(publication, snapshot)
+    if publication.is_self_hosted() != (self_hosted_gateway is not None):
+        raise ValidationError("The reviewed policy must name the exact self-hosted runtime.")
     operations = governed_operations(publication)
     grants = sorted(
         (grant for grant in snapshot.grants if grant.enabled),
@@ -2013,14 +2021,17 @@ def render_governed_policy(
         if key_name is not None:
             set_backend_key(fragment, shape=publication.api_shape, named_value=key_name)
         else:
+            auth_attributes = {
+                "resource": managed_identity_resource(
+                    publication.api_shape, azure_cloud=snapshot.azure_cloud
+                )
+            }
+            if self_hosted_gateway is not None:
+                auth_attributes["authentication-provider"] = "WorkloadIdentity"
             ET.SubElement(
                 fragment,
                 "authentication-managed-identity",
-                {
-                    "resource": managed_identity_resource(
-                        publication.api_shape, azure_cloud=snapshot.azure_cloud
-                    ),
-                },
+                auth_attributes,
             )
         ET.SubElement(fragment, "set-backend-service", {"backend-id": publication.backend_name})
         if snapshot.publication_enforcement is not None:
@@ -2040,6 +2051,29 @@ def render_governed_policy(
 
     policies = ET.Element("policies")
     inbound = ET.SubElement(policies, "inbound")
+    if self_hosted_gateway is not None:
+        _reject(
+            inbound,
+            "@(context.Deployment.Gateway == null || context.Deployment.Gateway.IsManaged"
+            f" || context.Deployment.Gateway.Id != {_literal(self_hosted_gateway)})",
+            reason="wrong-runtime",
+            message="This API is not available on this gateway.",
+        )
+        _reject(
+            inbound,
+            _expression([
+                "var query = context.Request.OriginalUrl.Query;",
+                'var names = query.Keys.Where(name => String.Equals(name, "api-version", '
+                "StringComparison.OrdinalIgnoreCase)).ToArray();",
+                'if (names.Length != 1 || names[0] != "api-version") { return true; }',
+                "var values = query[names[0]];",
+                "return values == null || values.Length != 1"
+                f" || values[0] != {_literal(SELF_HOSTED_CHAT_API_VERSION)};",
+            ]),
+            reason="api-version",
+            code=400,
+            message=f"Send one api-version parameter with value {SELF_HOSTED_CHAT_API_VERSION}.",
+        )
     ET.SubElement(inbound, "base")
     ET.SubElement(inbound, "include-fragment", {"fragment-id": publication.fragment_name})
     if is_standalone(publication):
@@ -2068,7 +2102,14 @@ def render_governed_policy(
         )
         ET.SubElement(ET.SubElement(policies, "on-error"), "base")
     else:
-        for section in ("backend", "outbound", "on-error"):
+        backend = ET.SubElement(policies, "backend")
+        if self_hosted_gateway is None:
+            ET.SubElement(backend, "base")
+        else:
+            # The self-hosted profile refuses custom inherited policy before replacing
+            # the backend forward, so SSE can stream without dropping customer policy.
+            ET.SubElement(backend, "forward-request", {"buffer-response": "false"})
+        for section in ("outbound", "on-error"):
             ET.SubElement(ET.SubElement(policies, section), "base")
     api_policy_xml = _serialize(policies)
     facets, unrecognized = _facets(publication, snapshot, fragment, policies, operations)

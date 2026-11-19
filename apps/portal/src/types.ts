@@ -559,6 +559,8 @@ export interface ConnectionOperation {
 export type ApiShape = 'azureOpenAi' | 'foundryModels' | 'anthropicMessages' | 'vertexGemini' | 'openAiChat'
 
 export interface ModelConnection {
+  selfHosted?: boolean
+  apiVersion?: string
   azureCloud?: AzureCloud
   entitlementId: string
   publicationId: string
@@ -624,6 +626,7 @@ export type PrincipalKind =
   | 'securityGroup'
 
 export interface McpConnection {
+  selfHosted?: boolean
   azureCloud?: AzureCloud
   appliedMethods?: ModelAccessSettings | null
   subscriptionHeader?: string

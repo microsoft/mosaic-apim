@@ -36,6 +36,7 @@ import { runtimeConfig } from '../runtime-config'
 import type {
   ApiShape,
   Gateway,
+  GatewayRuntimeChoice,
   PublishedResourceKind,
   Publication,
   PublishableModel,
@@ -51,6 +52,7 @@ import { ErrorState, Loading } from './AsyncState'
 import { useFocusAwareAnnounce } from './useFocusAwareAnnounce'
 import { PolicyCapabilityError } from './PolicyCapabilityFeedback'
 import { ChangeReview, TechnicalExecution } from './ChangeReview'
+import { GatewayRuntimePicker, azureManaged, runtimeRefusal, useGatewayRuntimes } from './GatewayRuntimePicker'
 import { EnvironmentBadge } from './EnvironmentBadge'
 import { PolicyFacetItem } from './PolicyFacets'
 import { ModelAccessReview } from './ModelAccessReview'
@@ -88,6 +90,8 @@ const actionLabels: Record<PublishAction, string> = {
 }
 
 const kindLabels: Record<PublishedResourceKind, string> = {
+  gatewayApi: 'Gateway–API association',
+  publicationBinding: 'APIM publication binding',
   namedValue: 'Named value',
   policyFragment: 'Policy fragment',
   backend: 'Backend',
@@ -121,6 +125,11 @@ function tokenCapability(model: PublishableModel | null, gatewayId: string): Pol
 
 function supportsTokenLimits(model: PublishableModel | null, gatewayId: string): boolean {
   return tokenCapability(model, gatewayId)?.support === 'available'
+}
+
+function selfHostedModel(model: PublishableModel) {
+  return model.provider === 'azureOpenAi' && model.apiShape === 'azureOpenAi'
+    && model.capability === 'chat' && !model.declared
 }
 
 function isPublishable(model: PublishableModel, gatewayId: string): boolean {
@@ -378,6 +387,9 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
   const queryClient = useQueryClient()
   const [step, setStep] = useState<Step>(initialReview ? 'review' : 'choose')
   const [gatewayId, setGatewayId] = useState(initialReview?.publication.gatewayId ?? '')
+  const [runtimeChoice, setRuntimeChoice] = useState<GatewayRuntimeChoice>(
+    initialReview?.publication.runtimeTarget ?? azureManaged,
+  )
   const [modelKey, setModelKey] = useState('')
   const [form, setForm] = useState<FormState>(() => initialForm(null, ''))
   const [publication, setPublication] = useState<Publication | null>(initialReview?.publication ?? null)
@@ -401,6 +413,10 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
   const gatewayOptions: Gateway[] = useMemo(() => gateways.data ?? [], [gateways.data])
   const catalog = useEnvironmentCatalog()
   const selectedGateway = gatewayOptions.find((gateway) => gateway.id === gatewayId)
+  const runtimes = useGatewayRuntimes(gatewayId, open && !reviewingExistingPlan)
+  const isLocal = runtimeChoice.kind === 'selfHosted'
+  const localRuntime = isLocal ? runtimes.data?.find((row) => row.id === runtimeChoice.runtimeId) : undefined
+  const runtimeUnavailable = isLocal && (!localRuntime || runtimes.isError || Boolean(runtimeRefusal(selectedGateway, localRuntime)))
 
   useEffect(() => {
     if (!open || reviewingExistingPlan) {
@@ -432,11 +448,20 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
   const external = isExternalModelProvider(externalProvider)
   const guided = bedrock || external
 
+  function canReviewModel(model: PublishableModel): boolean {
+    return isLocal
+      ? selfHostedModel(model) && isPublishable(model, gatewayId)
+      : isReviewable(model, gatewayId)
+  }
+
   const createAndPlan = useMutation({
     mutationKey,
     mutationFn: async () => {
       if (!selectedModel) throw new Error('Choose a model before reviewing the plan.')
-      if (!isReviewable(selectedModel, gatewayId)
+      if (runtimeUnavailable || (isLocal && !selfHostedModel(selectedModel))) {
+        throw new Error('The selected self-hosted runtime or model is unavailable. Choose a supported runtime explicitly.')
+      }
+      if (!canReviewModel(selectedModel)
         || form.tokenLimits !== supportsTokenLimits(selectedModel, gatewayId)) {
         throw new Error('Publication support has changed or is not confirmed. Your draft is retained. Return to the model list, refresh models, and select the deployment again.')
       }
@@ -447,8 +472,10 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
         displayName: form.displayName.trim() || undefined,
         apiName: form.apiName.trim() || undefined,
         apiPath: form.apiPath.trim() || undefined,
-        productName: form.productName.trim() || undefined,
-        subscriptionRequired: form.subscriptionRequired,
+        productName: isLocal ? undefined : form.productName.trim() || undefined,
+        subscriptionRequired: isLocal ? false : form.subscriptionRequired,
+        runtimeTarget: runtimeChoice,
+        ...(isLocal ? { governedAccess: { keysEnabled: false, entraEnabled: true } } : {}),
         enforcement: form.tokenLimits ? buildEnforcement(form) : null,
         ...(guided ? { governedAccess: { keysEnabled: true, entraEnabled: true } } : {}),
       })
@@ -512,6 +539,15 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
   })
   const applyError =
     apply.error && (apply.error as { status?: number }).status !== 409 ? apply.error : null
+  const refreshEvidence = useMutation({
+    mutationFn: () => api.createPublishPlan(publication!.id),
+    onSuccess: (freshPlan) => {
+      setPlan(freshPlan)
+      setInvalidPlan(false)
+      setRefreshError(null)
+    },
+    onError: (error) => { setInvalidPlan(true); setRefreshError(error) },
+  })
 
   const run = useQuery({
     queryKey: ['publish-run', publication?.id, runId],
@@ -568,7 +604,8 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
     target?.focus()
   }, [open, step, outcome])
 
-  const canConfigure = Boolean(gatewayId && selectedModel && isReviewable(selectedModel, gatewayId))
+  const canConfigure = Boolean(gatewayId && selectedModel && !runtimeUnavailable
+    && canReviewModel(selectedModel))
   const tokenLimits = form.tokenLimits
   const capabilityChanged = !canConfigure || tokenLimits !== supportsTokenLimits(selectedModel, gatewayId)
   const selectedCapability = tokenCapability(selectedModel, gatewayId)
@@ -576,6 +613,7 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
     !capabilityChanged && form.apiName.trim() && form.apiPath.trim()
     && (!tokenLimits || form.counterKeyExpression.trim()),
   )
+  const runtimeBlocked = Boolean(plan?.runtimeReview?.blockers.length)
   const executionBlocked = Boolean(plan && (
     plan.executable === false || (external && plan.executable !== true)
     || (plan.executionBlockedReasons?.length ?? 0) > 0
@@ -590,8 +628,10 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
 
   const title = executionBlocked ? 'Offline review'
     : initialReview?.plan.accessSnapshot ? 'Review model access' : initialReview ? 'Review model changes' : 'Publish a model'
-  const pending = createAndPlan.isPending || reviewSaved.isPending || apply.isPending || Boolean(runId && (!currentRun || currentRun.status === 'running'))
-  const actions = (requestClose: () => void) => <WorkspaceDialogActions>
+  const pending = createAndPlan.isPending || reviewSaved.isPending || apply.isPending
+    || Boolean(runId && (!currentRun || currentRun.status === 'running'))
+  const actions = (requestClose: () => void) => <WorkspaceDialogActions
+    className={plan?.runtimeReview ? styles.runtimeReviewActions : undefined}>
     <Button appearance="secondary" disabled={pending} onClick={requestClose}>Close</Button>
     {step === 'configure' && <Button onClick={() => setStep('choose')}>Previous step</Button>}
     {step === 'review' && !reviewingExistingPlan && !guided && <Button onClick={() => setStep('configure')}>Previous step</Button>}
@@ -602,7 +642,11 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
       disabledFocusable={reviewSaved.isPending} onClick={() => reviewSaved.mutate()}>
       {reviewSaved.isPending ? 'Reviewing…' : 'Review publication'}
     </Button>}
-    {step === 'review' && (!guided || (plan && !invalidPlan)) && <Button appearance="primary" disabled={invalidPlan || missingAccessReview || nothingToApply || executionBlocked} disabledFocusable={apply.isPending}
+    {step === 'review' && plan?.runtimeReview && <Button disabledFocusable={refreshEvidence.isPending}
+      onClick={() => { if (!refreshEvidence.isPending) refreshEvidence.mutate() }}>Refresh evidence</Button>}
+    {step === 'review' && (!guided || (plan && !invalidPlan)) && <Button appearance="primary"
+      disabled={invalidPlan || missingAccessReview || nothingToApply || executionBlocked
+        || runtimeBlocked || refreshEvidence.isPending} disabledFocusable={apply.isPending}
       onClick={() => apply.mutate()}>{apply.isPending ? 'Applying…' : guided ? 'Apply reviewed plan' : 'Apply all pending changes'}</Button>}
   </WorkspaceDialogActions>
   const content = (requestClose: () => void) => (
@@ -663,6 +707,8 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                     ))}
                   </Select>
                 </Field>
+                {selectedGateway && <GatewayRuntimePicker gateway={selectedGateway} choice={runtimeChoice}
+                  onChange={setRuntimeChoice} runtimes={runtimes} />}
                 {selectedGateway && (
                   <Text size={200}>
                     Gateway environment:{' '}
@@ -704,12 +750,13 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                       <TableBody>
                         {visibleModels.map((model) => {
                           const key = `${model.modelEndpointId}:${model.deploymentName}`
-                          const publishableRow = isPublishable(model, gatewayId)
-                          const reviewableRow = isReviewable(model, gatewayId)
+                          const localUnsupported = isLocal && !selfHostedModel(model)
+                          const publishableRow = isPublishable(model, gatewayId) && !localUnsupported
+                          const reviewableRow = canReviewModel(model)
                           const environmentBlocked = model.environmentVerdict.level === 'blocked'
                           const environmentWarning = model.environmentVerdict.level === 'warning'
                           const blockedReasons = [
-                            !publishableRow
+                            localUnsupported ? 'The selected self-hosted runtime supports only governed Azure OpenAI Chat.' : !publishableRow
                               ? publicationBlockReason(model, gatewayId)
                               : null,
                             environmentBlocked ? model.environmentVerdict.reason : null,
@@ -751,7 +798,9 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                                   {environmentWarning && <Text size={200}>{model.environmentVerdict.reason}</Text>}
                                 </div>
                               </TableCell>
-                              <TableCell><RuntimeAccessNote model={model} /></TableCell>
+                              <TableCell>{isLocal
+                                ? <Text size={200}>Verify the selected runtime in review</Text>
+                                : <RuntimeAccessNote model={model} />}</TableCell>
                             </TableRow>
                           )
                         })}
@@ -773,14 +822,15 @@ function PublishModelSession({ open, mutationKey, onClose, onPublished, initialR
                 <Field label="API path" required>
                   <Input value={form.apiPath} onChange={(_, data) => setForm({ ...form, apiPath: data.value })} />
                 </Field>
-                <Field label="Product name">
+                {!isLocal && <><Field label="Product name">
                   <Input value={form.productName} onChange={(_, data) => setForm({ ...form, productName: data.value })} />
                 </Field>
                 <Switch
                   checked={form.subscriptionRequired}
                   label="Subscription required"
                   onChange={(_, data) => setForm({ ...form, subscriptionRequired: Boolean(data.checked) })}
-                />
+                /></>}
+                {isLocal && <Text block>Entra only. This publication has no APIM product or caller subscription key.</Text>}
                 {capabilityChanged && (
                   <MessageBar intent="warning">
                     <MessageBarBody>

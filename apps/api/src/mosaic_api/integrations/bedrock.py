@@ -126,7 +126,9 @@ async def inherited_policy_digest(
         evidence[f"product:{name}"] = _checked_policy(
             await client.get_product_policy(name, strict=True), "Product"
         )
-    for operation in await client.list_operations(publication.api_name, strict=True):
+    for operation in await client.list_operations(
+        publication.api_name, strict=True, allow_initial_absence=True,
+    ):
         name = operation.get("name")
         if not isinstance(name, str) or not name:
             raise ValidationError("API Management returned an unidentified Bedrock operation.")

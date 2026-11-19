@@ -34,6 +34,7 @@ import { ENTITLEMENT_SUBJECT_KIND_LABELS, PRINCIPAL_KIND_LABELS } from '../label
 import { runtimeConfig } from '../runtime-config'
 import type {
   Gateway,
+  GatewayRuntimeChoice,
   McpEndpoint,
   McpPublication,
   PublishAction,
@@ -47,6 +48,7 @@ import { ErrorState, Loading } from './AsyncState'
 import { useFocusAwareAnnounce } from './useFocusAwareAnnounce'
 import { PolicyCapabilityError } from './PolicyCapabilityFeedback'
 import { ChangeReview, TechnicalExecution } from './ChangeReview'
+import { GatewayRuntimePicker, azureManaged, runtimeRefusal, useGatewayRuntimes } from './GatewayRuntimePicker'
 import { EnvironmentBadge } from './EnvironmentBadge'
 import { ModelAccessRecovery } from './ModelAccessRecovery'
 import { PolicyFacetItem } from './PolicyFacets'
@@ -76,6 +78,8 @@ const actionLabels: Record<PublishAction, string> = {
 }
 
 const kindLabels: Record<PublishedResourceKind, string> = {
+  gatewayApi: 'Gateway–API association',
+  publicationBinding: 'APIM publication binding',
   namedValue: 'Named value',
   policyFragment: 'Policy fragment',
   backend: 'Backend',
@@ -347,6 +351,9 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
   const queryClient = useQueryClient()
   const [step, setStep] = useState<Step>(initialReview ? 'review' : 'choose')
   const [gatewayId, setGatewayId] = useState(initialReview?.publication.gatewayId ?? '')
+  const [runtimeChoice, setRuntimeChoice] = useState<GatewayRuntimeChoice>(
+    initialReview?.publication.runtimeTarget ?? azureManaged,
+  )
   const [endpointId, setEndpointId] = useState(initialEndpointId ?? '')
   const [form, setForm] = useState<FormState>(() => defaultsFor(null))
   const [publication, setPublication] = useState<McpPublication | null>(initialReview?.publication ?? null)
@@ -369,6 +376,11 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
   const gatewayOptions: Gateway[] = useMemo(() => gateways.data ?? [], [gateways.data])
   const catalog = useEnvironmentCatalog()
   const selectedGateway = gatewayOptions.find((gateway) => gateway.id === gatewayId)
+  const runtimes = useGatewayRuntimes(gatewayId, open && !initialReview)
+  const localId = runtimeChoice.kind === 'selfHosted' ? runtimeChoice.runtimeId : null
+  const localRuntime = runtimes.data?.find((item) => item.id === localId)
+  const runtimeUnavailable = Boolean(localId &&
+    (!localRuntime || runtimes.isError || runtimeRefusal(selectedGateway, localRuntime)))
 
   useEffect(() => {
     if (!open || reviewingExistingPlan) {
@@ -392,7 +404,15 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
     enabled: open && !reviewingExistingPlan && gatewayId !== '',
   })
   const endpoint = (endpoints.data ?? []).find((item) => item.id === endpointId) ?? null
-  const localBlockers = endpointBlockers(endpoint)
+  function blockersFor(candidate: McpEndpoint | null) {
+    const blockers = endpointBlockers(candidate)
+    if (localId && candidate && (candidate.authMode !== 'managedIdentity'
+      || candidate.capabilities.transportType !== 'streamable' || !candidate.resourceAudience)) {
+      blockers.push('Self-hosted publishing requires Streamable HTTP and a workload identity audience.')
+    }
+    return blockers
+  }
+  const localBlockers = blockersFor(endpoint)
   const selectedEnvironmentVerdict = lookupCompatibility(catalog.data, selectedGateway?.environment, endpoint?.environment)
   const environmentBlocked = selectedEnvironmentVerdict?.level === 'blocked'
 
@@ -405,6 +425,9 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
     mutationKey,
     mutationFn: async () => {
       if (!endpoint) throw new Error('Choose an MCP server before reviewing the plan.')
+      if (runtimeUnavailable || localBlockers.length) {
+        throw new Error('Review the selected MCP server and runtime before requesting a plan.')
+      }
       const apiName = form.apiName.trim()
       const apiPath = form.apiPath.trim()
       const displayName = form.displayName.trim() || endpoint.name
@@ -417,6 +440,7 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
         draft &&
         (draft.gatewayId !== gatewayId ||
           draft.mcpEndpointId !== endpoint.id ||
+          (draft.runtimeTarget?.kind === 'selfHosted' ? draft.runtimeTarget.runtimeId : null) !== localId ||
           draft.apiName !== apiName ||
           draft.apiPath !== apiPath)
       ) {
@@ -435,6 +459,7 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
           displayName: form.displayName.trim() || undefined,
           apiName: apiName || undefined,
           apiPath: apiPath || undefined,
+          ...(localId ? { runtimeTarget: runtimeChoice } : {}),
         })
         setPublication(draft)
       }
@@ -496,6 +521,15 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
   })
   const applyError =
     apply.error && ((apply.error as { status?: number }).status !== 409 || environmentBlockedVerdict(apply.error)) ? apply.error : null
+  const refreshEvidence = useMutation({
+    mutationFn: () => api.planMcpPublication(publication!.id),
+    onSuccess: (freshPlan) => {
+      setPlan(freshPlan)
+      setInvalidPlan(false)
+      setRefreshError(null)
+    },
+    onError: (error) => { setInvalidPlan(true); setRefreshError(error) },
+  })
 
   const run = useQuery({
     queryKey: ['mcp-publish-run', publication?.id, runId],
@@ -548,9 +582,10 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
     endpoint &&
     capability.data?.supported &&
     localBlockers.length === 0 &&
-    !environmentBlocked,
+    !environmentBlocked && !runtimeUnavailable,
   )
-  const canReview = Boolean(form.apiName.trim() && form.apiPath.trim() && !environmentBlocked)
+  const canReview = Boolean(form.apiName.trim() && form.apiPath.trim()
+    && !environmentBlocked && !runtimeUnavailable && !localBlockers.length)
   const missingAccessReview = Boolean(plan && !plan.mcpAccessSnapshot)
   const createEnvironmentBlocked = environmentBlockedVerdict(createAndPlan.error)
   const applyEnvironmentBlocked = environmentBlockedVerdict(apply.error)
@@ -599,6 +634,9 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
                     ))}
                   </Select>
                 </Field>
+                {selectedGateway && <GatewayRuntimePicker gateway={selectedGateway} choice={runtimeChoice}
+                  onChange={setRuntimeChoice}
+                  runtimes={runtimes} path="mcp" />}
                 {gateways.isPending && <Loading label="Loading gateways" />}
                 {selectedGateway && (
                   <Text size={200}>
@@ -636,7 +674,7 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
                       </TableHeader>
                       <TableBody>
                         {endpoints.data.map((item) => {
-                          const blockers = endpointBlockers(item)
+                          const blockers = blockersFor(item)
                           const environmentVerdict = lookupCompatibility(catalog.data, selectedGateway?.environment, item.environment)
                           const blockedByEnvironment = environmentVerdict?.level === 'blocked'
                           const warningByEnvironment = environmentVerdict?.level === 'warning'
@@ -811,7 +849,7 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
               </div>
             )}
           </Content>
-          <Actions>
+          <Actions className={plan?.runtimeReview ? styles.runtimeReviewActions : undefined}>
             <Button appearance="secondary" onClick={requestClose}>Close</Button>
             {step === 'configure' && <Button appearance="secondary" disabled={workspace && pending} onClick={() => setStep('choose')}>{workspace ? 'Previous step' : 'Back'}</Button>}
             {step === 'review' && !reviewingExistingPlan && <Button appearance="secondary" disabled={workspace && pending} onClick={() => setStep('configure')}>{workspace ? 'Previous step' : 'Back'}</Button>}
@@ -832,11 +870,13 @@ function PublishMcpServerSession({ open, mutationKey, onClose, onPublished, init
               </Button>
             )}
             {step === 'review' && (
-              <Button appearance="primary" disabled={invalidPlan || missingAccessReview || nothingToApply}
+              <Button appearance="primary" disabled={invalidPlan || missingAccessReview || nothingToApply || refreshEvidence.isPending || Boolean(plan?.runtimeReview?.blockers.length)}
                 disabledFocusable={apply.isPending} onClick={() => apply.mutate()}>
                 {apply.isPending ? 'Applying…' : 'Apply all pending changes'}
               </Button>
             )}
+            {step === 'review' && plan?.runtimeReview && <Button disabledFocusable={refreshEvidence.isPending}
+              onClick={() => { if (!refreshEvidence.isPending) refreshEvidence.mutate() }}>Refresh evidence</Button>}
           </Actions>
         </Body>
       </Surface>

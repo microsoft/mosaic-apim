@@ -79,17 +79,18 @@ class ScreenshotEstateTests(unittest.TestCase):
         assert isinstance(last.func, ast.Name) and last.func.id == "Shot"
         assert isinstance(last.args[0], ast.Constant)
         self.assertEqual(last.args[0].value, "console-model-change-review")
-        draft_actions = {
+        mutation_actions = {
             "review_demo_changes", "review_vertex_release", "review_bedrock_release",
+            "_fictional_edge", "_review_fictional_edge", "_review_fictional_edge_mcp",
         }
-        saves_draft = [
+        mutates_estate = [
             any(
-                isinstance(node, ast.Name) and node.id in draft_actions
+                isinstance(node, ast.Name) and node.id in mutation_actions
                 for node in ast.walk(shot)
             )
             for shot in shots.elts
         ]
-        self.assertEqual(saves_draft, sorted(saves_draft))
+        self.assertEqual(mutates_estate, sorted(mutates_estate))
 
     def test_fictional_creation_requests_keep_incomplete_approval_honest(self) -> None:
         response = self.client.get("/api/v1/portal/cost-center-requests", headers=PORTAL_HEADERS)
