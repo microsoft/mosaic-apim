@@ -8,6 +8,8 @@ from pydantic import ValidationError as SchemaValidationError
 from mosaic_api.cost_centers import exact_resource_key
 from mosaic_api.domain import (
     EntitlementResource,
+    RequestChoiceAnswer,
+    RequestChoiceQuestion,
     RequestFormAnswer,
     RequestFormDefinition,
     RequestFormResolution,
@@ -23,6 +25,10 @@ from mosaic_api.domain import (
 from mosaic_api.errors import ConflictError, ValidationError
 
 MANUAL_FORM_REVIEW = "manualGovernanceReviewRequired"
+
+
+def _normalize_answer_text(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
 def form_hash(definition: RequestFormDefinition) -> str:
@@ -43,7 +49,9 @@ def question_view(question: RequestQuestion) -> RequestQuestionView:
         max_length=question.max_length
         if isinstance(question, RequestShortTextQuestion | RequestParagraphQuestion)
         else None,
-        options=question.options if question.kind == "singleChoice" else [],
+        options=question.options if isinstance(question, RequestChoiceQuestion) else [],
+        allow_custom_answer=isinstance(question, RequestChoiceQuestion)
+        and question.allow_custom_answer,
     )
 
 
@@ -79,6 +87,7 @@ def resolve_form(
     }
     return RequestFormResolution(
         status="configured" if questions else "notRequired",
+        format_version=definition.format_version,
         revision=revision,
         context_revision=hashlib.sha256(
             json.dumps(context, sort_keys=True, separators=(",", ":")).encode()
@@ -121,24 +130,12 @@ def validate_submission(
     for question in resolution.questions:
         value = supplied.get(question.id)
         if isinstance(value, str) and question.kind in {"shortText", "paragraph"}:
-            value = value.replace("\r\n", "\n").replace("\r", "\n").strip() or None
-        message = None
-        if value is None:
-            if question.required:
-                message = "Answer this required question."
-        elif question.kind == "acknowledgment":
-            if not isinstance(value, bool):
-                message = "Choose an acknowledgment, not a text or number."
-            elif question.required and not value:
-                message = "Acknowledge this statement before submitting."
-        elif not isinstance(value, str):
-            message = "Enter a text answer."
-        elif question.kind == "singleChoice":
-            if value not in {item.id for item in question.options}:
-                message = "Choose one of the recorded options."
-        elif len(value) > (question.max_length or 0):
-            message = f"Use at most {question.max_length} characters."
-        if message:
+            value = _normalize_answer_text(value) or None
+        if isinstance(value, RequestChoiceAnswer) and value.custom_text is not None:
+            value = value.model_copy(
+                update={"custom_text": _normalize_answer_text(value.custom_text)}
+            )
+        if message := question.answer_error(value):
             errors.append({"questionId": question.id, "message": message})
         elif value is not None:
             answers.append(RequestFormAnswer(question_id=question.id, value=value))
@@ -151,6 +148,7 @@ def validate_submission(
         return None
     try:
         return RequestFormSnapshot(
+            format_version=resolution.format_version,
             revision=resolution.revision,
             schema_hash=schema_hash,
             context_revision=resolution.context_revision,

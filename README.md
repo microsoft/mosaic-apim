@@ -173,7 +173,8 @@ It also shows [cost-center requests and Automatic access](docs/gallery.md#cost-c
 including membership discovery and requests, administrator controls, and incomplete setup
 rather than treating approval as usable access.
 
-[Governance request forms](docs/gallery.md#governance-request-forms) show guided authoring,
+[Governance request forms](docs/gallery.md#governance-request-forms) show authoring with text,
+single-choice and multiple-choice fields, optional Other write-ins,
 requester review, and historical single/bulk answer evidence without equating answers with authority.
 [Screenshot maintenance](docs/screenshots.md) explains capture, redaction, and the shot inventory.
 

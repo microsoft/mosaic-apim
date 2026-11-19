@@ -9,6 +9,7 @@ from mosaic_api.domain import (
     AccessRequestCreate,
     RequestFormDefinition,
     RequestFormPublishInput,
+    RequestFormSnapshot,
     RequestFormSubmission,
     general_cost_center_id,
 )
@@ -90,6 +91,91 @@ def validated(config: RequestFormDefinition, body: RequestFormSubmission | None)
         environment="development",
         cost_center_id=general_cost_center_id(TENANT),
     )
+
+
+def flexible_definition(*, allow_custom: bool = True) -> RequestFormDefinition:
+    payload = definition().model_dump()
+    payload["formatVersion"] = 2
+    data = payload["questions"][1]
+    data["allowCustomAnswer"] = True
+    payload["questions"].append({
+        **data, "id": "uses", "kind": "multipleChoice", "allowCustomAnswer": allow_custom,
+    })
+    return RequestFormDefinition.model_validate(payload)
+
+
+def flexible_submission(config: RequestFormDefinition, single: object, multiple: object):
+    payload = submission(config).model_dump()
+    payload["answers"][1]["value"] = single
+    payload["answers"].append({"questionId": "uses", "value": multiple})
+    return RequestFormSubmission.model_validate(payload)
+
+
+def test_flexible_choices_round_trip_unchanged_with_original_labels() -> None:
+    config = flexible_definition()
+    body = flexible_submission(
+        config, {"optionIds": [], "customText": "  Fictional data  "},
+        {"optionIds": ["synthetic", "unsure"], "customText": "  Mock fixtures  "},
+    )
+    snapshot = validated(config, body)
+    assert snapshot is not None
+    serialized = snapshot.model_dump(mode="json")
+    assert serialized["formatVersion"] == 2
+    assert serialized["answers"][1]["value"] == {"optionIds": [], "customText": "Fictional data"}
+    assert serialized["answers"][-1]["value"] == {
+        "optionIds": ["synthetic", "unsure"], "customText": "Mock fixtures",
+    }
+
+    updated = flexible_definition()
+    updated_payload = updated.model_dump()
+    updated_payload["questions"][-1]["options"][0]["label"] = "Updated label"
+    updated = RequestFormDefinition.model_validate(updated_payload)
+    with pytest.raises(ConflictError) as stale:
+        validated(updated, body)
+    assert stale.value.details["reason"] == "requestFormChanged"
+
+    archived = RequestFormSnapshot.model_validate(serialized)
+    view = snapshot_view(archived)
+    assert view is not None and view.format_version == 2
+    assert view.questions[-1].options[0].label == "Public / synthetic"
+    assert view.answers == archived.answers
+
+
+@pytest.mark.parametrize(("field", "value", "allow_custom", "error"), [
+    ("data", {"optionIds": ["synthetic"], "customText": "Other purpose"}, True, "not both"),
+    ("data", {"optionIds": ["synthetic", "unsure"]}, True, "Choose one"),
+    ("data", {"optionIds": [], "customText": "  "}, True, "Enter your custom answer"),
+    ("uses", {"optionIds": []}, True, "at least one"),
+    ("uses", {"optionIds": ["synthetic", "synthetic"]}, True, "only once"),
+    ("uses", {"optionIds": ["injected"]}, True, "available options"),
+    ("uses", {"optionIds": ["synthetic"], "customText": "x" * 201}, True, "Limit Other to 200"),
+    ("uses", {"optionIds": ["synthetic"], "customText": "Not accepted"}, False, "does not accept"),
+    ("uses", "synthetic", True, "Submit the selected choices"),
+])
+def test_structured_choice_validation(
+    field: str, value: object, allow_custom: bool, error: str
+) -> None:
+    config = flexible_definition(allow_custom=allow_custom)
+    single = value if field == "data" else {"optionIds": ["synthetic"]}
+    multiple = value if field == "uses" else {"optionIds": ["unsure", "synthetic"]}
+    with pytest.raises(ValidationError) as invalid:
+        validated(config, flexible_submission(config, single, multiple))
+    assert invalid.value.details["fields"][0]["questionId"] == field
+    assert error in invalid.value.details["fields"][0]["message"]
+
+
+def test_legacy_forms_do_not_gain_choice_configuration_or_change_format() -> None:
+    config = definition()
+    assert "allowCustomAnswer" not in config.model_dump()["questions"][1]
+    snapshot = validated(config, submission(config))
+    assert snapshot is not None
+    assert snapshot.format_version == 1
+    assert snapshot.answers[1].value == "synthetic"
+    assert "allowCustomAnswer" not in snapshot.model_dump()["questions"][1]
+    payload = flexible_definition().model_dump()
+    payload["formatVersion"] = 1
+    with pytest.raises(SchemaError, match="require form format version 2"):
+        RequestFormDefinition.model_validate(payload)
 
 
 @pytest.mark.parametrize(

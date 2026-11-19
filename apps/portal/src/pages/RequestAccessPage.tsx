@@ -6,13 +6,14 @@ import { ApiError, usePortalApi } from '../api'
 import { ErrorState } from '../components/AsyncState'
 import { EnvironmentBadge } from '../components/EnvironmentBadge'
 import { PageHeader } from '../components/PageHeader'
+import { RequestChoiceField } from '../components/RequestChoiceField'
 import { RequestFormAnswers } from '../components/RequestFormAnswers'
 import { UnsavedChanges } from '../components/UnsavedChanges'
 import { useFocusAwareAnnounce } from '../components/useFocusAwareAnnounce'
 import { resourceFromCatalog, sameResource } from '../entitlement-format'
 import { invalidateRequests } from '../request-queries'
 import {
-  compatibleRequestAnswers, requestAnswerErrors, requestAnswers, requestFormWarning, requestFormErrorMessage,
+  compatibleRequestAnswers, isStructuredChoice, requestAnswerErrors, requestAnswers, requestFormWarning, requestFormErrorMessage,
   type RequestAnswerDraft,
 } from '../request-form'
 import type { CatalogEntry, PortalEnvironment, RequestFormResolution } from '../types'
@@ -120,7 +121,7 @@ export function RequestAccessPage({ entry, environments, initialCostCenterId, in
     if (Object.keys(next).length) setInvalidAttempt(attempt => attempt + 1)
     else setStep(2)
   }
-  function answer(id: string, value: string | boolean) {
+  function answer(id: string, value: RequestAnswerDraft[string]) {
     setValues(old => ({ ...old, [id]: value }))
     setErrors(old => { const next = { ...old }; delete next[id]; return next })
   }
@@ -178,7 +179,12 @@ export function RequestAccessPage({ entry, environments, initialCostCenterId, in
           <Button type="button" onClick={() => acceptLatest(false)}>Load latest with blank answers</Button>
         </section>}
         {resolution && <Badge appearance="outline">Form v{resolution.revision}</Badge>}
-        {(resolution?.questions ?? []).map(question => <Field key={question.id} label={question.label}
+        {(resolution?.questions ?? []).map(question => {
+          const value = Object.hasOwn(values, question.id) ? values[question.id] : undefined
+          if (isStructuredChoice(question)) return <RequestChoiceField key={question.id} question={question}
+            value={typeof value === 'object' ? value : undefined} error={Object.hasOwn(errors, question.id) ? errors[question.id] : undefined}
+            onChange={next => answer(question.id, next)} />
+          return <Field key={question.id} label={question.label}
           required={question.required} hint={question.helpText ?? undefined}
           validationState={Object.hasOwn(errors, question.id) ? 'error' : 'none'} validationMessage={Object.hasOwn(errors, question.id) ? errors[question.id] : undefined}>
           {question.kind === 'acknowledgment' ? <Checkbox checked={values[question.id] === true}
@@ -194,14 +200,15 @@ export function RequestAccessPage({ entry, environments, initialCostCenterId, in
                 rows={3} resize="vertical" aria-invalid={Object.hasOwn(errors, question.id)}
                 onChange={(_, data) => answer(question.id, data.value)} />}
           {question.maxLength && <small>Maximum {question.maxLength.toLocaleString()} characters. No secrets or datasets.</small>}
-        </Field>)}
+          </Field>
+        })}
         <Field label="Justification (optional)" hint="The existing optional note remains separate from configured questions.">
           <Textarea value={justification} onChange={(_, data) => setJustification(data.value)} resize="vertical" />
         </Field>
       </>}
       {step === 2 && resolution && <>
         {resolution.questions.length > 0 ? <RequestFormAnswers draft form={{
-          formatVersion: 1, revision: resolution.revision, questions: resolution.questions,
+          formatVersion: resolution.formatVersion ?? 1, revision: resolution.revision, questions: resolution.questions,
           answers: requestAnswers(resolution.questions, values),
         }} /> : <p>No additional questions apply. The selected cost center and optional justification are still reviewed.</p>}
         <p><strong>Justification:</strong> {justification.trim() || 'Not provided'}</p>

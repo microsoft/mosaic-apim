@@ -4,32 +4,43 @@ import { useLayoutEffect, useRef, useState } from 'react'
 import { ApiError, useMosaicApi } from '../api'
 import type {
   EntitlementResource, EnvironmentCatalogView, RequestFormDefinition, RequestFormScope,
-  RequestQuestion, RequestQuestionKind,
+  RequestQuestion, RequestQuestionKind, RequestQuestionView,
 } from '../types'
 import { ErrorState, Loading } from './AsyncState'
 import { WorkspaceEditorFrame } from './WorkspaceEditorFrame'
 
 const kindLabels: Record<RequestQuestionKind, string> = {
-  shortText: 'Short text', paragraph: 'Paragraph', singleChoice: 'Single choice', acknowledgment: 'Acknowledgment',
+  shortText: 'Short text', paragraph: 'Paragraph', singleChoice: 'Single choice', multipleChoice: 'Multiple choice',
+  acknowledgment: 'Acknowledgment',
 }
 const resourceKinds: { key: RequestFormScope['resourceKinds'][number]; label: string }[] = [
   { key: 'modelApi', label: 'Model APIs' }, { key: 'poolModel', label: 'Pool models' }, { key: 'mcpServer', label: 'MCP servers' },
 ]
 function isKind(value: string): value is RequestQuestionKind {
-  return value === 'shortText' || value === 'paragraph' || value === 'singleChoice' || value === 'acknowledgment'
+  return Object.hasOwn(kindLabels, value)
 }
 function question(kind: RequestQuestionKind, previous?: RequestQuestion): RequestQuestion {
   const base = {
     id: `question_${crypto.randomUUID()}`, label: previous?.label ?? '', helpText: previous?.helpText ?? null,
     required: previous?.required ?? false, scope: previous?.scope ?? { resourceKinds: [], resources: [], environments: [] },
   }
-  if (kind === 'singleChoice') return { ...base, kind, options: [
-    { id: `option_${crypto.randomUUID()}`, label: '' }, { id: `option_${crypto.randomUUID()}`, label: '' },
-  ] }
+  if (kind === 'singleChoice' || kind === 'multipleChoice') return {
+    ...base, kind, ...(
+      previous && (previous.kind === 'singleChoice' || previous.kind === 'multipleChoice')
+        ? { options: previous.options, allowCustomAnswer: previous.allowCustomAnswer }
+        : { options: [{ id: `option_${crypto.randomUUID()}`, label: '' }, { id: `option_${crypto.randomUUID()}`, label: '' }] }
+    ),
+  }
   if (kind === 'acknowledgment') return { ...base, kind }
   return { ...base, kind, maxLength: kind === 'shortText' ? 200 : 2000 }
 }
 function key(resource: EntitlementResource) { return JSON.stringify([resource.kind, resource.scopeId, resource.id]) }
+
+function choiceDescription(item: Pick<RequestQuestionView, 'kind' | 'options' | 'allowCustomAnswer'>) {
+  return item.kind === 'singleChoice' || item.kind === 'multipleChoice'
+    ? ` · ${item.options.length} predefined choices${item.allowCustomAnswer ? ' + Other (write-in)' : ''}`
+    : ''
+}
 
 export function RequestFormEditor({ resources, environments }: {
   resources: { resource: EntitlementResource; label: string }[]; environments?: EnvironmentCatalogView
@@ -85,7 +96,13 @@ export function RequestFormEditor({ resources, environments }: {
     setRevision(current.data.revision); setStep(0); setProblems([]); setConfirmed(false); publish.reset(); preview.reset()
   }
   function update(index: number, next: RequestQuestion) {
-    setDraft(old => old && ({ ...old, questions: old.questions.map((item, i) => i === index ? next : item) }))
+    setDraft(old => {
+      if (!old) return old
+      const questions = old.questions.map((item, i) => i === index ? next : item)
+      const formatVersion = questions.some(item => item.kind === 'multipleChoice' ||
+        item.kind === 'singleChoice' && item.allowCustomAnswer) ? 2 : old.formatVersion
+      return { ...old, questions, formatVersion }
+    })
   }
   function scope(index: number, next: RequestFormScope) {
     if (draft) update(index, { ...draft.questions[index], scope: next })
@@ -96,7 +113,7 @@ export function RequestFormEditor({ resources, environments }: {
     if (draft.enabled && !draft.questions.length) errors.push('Add a question before enabling the form.')
     draft.questions.forEach((item, index) => {
       if (!item.label.trim()) errors.push(`Question ${index + 1}: enter a label.`)
-      if (item.kind === 'singleChoice' && item.options.some(option => !option.label.trim())) errors.push(`Question ${index + 1}: name every choice.`)
+      if ((item.kind === 'singleChoice' || item.kind === 'multipleChoice') && item.options.some(option => !option.label.trim())) errors.push(`Question ${index + 1}: name every choice.`)
       if ((item.kind === 'shortText' || item.kind === 'paragraph') &&
         (!Number.isInteger(item.maxLength) || item.maxLength < 1 || item.maxLength > (item.kind === 'shortText' ? 200 : 2000))) {
         errors.push(`Question ${index + 1}: choose a positive character limit within its type's bound.`)
@@ -132,7 +149,7 @@ export function RequestFormEditor({ resources, environments }: {
       <Text>{current.data.definition.questions.length} questions. No existing request is rewritten by publication.</Text>
       <Button ref={editButton} appearance="primary" onClick={edit}>{current.data.revision ? 'Edit request form' : 'Configure request form'}</Button>
       {current.data.definition.questions.map(item => <section key={item.id} className="governance-question">
-        <h3>{item.label}</h3><Text>{kindLabels[item.kind]} · {item.required ? 'Required' : 'Optional'}</Text>
+        <h3>{item.label}</h3><Text>{kindLabels[item.kind]} · {item.required ? 'Required' : 'Optional'}{'options' in item && choiceDescription(item)}</Text>
       </section>)}
     </>}
   </section>
@@ -184,13 +201,20 @@ export function RequestFormEditor({ resources, environments }: {
             <Input type="number" min={1} max={item.kind === 'shortText' ? 200 : 2000} value={String(item.maxLength)}
               onChange={(_, data) => update(index, { ...item, maxLength: Number(data.value) })} />
           </Field>}
-          {item.kind === 'singleChoice' && <>
+          {(item.kind === 'singleChoice' || item.kind === 'multipleChoice') && <>
+            <Text>{item.kind === 'singleChoice' ? 'Requesters choose one answer.' : 'Requesters can choose more than one answer.'}</Text>
             {item.options.map((option, optionIndex) => <div className="governance-question-grid" key={option.id}>
               <Field label={`Question ${index + 1} choice ${optionIndex + 1}`} required><Input value={option.label} maxLength={100}
                 onChange={(_, data) => update(index, { ...item, options: item.options.map((old, i) => i === optionIndex ? { ...old, label: data.value } : old) })} /></Field>
               <Button disabled={item.options.length <= 2} onClick={() => update(index, { ...item, options: item.options.filter((_, i) => i !== optionIndex) })}>Remove choice {optionIndex + 1}</Button>
             </div>)}
             <Button disabled={item.options.length >= 12} onClick={() => update(index, { ...item, options: [...item.options, { id: `option_${crypto.randomUUID()}`, label: '' }] })}>Add choice</Button>
+            <Field hint={item.kind === 'singleChoice'
+              ? 'Adds “Other” as an alternative to the predefined choices. Write-ins are limited to 200 characters.'
+              : 'Adds “Other” alongside any selected predefined choices. Write-ins are limited to 200 characters.'}>
+              <Checkbox label="Allow a custom answer" checked={item.allowCustomAnswer ?? false}
+                onChange={(_, data) => update(index, { ...item, allowCustomAnswer: data.checked === true })} />
+            </Field>
           </>}
         </div>
       </section>)}
@@ -234,7 +258,7 @@ export function RequestFormEditor({ resources, environments }: {
         <Button disabled={!previewResource} disabledFocusable={preview.isPending} onClick={() => { if (!preview.isPending) preview.mutate() }}>Preview questions</Button>
         {preview.isError && <ErrorState context="action" title="Unable to preview form" error={preview.error} announcementKey={preview.submittedAt} />}
         {preview.data && <div><Text>{previewDraft === JSON.stringify(draft) ? 'Current draft preview' : 'Preview is stale; preview this draft again.'}</Text>
-          <ul>{preview.data.questions.map(item => <li key={item.id}>{item.label} - {item.required ? 'Required' : 'Optional'} - {kindLabels[item.kind]}</li>)}</ul>
+          <ul>{preview.data.questions.map(item => <li key={item.id}>{item.label} - {item.required ? 'Required' : 'Optional'} - {kindLabels[item.kind]}{choiceDescription(item)}</li>)}</ul>
           {!preview.data.questions.length && <Text>No questions apply to this offering under this draft. Disabled forms collect no answers.</Text>}
         </div>}
       </section>
@@ -244,7 +268,7 @@ export function RequestFormEditor({ resources, environments }: {
       <Text>{draft.enabled ? 'Enabled' : 'Disabled'} · {draft.questions.length} questions · {draft.questions.filter(item => item.required).length} required</Text>
       <Text>Existing: {baseline?.questions.length ?? 0} questions, {baseline?.enabled ? 'enabled' : 'disabled'}. Submitted answers remain tied to their original version.</Text>
       {draft.questions.map(item => <section className="governance-question" key={item.id}><h4>{item.label}</h4>
-        <Text>{kindLabels[item.kind]} · {item.required ? 'Required' : 'Optional'} · {item.scope.resourceKinds.length ? item.scope.resourceKinds.join(', ') : 'All types'} · {item.scope.environments.join(', ') || 'All environments'} · {item.scope.resources.length ? `${item.scope.resources.length} exact offering(s)` : 'All matching offerings'}</Text>
+        <Text>{kindLabels[item.kind]}{'options' in item && choiceDescription(item)} · {item.required ? 'Required' : 'Optional'} · {item.scope.resourceKinds.length ? item.scope.resourceKinds.join(', ') : 'All types'} · {item.scope.environments.join(', ') || 'All environments'} · {item.scope.resources.length ? `${item.scope.resources.length} exact offering(s)` : 'All matching offerings'}</Text>
       </section>)}
       <Text>Matching new form-bearing requests require human single/bulk review in Phase 1. Automatic policies do not evaluate these answers. Existing no-form requests and policy revisions are unchanged. Approval creates grant intent only; gateway apply stays separate.</Text>
       <Text>A charge reference is informational. The existing eligible cost-center selector alone binds charging. No answers grant identity, membership, funding eligibility, scope or relaxed limits. No credentials/uploads/datasets.</Text>

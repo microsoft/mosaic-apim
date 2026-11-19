@@ -506,7 +506,7 @@ def review_form_requests(page: Page) -> None:
     _visible_text(page, "Review recorded evidence").wait_for()
 
 
-def draft_governance_request(page: Page) -> None:
+def fill_governance_questions(page: Page) -> None:
     click_button("View access options for gpt-4o-mini")(page)
     select_access_offering("Azure Commercial")(page)
     select_option("Cost center for GPT-4o mini", "General")(page)
@@ -515,10 +515,20 @@ def draft_governance_request(page: Page) -> None:
     fill_textbox(
         "Intended usage", "Summarize synthetic research notes in a demonstration assistant."
     )(page)
-    page.get_by_role("combobox", name="Data class", exact=True).select_option("synthetic")
+    select_option("Data class", "Other")(page)
+    fill_textbox("Custom answer for Data class", "Fictional research notes")(page)
+    uses = page.get_by_role("group", name="Use cases (required)")
+    uses.get_by_role("checkbox", name="Summarization").check()
+    uses.get_by_role("checkbox", name="Classification").check()
+    uses.get_by_role("checkbox", name="Other (write in)").check()
+    fill_textbox("Custom answer for Use cases", "Compare drafts with fictional analyst notes.")(page)
     fill_textbox("Charge reference", "DEMO-167")(page)
     page.get_by_role("checkbox", name=re.compile("I acknowledge this statement")).check()
     fill_textbox("Justification (optional)", "Pilot for a fictional research team.")(page)
+
+
+def draft_governance_request(page: Page) -> None:
+    fill_governance_questions(page)
     click_button("Next: Review")(page)
     _visible_text(page, "Review your answers").wait_for()
 
@@ -1300,15 +1310,15 @@ SHOTS: list[Shot] = [
         "console-request-form-authoring", "console", "/entitlements?tab=requestForm",
         "light", "Request form",
         actions=(click_button("Edit request form"), wait_for_text("Define questions")),
-        height=3100,
+        height=3900,
     ),
     Shot(
         "console-request-form-review", "console", "/entitlements?tab=requests",
-        "light", "Requests", actions=(review_form_request,), height=2050,
+        "light", "Requests", actions=(review_form_request,), height=2200,
     ),
     Shot(
         "console-request-form-bulk", "console", "/entitlements?tab=requests",
-        "dark", "Requests", actions=(review_form_requests,), height=2700,
+        "dark", "Requests", actions=(review_form_requests,), height=3020,
     ),
     Shot(
         "console-approval-policy",
@@ -1793,7 +1803,11 @@ SHOTS: list[Shot] = [
     ),
     Shot(
         "portal-request-form", "portal", "/catalog", "light", "Docs search MCP",
-        actions=(draft_governance_request,), height=1550,
+        actions=(draft_governance_request,), height=1780,
+    ),
+    Shot(
+        "portal-request-form-questions", "portal", "/catalog", "light", "Docs search MCP",
+        actions=(fill_governance_questions,), height=1900,
     ),
     Shot(
         "portal-access",
@@ -1922,7 +1936,7 @@ SHOTS: list[Shot] = [
             wait_for_text("Recorded form v3"),
             wait_for_text("Boundary & effect"),
         ),
-        height=1300, delegated_reviewer=True,
+        height=1400, delegated_reviewer=True,
     ),
     Shot(
         "portal-my-cost-centers",
@@ -3106,6 +3120,20 @@ def _check_governance_navigation(page: Page, urls: dict[App, str]) -> None:
             raise CaptureError("portal form: Back lost the reviewed answer")
         if not page.get_by_role("checkbox", name=re.compile("I acknowledge")).is_checked():
             raise CaptureError("portal form: Back changed the acknowledgment")
+        use_cases = page.get_by_role("group", name="Use cases (required)")
+        if not use_cases.get_by_role("checkbox", name="Summarization").is_checked():
+            raise CaptureError("portal form: Back lost a selected choice")
+        custom = page.get_by_role("textbox", name="Custom answer for Use cases", exact=True)
+        if custom.input_value() != "Compare drafts with fictional analyst notes.":
+            raise CaptureError("portal form: Back lost the custom answer")
+        custom.fill("")
+        click_button("Next: Review")(page)
+        page.wait_for_function(
+            "() => document.activeElement?.getAttribute('aria-invalid') === 'true'"
+        )
+        if not custom.evaluate("(el) => el === document.activeElement"):
+            raise CaptureError("portal form: the missing write-in did not receive focus")
+        custom.fill("Compare drafts with fictional analyst notes.")
         page.get_by_role("textbox", name="Charge reference", exact=True).press("Enter")
         page.get_by_role("heading", name="Governance questions", exact=True).wait_for()
         for width in (1440, 390, 320):

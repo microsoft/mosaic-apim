@@ -47,7 +47,8 @@ membership requests are off until an administrator enables them.
 
 Governance-form examples use only two exact existing Production model offerings. All other
 estate requests are seeded first through normal admission; the two designated pending examples
-are then submitted with explicit validated v3 answers, before publishing v4. No missing answers
+are then submitted with explicit validated v3 answers, including multiple selections and a
+fictional write-in, before publishing v4. No missing answers
 are filled in, no guard is bypassed, and catalog/grant/request counts are not inflated for the
 screenshots. New request-form captures only navigate or edit local drafts; they never publish,
 submit a request, approve a grant, enable a worker, or apply a plan.
@@ -517,6 +518,7 @@ to include both the daily trend and the complete last-24-hours chart.
 | `console-teams-private` | Console | `/settings?tab=notifications&notificationView=personalTeams`, saved bot registration, caller-scoped runtime access check, installation, opt-in and test | Dark | Private Teams access |
 | `portal-request-access` | Portal | `/catalog`, GPT-4o mini's exact Commercial offering with its administrator-authored summary selected in the access drawer, never submitted | Light | Request access |
 | `portal-request-form` | Portal | `/catalog`, exact Commercial GPT-4o mini under General in Offering/Questions/Review, fictional v4 question help and draft answers reviewed but never submitted | Light | Guided request form |
+| `portal-request-form-questions` | Portal | `/catalog`, Questions for Commercial GPT-4o mini, with single-choice Other and multiple selections plus a fictional write-in, never submitted | Light | Flexible request questions |
 | `portal-access` | Portal | `/access`, grouped model rows and an exact grant's **Connection details** open in a drawer | Light | My access |
 | `portal-connection-cost-center` | Portal | `/access`, the GPT-4o grant under General with **Connection details** open, scrolled to **Cost center header** | Light | Choosing a cost center |
 | `portal-pool-connection` | Portal | `/access`, Claude Sonnet 4.5 selected, **Connection details** drawer scrolled to **Authentication** and the shared-key note | Dark | Models that share a key |

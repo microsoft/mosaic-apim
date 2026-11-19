@@ -751,25 +751,31 @@ resource lists, forms, and connection drawers remain solid for readability.
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="images/screenshots/console-request-form-authoring.png" alt="Questions step in the administrator's versioned request-form editor with required fields, types and character bounds">
-      <p><b>Author request questions.</b> Define bounded required or optional questions in
-      Questions, target exact offerings and environments in Applicability, then explicitly Publish.
-      The active version and unsaved draft stay separate.</p>
+      <img src="images/screenshots/console-request-form-authoring.png" alt="Form editor with open text, single choice, multiple choice and options to allow custom answers">
+      <p><b>Author request questions.</b> Combine open text, single choice, and multiple choice,
+      with optional write-ins for either choice type. Set applicability before publishing a version.</p>
     </td>
+    <td width="50%" valign="top">
+      <img src="images/screenshots/portal-request-form-questions.png" alt="Portal Questions step with a single-choice write-in and two predefined choices selected alongside a write-in">
+      <p><b>Answer in the portal.</b> Choose Other instead of a predefined answer for single choice,
+      or add it alongside other selections for multiple choice.</p>
+    </td>
+  </tr>
+  <tr>
     <td width="50%" valign="top">
       <img src="images/screenshots/portal-request-form.png" alt="The portal's Review step with fictional answers to the active v4 request form and a separate charged cost center">
       <p><b>Review before requesting.</b> Review the resolved offering, original question help
       and answers without changing charging eligibility or granting access. The final request records the
       reviewed version; a typed charge reference remains informational.</p>
     </td>
-  </tr>
-  <tr>
     <td width="50%" valign="top">
       <img src="images/screenshots/console-request-form-review.png" alt="A single approval's Evidence step showing immutable v3 answers after v4 publication">
-      <p><b>Read recorded evidence.</b> Review the submitted questions, original help/conditions, choice labels and
-      acknowledgments rather than today's form. Grant settings and final confirmation remain
+      <p><b>Read recorded evidence.</b> Review the submitted questions, original help, selected choice
+      labels, write-ins and acknowledgments rather than today's form. Grant settings and final confirmation remain
       separate, and approval saves intent rather than applying a gateway plan.</p>
     </td>
+  </tr>
+  <tr>
     <td width="50%" valign="top">
       <img src="images/screenshots/console-request-form-bulk.png" alt="Two form-bearing requests in bulk Evidence with separate recorded snapshots and the next Grant settings step">
       <p><b>Keep bulk evidence independent.</b> Review each selected requester's recorded

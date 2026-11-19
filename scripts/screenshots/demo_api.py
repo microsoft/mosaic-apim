@@ -2660,15 +2660,22 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
         "environments": ["production"],
     }
     form = RequestFormDefinition.model_validate({
+        "formatVersion": 2,
         "questions": [
             {"id": "intended-use", "kind": "paragraph", "label": "Intended use",
              "helpText": "Describe the application without code, secrets or datasets.",
              "required": True, "scope": form_scope},
             {"id": "data-class", "kind": "singleChoice", "label": "Data class",
-             "required": True, "scope": form_scope, "options": [
+             "required": True, "allowCustomAnswer": True, "scope": form_scope, "options": [
                  {"id": "synthetic", "label": "Public / synthetic"},
                  {"id": "internal", "label": "Internal"},
                  {"id": "unsure", "label": "Unsure - needs review"},
+             ]},
+            {"id": "use-cases", "kind": "multipleChoice", "label": "Use cases",
+             "helpText": "Select all intended uses for this offering.", "required": True,
+             "allowCustomAnswer": True, "scope": form_scope, "options": [
+                 {"id": "summarize", "label": "Summarization"},
+                 {"id": "classify", "label": "Classification"},
              ]},
             {"id": "charge-reference", "kind": "shortText", "label": "Charge reference",
              "helpText": "Informational only. The selected cost center remains authoritative.",
@@ -2718,7 +2725,11 @@ async def seed_estate(services: DemoServices, tenant_id: str) -> Estate:
                 "revision": resolved.revision, "contextRevision": resolved.context_revision,
                 "answers": [
                     {"questionId": "intended-use", "value": purpose},
-                    {"questionId": "data-class", "value": "synthetic"},
+                    {"questionId": "data-class", "value": {"optionIds": ["synthetic"]}},
+                    {"questionId": "use-cases", "value": {
+                        "optionIds": ["summarize", "classify"],
+                        "customText": "Compare the results with mock review notes.",
+                    }},
                     {"questionId": "charge-reference", "value": "DEMO-167"},
                     {"questionId": "data-policy", "value": True},
                 ],

@@ -750,7 +750,7 @@ export interface ResolvedEntitlement {
 
 export type AccessRequestState = 'pending' | 'approved' | 'denied' | 'withdrawn'
 
-export type RequestQuestionKind = 'shortText' | 'paragraph' | 'singleChoice' | 'acknowledgment'
+export type RequestQuestionKind = 'shortText' | 'paragraph' | 'singleChoice' | 'multipleChoice' | 'acknowledgment'
 export interface RequestFormScope {
   resourceKinds: ('modelApi' | 'poolModel' | 'mcpServer')[]
   resources: EntitlementResource[]
@@ -765,7 +765,7 @@ interface RequestQuestionBase {
 }
 export type RequestQuestion = RequestQuestionBase & (
   | { kind: 'shortText' | 'paragraph'; maxLength: number }
-  | { kind: 'singleChoice'; options: { id: string; label: string }[] }
+  | { kind: 'singleChoice' | 'multipleChoice'; options: { id: string; label: string }[]; allowCustomAnswer?: boolean }
   | { kind: 'acknowledgment' }
 )
 export interface RequestQuestionView {
@@ -776,9 +776,10 @@ export interface RequestQuestionView {
   required: boolean
   maxLength: number | null
   options: { id: string; label: string }[]
+  allowCustomAnswer?: boolean
 }
 export interface RequestFormDefinition {
-  formatVersion: 1
+  formatVersion: 1 | 2
   enabled: boolean
   questions: RequestQuestion[]
 }
@@ -790,14 +791,16 @@ export interface RequestFormPublishInput {
 }
 export interface RequestFormResolution {
   status: 'configured' | 'notRequired'
+  formatVersion: 1 | 2
   revision: number
   contextRevision: string
   environment: string | null
   questions: RequestQuestionView[]
 }
-export interface RequestFormAnswer { questionId: string; value: string | boolean }
+export interface RequestChoiceAnswer { optionIds: string[]; customText?: string }
+export interface RequestFormAnswer { questionId: string; value: string | boolean | RequestChoiceAnswer }
 export interface RequestFormSnapshotView {
-  formatVersion: 1
+  formatVersion: 1 | 2
   revision: number
   questions: RequestQuestionView[]
   answers: RequestFormAnswer[]

@@ -51,6 +51,12 @@
 .governance-steps [aria-current="step"] { color: var(--mosaic-primary); background: var(--mosaic-primary-soft); font-weight: 600; }
 .governance-form { display: grid; gap: 24px; padding: 24px; background: var(--mosaic-surface); border: 1px solid var(--mosaic-border-soft); border-radius: 12px; }
 .governance-form .fui-Input, .governance-form .fui-Textarea, .governance-form .fui-Select { width: 100%; }
+.governance-choice { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.governance-choice legend { padding: 0; overflow-wrap: anywhere; }
+.governance-choice-hint { color: var(--mosaic-text-muted); }
+.governance-choice-hint p, .governance-choice-error { margin: 0; }
+.governance-choice-error { color: var(--colorPaletteRedForeground1); }
+.governance-choice-options { display: grid; justify-items: start; overflow-wrap: anywhere; }
 .governance-context, .governance-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; }
 .governance-context { padding: 16px 0 24px; }
 .governance-context strong { font-size: 20px; }
@@ -64,6 +70,7 @@
 .recorded-request-form dt { color: var(--mosaic-text-muted); font-weight: 600; }
 .recorded-request-form dd { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .recorded-request-form dd p { margin: 0 0 8px; color: var(--mosaic-text-muted); }
+.recorded-request-form dd ul { margin: 0; padding-inline-start: 1.25rem; }
 @media (max-width: 600px) { .governance-form { padding: 16px; } .governance-steps { gap: 8px; } .governance-steps li { padding: 10px 12px; } }
 
 .cost-center-search { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 24px 0; }

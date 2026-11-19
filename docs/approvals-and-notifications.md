@@ -19,7 +19,8 @@ what can be recorded. Existing optional justification and eligible cost-center s
 separate. A typed charge reference or self-reported acknowledgment is not authorization.
 
 Selected detail and **My requests** display an immutable submitted schema/answer snapshot, not
-today's active form. Single/bulk review of form-bearing requests uses Evidence, Grant, and Confirm;
+today's active form. Choice evidence shows the original selected labels and any Other write-in.
+Single/bulk review of form-bearing requests uses Evidence, Grant, and Confirm;
 Next and Back never create a grant or reset edited limits. Only final approval mutates intent.
 Request lists and notifications contain no new answer text.
 
@@ -120,8 +121,8 @@ use the configured local time zone; a Weekly call quota instead starts Monday at
   person. A later form disable does not remove that recorded-evidence boundary. Existing
   no-form/legacy requests and policy revisions remain unchanged.
 
-Answer-based deterministic conditions, their policy revision/preview semantics, and delegated
-cost-center POC authority are later explicit phases, not implicit extensions of form publication.
+Answer-based deterministic conditions and their policy revision/preview semantics are not part of
+form publication. Delegated cost-center POC authority is governed separately.
 Before enabling a required form, deploy compatible API/worker readers and admission writers;
 an old writer that ignores the form is unsafe even before any populated snapshot exists.
 See the [upgrade boundary](access.md#governance-questions-on-access-requests).

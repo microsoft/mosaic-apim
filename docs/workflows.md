@@ -154,7 +154,8 @@ and is excluded from these new center modes.
 Administrator authoring uses Questions, Applicability, and Publish. The requester uses Offering,
 Questions, and Review; form-bearing single/bulk approvals use Evidence, Grant, and Confirm.
 Next/Back are draft navigation, never publication, submission, approval, or gateway apply.
-Later schema publication does not rewrite a recorded request. A charge reference remains
+Review shows the selected option labels and any write-in before submission. Later schema
+publication does not rewrite a recorded request. A charge reference remains
 informational, and self-reported answers establish no permission. See
 [governance questions](access.md#governance-questions-on-access-requests) for bounds, privacy,
 stale recovery, and the compatible-writer rollout boundary.
