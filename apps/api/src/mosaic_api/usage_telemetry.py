@@ -529,6 +529,29 @@ class RolledUpApi(MosaicModel):
     first_seen_at: datetime
     removed_at: datetime | None = None
 
+    def with_publication_history(self, remembered: "RolledUpApi | None") -> "RolledUpApi":
+        """Retain standalone cost identity after its publication is deleted."""
+
+        if (
+            remembered is None
+            or self.kind != "model"
+            or remembered.kind != "model"
+            or self.resource_id != remembered.resource_id
+            or self.publication_id not in (None, remembered.publication_id)
+            or self.model_endpoint_id is not None
+            or self.deployment_name is not None
+            or remembered.cost_telemetry != "aggregateOnly"
+        ):
+            return self
+        return self.model_copy(update={
+            name: getattr(remembered, name)
+            for name in (
+                "publication_id", "model_endpoint_id", "deployment_name",
+                "subscription_name", "cost_telemetry",
+            )
+            if getattr(self, name) is None
+        })
+
     @property
     def deployment_key(self) -> str | None:
         if self.model_endpoint_id is None or self.deployment_name is None:

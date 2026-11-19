@@ -193,10 +193,11 @@ get the original estate back. Before committing, refresh every affected shot wit
 `--reuse-servers`; changes to shared navigation require the full gallery.
 
 Browser contexts isolate each shot's UI state, not the shared demo API. Keep mutation shots at
-the end of `SHOTS`: `console-model-change-review` saves unapplied access intent that would
-otherwise make connection shots show pending changes. The final Bedrock review shots save one
-fictional endpoint and publication through the loopback demo API, and review without applying
-or granting access. They share that draft with each other only; no estate-dependent shots follow.
+the end of `SHOTS`. The Vertex and Bedrock review pairs save fictional endpoints and publications
+through the loopback demo API, and review without applying or granting access. The unrelated
+`console-model-change-review` stays last: it saves unapplied GPT-4o access intent that would
+otherwise make connection shots show pending changes. No connection or estate-overview shots
+follow this terminal mutation block.
 The register shot never submits. The redactor covers visible sensitive input placeholders as
 well as values, including Bedrock host names.
 
