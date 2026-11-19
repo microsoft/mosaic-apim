@@ -1,4 +1,4 @@
-FROM node:24-alpine AS builder
+FROM node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS builder
 WORKDIR /workspace/apps/web
 COPY apps/web/package.json apps/web/package-lock.json ./
 RUN npm ci
@@ -11,7 +11,8 @@ COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY apps/web/config.template.js /opt/mosaic/config.template.js
 COPY apps/web/40-runtime-config.sh /docker-entrypoint.d/40-runtime-config.sh
 USER root
-RUN sed -i 's/\r$//' /docker-entrypoint.d/40-runtime-config.sh \
+RUN apk add --no-cache --upgrade 'brotli-libs>=1.2.1-r0' \
+    && sed -i 's/\r$//' /docker-entrypoint.d/40-runtime-config.sh \
     && chmod +x /docker-entrypoint.d/40-runtime-config.sh
 USER 101
 EXPOSE 8080
