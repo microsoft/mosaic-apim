@@ -2425,7 +2425,11 @@ class AccessRequestState(StrEnum):
 REQUESTER_DISPLAY_MAX_LENGTH = 200
 
 
-RequestQuestionKind = Literal["shortText", "paragraph", "singleChoice", "acknowledgment"]
+RequestQuestionKind = Literal[
+    "shortText", "paragraph", "singleChoice", "multipleChoice", "acknowledgment"
+]
+RequestFormFormatVersion = Literal[1, 2]
+REQUEST_CUSTOM_ANSWER_MAX_LENGTH = 200
 RequestResourceKind = Literal["modelApi", "poolModel", "mcpServer"]
 QuestionId = Annotated[str, Field(pattern=r"^[a-zA-Z0-9_-]{1,64}$")]
 
@@ -2501,15 +2505,23 @@ class RequestParagraphQuestion(RequestQuestionBase):
     max_length: int = Field(default=2000, ge=1, le=2000, strict=True)
 
 
-class RequestSingleChoiceQuestion(RequestQuestionBase):
-    kind: Literal["singleChoice"] = "singleChoice"
+class RequestChoiceQuestion(RequestQuestionBase):
     options: list[RequestChoice] = Field(min_length=2, max_length=12)
+    allow_custom_answer: bool = Field(default=False, strict=True, exclude_if=_unset)
 
     @model_validator(mode="after")
     def _unique_choices(self) -> Self:
         if len({item.id for item in self.options}) != len(self.options):
             raise ValueError("Choice IDs must be unique")
         return self
+
+
+class RequestSingleChoiceQuestion(RequestChoiceQuestion):
+    kind: Literal["singleChoice"] = "singleChoice"
+
+
+class RequestMultipleChoiceQuestion(RequestChoiceQuestion):
+    kind: Literal["multipleChoice"] = "multipleChoice"
 
 
 class RequestAcknowledgmentQuestion(RequestQuestionBase):
@@ -2520,18 +2532,25 @@ RequestQuestion = Annotated[
     RequestShortTextQuestion
     | RequestParagraphQuestion
     | RequestSingleChoiceQuestion
+    | RequestMultipleChoiceQuestion
     | RequestAcknowledgmentQuestion,
     Field(discriminator="kind"),
 ]
 
 
 class RequestFormDefinition(MosaicModel):
-    format_version: Literal[1] = 1
+    format_version: RequestFormFormatVersion = 1
     enabled: bool = Field(default=False, strict=True)
     questions: list[RequestQuestion] = Field(default_factory=list, max_length=20)
 
     @model_validator(mode="after")
     def _bounded_definition(self) -> Self:
+        if self.format_version == 1 and any(
+            item.kind == "multipleChoice"
+            or (isinstance(item, RequestChoiceQuestion) and item.allow_custom_answer)
+            for item in self.questions
+        ):
+            raise ValueError("Multiple choices and custom answers require form format version 2")
         if self.enabled and not self.questions:
             raise ValueError("An enabled form needs at least one question")
         if len({item.id for item in self.questions}) != len(self.questions):
@@ -2589,6 +2608,14 @@ class RequestFormPreviewInput(MosaicModel):
         return self
 
 
+class RequestChoiceAnswer(MosaicModel):
+    option_ids: list[QuestionId] = Field(max_length=12)
+    custom_text: StrictStr | None = Field(default=None, exclude_if=_unset)
+
+
+RequestAnswerValue = StrictStr | StrictBool | RequestChoiceAnswer
+
+
 class RequestQuestionView(MosaicModel):
     id: QuestionId
     kind: RequestQuestionKind
@@ -2597,10 +2624,54 @@ class RequestQuestionView(MosaicModel):
     required: bool
     max_length: int | None = Field(default=None, ge=1, le=2000)
     options: list[RequestChoice] = Field(default_factory=list, max_length=12)
+    allow_custom_answer: bool = Field(default=False, strict=True, exclude_if=_unset)
+
+    def answer_error(self, value: RequestAnswerValue | None) -> str | None:
+        if value is None:
+            return "Answer this required question." if self.required else None
+        if self.kind == "acknowledgment":
+            if not isinstance(value, bool):
+                return "Choose an acknowledgment, not a text or number."
+            if self.required and not value:
+                return "Acknowledge this statement before submitting."
+        elif self.kind in {"shortText", "paragraph"}:
+            if not isinstance(value, str):
+                return "Enter a text answer."
+            if self.required and not value.strip():
+                return "Answer this required question."
+            if len(value) > (self.max_length or 0):
+                return f"Use at most {self.max_length} characters."
+        else:
+            options = {item.id for item in self.options}
+            if self.kind == "singleChoice" and not self.allow_custom_answer:
+                if not isinstance(value, str) or value not in options:
+                    return "Choose one of the recorded options."
+            elif not isinstance(value, RequestChoiceAnswer):
+                return "Submit the selected choices and any custom answer."
+            else:
+                if len(set(value.option_ids)) != len(value.option_ids):
+                    return "Choose each option only once."
+                if not options.issuperset(value.option_ids):
+                    return "Choose only the available options."
+                custom = value.custom_text
+                if custom is not None:
+                    if not self.allow_custom_answer:
+                        return "This question does not accept a custom answer."
+                    if not custom.strip():
+                        return "Enter your custom answer or deselect Other."
+                    if len(custom) > REQUEST_CUSTOM_ANSWER_MAX_LENGTH:
+                        return f"Limit Other to {REQUEST_CUSTOM_ANSWER_MAX_LENGTH} characters."
+                selections = len(value.option_ids) + (custom is not None)
+                if not selections:
+                    return "Choose at least one answer."
+                if self.kind == "singleChoice" and selections != 1:
+                    return "Choose one option or enter a custom answer, not both."
+        return None
 
 
 class RequestFormResolution(MosaicModel):
     status: Literal["configured", "notRequired"]
+    format_version: RequestFormFormatVersion = 1
     revision: int = Field(ge=0)
     context_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
     environment: str | None
@@ -2609,7 +2680,7 @@ class RequestFormResolution(MosaicModel):
 
 class RequestFormAnswer(MosaicModel):
     question_id: QuestionId
-    value: StrictStr | StrictBool
+    value: RequestAnswerValue
 
 
 class RequestFormSubmission(MosaicModel):
@@ -2627,7 +2698,7 @@ class RequestFormSubmission(MosaicModel):
 
 
 class RequestFormSnapshotView(MosaicModel):
-    format_version: Literal[1] = 1
+    format_version: RequestFormFormatVersion = 1
     revision: int = Field(ge=1)
     questions: list[RequestQuestionView] = Field(min_length=1, max_length=20)
     answers: list[RequestFormAnswer] = Field(default_factory=list, max_length=20)
@@ -2652,34 +2723,26 @@ class RequestFormSnapshot(RequestFormSnapshotView):
         if len(questions) != len(self.questions) or answers.keys() - questions.keys():
             raise ValueError("Recorded answers must match unique recorded questions")
         for item in self.questions:
-            value = answers.get(item.id)
-            if item.kind == "singleChoice":
+            if self.format_version == 1 and (
+                item.kind == "multipleChoice" or item.allow_custom_answer
+            ):
+                raise ValueError("Recorded choices require form format version 2")
+            if item.kind in {"singleChoice", "multipleChoice"}:
                 if (
                     not 2 <= len(item.options) <= 12
                     or len({choice.id for choice in item.options}) != len(item.options)
-                    or (value is not None and value not in {choice.id for choice in item.options})
                 ):
                     raise ValueError("The recorded choice evidence is invalid")
-            elif item.options:
-                raise ValueError("Only a choice question has options")
+            elif item.options or item.allow_custom_answer:
+                raise ValueError("Only a choice question has options or allows a write-in answer")
             if item.kind in {"shortText", "paragraph"}:
                 bound = 200 if item.kind == "shortText" else 2000
                 if item.max_length is None or item.max_length > bound:
                     raise ValueError("The recorded text bound is invalid")
-                if value is not None and (
-                    not isinstance(value, str) or len(value) > item.max_length
-                ):
-                    raise ValueError("The recorded text answer is invalid")
             elif item.max_length is not None:
                 raise ValueError("Only a text question has a character bound")
-            if item.kind == "acknowledgment" and value is not None and not isinstance(value, bool):
-                raise ValueError("The recorded acknowledgment is invalid")
-            if item.required and (
-                value is None
-                or (isinstance(value, str) and not value.strip())
-                or (item.kind == "acknowledgment" and value is not True)
-            ):
-                raise ValueError("The recorded required answer is missing")
+            if error := item.answer_error(answers.get(item.id)):
+                raise ValueError(error)
         return self
 
 

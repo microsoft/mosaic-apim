@@ -1,6 +1,7 @@
 import json
 from unittest.mock import patch
 
+import pytest
 from fastapi import Request
 from fastapi.testclient import TestClient
 from mosaic_api.auth import AuthContext
@@ -9,7 +10,7 @@ from mosaic_api.domain import CatalogVisibility
 from mosaic_api.main import create_app
 from mosaic_api.services.portal import PortalService
 from test_approval_workflows import RESOURCE, TENANT, Harness, audit
-from test_request_forms import definition
+from test_request_forms import definition, flexible_definition
 
 
 class Auth:
@@ -27,7 +28,20 @@ class Auth:
         pass
 
 
-async def test_form_http_authorization_submission_and_explicit_safe_views() -> None:
+@pytest.mark.parametrize("flexible", [False, True])
+async def test_form_http_authorization_submission_and_explicit_safe_views(flexible: bool) -> None:
+    config = flexible_definition() if flexible else definition()
+    write_in = "Compare with fictional reference notes."
+    multiple_answers = (
+        [
+            {
+                "questionId": "uses",
+                "value": {"optionIds": ["synthetic", "unsure"], "customText": write_in},
+            },
+        ]
+        if flexible
+        else []
+    )
     h = Harness()
     await h.seed()
     model = await h.gateways.get_model_api(TENANT, RESOURCE.id)
@@ -56,7 +70,7 @@ async def test_form_http_authorization_submission_and_explicit_safe_views() -> N
             "/api/v1/request-form",
             json={
                 "expectedRevision": 0,
-                "definition": definition().model_dump(mode="json"),
+                "definition": config.model_dump(mode="json"),
                 "enableConfirmed": True,
             },
         )
@@ -73,7 +87,7 @@ async def test_form_http_authorization_submission_and_explicit_safe_views() -> N
                 "/api/v1/request-form",
                 json={
                     "expectedRevision": 1,
-                    "definition": definition().model_dump(mode="json"),
+                    "definition": config.model_dump(mode="json"),
                 },
             ).status_code
             == 403
@@ -86,27 +100,31 @@ async def test_form_http_authorization_submission_and_explicit_safe_views() -> N
         assert form["status"] == "configured"
         assert form["environment"] == "development"
         assert all("scope" not in question for question in form["questions"])
-        created = client.post(
-            "/api/v1/portal/access-requests",
-            json={
-                **target,
-                "requestForm": {
-                    "revision": form["revision"],
-                    "contextRevision": form["contextRevision"],
-                    "answers": [
-                        {"questionId": "purpose", "value": "Fictional request evidence."},
-                        {"questionId": "data", "value": "synthetic"},
-                        {"questionId": "charge", "value": "LUNA-042"},
-                        {"questionId": "ack", "value": True},
-                    ],
-                },
+        assert form["formatVersion"] == (2 if flexible else 1)
+        payload = {
+            **target,
+            "requestForm": {
+                "revision": form["revision"],
+                "contextRevision": form["contextRevision"],
+                "answers": [
+                    {"questionId": "purpose", "value": "Fictional request evidence."},
+                    {
+                        "questionId": "data",
+                        "value": {"optionIds": ["synthetic"]} if flexible else "synthetic",
+                    },
+                    {"questionId": "charge", "value": "LUNA-042"},
+                    {"questionId": "ack", "value": True},
+                    *multiple_answers,
+                ],
             },
-        )
+        }
+        created = client.post("/api/v1/portal/access-requests", json=payload)
         assert created.status_code == 201, created.text
         request_id = created.json()["id"]
         listed = client.get("/api/v1/portal/access-requests")
         for response in (created, listed):
             assert "LUNA-042" not in response.text
+            assert write_in not in response.text
             assert "requestFormSummary" in response.text
             assert "requesterName" not in response.text
             assert "approvalProvenance" not in response.text
@@ -117,6 +135,8 @@ async def test_form_http_authorization_submission_and_explicit_safe_views() -> N
             assert history.call_count == 0
         assert detail.status_code == 200
         assert "LUNA-042" in detail.text
+        if flexible:
+            assert detail.json()["recordedForm"]["answers"][-1] == multiple_answers[0]
         assert set(detail.json()["recordedForm"]) == {
             "formatVersion",
             "revision",
@@ -142,11 +162,17 @@ async def test_form_http_authorization_submission_and_explicit_safe_views() -> N
             tenant_id=TENANT,
             roles=frozenset({"Admin"}),
         )
-        assert "LUNA-042" not in client.get("/api/v1/access-requests").text
-        assert "LUNA-042" in client.get(f"/api/v1/access-requests/{request_id}").text
-        assert "LUNA-042" not in json.dumps(
-            [event.model_dump(mode="json") for event in h.repository.audit_events.values()]
-        )
-        assert "LUNA-042" not in json.dumps(
-            [event.model_dump(mode="json") for event in h.repository.notification_events.values()]
-        )
+        admin_list = client.get("/api/v1/access-requests")
+        admin_detail = client.get(f"/api/v1/access-requests/{request_id}")
+        for sensitive in ["LUNA-042", *([write_in] if flexible else [])]:
+            assert sensitive not in admin_list.text
+            assert sensitive in admin_detail.text
+            assert sensitive not in json.dumps(
+                [event.model_dump(mode="json") for event in h.repository.audit_events.values()]
+            )
+            assert sensitive not in json.dumps(
+                [
+                    event.model_dump(mode="json")
+                    for event in h.repository.notification_events.values()
+                ]
+            )

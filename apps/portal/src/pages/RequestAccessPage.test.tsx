@@ -58,6 +58,50 @@ beforeEach(() => {
   api.listAccessRequests.mockResolvedValue([])
 })
 describe('guided resource request', () => {
+  it('collects a write-in instead of a single choice and alongside multiple choices', async () => {
+    const user = userEvent.setup()
+    const data = resolution.questions[1]
+    api.resolveRequestForm.mockResolvedValue({
+      ...resolution, formatVersion: 2,
+      questions: [{ ...data, allowCustomAnswer: true }, {
+        ...data, id: 'useCases', kind: 'multipleChoice', label: 'Use cases', allowCustomAnswer: true,
+        options: [{ id: 'search', label: 'Search' }, { id: 'summary', label: 'Summaries' }],
+      }],
+    } satisfies RequestFormResolution)
+    mount()
+    await user.click(await screen.findByRole('button', { name: 'Next: Questions' }))
+    const single = await screen.findByRole('combobox', { name: 'Data class' })
+    const next = screen.getByRole('button', { name: 'Next: Review' })
+    await user.selectOptions(single, 'synthetic')
+    await user.selectOptions(single, screen.getByRole('option', { name: 'Other (write in)' }))
+    await user.click(next)
+    const singleCustom = screen.getByRole('textbox', { name: /Custom answer for Data class/ })
+    expect(singleCustom).toHaveFocus()
+    await user.type(singleCustom, 'Fake documents')
+    const search = screen.getByRole('checkbox', { name: 'Search' })
+    await user.click(next)
+    expect(search).toHaveFocus()
+    await user.keyboard(' ')
+    await user.click(screen.getByRole('checkbox', { name: 'Summaries' }))
+    const other = screen.getByRole('checkbox', { name: 'Other (write in)' })
+    await user.click(other)
+    await user.type(screen.getByRole('textbox', { name: /Custom answer for Use cases/ }), 'Discard this')
+    await user.click(other)
+    await user.click(other)
+    const multiCustom = screen.getByRole('textbox', { name: /Custom answer for Use cases/ })
+    expect(multiCustom).toHaveValue('')
+    await user.type(multiCustom, 'Fictional extra use')
+    await user.click(next)
+    expect(screen.getByText('Fictional extra use', { exact: false })).toBeVisible()
+    expect(screen.getByText('Summaries')).toBeVisible()
+    expect(screen.queryByText('Synthetic')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Request access' }))
+    await waitFor(() => expect(api.createAccessRequest).toHaveBeenCalledOnce())
+    expect(api.createAccessRequest.mock.calls[0][0].requestForm.answers).toEqual([
+      { questionId: 'data', value: { optionIds: [], customText: 'Fake documents' } },
+      { questionId: 'useCases', value: { optionIds: ['search', 'summary'], customText: 'Fictional extra use' } },
+    ])
+  })
   it('validates, retains Back edits and submits only the reviewed version on the final action', async () => {
     mount()
     await userEvent.click(await screen.findByRole('button', { name: 'Next: Questions' }))

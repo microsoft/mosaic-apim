@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../api'
@@ -36,6 +36,33 @@ beforeEach(() => {
   api.publishRequestForm.mockImplementation(async (body: RequestFormPublishInput) => ({ revision: 1, definition: body.definition }))
 })
 describe('guided request form publication', () => {
+  it('publishes open text, single choice and multiple choice together with optional write-ins', async () => {
+    const user = userEvent.setup()
+    mount(); await prepare()
+    await user.click(screen.getByRole('button', { name: 'Previous step' }))
+    for (const [index, kind, label] of [[2, 'singleChoice', 'Data class'], [3, 'multipleChoice', 'Use cases']] as const) {
+      await user.click(screen.getByRole('button', { name: 'Add question' }))
+      const field = () => within(screen.getByRole('region', { name: `Question ${index}` }))
+      await user.type(field().getByRole('textbox', { name: `Question ${index} label` }), label)
+      await user.selectOptions(field().getByRole('combobox', { name: `Question ${index} type` }), kind)
+      await user.type(field().getByRole('textbox', { name: `Question ${index} choice 1` }), 'First')
+      await user.type(field().getByRole('textbox', { name: `Question ${index} choice 2` }), 'Second')
+      await user.click(field().getByRole('checkbox', { name: 'Allow a custom answer' }))
+    }
+    await user.click(screen.getByRole('button', { name: 'Next: Applicability' }))
+    await user.click(screen.getByRole('button', { name: 'Next: Publish' }))
+    expect(screen.getByText(/Multiple choice · 2 predefined choices \+ Other/)).toBeVisible()
+    await user.click(screen.getByRole('checkbox', { name: 'Enable this form and require human review for matching new requests' }))
+    await user.click(screen.getByRole('button', { name: 'Publish revision' }))
+    await waitFor(() => expect(api.publishRequestForm).toHaveBeenCalledOnce())
+    expect(api.publishRequestForm.mock.calls[0][0]).toMatchObject({
+      definition: { formatVersion: 2, questions: [
+        { kind: 'paragraph' },
+        { kind: 'singleChoice', allowCustomAnswer: true },
+        { kind: 'multipleChoice', allowCustomAnswer: true, options: [{ label: 'First' }, { label: 'Second' }] },
+      ] },
+    })
+  })
   it('clears a different offering preview and prevents selection changes while resolving it', async () => {
     api.previewRequestForm.mockResolvedValueOnce({
       revision: 0, status: 'configured', contextRevision: 'a'.repeat(64), environment: 'development',
@@ -53,7 +80,7 @@ describe('guided request form publication', () => {
     api.previewRequestForm.mockImplementationOnce(() => new Promise<RequestFormResolution>(resolve => { finish = resolve }))
     await userEvent.click(screen.getByRole('button', { name: 'Preview questions' }))
     expect(offering).toBeDisabled()
-    await act(async () => finish({ revision: 0, status: 'notRequired', contextRevision: 'b'.repeat(64), environment: 'production', questions: [] }))
+    await act(async () => finish({ revision: 0, status: 'notRequired', formatVersion: 1, contextRevision: 'b'.repeat(64), environment: 'production', questions: [] }))
     expect(await screen.findByText('Current draft preview')).toBeVisible()
     expect(offering).toHaveValue(JSON.stringify(['modelApi', null, 'other']))
     expect(api.publishRequestForm).not.toHaveBeenCalled()

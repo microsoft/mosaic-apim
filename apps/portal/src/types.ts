@@ -144,7 +144,7 @@ export interface AccessRequestCreate {
   requestForm?: RequestFormSubmission
 }
 
-export type RequestQuestionKind = 'shortText' | 'paragraph' | 'singleChoice' | 'acknowledgment'
+export type RequestQuestionKind = 'shortText' | 'paragraph' | 'singleChoice' | 'multipleChoice' | 'acknowledgment'
 export interface RequestQuestionView {
   id: string
   kind: RequestQuestionKind
@@ -153,8 +153,10 @@ export interface RequestQuestionView {
   required: boolean
   maxLength: number | null
   options: { id: string; label: string }[]
+  allowCustomAnswer?: boolean
 }
-export interface RequestFormAnswer { questionId: string; value: string | boolean }
+export interface RequestChoiceAnswer { optionIds: string[]; customText?: string }
+export interface RequestFormAnswer { questionId: string; value: string | boolean | RequestChoiceAnswer }
 export interface RequestFormSubmission {
   revision: number
   contextRevision: string
@@ -162,13 +164,14 @@ export interface RequestFormSubmission {
 }
 export interface RequestFormResolution {
   status: 'configured' | 'notRequired'
+  formatVersion?: 1 | 2
   revision: number
   contextRevision: string
   environment: string | null
   questions: RequestQuestionView[]
 }
 export interface RequestFormSnapshotView {
-  formatVersion: 1
+  formatVersion: 1 | 2
   revision: number
   questions: RequestQuestionView[]
   answers: RequestFormAnswer[]

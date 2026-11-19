@@ -49,8 +49,14 @@ Administrators use **Entitlements > Request form** to author bounded questions i
 publication changes the active revision. Enabling collection requires an explicit confirmation.
 The default is unconfigured/disabled, and publishing never rewrites an existing request.
 
-A form contains at most 20 ordered questions: short text (up to 200 characters), paragraph
-(up to 2,000), single choice (2-12 stable choices), and acknowledgment. Labels are limited to
+A form contains at most 20 ordered questions. Mix short text (up to 200 characters), paragraph
+(up to 2,000), single choice, multiple choice, and acknowledgment. Each choice question has
+2–12 predefined options and can allow a custom answer. **Other** replaces the predefined
+selection in single choice and can be selected alongside any predefined options in multiple
+choice. Selecting **Other** requires a nonblank write-in of at most 200 characters; deselecting
+it discards the write-in. Required multiple-choice questions need at least one selection.
+
+Labels are limited to
 120 characters, help to 500, choices to 100, answer JSON to 16 KiB, form configuration to
 64 KiB, and the complete recorded snapshot to 80 KiB. Smaller authored text bounds are allowed.
 Required text must be nonblank; required acknowledgment means the boolean `true`, not a typed
@@ -78,7 +84,9 @@ validation. Exhausted contention reports a retryable submission conflict, not a 
 schema changed; no request, audit entry, or notification is partially saved.
 
 Changed forms retain the local draft until the requester chooses whether to keep compatible
-answers. Removed/incompatible values are not submitted; changed acknowledgment wording must be
+answers. A choice answer must be reviewed again if a selected option is renamed or removed, the
+question wording changes, or its write-in is no longer allowed. Removed/incompatible values are
+not submitted; changed acknowledgment wording must be
 acknowledged again. Nothing is auto-submitted. Drafts never enter URLs, history state, browser
 storage, notifications, or a file upload. After an uncertain network result, check **My requests**
 before deliberately retrying.
@@ -115,13 +123,16 @@ allowlist; it does not review the new structured answers.
 
 The form configuration/history and administrator request detail require `Admin`; portal resolution
 requires the existing portal role and current offering/charging eligibility, and portal detail
-requires ownership of that request. A guessed URL supplies no permission. Future delegated
-reviewers must obtain their own scoped authorization before reusing the read-only recorded-answer
-contract; cost-center POC delegation (#173) and answer-based approval conditions (Phase 2 of #167)
-are not implemented here.
+requires ownership of that request. A guessed URL supplies no permission. The delegated approval
+desk shows recorded answers only through its separate, cost-center-scoped authorization.
+Answer-based approval conditions (Phase 2 of #167) are not part of this feature.
 
 **Upgrade boundary:** deploy compatible API readers/writers and approval workers before first
-enablement. Once a required form is published, an old API that ignores it is an unsafe mixed-version
+enablement. Deploy the console, portal, API, and workers that support form format 2 before
+publishing multiple-choice fields or enabling write-ins. Format 2 adds choice answers with
+`optionIds` and, when Other is selected, `customText`. Existing format 1 snapshots and scalar
+answers remain readable without migration. Once a required form is published, an old API that
+ignores it is an unsafe mixed-version
 admission writer even before the first populated snapshot is saved. Omitting unused optional fields
 only preserves unused record shapes; it does not make populated schemas/answers backward-readable
 or make old writers enforce new requirements. Follow the compatible-reader/writer and quiescence

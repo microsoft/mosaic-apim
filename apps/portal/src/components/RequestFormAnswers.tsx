@@ -16,8 +16,12 @@ export function RequestFormAnswers({ form, draft = false, reviewer = false }: { 
       const value = answers.get(question.id)
       const text = value === undefined ? 'Not provided' : question.kind === 'acknowledgment'
         ? value ? 'Acknowledged (self-reported)' : 'Not acknowledged'
-        : question.kind === 'singleChoice' ? question.options.find(option => option.id === value)?.label ?? 'Recorded choice unavailable'
-        : String(value)
+        : typeof value === 'object' ? <ul>
+          {value.optionIds.map(id => <li key={id}>{question.options.find(option => option.id === id)?.label ?? 'Recorded choice unavailable'}</li>)}
+          {value.customText !== undefined && <li><strong>Other:</strong> {value.customText}</li>}
+        </ul>
+          : question.kind === 'singleChoice' ? question.options.find(option => option.id === value)?.label ?? 'Recorded choice unavailable'
+            : String(value)
       return <div key={question.id}><dt>{question.label}{question.required ? ' (required)' : ' (optional)'}</dt>
         <dd>{question.helpText && <p>{question.helpText}</p>}{text}</dd></div>
     })}</dl>
