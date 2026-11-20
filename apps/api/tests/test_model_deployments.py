@@ -647,6 +647,43 @@ async def test_project_registration_targets_parent_account_for_every_write(estat
     )
 
 
+@pytest.mark.parametrize("fine_tune_first", [False, True])
+async def test_base_catalogue_uses_base_sku_metadata_and_quota(estate, fine_tune_first) -> None:
+    fake, _, _, _, service, endpoint = estate
+    await enable(estate)
+    base = fake.models[0]["skus"][0]
+    base_usage = "OpenAI.GlobalStandard.gpt-4o"
+    fine_tune_usage = f"{base_usage}-finetune"
+    base.update(usageName=base_usage, deprecationDate="2090-01-01T00:00:00Z")
+    fine_tune = {
+        "name": "globalstandard",
+        "usageName": fine_tune_usage,
+        "capacity": {"minimum": 1, "maximum": 1000, "default": 50},
+        "deprecationDate": "2091-01-01T00:00:00Z",
+    }
+    fake.models[0]["skus"].insert(0 if fine_tune_first else 1, fine_tune)
+    fake.usages[0]["name"]["value"] = base_usage
+    fake.usages.append(
+        {"name": {"value": fine_tune_usage}, "currentValue": 0, "limit": 1000}
+    )
+
+    catalogue = await service.catalogue(ACTOR, endpoint.id)
+    matching = [sku for sku in catalogue.models[0].skus if sku.name.casefold() == "globalstandard"]
+    assert len(matching) == 1
+    sku = matching[0]
+    assert sku.name == "GlobalStandard"
+    assert sku.capacity.maximum == 100
+    assert sku.capacity.default == 10
+    assert sku.deprecation_date == base["deprecationDate"]
+    plan = await service.plan(ACTOR, endpoint.id, configuration())
+    assert plan.checks.quota.usage_name == base_usage
+
+    fake.usages.pop(0)
+    with pytest.raises(ConflictError, match="verifiable quota mapping"):
+        await service.plan(ACTOR, endpoint.id, configuration())
+    assert not fake.writes
+
+
 @pytest.mark.parametrize(
     "case",
     [
@@ -656,6 +693,8 @@ async def test_project_registration_targets_parent_account_for_every_write(estat
         "reversed-bounds",
         "invalid-choices",
         "duplicate-sku",
+        "unrelated-sku-meters",
+        "duplicate-sourced-model-sku",
         "duplicate-model",
     ],
 )
@@ -676,6 +715,13 @@ async def test_ambiguous_or_malformed_catalogue_cannot_be_reviewed(estate, case)
         capacity["allowedValues"] = [True, 10]
     elif case == "duplicate-sku":
         model["skus"].append(deepcopy(model["skus"][0]))
+    elif case in {"unrelated-sku-meters", "duplicate-sourced-model-sku"}:
+        sku = model["skus"][0]
+        sku["usageName"] = "OpenAI.GlobalStandard.gpt-4o"
+        suffix = "-other" if case == "unrelated-sku-meters" else "-finetune"
+        model["skus"].append({**sku, "usageName": f"{sku['usageName']}{suffix}"})
+        if case == "duplicate-sourced-model-sku":
+            model["sourceAccount"] = AI_RESOURCE_ID
     else:
         fake.models.append(deepcopy(model))
     with pytest.raises(UpstreamError):
