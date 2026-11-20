@@ -26,10 +26,12 @@ administrator-only API provides live catalogue/access reads, persisted review pl
 plan apply, operation history/status, reconciliation, and inventory-refresh retry.
 
 The live account catalogue preserves format, name, exact version, publisher, source, and source
-account. It advertises every returned SKU, rather than a hardcoded list. Validate Azure's capacity
+account. It uses Azure-advertised SKUs rather than a hardcoded list. Validate Azure's capacity
 bounds, increments and allowed values, lifecycle/deprecation, existing RAI policy selection,
 version-upgrade behavior, and live name availability. Match subscription quota by the SKU's
-`usageName`; do not guess quota identifiers or multiply all capacity by 1,000 TPM. Invalid,
+`usageName`; do not guess quota identifiers or multiply all capacity by 1,000 TPM. When Azure
+returns the same SKU for an OpenAI base model and its paired `-finetune` meter, use the base SKU
+row without merging the two. Other duplicate SKU rows remain ambiguous. Invalid,
 ambiguous, missing, unreadable, blocked, or insufficient quota blocks apply. For provisioned SKUs,
 also verify physical capacity for the selected model, version, SKU, and account region.
 Unverifiable required reads fail closed; truncated catalogues are errors, not successful empty

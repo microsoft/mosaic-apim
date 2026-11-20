@@ -55,6 +55,41 @@ def _capacity(raw: object) -> DeploymentCapacity:
     )
 
 
+def _deployment_sku_rows(raw: object, *, base_openai: bool) -> list[JsonObject]:
+    groups: dict[str, list[JsonObject]] = {}
+    for sku in raw if isinstance(raw, list) else []:
+        name = _text(sku.get("name")) if isinstance(sku, dict) else None
+        if name is None:
+            raise UpstreamError("Azure returned an incomplete model SKU; retry the catalogue")
+        groups.setdefault(name.casefold(), []).append(sku)
+
+    rows: list[JsonObject] = []
+    for sku_key, variants in groups.items():
+        if len(variants) == 1:
+            rows.append(variants[0])
+            continue
+        if base_openai and len(variants) == 2:
+            # ARM takes only the SKU name. For a base model, keep Azure's base
+            # meter when the second row is explicitly its fine-tuning counterpart.
+            by_usage = {
+                usage.casefold(): row
+                for row in variants
+                if (usage := _text(row.get("usageName"))) is not None
+            }
+            base_rows = [
+                row
+                for usage_name, row in by_usage.items()
+                if usage_name.startswith(f"openai.{sku_key}.")
+                and not usage_name.endswith("-finetune")
+                and f"{usage_name}-finetune" in by_usage
+            ]
+            if base_rows:
+                rows.extend(base_rows)
+                continue
+        raise UpstreamError("Azure returned ambiguous duplicate model deployment types")
+    return rows
+
+
 def deployment_models(items: list[JsonObject], usages: list[JsonObject]) -> list[DeployableModel]:
     quotas: dict[str, DeploymentQuota] = {}
     seen: set[str] = set()
@@ -92,27 +127,25 @@ def deployment_models(items: list[JsonObject], usages: list[JsonObject]) -> list
                 "The deployment catalogue cannot be verified; retry or inspect the account "
                 "in Azure."
             )
+        source = _text(model.get("source"))
+        source_account = _text(model.get("sourceAccount"))
         identity = (
             model_format,
             name,
             version,
             _text(model.get("publisher")),
-            _text(model.get("source")),
-            _text(model.get("sourceAccount")),
+            source,
+            source_account,
         )
         if identity in model_identities:
             raise UpstreamError("Azure returned an ambiguous duplicate model version")
         model_identities.add(identity)
         skus: list[DeploymentSku] = []
-        sku_names: set[str] = set()
         raw_skus = model.get("skus", item.get("skus", []))
-        for sku in raw_skus if isinstance(raw_skus, list) else []:
-            if not isinstance(sku, dict) or not _text(sku.get("name")):
-                raise UpstreamError("Azure returned an incomplete model SKU; retry the catalogue")
-            sku_key = sku["name"].casefold()
-            if sku_key in sku_names:
-                raise UpstreamError("Azure returned ambiguous duplicate model deployment types")
-            sku_names.add(sku_key)
+        for sku in _deployment_sku_rows(
+            raw_skus,
+            base_openai=model_format.casefold() == "openai" and not (source or source_account),
+        ):
             usage_name = _text(sku.get("usageName"))
             skus.append(
                 DeploymentSku(
@@ -129,8 +162,8 @@ def deployment_models(items: list[JsonObject], usages: list[JsonObject]) -> list
                 model_format=model_format,
                 model_version=version,
                 model_publisher=_text(model.get("publisher")),
-                source=_text(model.get("source")),
-                source_account=_text(model.get("sourceAccount")),
+                source=source,
+                source_account=source_account,
                 is_default_version=model.get("isDefaultVersion") is True,
                 lifecycle_status=_text(model.get("lifecycleStatus")),
                 deprecation_inference=(

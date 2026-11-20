@@ -98,6 +98,9 @@ insufficient quota blocks creation; so do unverifiable write permissions. MOSAIC
 
 Pay-as-you-go, provisioned throughput, batch, and other account-advertised SKUs use Azure's own
 capacity limits and quota `usageName` mapping, not a universal tokens-per-minute conversion.
+When Azure lists the same SKU for an OpenAI base model and its corresponding fine-tuning variant,
+MOSAIC uses the base-model row's limits and quota. It never substitutes fine-tuning quota for
+missing base-model quota.
 Provisioned capacity can be billable while idle. Quota checks reserve nothing and are not a price
 quote. Partner-model Marketplace agreements and other prerequisites must already be satisfied in
 Azure; MOSAIC reports Azure's refusal instead of accepting terms or buying capacity.
