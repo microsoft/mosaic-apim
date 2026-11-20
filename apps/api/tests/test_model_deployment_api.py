@@ -77,6 +77,41 @@ def test_registration_review_deploy_status_and_inventory(
 
 
 @pytest.mark.parametrize(
+    ("read_status", "expected"), [(200, "read"), (403, "denied"), (None, "empty"), (500, "unknown")]
+)
+def test_deployment_surfaces_distinguish_quota_reads_from_account_permissions(
+    deployments_client: TestClient,
+    fake_aoai: FakeDeploymentServices,
+    read_status: int | None,
+    expected: str,
+) -> None:
+    client = deployments_client
+    registered = client.post("/api/v1/model-endpoints", json={"azureResourceId": AI_RESOURCE_ID})
+    assert registered.status_code == 201
+    base = f"/api/v1/model-endpoints/{registered.json()['id']}"
+    fake_aoai.permissions = [{"actions": ["*/read"], "notActions": []}]
+    if read_status is None:
+        fake_aoai.usages = []
+    elif read_status != 200:
+        fake_aoai.fail_always("usages", read_status)
+
+    access = client.get(f"{base}/deployment-access")
+    response = client.get(f"{base}/deployable-models")
+    assert (access.status_code, response.status_code) == (200, 200)
+    catalogue = response.json()
+    for result in (access.json(), catalogue["access"]):
+        assert result["evaluation"] == "denied"
+        assert result["missingActions"] == [
+            "Microsoft.CognitiveServices/accounts/deployments/write"
+        ]
+        assert result["quotaStatus"] == expected
+    assert bool(catalogue["quotaError"]) == (expected != "read")
+    if expected == "denied":
+        assert "Cognitive Services Usages Reader" in catalogue["quotaError"]
+    assert not fake_aoai.writes
+
+
+@pytest.mark.parametrize(
     "suffix,method",
     [
         ("deployable-models", "GET"),

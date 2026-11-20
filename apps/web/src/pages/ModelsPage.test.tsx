@@ -228,6 +228,7 @@ const api = {
   getModelEndpointRuntimeAccess: vi.fn(),
   deleteModelEndpoint: vi.fn(),
   listModelDeployments: vi.fn(),
+  getModelDeploymentAccess: vi.fn(),
   getDeployableModels: vi.fn(),
   listModelDeploymentRuns: vi.fn(),
   planModelDeployment: vi.fn(),
@@ -301,6 +302,10 @@ async function openRowMenu(user: ReturnType<typeof userEvent.setup>, scope: HTML
 describe('ModelsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    api.getModelDeploymentAccess.mockResolvedValue({
+      canDeploy: true, evaluation: 'allowed', requiredActions: [], missingActions: [],
+      message: 'Deployment permissions verified.', quotaStatus: 'read',
+    })
     api.listGateways.mockResolvedValue([gateway])
     api.listEnvironmentFindings.mockResolvedValue({
       items: [],
@@ -1296,6 +1301,10 @@ describe('ModelsPage model endpoints', () => {
     api.listSuggestedModelEndpoints.mockResolvedValue(suggestionView())
     api.listModelDeployments.mockResolvedValue([])
     api.listModelDeploymentRuns.mockResolvedValue([])
+    api.getModelDeploymentAccess.mockResolvedValue({
+      canDeploy: true, evaluation: 'allowed', requiredActions: [], missingActions: [],
+      message: 'Deployment permissions verified.', quotaStatus: 'read',
+    })
     api.getDeployableModels.mockResolvedValue({
       endpointId: 'endpoint_1', target: null, models: [], raiPolicies: [],
       checkedAt: '2026-09-01T12:00:00Z',
@@ -1617,6 +1626,29 @@ describe('ModelsPage model endpoints', () => {
     expect(
       screen.getByText(/does not hold Cognitive Services OpenAI User/i),
     ).toBeVisible()
+  })
+
+  it('explains account and subscription deployment permissions separately from gateway access', async () => {
+    api.listModelEndpoints.mockResolvedValue([modelEndpoint()])
+    api.getModelDeploymentAccess.mockResolvedValue({
+      canDeploy: false, evaluation: 'denied', scope: AI_RESOURCE_ID,
+      missingActions: ['Microsoft.CognitiveServices/accounts/deployments/write'], quotaStatus: 'empty',
+    })
+
+    renderPage()
+
+    const readiness = await screen.findByRole('region', { name: 'Deployment readiness' })
+    expect(await within(readiness).findByText('Create deployments')).toBeVisible()
+    expect(within(readiness).getByText('Action needed')).toBeVisible()
+    expect(screen.getByText('Microsoft.CognitiveServices/accounts/deployments/write')).toBeVisible()
+    expect(screen.getByText('Cognitive Services Usages Reader')).toBeVisible()
+    expect(screen.getByText('subscription scope')).toBeVisible()
+    expect(screen.getByText(/This does not mean quota is exhausted/)).toBeVisible()
+    expect(screen.getByText('Gateways calling this endpoint')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Deploy model' })).toBeEnabled()
+    await userEvent.click(within(readiness).getByRole('button', { name: 'Recheck deployment permissions' }))
+    await waitFor(() => expect(api.getModelDeploymentAccess).toHaveBeenCalledTimes(2))
+    expect(api.updateModelEndpoint).not.toHaveBeenCalled()
   })
 
   it('offers a runnable command when the gateway is missing its role', async () => {

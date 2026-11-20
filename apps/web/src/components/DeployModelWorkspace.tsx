@@ -11,6 +11,7 @@ import type {
   ModelDeploymentPlan, ModelDeploymentRun, ModelEndpoint,
 } from '../types'
 import { EmptyState, ErrorState, Loading } from './AsyncState'
+import { DeploymentIdentity, DeploymentReadiness } from './DeploymentReadiness'
 import { WorkspaceDialog } from './WorkspaceDialog'
 import styles from './DeployModelWorkspace.module.css'
 
@@ -287,13 +288,12 @@ export function DeployModelWorkspace({ endpoint, onClose }: {
           {catalogue.data.target && <TargetSummary target={catalogue.data.target} />}
           {endpoint.projectName && <Text>Deployments belong to this project's parent account, not the project itself.</Text>}
           <section className={styles.section}>
-            <div className={styles.sectionHeading}><Title3 as="h3">Deployment management</Title3>
+            <div className={styles.sectionHeading}><Title3 as="h3">Deployment readiness</Title3>
               <Badge appearance="tint">{managementMode === 'manage' ? 'Manage deployments' : 'Read-only'}</Badge>
             </div>
-            <Text>{catalogue.data.access.message}</Text>
-            {Boolean(catalogue.data.access.missingActions.length) && <ul className={styles.warnings}>
-              {catalogue.data.access.missingActions.map((action) => <li key={action}><code>{action}</code></li>)}
-            </ul>}
+            <DeploymentIdentity endpoint={endpoint} />
+            <DeploymentReadiness endpoint={endpoint} access={catalogue.data.access} quotaError={catalogue.data.quotaError} />
+            <Button onClick={() => { void catalogue.refetch() }} disabled={catalogue.isFetching}>Check catalogue again</Button>
             {managementMode !== 'manage' ? <>
               <Checkbox checked={optIn} onChange={(_, data) => setOptIn(data.checked === true)}
                 disabled={!catalogue.data.access.canDeploy}
@@ -304,11 +304,8 @@ export function DeployModelWorkspace({ endpoint, onClose }: {
             </> : <Button onClick={() => mode.mutate('observe')} disabled={pending}>Return to read-only</Button>}
           </section>
           <section className={styles.section}>
-            <div className={styles.sectionHeading}><Title3 as="h3">Model configuration</Title3>
-              <Button onClick={() => { void catalogue.refetch() }} disabled={catalogue.isFetching}>Check catalogue again</Button>
-            </div>
+            <Title3 as="h3">Model configuration</Title3>
             <Text size={200}>Live Azure catalogue checked {formatTimestamp(catalogue.data.checkedAt)}. Choose an exact version and one of its advertised deployment types.</Text>
-            {catalogue.data.quotaError && <MessageBar intent="warning"><MessageBarBody>{catalogue.data.quotaError} Deployment is blocked until quota can be verified.</MessageBarBody></MessageBar>}
             <div className={styles.formGrid}>
               <Field className={styles.wide} label="Search available models">
                 <Input value={search} onChange={(_, data) => {
@@ -363,9 +360,13 @@ export function DeployModelWorkspace({ endpoint, onClose }: {
                   onChange={(_, data) => setCapacity(data.value)} />
               </Field>
               {sku && <div className={styles.wide}><MessageBar intent={enoughQuota ? 'info' : 'warning'}><MessageBarBody>
-                {sku.quota && quotaVerified
-                  ? `Subscription quota: ${sku.quota.available} available of ${sku.quota.limit} ${sku.quota.unit ?? 'Azure units'}. ${enoughQuota ? 'This is not a capacity reservation.' : 'The requested capacity exceeds available quota.'}`
-                  : 'Quota is unavailable, blocked, or has no verified mapping for this SKU. Deployment is blocked.'}
+                {catalogue.data.quotaError
+                  ? `Quota for ${sku.name} is unknown. See Deployment readiness above for how to verify it.`
+                  : quota?.blocked
+                    ? 'Azure marked quota for this deployment type as blocked or unknown. Check quota in Azure or choose another deployment type.'
+                    : quota
+                      ? `Subscription quota: ${quota.available} available of ${quota.limit} ${quota.unit ?? 'Azure units'}. ${enoughQuota ? 'This is not a capacity reservation.' : 'The requested capacity exceeds available quota.'}`
+                      : 'No verified quota record matches this model and deployment type. Check quota in Azure or choose another deployment type.'}
               </MessageBarBody></MessageBar></div>}
               <Field label="New deployment name" required hint="1–64 letters, digits, dots, hyphens, or underscores. Start with a letter or digit."
                 validationState={deploymentName && !validName ? 'error' : 'none'}

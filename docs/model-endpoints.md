@@ -95,6 +95,14 @@ prefix). It must be able to read its effective permissions, the subscription's r
 and, for provisioned deployments, the selected model's regional physical capacity. Account-only
 Reader does not authorize subscription-level quota reads. Missing, unknown, blocked, unmapped, or
 insufficient quota blocks creation; so do unverifiable write permissions. MOSAIC assigns no roles.
+The endpoint and the **Deploy model** workspace both show **Deployment readiness**. The summary distinguishes
+reading model inventory from creating deployments and reading regional quota. It shows
+which checks need attention. Ask an Azure administrator to grant the management identity the
+listed deployment actions on the Azure account, and **Cognitive Services Usages Reader** on the
+subscription if quota access is missing. An unreadable or empty quota response is not evidence
+that quota is exhausted. After changing access, recheck permissions before enabling deployment
+management or reviewing a deployment. Gateway invocation uses a different identity and is
+reported separately.
 
 Pay-as-you-go, provisioned throughput, batch, and other account-advertised SKUs use Azure's own
 capacity limits and quota `usageName` mapping, not a universal tokens-per-minute conversion.
