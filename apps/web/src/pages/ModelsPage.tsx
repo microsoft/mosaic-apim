@@ -63,6 +63,7 @@ import { useWorkbenchLocation } from '../components/useWorkbenchLocation'
 import { WorkspaceDialog } from '../components/WorkspaceDialog'
 import { ModelEndpointEditor, ModelEndpointEnvironmentEditor } from '../components/ModelEndpointEditor'
 import { DeployModelWorkspace } from '../components/DeployModelWorkspace'
+import { DeploymentIdentity, DeploymentReadiness } from '../components/DeploymentReadiness'
 import { completeWorkspaceNavigation } from '../components/WorkspaceLeaveGuard'
 import { UnpublishDialog } from '../components/UnpublishDialog'
 import { CatalogSummaryDetails, CatalogSummaryEditor } from '../components/CatalogSummaryEditor'
@@ -771,11 +772,28 @@ function ImportedModelApis({ onRemoved, onImport }: { onRemoved: (message: strin
   )
 }
 
-/**
- * A model endpoint has two independent access relationships, held by two different identities.
- * Collapsing them into one verdict would hide the common failure where MOSAIC can read an
- * endpoint perfectly well but the gateway still cannot call it.
- */
+function DeploymentAccessSection({ endpoint }: { endpoint: ModelEndpoint }) {
+  const api = useMosaicApi()
+  const access = useQuery({
+    queryKey: ['model-deployment-access', endpoint.id],
+    queryFn: () => api.getModelDeploymentAccess(endpoint.id),
+  })
+
+  return <section className={styles.accessSection} aria-label="Deployment readiness">
+    <div className={styles.suggestionHeading}>
+      <Text weight="semibold">Deployment readiness</Text>
+      <Button disabled={access.isFetching} onClick={() => { void access.refetch() }}>Recheck deployment permissions</Button>
+    </div>
+    <DeploymentIdentity endpoint={endpoint} />
+    {access.isPending && <Loading label="Checking deployment permissions and quota access" />}
+    {access.isError && <ErrorState title="MOSAIC could not check deployment permissions" error={access.error} />}
+    {access.isSuccess && <DeploymentReadiness endpoint={endpoint} access={access.data} />}
+    {access.isSuccess && (!access.data.canDeploy || access.data.quotaStatus !== 'read') &&
+      <Text size={200} className={styles.muted}>You can browse the model catalogue while deployment is blocked.</Text>}
+  </section>
+}
+
+// MOSAIC's management checks do not establish that the gateway can call existing models.
 function AccessPanel({
   endpoint,
   onMessage,
@@ -836,6 +854,8 @@ function AccessPanel({
     <section className={styles.detailSection}>
       <Title3 as="h3">Access</Title3>
       {gateways.isError && <ErrorState title="MOSAIC could not load gateway context" error={gateways.error} />}
+
+      {supportsModelDeployment(endpoint) && <DeploymentAccessSection endpoint={endpoint} />}
 
       <section className={styles.accessSection}>
         <CheckEvidence access={access} title="MOSAIC access">

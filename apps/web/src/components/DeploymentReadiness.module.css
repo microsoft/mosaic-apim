@@ -1,0 +1,46 @@
+.readiness {
+  container-type: inline-size;
+  margin: 0;
+  border-top: 1px solid var(--colorNeutralStroke2);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 10rem) 7rem minmax(0, 1fr);
+  gap: 0.375rem 1rem;
+  align-items: start;
+  padding-block: 0.75rem;
+  border-bottom: 1px solid var(--colorNeutralStroke2);
+}
+
+.row dt {
+  font-weight: var(--fontWeightSemibold);
+}
+
+.row dd {
+  margin: 0;
+}
+
+.details {
+  overflow-wrap: anywhere;
+}
+
+.actionList {
+  padding-inline-start: 1.25rem;
+  margin-block: 0.25rem 0;
+}
+
+.note {
+  margin-top: 0.25rem;
+  color: var(--mosaic-text-muted);
+}
+
+@container (max-width: 35rem) {
+  .row {
+    grid-template-columns: minmax(0, 1fr) max-content;
+  }
+
+  .details {
+    grid-column: 1 / -1;
+  }
+}

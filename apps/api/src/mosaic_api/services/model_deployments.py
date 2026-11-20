@@ -42,6 +42,7 @@ from mosaic_api.model_deployments import (
     DeploymentAccess,
     DeploymentCatalogue,
     DeploymentChecks,
+    DeploymentQuotaStatus,
     DeploymentRecoveryRequest,
     DeploymentRunStatus,
     DeploymentTarget,
@@ -143,7 +144,46 @@ class ModelDeploymentService:
                     "models. Other providers are not supported."
                 ),
             )
-        return await deployment_access(self._client_factory(endpoint.arm_resource()))
+        client = self._client_factory(endpoint.arm_resource())
+        access, quota_status = await asyncio.gather(
+            deployment_access(client), self._regional_quota_status(client)
+        )
+        return access.model_copy(update={"quota_status": quota_status})
+
+    async def _regional_quota_status(
+        self, client: CognitiveServicesClient
+    ) -> DeploymentQuotaStatus:
+        try:
+            account = await client.get_account()
+        except DomainError as error:
+            logger.warning("deployment_quota_region_unavailable", reason=error.message)
+            return "unknown"
+        _, quota_status, _ = await self._read_quota(client, _text((account or {}).get("location")))
+        return quota_status
+
+    @staticmethod
+    async def _read_quota(
+        client: CognitiveServicesClient, location: str | None
+    ) -> tuple[list[JsonObject], DeploymentQuotaStatus, str | None]:
+        if not location:
+            return [], "unknown", "Azure did not report this account's region."
+        try:
+            usages = await client.list_usages(location)
+        except DomainError as error:
+            denied = isinstance(error, UpstreamAuthorizationError)
+            logger.warning(
+                "deployment_options_unavailable", section="subscription quota", reason=error.message
+            )
+            if denied:
+                return [], "denied", (
+                    "Azure denied the subscription quota read. Ask an Azure administrator to "
+                    "assign Cognitive Services Usages Reader on the subscription to the "
+                    "endpoint's management identity, then check again."
+                )
+            return [], "unknown", f"Could not read subscription quota: {error.message}"
+        if not usages:
+            return [], "empty", "Azure returned no quota records for this subscription and region."
+        return usages, "read", None
 
     @staticmethod
     async def _optional_read(
@@ -183,17 +223,17 @@ class ModelDeploymentService:
         access, models, quota_read, policy_read = await asyncio.gather(
             deployment_access(client),
             client.list_models(strict=True),
-            self._optional_read("subscription quota", client.list_usages(location)),
+            self._read_quota(client, location),
             self._optional_read("content-filter policies", client.list_rai_policies()),
         )
-        usages, quota_error = quota_read
+        usages, quota_status, quota_error = quota_read
         policies, policy_error = policy_read
         blocking_run = await self._locked_run(endpoint)
         return DeploymentCatalogue(
             endpoint_id=endpoint.id,
             blocking_run_id=blocking_run.id if blocking_run else None,
             target=target,
-            access=access,
+            access=access.model_copy(update={"quota_status": quota_status}),
             models=deployment_models(models, usages),
             rai_policies=sorted(
                 {name for policy in policies if (name := _text(policy.get("name")))}

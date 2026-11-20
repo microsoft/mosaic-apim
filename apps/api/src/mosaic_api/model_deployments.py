@@ -28,6 +28,9 @@ def deployment_lock_scope(endpoint: ModelEndpoint) -> str:
     return deterministic_id("endpointdeployment", endpoint.azure_cloud, account)
 
 
+DeploymentQuotaStatus = Literal["read", "denied", "empty", "unknown"]
+
+
 class DeploymentAccess(MosaicModel):
     can_deploy: bool = False
     evaluation: Literal["allowed", "denied", "unknown", "unsupported"] = "unknown"
@@ -36,6 +39,7 @@ class DeploymentAccess(MosaicModel):
     required_actions: list[str] = Field(default_factory=lambda: list(DEPLOYMENT_ACTIONS))
     missing_actions: list[str] = Field(default_factory=list)
     message: str
+    quota_status: DeploymentQuotaStatus | None = None
 
 
 class DeploymentModelRef(MosaicModel):

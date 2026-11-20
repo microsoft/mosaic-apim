@@ -246,8 +246,16 @@ embeddings remain disabled read-only intent, not current save or enforcement pro
     </td>
   </tr>
   <tr>
+    <td colspan="2" valign="top">
+      <a id="deployment-readiness"></a>
+      <img src="images/screenshots/console-deployment-readiness.png" alt="Endpoint deployment readiness showing verified inventory read, missing account deployment write, and unverified subscription quota access">
+      <p><b>Deployment readiness.</b> See which identity needs permission and whether it belongs on
+      the Azure account or subscription. An unverified quota read does not mean quota is exhausted.</p>
+    </td>
+  </tr>
+  <tr>
     <td width="50%" valign="top">
-      <img src="images/screenshots/console-deploy-model.png" alt="The Azure model deployment workspace with explicit management opt-in, a live model version, deployment type, native capacity, quota, and content-filter selection">
+      <img src="images/screenshots/console-deploy-model.png" alt="The Azure model deployment workspace showing deployment readiness, management opt-in, model version, and verified quota">
       <p><b>Deploy an Azure model.</b> Query an existing account's live model catalogue and configure
       a new deployment, with explicit management opt-in, native Azure capacity, and verified quota.
       Registration and deployment are connected without automatically publishing a model.</p>

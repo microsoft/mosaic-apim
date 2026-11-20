@@ -150,6 +150,39 @@ describe('Azure model deployment workspace', () => {
     expect(api.planModelDeployment).not.toHaveBeenCalled()
   })
 
+  it('explains who needs quota access before model selection and keeps review blocked', async () => {
+    const user = userEvent.setup()
+    api.getDeployableModels.mockResolvedValue({
+      ...catalogue,
+      access: { ...catalogue.access, quotaStatus: 'denied' },
+      quotaError: 'Azure denied the regional quota read.',
+    })
+    renderWorkspace(true)
+    expect(await screen.findByText('Read regional quota')).toBeVisible()
+    expect(screen.getByText(/Azure denied the quota read/)).toBeVisible()
+    expect(screen.getByText('Cognitive Services Usages Reader')).toBeVisible()
+    expect(screen.getByText('the MOSAIC host managed identity')).toBeVisible()
+    expect(screen.getByText('subscription scope')).toBeVisible()
+    await configure(user)
+    expect(screen.getByText(/Quota for GlobalStandard is unknown/)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Review deployment' })).toBeDisabled()
+  })
+
+  it('reports real insufficient quota without suggesting a subscription role change', async () => {
+    api.getDeployableModels.mockResolvedValue({
+      ...catalogue,
+      access: { ...catalogue.access, quotaStatus: 'read' },
+      models: [{ ...catalogue.models[0], skus: [{
+        ...catalogue.models[0].skus[0], quota: { ...quota, currentValue: 98, available: 2 },
+      }] }],
+    })
+    renderWorkspace(true)
+    await configure(userEvent.setup())
+    expect(screen.getByText(/requested capacity exceeds available quota/)).toBeVisible()
+    expect(screen.queryByText('Cognitive Services Usages Reader')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Review deployment' })).toBeDisabled()
+  })
+
   it.each(['unreadable', 'removed'])('reviews Azure default when a selected content filter becomes %s', async (reason) => {
     const user = userEvent.setup()
     api.getDeployableModels.mockResolvedValueOnce(structuredClone(catalogue)).mockResolvedValue({

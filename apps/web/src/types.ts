@@ -1638,6 +1638,7 @@ export interface DeploymentAccess {
   requiredActions: string[]
   missingActions: string[]
   message: string
+  quotaStatus?: 'read' | 'denied' | 'empty' | 'unknown' | null
 }
 
 export interface DeploymentQuota {

@@ -182,6 +182,9 @@ requester review, and historical single/bulk answer evidence without equating an
 grant limits and shared safeguards with field-specific recovery and a retained draft. Historical
 embeddings are unverified read-only intent, not current enforcement evidence.
 
+[Deployment readiness](docs/gallery.md#deployment-readiness) separates inventory access, account
+permissions to create deployments, and subscription access to read regional quota.
+
 **Capture warning (PR #182):** the previously pending gateway-feedback shot and other refreshed
 views are inherited from merged `main`, not independently regenerated on this branch.
 See the [capture provenance warning](docs/screenshots.md#shot-inventory).

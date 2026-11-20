@@ -743,12 +743,20 @@ DASHBOARD_LOADED = (
 TELEMETRY_READY = "This gateway is ready for usage analytics."
 
 
-def configure_model_deployment(page: Page) -> None:
-    """Reach deployment configuration using only the locally seeded fictional Azure account."""
+def select_deployment_account(page: Page) -> Locator:
     if page.viewport_size and page.viewport_size["width"] <= 640:
         page.get_by_role("button", name="Back to list", exact=True).click()
-    page.get_by_role("button", name="Contoso Azure OpenAI").first.click()
-    page.get_by_role("button", name="Deploy model", exact=True).click()
+    accounts = page.get_by_role("list", name="Registered model endpoints", exact=True)
+    accounts.get_by_role("button", name=re.compile(r"^Contoso Azure OpenAI\b")).click()
+    detail = page.get_by_role("region", name="Model endpoint details", exact=True)
+    detail.get_by_role("heading", name="Contoso Azure OpenAI", exact=True).wait_for()
+    return detail
+
+
+def configure_model_deployment(page: Page) -> None:
+    """Reach deployment configuration using only the locally seeded fictional Azure account."""
+    detail = select_deployment_account(page)
+    detail.get_by_role("button", name="Deploy model", exact=True).click()
     page.get_by_text("Model configuration", exact=True).wait_for()
     opt_in = page.get_by_role("checkbox", name=re.compile(r"^Allow MOSAIC"))
     if opt_in.count():
@@ -760,6 +768,35 @@ def configure_model_deployment(page: Page) -> None:
     select_option("Deployment type", "GlobalStandard")(page)
     page.get_by_label("New deployment name", exact=False).fill("contoso-gpt-41-eval")
     page.get_by_text(re.compile(r"Subscription quota: 2000 available")).wait_for()
+
+
+def show_deployment_readiness(page: Page) -> None:
+    """Illustrate missing permissions without changing the seeded account or any Azure roles."""
+
+    def blocked_access(route: Route) -> None:
+        response = route.fetch()
+        payload = response.json()
+        payload.update(
+            canDeploy=False,
+            evaluation="denied",
+            missingActions=["Microsoft.CognitiveServices/accounts/deployments/write"],
+            quotaStatus="empty",
+        )
+        route.fulfill(response=response, json=payload)
+
+    page.route("**/api/v1/model-endpoints/*/deployment-access", blocked_access)
+    detail = select_deployment_account(page)
+    readiness = detail.get_by_role("region", name="Deployment readiness", exact=True)
+    readiness.get_by_text("Cognitive Services Usages Reader", exact=True).wait_for()
+    readiness.get_by_text("Not verified", exact=True).last.wait_for()
+    viewport = page.viewport_size
+    assert viewport is not None
+    try:
+        page.set_viewport_size({"width": 390, "height": viewport["height"]})
+        _assert_no_document_overflow(page, "deployment readiness at 390px", expected_width=390)
+    finally:
+        page.set_viewport_size(viewport)
+    readiness.scroll_into_view_if_needed()
 
 
 def preview_gateway_limit_refusal(page: Page) -> None:
@@ -1037,7 +1074,16 @@ SHOTS: list[Shot] = [
             click_button("Contoso AI Lab"),
             wait_for_text("MOSAIC access check out of date"),
         ),
-        height=1700,
+        height=2200,
+    ),
+    Shot(
+        "console-deployment-readiness",
+        "console",
+        "/models?tab=endpoints",
+        "dark",
+        "Model endpoints",
+        actions=(show_deployment_readiness,),
+        height=1200,
     ),
     Shot(
         "console-deploy-model",
@@ -1046,7 +1092,7 @@ SHOTS: list[Shot] = [
         "light",
         "Model endpoints",
         actions=(configure_model_deployment,),
-        height=1700,
+        height=1950,
     ),
     Shot(
         "console-deploy-model-review",

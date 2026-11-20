@@ -116,6 +116,7 @@ import type {
   ModelEndpoint,
   ModelEndpointSuggestionView,
   ModelEndpointSyncRun,
+  DeploymentAccess,
   DeploymentCatalogue,
   DeploymentRecoveryRequest,
   ModelDeploymentCreate,
@@ -574,6 +575,7 @@ export interface MosaicApi extends AdminApi {
   listModelEndpointSyncRuns(endpointId: string): Promise<ModelEndpointSyncRun[]>
   getModelEndpointSyncRun(endpointId: string, runId: string): Promise<ModelEndpointSyncRun>
   listModelDeployments(endpointId: string): Promise<ObservedModelDeployment[]>
+  getModelDeploymentAccess(endpointId: string): Promise<DeploymentAccess>
   getDeployableModels(endpointId: string): Promise<DeploymentCatalogue>
   planModelDeployment(endpointId: string, payload: ModelDeploymentCreate): Promise<ModelDeploymentPlan>
   applyModelDeployment(endpointId: string, planId: string): Promise<ModelDeploymentRun>
@@ -1452,6 +1454,8 @@ export function useMosaicApi(): MosaicApi {
         request<ModelEndpointSyncRun>(`/api/v1/model-endpoints/${encodeURIComponent(id)}/sync-runs/${encodeURIComponent(runId)}`),
       listModelDeployments: (id) =>
         request<ObservedModelDeployment[]>(`/api/v1/model-endpoints/${id}/deployments`),
+      getModelDeploymentAccess: (id) =>
+        request<DeploymentAccess>(`/api/v1/model-endpoints/${encodeURIComponent(id)}/deployment-access`),
       getDeployableModels: (id) =>
         request<DeploymentCatalogue>(`/api/v1/model-endpoints/${encodeURIComponent(id)}/deployable-models`),
       planModelDeployment: (id, payload) =>
