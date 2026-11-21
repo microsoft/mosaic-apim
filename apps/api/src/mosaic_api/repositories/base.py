@@ -122,7 +122,7 @@ class DirectoryRepository(Protocol):
 
 
 class AppearanceRepository(Protocol):
-    """Persistence for the organization's colour scheme."""
+    """Persistence for the organization's color scheme."""
 
     async def ready(self) -> bool: ...
 

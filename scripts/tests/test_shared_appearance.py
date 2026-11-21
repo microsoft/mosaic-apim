@@ -1,8 +1,8 @@
 """Checks the appearance files the console (apps/web) and the portal (apps/portal) share.
 
 The two apps are separate packages, so each carries its own copy of the palette arithmetic, the
-theme provider, the shell stylesheet, the colour editors, and the fonts. A change made to one copy
-and not the other would give the two apps different colours for the same saved palette.
+theme provider, the shell stylesheet, the color editors, and the fonts. A change made to one copy
+and not the other would give the two apps different colors for the same saved palette.
 """
 
 from __future__ import annotations

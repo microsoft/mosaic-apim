@@ -578,6 +578,14 @@ def fill_textbox(name: str, text: str) -> Action:
     return act
 
 
+def open_custom_colors(page: Page) -> None:
+    """Open the portal's own-colors dialog from the account menu. Nothing in it reaches the API."""
+
+    page.get_by_role("button", name=re.compile("^Account menu for ")).filter(visible=True).click()
+    page.get_by_role("menuitem", name="Custom colors", exact=True).click()
+    page.get_by_role("dialog", name="Your custom colors").wait_for()
+
+
 def fill_labelled(pattern: str, text: str) -> Action:
     """Fill the field whose label matches, such as a password field, which has no textbox role."""
 
@@ -1728,6 +1736,27 @@ SHOTS: list[Shot] = [
         "console-environments", "console", "/settings", "light", "needs classification", height=1178
     ),
     Shot(
+        "console-appearance",
+        "console",
+        "/settings?tab=appearance",
+        "dark",
+        "Organization colors",
+        actions=(
+            # A person's own colors stay in the browser, so saving them changes nothing in the
+            # shared demo API. The organization's colors are left as they are.
+            fill_textbox("Accent", "#f0603f"),
+            fill_textbox("Page background", "#160b08"),
+            fill_textbox("Panels", "#2a1611"),
+            fill_textbox("Borders", "#5a3329"),
+            fill_textbox("Text", "#fdf3ef"),
+            fill_textbox("Secondary text", "#e0b9ad"),
+            click_button("Save and use my colors"),
+            wait_for_text("Preference: custom. Resolved theme: dark."),
+            scroll_to_text("Your custom colors", margin=96),
+        ),
+        height=1000,
+    ),
+    Shot(
         "console-azure-connections",
         "console",
         "/settings?tab=connections",
@@ -1829,6 +1858,20 @@ SHOTS: list[Shot] = [
         "Categories & channels",
         actions=(scroll_to_text("Digest schedules", margin=105),),
         height=1430,
+    ),
+    Shot(
+        "portal-custom-colors",
+        "portal",
+        "/catalog",
+        "light",
+        "Docs search MCP",
+        actions=(
+            open_custom_colors,
+            # A draft only: the dialog is never saved, so the portal behind it keeps its colors.
+            fill_textbox("Accent", "#0f9d8a"),
+            fill_textbox("Page background", "#e9f5f2"),
+            fill_textbox("Borders", "#bfd9d3"),
+        ),
     ),
     Shot(
         "portal-request-access",
@@ -2421,7 +2464,7 @@ def _capture_one(
     return target
 
 
-# The built-in palettes' solid panel colour, which dialogs, drawers, and every fallback use.
+# The built-in palettes' solid panel color, which dialogs, drawers, and every fallback use.
 SOLID_PANEL: dict[Theme, str] = {"light": "rgb(255, 255, 255)", "dark": "rgb(27, 34, 51)"}
 
 # Reads an element's paint, the bar drawn in its ::before, and what the shell's tokens resolve to.
@@ -2504,7 +2547,7 @@ def _check_portal_appearance(page: Page, theme: Theme) -> None:
                             f"portal: join action contrast {contrast:.2f} is below 4.5 in {theme}"
                         )
                 # The top bar is a band that blurs what scrolls beneath it, with the glass bar
-                # drawn inside it. The rail is a solid colour of its own.
+                # drawn inside it. The rail is a solid color of its own.
                 topbar = page.locator(".topbar").evaluate(SHELL_PAINT)
                 if (
                     topbar["blur"] != "blur(20px) saturate(1.4)"
@@ -2526,7 +2569,7 @@ def _check_portal_appearance(page: Page, theme: Theme) -> None:
                     )
                 if panel["solid"] != expected:
                     raise CaptureError(
-                        f"portal: {route} does not use the built-in {theme} panel colour: {panel}"
+                        f"portal: {route} does not use the built-in {theme} panel color: {panel}"
                     )
                 if panel["radius"] != "20px":
                     raise CaptureError(f"portal: {route} does not use rounded panels")
@@ -2579,7 +2622,7 @@ def _check_portal_appearance(page: Page, theme: Theme) -> None:
                         f"portal: reduced transparency left panels translucent: {panel}"
                     )
             else:
-                # Forced colours replace every background, so only the blur is ours to check.
+                # Forced colors replace every background, so only the blur is ours to check.
                 for selector in (".sidebar", ".topbar"):
                     if page.locator(selector).evaluate(SHELL_PAINT)["blur"] != "none":
                         raise CaptureError(f"portal: {feature} did not disable {selector} blur")

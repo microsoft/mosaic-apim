@@ -177,7 +177,9 @@ content returned by APIs are not vendored or redirected by this rule.
 
 The API serves Swagger UI at `/docs`, ReDoc at `/redoc`, and their assets at `/docs-assets/`.
 The files live inside `apps/api/src/mosaic_api/static/`, so the API wheel and existing Docker
-build include them without a runtime download. ReDoc's Montserrat and Roboto fonts (weights
+build include them without a runtime download. The console and portal vendor the Outfit and
+JetBrains Mono variable fonts (Latin and Latin Extended) under `src/fonts`, each beside its SIL
+Open Font License, from pinned Fontsource distributions. ReDoc's Montserrat and Roboto fonts (weights
 300, 400, and 700, including their language subsets) are vendored from pinned Fontsource
 distributions rather than loaded through Google Fonts. Swagger's remote validator is
 disabled. ReDoc's bundled search worker stays local; its branding image is also vendored.

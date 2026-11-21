@@ -134,7 +134,7 @@ python -m scripts.screenshots.capture
 | `--logs-dir DIR` | Use a new dedicated project-local directory for server logs and unredacted failure captures, outside the PNG output directory. The default is an ignored `scripts\screenshots\__pycache__\capture-*` cache; a successful run removes it |
 | `--headed` | Show the browser while it captures |
 | `--preview` | Serve production assets after building both apps with `npm run build --prefix apps\web` and `npm run build --prefix apps\portal`; avoids cold dev-server dependency bundling |
-| `--check-navigation` | Also verify all four administrator rail combinations in both themes, full width recovery, single-line controls and document reflow, every Pool section and Pricing at exactly 1440px document width with local table scrolling and `scrollIntoView`, mobile focus/inert behavior, workspace drafts and section-change discard decisions, forced colors, usage-first portal landing, portal primary/section rail width recovery, expanded/compact appearance controls, unchanged portal list geometry, and drawer/credential teardown against the fictional estate. For each captured portal theme, check resource, request, and cost-center pages at desktop/mobile widths, glass chrome, opaque panels/drawers, panel spacing, and reduced-transparency/forced-colors/unsupported-blur fallbacks |
+| `--check-navigation` | Also verify all four administrator rail combinations in both themes, full width recovery, single-line controls and document reflow, every Pool section and Pricing at exactly 1440px document width with local table scrolling and `scrollIntoView`, mobile focus/inert behavior, workspace drafts and section-change discard decisions, forced colors, usage-first portal landing, portal primary/section rail width recovery, expanded/compact appearance controls, unchanged portal list geometry, and drawer/credential teardown against the fictional estate. For each captured portal theme, check resource, request, and cost-center pages at desktop/mobile widths, the frosted top bar, solid rail, glass panels, solid drawers and Fluent surfaces, panel radius and spacing, and that reduced transparency, forced colors, and unsupported blur leave solid surfaces. The checks expand the primary rail first, because it starts compact |
 | `--reuse-servers` | Use a demo API and apps that are already running instead of starting them |
 | `--api-port`, `--console-port`, `--portal-port` | Change the ports, which default to 18000, 15173, and 15174 |
 | `--console-access-port` | Change the isolated User-only handoff fixture's port (default 15175). It starts when handoff shots are selected, including with `--reuse-servers`; choose an unused port |
@@ -320,7 +320,8 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
   `User`. Local authentication is refused outside local and test environments, so the demo can't be
   pointed at a deployed MOSAIC.
 - `capture.py` opens each shot in a fresh Chromium context 1440 pixels wide, with the shot's theme
-  set both as the operating-system preference and as MOSAIC's stored preference. It waits for
+  set both as the operating-system preference and as MOSAIC's stored preference. A shot of custom
+  colors types them into the editor, because a person's palette lives only in the browser. It waits for
   every spinner to clear and for the shot's ready text, runs the shot's actions, captures the
   viewport, and blurs every sensitive region before it saves the PNG. Administrator shots fail
   rather than save clipped content if the document overflows horizontally. Dates are rendered in UTC,
@@ -423,15 +424,18 @@ Issue #145 separately regenerates `console-pricing`, `console-billing-data`, and
 `console-billing-review`, and adds `console-pricing-catalog` and
 `console-pricing-catalog-review` through the same fictional capture/redaction pipeline.
 
-The portal shots use the console's cool light/dark palette and glass navigation, with opaque
-resource lists, forms, and connection drawers. The Usage & cost overview uses a taller viewport
+Both apps' shots show the compact primary rail, the frosted top bar, and glass panels over the
+accent-washed backdrop, in the built-in palettes unless a row says otherwise. Connection drawers
+and dialogs are solid. The Usage & cost overview uses a taller viewport
 to include both the daily trend and the complete last-24-hours chart.
 
 | Shot | App | Route and state | Theme | Gallery entry |
 | --- | --- | --- | --- | --- |
 | `console-dashboard-light`, `console-dashboard-dark` | Console | `/dashboard` | Both | Light and dark: console overview |
 | `console-portal-handoff-light`, `console-portal-handoff-dark` | Console | `/` in the isolated fictional User-only access fixture; separate administrator explanation, configured portal link, and Sign out | Both | Portal handoff for end users |
-| `portal-catalog-light`, `portal-catalog-dark` | Portal | `/catalog`, full-width model-grouped rows with filters, blue-tinted glass navigation, and appearance controls | Both | Light and dark: portal catalog |
+| `portal-catalog-light`, `portal-catalog-dark` | Portal | `/catalog`, full-width model-grouped rows with filters, the compact rail, and the frosted top bar | Both | Light and dark: portal catalog |
+| `console-appearance` | Console | `/settings?tab=appearance`, a fictional coral palette typed into **Your custom colors** and saved in the browser only, so the page shows Custom applied; organization colors untouched | Dark base, custom palette | Custom colors, console |
+| `portal-custom-colors` | Portal | `/catalog`, account menu **Custom colors** dialog with a draft teal palette, preview, and contrast results; never saved | Light | Custom colors, portal |
 | `console-gateways` | Console | `/gateways`, compact list with selected gateway overview | Light | Gateways |
 | `console-self-hosted-gateways` | Console | `/gateways?tab=self-hosted`, fictional existing child registered under its APIM parent | Light | Self-hosted gateways |
 | `console-self-hosted-publication-review` | Console | `/models?tab=published`, Association map and local caller preview with Apply blocked | Light | Self-hosted publication review |

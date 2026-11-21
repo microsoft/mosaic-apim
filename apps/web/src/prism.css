@@ -1,5 +1,5 @@
 /*
- * MOSAIC's shared shell: colour tokens, the tinted backdrop, the navigation rail, the frosted
+ * MOSAIC's shared shell: color tokens, the tinted backdrop, the navigation rail, the frosted
  * top bar and workspace, and the Fluent adjustments that go with them.
  *
  * The console and the portal each import this file after their own index.css, so it must stay
@@ -7,7 +7,7 @@
  *
  * The token values below are the built-in palettes. The theme provider recomputes all of them
  * from the active palette (see appearance.ts) and sets them on <html>, which is how an
- * organization's scheme and a person's custom colours reach every rule here.
+ * organization's scheme and a person's custom colors reach every rule here.
  */
 @import "./fonts/fonts.css";
 
@@ -38,7 +38,6 @@
   --mosaic-border: #cdd4e3;
   --mosaic-border-soft: rgba(205, 212, 227, 0.62);
   --mosaic-edge: rgba(255, 255, 255, 0.86);
-  --mosaic-chrome-tint: rgba(53, 102, 232, 0.3);
   --mosaic-text: #0f1629;
   --mosaic-text-muted: #465069;
   --mosaic-text-faint: #7e8596;
@@ -82,7 +81,6 @@
   --mosaic-border: #3a4560;
   --mosaic-border-soft: rgba(58, 69, 96, 0.6);
   --mosaic-edge: rgba(255, 255, 255, 0.1);
-  --mosaic-chrome-tint: rgba(53, 102, 232, 0.5);
   --mosaic-text: #f3f5fb;
   --mosaic-text-muted: #b6bfd4;
   --mosaic-text-faint: #8890a4;
@@ -112,7 +110,7 @@
 }
 
 /*
- * People who ask for less transparency, or use forced colours, get solid surfaces everywhere.
+ * People who ask for less transparency, or use forced colors, get solid surfaces everywhere.
  * `!important` is needed because the theme provider sets these tokens on <html> itself.
  */
 @media (prefers-reduced-transparency: reduce), (forced-colors: active) {
@@ -307,7 +305,7 @@ code,
   outline-offset: 2px;
 }
 
-/* Fluent buttons inside the rail read the rail's colours, not the page's. */
+/* Fluent buttons inside the rail read the rail's colors, not the page's. */
 .sidebar .fui-Button {
   border-color: transparent;
   background: transparent;
@@ -401,8 +399,9 @@ code,
     padding: var(--shell-gap) 8px 0;
   }
 
-  .topbar-brand {
-    display: inline;
+  /* A phone's top bar has no room for the wordmark; the navigation drawer carries it. */
+  .rail-collapsed .topbar-brand {
+    display: none;
   }
 
   .content-inner {

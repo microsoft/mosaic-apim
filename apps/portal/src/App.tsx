@@ -170,7 +170,7 @@ function PortalShell() {
               <MenuItem>{accountName}</MenuItem>
               <MenuItem onClick={() => { closeNavigation(); navigate('/notifications') }}>Notifications</MenuItem>
               <MenuItem onClick={() => { closeNavigation(); navigate('/notification-preferences') }}>Notification preferences</MenuItem>
-              <MenuItem onClick={() => { closeNavigation(); setAppearanceOpen(true) }}>Custom colours</MenuItem>
+              <MenuItem onClick={() => { closeNavigation(); setAppearanceOpen(true) }}>Custom colors</MenuItem>
               {runtimeConfig.authMode === 'entra' && <MenuItem icon={<SignOutRegular />} onClick={signOut}>Sign out</MenuItem>}
             </MenuList></MenuPopover>
           </Menu>

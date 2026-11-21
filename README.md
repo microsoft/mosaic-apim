@@ -30,6 +30,7 @@ Start with the [architecture](docs/architecture.md), [workflow diagrams](docs/wo
 | Set up team access and real Entra membership | [Cost-center setup](docs/cost-centers.md#set-up-cost-centers) |
 | Understand chargeback and spending controls | [Cost centers](docs/cost-centers.md), [usage](docs/usage-analytics.md), [pricing](docs/pricing.md), and [budgets](docs/budgets-and-alerts.md) |
 | Derive and approve customer-specific billing rates | [Billing data, credentials, and schedules](docs/pricing.md#billing-data-import-review-publish) |
+| Set organization colors or choose your own | [Appearance](docs/appearance.md) |
 | Check capabilities, limitations, and direction | [Capabilities and roadmap](docs/overview.md) |
 
 ## What MOSAIC does
@@ -127,8 +128,8 @@ model and MCP server publications.
   </tr>
   <tr>
     <td colspan="2"><b>Console overview.</b> Inspect gateway usage, estimated cost, telemetry freshness,
-    budgets, pools needing attention, and environment inventory. Identity counts open the corresponding
-    administrative sections.</td>
+    budgets, pools needing attention, and environment inventory. Pending requests and identity counts
+    open the corresponding administrative sections.</td>
   </tr>
   <tr>
     <td><img src="docs/images/screenshots/portal-catalog-light.png" alt="The end-user model catalog in the light theme"></td>

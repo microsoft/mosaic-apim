@@ -29,6 +29,7 @@ to understand the boundaries, then follow the guide for the task you need to per
 | Publish or unpublish an individual model through a reviewed plan | [Model publishing](model-publishing.md) |
 | Route compatible models across multiple deployments and regions | [Model pools](model-pools.md) |
 | Classify resources and enforce publication compatibility | [Environments](environments.md) |
+| Set the colors everyone sees, or choose your own | [Appearance](appearance.md) |
 | Manage Government resources from commercial MOSAIC | [Azure Government](azure-government.md) |
 | Prove runtime access or recover an interrupted operation | [Verification](verification.md) and [access recovery](access.md#recovering-an-interrupted-operation) |
 | Run the persona-based browser harness | [E2E runbook](e2e/runbook.md) and [harness reference](../e2e/README.md) |

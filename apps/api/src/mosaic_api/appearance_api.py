@@ -28,6 +28,6 @@ async def update_appearance(
 
 @portal_appearance_router.get("/appearance", response_model=AppearanceView)
 async def portal_appearance(request: Request, auth: PortalUser) -> AppearanceView:
-    """The colours to paint with. Both apps read this, so every signed-in role may."""
+    """The colors to paint with. Both apps read this, so every signed-in role may."""
 
     return await _appearance(request).view(_actor(auth))

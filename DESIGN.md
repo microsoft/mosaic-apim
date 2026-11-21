@@ -2,10 +2,26 @@
 
 ## Visual authority
 
-Use the existing Fluent UI React components and semantic `--mosaic-*` tokens in each app's
-`src/index.css`. System typography follows Segoe UI, Aptos, and the platform system stack. Blue
-identifies navigation and primary actions; warning and danger colors communicate actual state,
-not decorative emphasis. Both apps support system, light, and dark appearance.
+Use the existing Fluent UI React components and the semantic `--mosaic-*` tokens. The tokens, the
+fonts, and the shared shell live in each app's `src/prism.css`; page and component styles stay in
+`src/index.css` and the CSS modules. Outfit sets the interface and JetBrains Mono sets breadcrumbs,
+figures in dense lists, and chart labels; both are vendored, with the system stack as fallback.
+Warning and danger colors communicate actual state, not decorative emphasis.
+
+Every color derives from a six-color palette: accent, page background, panels, borders, text, and
+secondary text (`src/appearance.ts`). Never write a literal color in a component. Use
+`--mosaic-accent` with `--mosaic-on-accent` for filled controls and `--mosaic-primary` where the
+accent is text, because a custom accent may be too light or too dark to serve as both. The accent
+identifies the active navigation item, primary actions, and counters. Graphs and usage bars are
+drawn in the text color, with the accent marking only the latest point, so they read the same
+under any palette; status bars keep their status colors.
+
+Both apps support Light, Dark, System, and Custom. Light and Dark show the organization's colors
+when an administrator has saved them in **Settings > Appearance**, and MOSAIC's own otherwise.
+Custom is a person's own palette, kept in their browser; an administrator can turn it off. A
+palette cannot be saved while any text pair falls below 4.5:1, in the editors or through the API.
+`appearance.ts`, `prism.css`, the theme provider, and the color editors are identical in both apps,
+and a test keeps them so.
 
 ## Navigation and hierarchy
 
@@ -16,12 +32,17 @@ browser history. Both rails use meaningful icons, tooltips, accessible names, an
 collapse state. Collapsing either rail releases its full width to the workspace; content has no
 fixed maximum width. At constrained workspace widths, a labeled selector replaces the section rail.
 
-Both primary rails expose Light, Dark, and System next to the account menu, with a compact
-menu when collapsed. They use the same preference key as administrator Settings. Both apps use a cool-neutral
-light/dark palette and restrained translucent navigation rails and top bars. The admin chrome
-uses soft blue-tinted glass, as does the portal; data panels, forms, menus, and portal drawers stay opaque. Rounded
-panels, soft borders, and Fluent theme overrides keep those surfaces consistent. Unsupported blur,
-reduced transparency, and forced colors use solid navigation surfaces.
+The primary rail starts compact, as icons with tooltips, and keeps a person's choice to expand it.
+While it is compact the top bar carries the MOSAIC wordmark. Both primary rails expose Light,
+Dark, System, and Custom next to the account menu, as a menu when compact. They use the same
+preference key as administrator Settings.
+
+The page is a backdrop washed with the accent color. The rail is a solid dark panel; the top bar
+is frosted glass that blurs what scrolls beneath it; the workspace and its panels are translucent
+glass over the backdrop. Only the top bar and sticky section rails use backdrop blur, because
+only they have content moving behind them. Menus, dialogs, and drawers stay solid, so their text
+never competes with what is behind them. Reduced transparency, forced colors, and browsers
+without backdrop blur get solid surfaces throughout.
 
 Primary mobile navigation is modal, traps focus, restores the opener, and makes the underlying
 header/content inert. The portal opens on Usage & cost, followed by Catalog, My access,
@@ -50,8 +71,8 @@ fallback.
 
 ## Brand
 
-The mosaic symbol uses seven rounded tiles arranged as an abstract M. Render it in the theme's
-primary foreground color, with the MOSAIC wordmark when space allows. Use the standalone blue
+The mosaic symbol uses seven rounded tiles arranged as an abstract M. Render it in the color of
+the surface's text, with the MOSAIC wordmark when space allows. Use the standalone blue
 vector for favicons. The mark is decorative when the adjacent wordmark names the application.
 
 Admin people use optional authenticated Entra thumbnails or initials. Other identity kinds use

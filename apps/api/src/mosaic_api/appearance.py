@@ -1,6 +1,6 @@
-"""The organization's colour scheme for the console and the portal.
+"""The organization's color scheme for the console and the portal.
 
-A palette is six colours. Both apps derive every other colour from them, including readable text
+A palette is six colors. Both apps derive every other color from them, including readable text
 on the accent, so only the pairs a person chooses directly need checking here.
 """
 
@@ -20,7 +20,7 @@ MIN_TEXT_CONTRAST = 4.5
 def _hex_color(value: str) -> str:
     color = value.strip().lower()
     if not _HEX_COLOR.fullmatch(color):
-        raise ValueError("Use a six-digit hex colour such as #3566e8")
+        raise ValueError("Use a six-digit hex color such as #3566e8")
     return color
 
 
@@ -36,7 +36,7 @@ def _luminance(color: str) -> float:
 
 
 def contrast(first: str, second: str) -> float:
-    """The WCAG contrast ratio of two opaque colours, from 1 to 21."""
+    """The WCAG contrast ratio of two opaque colors, from 1 to 21."""
 
     lighter, darker = sorted((_luminance(first), _luminance(second)), reverse=True)
     return (lighter + 0.05) / (darker + 0.05)
@@ -69,14 +69,14 @@ class Palette(MosaicModel):
 
 
 class ColorScheme(MosaicModel):
-    """The colours everyone sees in light mode and in dark mode."""
+    """The colors everyone sees in light mode and in dark mode."""
 
     light: Palette
     dark: Palette
 
 
 class AppearanceSettings(Entity):
-    """What an administrator has chosen for everyone. No scheme means MOSAIC's own colours."""
+    """What an administrator has chosen for everyone. No scheme means MOSAIC's own colors."""
 
     entity_type: Literal["appearanceSettings"] = "appearanceSettings"
     scheme: ColorScheme | None = None
@@ -84,7 +84,7 @@ class AppearanceSettings(Entity):
 
 
 class AppearanceUpdate(MosaicModel):
-    """A full replacement: send `scheme: null` to return to MOSAIC's own colours."""
+    """A full replacement: send `scheme: null` to return to MOSAIC's own colors."""
 
     scheme: ColorScheme | None = Field(default=None)
     allow_custom_themes: bool = True

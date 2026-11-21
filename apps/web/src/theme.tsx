@@ -89,7 +89,7 @@ export function MosaicThemeProvider({ children }: PropsWithChildren) {
   const [preferredSystemTheme, setPreferredSystemTheme] = useState<ResolvedTheme>(systemTheme)
   const [customTheme, setCustomThemeState] = useState<CustomTheme | null>(() => normalizeCustomTheme(storedJson(CUSTOM_KEY)))
   const [organization, setOrganizationState] = useState<OrganizationAppearance>(storedOrganization)
-  // An administrator can turn custom colours off. The stored choice is kept, so it returns if they turn it back on.
+  // An administrator can turn custom colors off. The stored choice is kept, so it returns if they turn it back on.
   const effectivePreference = preference === 'custom' && !organization.allowCustomThemes ? 'system' : preference
   const { base: resolvedTheme, palette } = useMemo(
     () => resolvePalette(effectivePreference, preferredSystemTheme, organization.scheme, customTheme),
@@ -109,7 +109,7 @@ export function MosaicThemeProvider({ children }: PropsWithChildren) {
     window.localStorage.setItem(STORAGE_KEY, preference)
   }, [preference])
 
-  // Before paint, so a palette change never shows one frame of the old colours.
+  // Before paint, so a palette change never shows one frame of the old colors.
   useLayoutEffect(() => {
     const root = document.documentElement
     const tokens = paletteTokens(palette, resolvedTheme)

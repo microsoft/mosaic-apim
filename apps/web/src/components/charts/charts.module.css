@@ -32,7 +32,7 @@
   stroke-dasharray: 3 4;
 }
 
-/* Graphs are drawn in the text colour, so they read the same under any accent. */
+/* Graphs are drawn in the text color, so they read the same under any accent. */
 .area {
   stroke: none;
 }

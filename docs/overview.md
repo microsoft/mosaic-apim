@@ -89,7 +89,9 @@ applied runtime enforcement, and measured reporting are deliberately different c
   with problems on the dashboard. See [Model pools](model-pools.md)
 - Async repository abstraction with explicit in-memory and Cosmos implementations
 - React/TypeScript/Vite administrator console using Fluent UI, React Router, TanStack Query, and
-  MSAL, with responsive navigation and persisted light/dark/system themes. It confirms the caller
+  MSAL, with responsive navigation and persisted light, dark, system, and custom appearance. An
+  administrator can set the light and dark colors everyone sees in the console and the portal,
+  and each person can choose their own; see [Appearance](appearance.md). It confirms the caller
   holds the `Admin` role before it shows any of that; a caller with only `User`, or with no MOSAIC
   role, is told the console isn't for them and what to ask an administrator for
 - Runtime browser configuration; Azure IDs and service URLs are not baked into the web image

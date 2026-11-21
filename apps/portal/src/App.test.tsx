@@ -78,7 +78,7 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: 'Notification preferences' })).toBeVisible()
     expect(await screen.findByLabelText('Email — Access requests')).toHaveValue('off')
   })
-  it('paints the organization\u2019s colours and opens custom colours from the account menu', async () => {
+  it('paints the organization\u2019s colors and opens custom colors from the account menu', async () => {
     const user = userEvent.setup()
     localStorage.clear()
     mocks.api = {
@@ -95,19 +95,19 @@ describe('App', () => {
 
     expect(await screen.findByRole('heading', { name: 'Notifications' })).toBeVisible()
     await vi.waitFor(() => expect(document.documentElement.style.getPropertyValue('--mosaic-accent')).toBe('#0f9d8a'))
-    // Kept for the next visit, so the page paints in these colours before the API answers.
+    // Kept for the next visit, so the page paints in these colors before the API answers.
     expect(JSON.parse(localStorage.getItem('mosaic-organization-appearance')!).scheme.light.accent).toBe('#0f9d8a')
 
     await user.click(screen.getByRole('button', { name: 'Account menu for Ada Lovelace' }))
-    await user.click(await screen.findByRole('menuitem', { name: 'Custom colours' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Custom colors' }))
     // The account menu's focus handling leaves the dialog marked hidden in this test DOM, which also blanks its
     // accessible name here. A real browser exposes it normally, so find it by its title and look past the flag.
-    const surface = (await screen.findByText('Your custom colours')).closest('[role="dialog"]') as HTMLElement
+    const surface = (await screen.findByText('Your custom colors')).closest('[role="dialog"]') as HTMLElement
     const dialog = within(surface)
     expect(dialog.getByRole('textbox', { name: 'Accent', hidden: true })).toHaveValue('#0f9d8a')
-    await user.click(dialog.getByRole('button', { name: 'Save and use my colours', hidden: true }))
+    await user.click(dialog.getByRole('button', { name: 'Save and use my colors', hidden: true }))
     expect(localStorage.getItem('mosaic-theme')).toBe('custom')
-    await vi.waitFor(() => expect(screen.queryByText('Your custom colours')).not.toBeInTheDocument())
+    await vi.waitFor(() => expect(screen.queryByText('Your custom colors')).not.toBeInTheDocument())
     localStorage.clear()
   })
   it.each(['/', '/unknown-page'])('lands %s on usage and orders end-user navigation', async (path) => {

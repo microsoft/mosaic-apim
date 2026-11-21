@@ -1,4 +1,4 @@
-/* Colour tokens, fonts, and the shared shell live in prism.css, which loads after this file. */
+/* Color tokens, fonts, and the shared shell live in prism.css, which loads after this file. */
 
 * {
   box-sizing: border-box;
@@ -939,6 +939,19 @@ tbody tr:focus-within {
 
   .portal-handoff-panel h2 {
     font-size: 22px;
+  }
+}
+
+/* At the narrowest phones the portal action must still fit on one line beside its icon. */
+@media (max-width: 380px) {
+  .portal-handoff-card,
+  .portal-handoff-panel {
+    padding: 16px;
+  }
+
+  .portal-handoff-panel .fui-Button {
+    gap: 8px;
+    padding-inline: 10px;
   }
 }
 

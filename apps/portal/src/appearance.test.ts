@@ -26,7 +26,7 @@ function declared(block: string): Record<string, string> {
   return Object.fromEntries([...block.matchAll(/^\s*(--mosaic-[\w-]+):\s*(.+);$/gm)].map((match) => [match[1], match[2]]))
 }
 
-describe('colour arithmetic', () => {
+describe('color arithmetic', () => {
   it('measures contrast the way WCAG does', () => {
     expect(contrast('#000000', '#ffffff')).toBeCloseTo(21, 5)
     expect(contrast('#ffffff', '#000000')).toBeCloseTo(21, 5)
@@ -79,7 +79,7 @@ describe('palettes', () => {
     ['a CSS function', { ...coral, accent: 'rgb(240, 96, 63)' }],
     ['a variable reference', { ...coral, accent: 'var(--mosaic-accent)' }],
     ['an injected declaration', { ...coral, accent: '#f0603f; background: url(https://example.test)' }],
-    ['a missing colour', { ...coral, textMuted: undefined }],
+    ['a missing color', { ...coral, textMuted: undefined }],
     ['a non-object', 'coral'],
   ])('refuses %s', (_, value) => {
     expect(normalizePalette(value)).toBeNull()
@@ -87,7 +87,7 @@ describe('palettes', () => {
     expect(normalizeCustomTheme({ base: 'dark', colors: value })).toBeNull()
   })
 
-  it('normalizes case and ignores anything that is not a palette colour', () => {
+  it('normalizes case and ignores anything that is not a palette color', () => {
     expect(normalizePalette({ ...coral, accent: '#F0603F', extra: 'ignored' })).toEqual(coral)
     expect(normalizeCustomTheme({ base: 'sepia', colors: coral })).toBeNull()
   })
@@ -128,7 +128,7 @@ describe('resolvePalette', () => {
     expect(resolvePalette('system', 'light', null, null).base).toBe('light')
   })
 
-  it('uses a person’s colours and their base in Custom, and the device when none are saved', () => {
+  it('uses a person’s colors and their base in Custom, and the device when none are saved', () => {
     expect(resolvePalette('custom', 'light', scheme, custom)).toEqual({ base: 'dark', palette: coral })
     expect(resolvePalette('custom', 'light', scheme, null)).toEqual({ base: 'light', palette: scheme.light })
   })

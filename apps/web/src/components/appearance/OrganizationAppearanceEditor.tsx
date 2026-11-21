@@ -10,11 +10,11 @@ import { PaletteEditor } from './PaletteEditor'
 import styles from './appearance.module.css'
 
 const MODES: Array<{ value: ThemeBase; label: string }> = [
-  { value: 'light', label: 'Light mode colours' },
-  { value: 'dark', label: 'Dark mode colours' },
+  { value: 'light', label: 'Light mode colors' },
+  { value: 'dark', label: 'Dark mode colors' },
 ]
 
-/** The colours everyone in the organization sees in Light and Dark, in the console and the portal. */
+/** The colors everyone in the organization sees in Light and Dark, in the console and the portal. */
 export function OrganizationAppearanceEditor() {
   const api = useMosaicApi()
   const queryClient = useQueryClient()
@@ -43,15 +43,15 @@ export function OrganizationAppearanceEditor() {
     },
   })
 
-  if (saved.isLoading) return <Spinner size="tiny" label="Loading organization colours" />
-  if (saved.isError) return <ErrorState title="Organization colours unavailable" error={saved.error} />
+  if (saved.isLoading) return <Spinner size="tiny" label="Loading organization colors" />
+  if (saved.isError) return <ErrorState title="Organization colors unavailable" error={saved.error} />
 
   const readable = !custom || (paletteIsReadable(scheme.light) && paletteIsReadable(scheme.dark))
   const unreadable = custom ? MODES.filter((item) => !paletteIsReadable(scheme[item.value])).map((item) => item.label.toLowerCase()) : []
 
   return (
     <div className={styles.stack}>
-      <Switch checked={custom} onChange={(_, data) => setCustom(data.checked)} label="Use our own colours instead of MOSAIC's" />
+      <Switch checked={custom} onChange={(_, data) => setCustom(data.checked)} label="Use our own colors instead of MOSAIC's" />
       {custom && (
         <>
           <div className={styles.modeTabs} role="group" aria-label="Palette to edit">
@@ -63,23 +63,23 @@ export function OrganizationAppearanceEditor() {
           <PaletteEditor key={mode} palette={scheme[mode]} base={mode} onChange={(palette) => setScheme({ ...scheme, [mode]: palette })} />
           {unreadable.length > 0 && (
             <MessageBar intent="warning">
-              <MessageBarBody>Some text would be hard to read in the {unreadable.join(' and the ')}. Adjust the colours marked there before saving.</MessageBarBody>
+              <MessageBarBody>Some text would be hard to read in the {unreadable.join(' and the ')}. Adjust the colors marked there before saving.</MessageBarBody>
             </MessageBar>
           )}
         </>
       )}
-      <Switch checked={allowCustomThemes} onChange={(_, data) => setAllowCustomThemes(data.checked)} label="Let people choose their own custom colours" />
+      <Switch checked={allowCustomThemes} onChange={(_, data) => setAllowCustomThemes(data.checked)} label="Let people choose their own custom colors" />
       <Text className={styles.note}>
         Saving changes Light and Dark for everyone in the console and the portal the next time their app loads.
-        A person&apos;s own custom colours stay in their browser and are not affected.
+        A person&apos;s own custom colors stay in their browser and are not affected.
       </Text>
-      {save.isError && <ErrorState context="action" title="Unable to save organization colours" error={save.error} />}
+      {save.isError && <ErrorState context="action" title="Unable to save organization colors" error={save.error} />}
       {save.isSuccess && !save.isPending && (
-        <MessageBar intent="success"><MessageBarBody>Organization colours saved.</MessageBarBody></MessageBar>
+        <MessageBar intent="success"><MessageBarBody>Organization colors saved.</MessageBarBody></MessageBar>
       )}
       <div className={styles.row}>
         <Button appearance="primary" disabled={!readable || save.isPending} onClick={() => save.mutate()}>
-          {save.isPending ? 'Saving…' : 'Save organization colours'}
+          {save.isPending ? 'Saving…' : 'Save organization colors'}
         </Button>
       </div>
     </div>

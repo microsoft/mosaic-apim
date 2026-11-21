@@ -10,7 +10,7 @@ from mosaic_api.services.directory import Actor
 
 
 class AppearanceService:
-    """Reads and replaces the organization's colour scheme."""
+    """Reads and replaces the organization's color scheme."""
 
     def __init__(self, repository: AppearanceRepository) -> None:
         self._repository = repository
@@ -34,7 +34,7 @@ class AppearanceService:
                 "updated_at": utc_now(),
             }
         )
-        # The colours are not sensitive, but who changed everyone's interface is worth keeping.
+        # The colors are not sensitive, but who changed everyone's interface is worth keeping.
         audit_event = AuditEvent(
             id=new_id("audit"),
             tenant_id=actor.tenant_id,

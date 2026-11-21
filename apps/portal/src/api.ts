@@ -96,7 +96,7 @@ export interface PortalApi {
   listEnvironments(): Promise<PortalEnvironment[]>
   listCatalog(): Promise<CatalogEntry[]>
   listCostCenters(): Promise<PortalCostCenter[]>
-  /** The organization's colours, readable by every signed-in person. */
+  /** The organization's colors, readable by every signed-in person. */
   getAppearance(): Promise<OrganizationAppearanceResponse>
   getCostCenterSelfServiceSettings(): Promise<CostCenterSelfServiceSettings>
   listMyCostCenters(filter?: { q?: string; cursor?: string }): Promise<CostCenterDirectoryPage>

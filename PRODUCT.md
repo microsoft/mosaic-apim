@@ -31,9 +31,13 @@ gateway telemetry. It does not proxy model traffic or replace API Management.
 
 ## Brand and constraints
 
-Preserve MOSAIC blue, Fluent UI controls, system typography, and light/dark themes. The tile-based
-M symbol identifies both apps. Adapt SimpleChat's layered navigation ideas, not its services or
-visual theme. Keep portal workflows user-scoped and separate from administrator operations.
+Preserve Fluent UI controls, the tile-based M symbol that identifies both apps, and a blue default
+accent. Both apps share a frosted-glass shell set in the bundled Outfit typeface, with Light,
+Dark, System, and Custom appearance. Every color derives from a six-color palette that an
+administrator can replace for the organization and a person can replace for themselves, and no
+saved palette may leave text unreadable. Adapt SimpleChat's layered navigation and its custom
+color-scheme model, not its services. Keep portal workflows user-scoped and separate from
+administrator operations.
 
 ## Evidence and documentation
 

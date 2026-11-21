@@ -23,12 +23,13 @@ changes, regenerate them and update their descriptions as described in
 
 ## Light and dark
 
-The blue mosaic-tile mark anchors collapsible primary navigation in both apps. Section menus
-separate administrative workflows; the portal opens on Usage & cost, with model-first lists
-and accessible detail drawers that leave the page layout in place.
+The mosaic-tile mark tops a compact navigation rail in both apps, which expands to show labels.
+Section menus separate administrative workflows; the portal opens on Usage & cost, with
+model-first lists and accessible detail drawers that leave the page layout in place.
 
-Both apps follow the operating system's light or dark setting, and the console can pin either
-one using the sidebar's **Light / Dark / System** controls or **Settings > Appearance**.
+Both apps follow the operating system's light or dark setting. The rail's appearance menu pins
+**Light**, **Dark**, or **System**, or switches to a person's own **Custom** colors. An
+administrator can replace the light and dark colors for everyone in **Settings > Appearance**.
 
 <table>
   <tr>
@@ -40,9 +41,10 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
     <td><img src="images/screenshots/console-dashboard-dark.png" alt="The console overview in the dark theme"></td>
   </tr>
   <tr>
-    <td colspan="2"><b>Console overview.</b> Registered identity counts open their corresponding
-    Identity sections. Gateway usage, cost and forecast, telemetry freshness, rankings, budgets,
-    pools needing attention, and environment inventory summarize the fictional estate.</td>
+    <td colspan="2"><b>Console overview.</b> Pending requests and registered identity counts open
+    their sections. One request figure leads the week's usage beside its daily graph; cost and
+    forecast, telemetry freshness, rankings, budgets, pools needing attention, and environment
+    inventory summarize the fictional estate.</td>
   </tr>
   <tr>
     <td><img src="images/screenshots/portal-catalog-light.png" alt="The portal catalog in the light theme"></td>
@@ -52,6 +54,17 @@ one using the sidebar's **Light / Dark / System** controls or **Settings > Appea
     <td colspan="2"><b>Portal catalog.</b> Model-first rows group known offerings and show their
     clouds, environments, and existing access. Search and cloud/environment/cost-center/type filters narrow the list;
     access options open in an overlay drawer without rearranging the catalog.</td>
+  </tr>
+  <tr>
+    <td><img src="images/screenshots/console-appearance.png" alt="Settings Appearance in a person's custom coral palette, with six color fields, a live preview, and contrast results"></td>
+    <td><img src="images/screenshots/portal-custom-colors.png" alt="The portal's custom colors dialog with a draft teal palette, its preview, and contrast results"></td>
+  </tr>
+  <tr>
+    <td><b>Custom colors, console.</b> Choose six colors and see a preview and each text pair's
+    contrast before saving; here a person's saved palette recolors the whole console. The same page
+    sets the organization's light and dark colors.</td>
+    <td><b>Custom colors, portal.</b> Portal users reach the same editor from the account menu.
+    This draft is never saved, so the catalog behind it keeps the built-in colors.</td>
   </tr>
 </table>
 
@@ -654,9 +667,9 @@ of the main review; Technical execution retains the complete target and resource
 
 ## End-user portal
 
-The portal shares the console's cool-neutral palette, blue-tinted glass navigation, rounded
-controls, and full-width workspace. Choose Light, Dark, or System beside the account menu;
-resource lists, forms, and connection drawers remain solid for readability.
+The portal shares the console's palette, compact rail, frosted top bar, glass panels, and
+full-width workspace. Choose Light, Dark, System, or your own Custom colors from the rail's
+appearance menu; connection drawers and dialogs remain solid for readability.
 
 <table>
   <tr>

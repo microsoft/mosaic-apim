@@ -11,13 +11,13 @@ const options = [
 ] satisfies Array<{ value: ThemePreference; label: string; icon: ReactNode }>
 
 /**
- * Light, Dark, System, and the person's own Custom colours. `onCustomize` opens wherever this app
- * edits those colours; Custom leads there until the person has saved some.
+ * Light, Dark, System, and the person's own Custom colors. `onCustomize` opens wherever this app
+ * edits those colors; Custom leads there until the person has saved some.
  */
 export function AppearanceControl({ onCustomize }: { onCustomize?: () => void }) {
   const { preference, resolvedTheme, setPreference, customTheme, organization } = useMosaicTheme()
   const shown = options.filter((option) => option.value !== 'custom' || (organization.allowCustomThemes && (customTheme || onCustomize)))
-  // With custom colours turned off, a stored Custom choice shows as System, which is what applies.
+  // With custom colors turned off, a stored Custom choice shows as System, which is what applies.
   const active = preference === 'custom' && !(organization.allowCustomThemes && customTheme) ? 'system' : preference
   const choose = (value: ThemePreference) => {
     if (value === 'custom' && !customTheme) onCustomize?.()
@@ -46,7 +46,7 @@ export function AppearanceControl({ onCustomize }: { onCustomize?: () => void })
             ))}
             {onCustomize && organization.allowCustomThemes && <>
               <MenuDivider />
-              <MenuItem icon={<PaintBrushRegular />} onClick={onCustomize}>Customize colours</MenuItem>
+              <MenuItem icon={<PaintBrushRegular />} onClick={onCustomize}>Customize colors</MenuItem>
             </>}
           </MenuList></MenuPopover>
         </Menu>

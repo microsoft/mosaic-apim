@@ -36,7 +36,7 @@ def test_contrast_matches_the_wcag_extremes() -> None:
     assert contrast("#ffffff", "#000000") == contrast("#000000", "#ffffff")
 
 
-def test_appearance_defaults_to_the_built_in_colours(client: TestClient) -> None:
+def test_appearance_defaults_to_the_built_in_colors(client: TestClient) -> None:
     response = client.get("/api/v1/appearance")
 
     assert response.status_code == 200
@@ -66,7 +66,7 @@ def test_an_administrator_saves_a_scheme_everyone_then_reads(client: TestClient)
         ("appearance.settingsUpdated", {"customScheme": True, "allowCustomThemes": False})
     ]
 
-    # A second save replaces the first, and `scheme: null` returns to the built-in colours.
+    # A second save replaces the first, and `scheme: null` returns to the built-in colors.
     reset = client.put("/api/v1/appearance", json={"scheme": None, "allowCustomThemes": True})
     assert reset.status_code == 200
     assert client.get("/api/v1/portal/appearance").json() == {
@@ -75,7 +75,7 @@ def test_an_administrator_saves_a_scheme_everyone_then_reads(client: TestClient)
     }
 
 
-def test_hex_colours_are_normalized_to_lower_case(client: TestClient) -> None:
+def test_hex_colors_are_normalized_to_lower_case(client: TestClient) -> None:
     light = {**LIGHT, "accent": " #0F9D8A "}
 
     response = client.put("/api/v1/appearance", json={"scheme": {"light": light, "dark": DARK}})
@@ -88,7 +88,7 @@ def test_hex_colours_are_normalized_to_lower_case(client: TestClient) -> None:
     "accent",
     ["#abc", "0f9d8a", "#0f9d8g", "rgb(15, 157, 138)", "var(--mosaic-accent)", "#0f9d8a80", ""],
 )
-def test_only_six_digit_hex_colours_are_accepted(client: TestClient, accent: str) -> None:
+def test_only_six_digit_hex_colors_are_accepted(client: TestClient, accent: str) -> None:
     light = {**LIGHT, "accent": accent}
 
     response = client.put("/api/v1/appearance", json={"scheme": {"light": light, "dark": DARK}})
@@ -107,7 +107,7 @@ def test_a_palette_people_could_not_read_is_refused(client: TestClient) -> None:
     assert "It needs at least 4.5:1." in response.text
 
 
-def test_a_scheme_needs_both_modes_and_no_extra_colours(client: TestClient) -> None:
+def test_a_scheme_needs_both_modes_and_no_extra_colors(client: TestClient) -> None:
     assert client.put("/api/v1/appearance", json={"scheme": {"light": LIGHT}}).status_code == 422
     extra = {**LIGHT, "banner": "#ff0000"}
     assert (
@@ -118,7 +118,7 @@ def test_a_scheme_needs_both_modes_and_no_extra_colours(client: TestClient) -> N
     )
 
 
-def test_a_portal_user_reads_the_colours_but_cannot_change_them(portal_client: TestClient) -> None:
+def test_a_portal_user_reads_the_colors_but_cannot_change_them(portal_client: TestClient) -> None:
     assert portal_client.get("/api/v1/portal/appearance").status_code == 200
     assert portal_client.get("/api/v1/appearance").status_code == 403
     response = portal_client.put(

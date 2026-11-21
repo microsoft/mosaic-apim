@@ -14,11 +14,11 @@ export interface ThemeContextValue {
   preference: ThemePreference
   resolvedTheme: ResolvedTheme
   setPreference: (preference: ThemePreference) => void
-  /** The colours on screen now. */
+  /** The colors on screen now. */
   palette: Palette
-  /** This person's saved custom colours, whether or not Custom is the active mode. */
+  /** This person's saved custom colors, whether or not Custom is the active mode. */
   customTheme: CustomTheme | null
-  /** Saves the custom colours in this browser. `null` forgets them. */
+  /** Saves the custom colors in this browser. `null` forgets them. */
   setCustomTheme: (theme: CustomTheme | null) => void
   organization: OrganizationAppearance
   /** Applies what the API returned, or what an administrator just saved. */

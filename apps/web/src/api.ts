@@ -312,7 +312,7 @@ export interface MosaicApi extends AdminApi {
   updateCostCenterLimits(costCenterId: string, limits: CostCenterLimit[]): Promise<CostCenter>
   recheckCostCenter(costCenterId: string): Promise<CostCenter>
   getCostCenterSettings(): Promise<CostCenterSettings>
-  /** The organization's colours as every signed-in person's app reads them. */
+  /** The organization's colors as every signed-in person's app reads them. */
   getOrganizationAppearance(): Promise<AppearanceSettings>
   getAppearance(): Promise<AppearanceSettings>
   updateAppearance(payload: AppearanceSettings): Promise<AppearanceSettings>

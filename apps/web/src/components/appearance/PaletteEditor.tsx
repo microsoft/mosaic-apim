@@ -14,7 +14,7 @@ import styles from './appearance.module.css'
 
 function ColorField({ label, hint, value, onChange }: { label: string; hint: string; value: string; onChange: (value: string) => void }) {
   const picker = useId()
-  // What is typed may be half a colour. Keep it as typed and only pass on a complete one.
+  // What is typed may be half a color. Keep it as typed and only pass on a complete one.
   const [typed, setTyped] = useState<string | null>(null)
   const shown = typed ?? value
   const invalid = typed !== null && !isHexColor(typed)
@@ -23,7 +23,7 @@ function ColorField({ label, hint, value, onChange }: { label: string; hint: str
       validationMessage={invalid ? 'Enter six hex digits after #, such as #3566e8.' : undefined}>
       {(control) => (
         <div className={styles.colorField}>
-          <input id={picker} className={styles.swatch} type="color" value={value} aria-label={`${label} colour picker`}
+          <input id={picker} className={styles.swatch} type="color" value={value} aria-label={`${label} color picker`}
             onChange={(event) => { setTyped(null); onChange(event.target.value.toLowerCase()) }} />
           <Input {...control} className={styles.hex} value={shown} maxLength={7} spellCheck={false}
             onChange={(_, data) => {
@@ -58,7 +58,7 @@ export function PalettePreview({ palette, base }: { palette: Palette; base: Them
   )
 }
 
-/** The six colours of one palette, a live preview, and the contrast each text pair reaches. */
+/** The six colors of one palette, a live preview, and the contrast each text pair reaches. */
 export function PaletteEditor({ palette, base, onChange }: { palette: Palette; base: ThemeBase; onChange: (palette: Palette) => void }) {
   const checks = contrastChecks(palette)
   return (

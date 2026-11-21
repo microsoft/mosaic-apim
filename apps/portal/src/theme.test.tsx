@@ -67,7 +67,7 @@ describe('MosaicThemeProvider', () => {
     expect(document.documentElement.style.getPropertyValue('--mosaic-bg')).toBe(palette.backdrop)
   })
 
-  it('paints the organization\u2019s colours in light and dark, and a person\u2019s own in custom', async () => {
+  it('paints the organization\u2019s colors in light and dark, and a person\u2019s own in custom', async () => {
     const scheme = {
       light: { ...DEFAULT_PALETTES.light, accent: '#0f9d8a' },
       dark: { ...DEFAULT_PALETTES.dark, accent: '#0f9d8a', panel: '#15241f' },
@@ -93,7 +93,7 @@ describe('MosaicThemeProvider', () => {
     expect(paint.tokens['--mosaic-accent']).toBe('#f0603f')
   })
 
-  it('ignores stored colours that are not colours', async () => {
+  it('ignores stored colors that are not colors', async () => {
     window.localStorage.setItem('mosaic-theme', 'custom')
     window.localStorage.setItem('mosaic-custom-theme', JSON.stringify({ base: 'dark', colors: { ...DEFAULT_PALETTES.dark, accent: 'red; background: url(https://example.test)' } }))
     window.localStorage.setItem('mosaic-organization-appearance', '{not json')

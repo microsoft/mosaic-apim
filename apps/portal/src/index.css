@@ -1,4 +1,4 @@
-/* Colour tokens, fonts, and the shared shell live in prism.css, which loads after this file. */
+/* Color tokens, fonts, and the shared shell live in prism.css, which loads after this file. */
 
 * { box-sizing: border-box; }
 
@@ -933,7 +933,7 @@ textarea { font: inherit; }
   height: 100%;
   min-width: 2px;
   border-radius: inherit;
-  /* Usage bars are drawn in the text colour, so they read the same under any accent. */
+  /* Usage bars are drawn in the text color, so they read the same under any accent. */
   background: var(--mosaic-text);
 }
 

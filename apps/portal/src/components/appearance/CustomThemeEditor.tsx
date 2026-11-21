@@ -11,8 +11,8 @@ const BASES: Array<{ value: ThemeBase; label: string }> = [
 ]
 
 /**
- * A person's own colours. They are kept in this browser only, start from the organization's
- * colours, and cannot be saved until every text pair is readable.
+ * A person's own colors. They are kept in this browser only, start from the organization's
+ * colors, and cannot be saved until every text pair is readable.
  */
 export function CustomThemeEditor({ onSaved }: { onSaved?: () => void }) {
   const { customTheme, setCustomTheme, setPreference, preference, organization, resolvedTheme, palette } = useMosaicTheme()
@@ -24,7 +24,7 @@ export function CustomThemeEditor({ onSaved }: { onSaved?: () => void }) {
   if (!organization.allowCustomThemes) {
     return (
       <MessageBar intent="info">
-        <MessageBarBody>Your administrator has turned off custom colours. Light, Dark, and System use your organization&apos;s colours.</MessageBarBody>
+        <MessageBarBody>Your administrator has turned off custom colors. Light, Dark, and System use your organization&apos;s colors.</MessageBarBody>
       </MessageBar>
     )
   }
@@ -39,22 +39,22 @@ export function CustomThemeEditor({ onSaved }: { onSaved?: () => void }) {
               onClick={() => setDraft({ base: base.value, colors: starting(base.value) })}>{base.label}</Button>
           ))}
         </div>
-        <Text className={styles.note}>Choosing one replaces the colours below with your organization&apos;s {draft.base} colours.</Text>
+        <Text className={styles.note}>Choosing one replaces the colors below with your organization&apos;s {draft.base} colors.</Text>
       </div>
       <PaletteEditor palette={draft.colors} base={draft.base} onChange={(colors) => setDraft({ ...draft, colors })} />
       {!readable && (
         <MessageBar intent="warning">
-          <MessageBarBody>Some text would be hard to read. Adjust the colours marked above before saving.</MessageBarBody>
+          <MessageBarBody>Some text would be hard to read. Adjust the colors marked above before saving.</MessageBarBody>
         </MessageBar>
       )}
       <div className={styles.row}>
         <Button appearance="primary" disabled={!readable || (saved && preference === 'custom')}
           onClick={() => { setCustomTheme(draft); setPreference('custom'); onSaved?.() }}>
-          {saved && preference !== 'custom' ? 'Use my colours' : 'Save and use my colours'}
+          {saved && preference !== 'custom' ? 'Use my colors' : 'Save and use my colors'}
         </Button>
         {customTheme && (
           <Button onClick={() => { setCustomTheme(null); if (preference === 'custom') setPreference('system'); setDraft({ base: resolvedTheme, colors: starting(resolvedTheme) }) }}>
-            Remove my colours
+            Remove my colors
           </Button>
         )}
         <Text className={styles.note}>Saved in this browser only.</Text>

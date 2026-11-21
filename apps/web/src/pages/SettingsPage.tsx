@@ -81,14 +81,14 @@ const appearanceOptions: Array<{
   label: string
   description: string
 }> = [
-  { value: 'light', label: 'Light', description: 'Always use your organization\u2019s light colours.' },
-  { value: 'dark', label: 'Dark', description: 'Always use your organization\u2019s dark colours.' },
+  { value: 'light', label: 'Light', description: 'Always use your organization\u2019s light colors.' },
+  { value: 'dark', label: 'Dark', description: 'Always use your organization\u2019s dark colors.' },
   {
     value: 'system',
     label: 'System',
     description: 'Follow your browser and operating system color-scheme preference.',
   },
-  { value: 'custom', label: 'Custom', description: 'Use the colours you choose below.' },
+  { value: 'custom', label: 'Custom', description: 'Use the colors you choose below.' },
 ]
 
 const environmentColors: EnvironmentColor[] = [
@@ -678,7 +678,7 @@ export function SettingsPage() {
     { value: 'notifications', label: 'Notifications', icon: <MailRegular />, description: 'Configure shared channels, administrator routing, Teams destinations, and inspect delivery evidence.' },
     { value: 'costCenters', label: 'Cost centers', icon: <SettingsRegular />, description: 'Persisted portal request controls and separate directory capability status.' },
     { value: 'runtime', label: 'Runtime configuration', icon: <SettingsRegular />, description: 'Read-only deployed configuration. Change deployment settings outside this page.' },
-    { value: 'appearance', label: 'Appearance', icon: <WeatherMoonRegular />, description: 'Choose your own mode and colours, and set the colours everyone in the organization sees.' },
+    { value: 'appearance', label: 'Appearance', icon: <WeatherMoonRegular />, description: 'Choose your own mode and colors, and set the colors everyone in the organization sees.' },
   ]
   const [section, selectSection] = usePageSection(sections)
   const [params] = useSearchParams()
@@ -758,15 +758,15 @@ export function SettingsPage() {
               onChange={(_, data) => setPreference(data.value as ThemePreference)}
             >
               {appearanceOptions.map((option) => {
-                // Custom needs saved colours, and an administrator can turn it off for everyone.
+                // Custom needs saved colors, and an administrator can turn it off for everyone.
                 const unavailable = option.value === 'custom' && (!organization.allowCustomThemes || !customTheme)
                 return (
                   <div key={option.value} className={styles.radioOption}>
                     <Radio label={option.label} value={option.value} disabled={unavailable} />
                     <Text className={styles.radioDescription}>
                       {option.value !== 'custom' ? option.description
-                        : !organization.allowCustomThemes ? 'Your administrator has turned off custom colours.'
-                          : customTheme ? option.description : 'Save your own colours below to use them.'}
+                        : !organization.allowCustomThemes ? 'Your administrator has turned off custom colors.'
+                          : customTheme ? option.description : 'Save your own colors below to use them.'}
                     </Text>
                   </div>
                 )
@@ -786,9 +786,9 @@ export function SettingsPage() {
           <Card className={styles.card}>
             <div className={styles.cardHeader}>
               <div>
-                <Title3 as="h2">Your custom colours</Title3>
+                <Title3 as="h2">Your custom colors</Title3>
                 <Text className={styles.cardDescription}>
-                  Choose six colours and MOSAIC works out the rest, including readable text on your accent.
+                  Choose six colors and MOSAIC works out the rest, including readable text on your accent.
                 </Text>
               </div>
             </div>
@@ -797,9 +797,9 @@ export function SettingsPage() {
           <Card className={styles.card}>
             <div className={styles.cardHeader}>
               <div>
-                <Title3 as="h2">Organization colours</Title3>
+                <Title3 as="h2">Organization colors</Title3>
                 <Text className={styles.cardDescription}>
-                  Set the Light and Dark colours everyone sees in the console and the portal.
+                  Set the Light and Dark colors everyone sees in the console and the portal.
                 </Text>
               </div>
             </div>

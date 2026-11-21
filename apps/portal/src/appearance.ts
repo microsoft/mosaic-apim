@@ -1,8 +1,8 @@
 /**
- * MOSAIC colour palettes.
+ * MOSAIC color palettes.
  *
- * A palette is six colours. Every `--mosaic-*` token and the Fluent theme are derived from it,
- * so the default look, an organization's scheme, and a person's custom colours all take the same
+ * A palette is six colors. Every `--mosaic-*` token and the Fluent theme are derived from it,
+ * so the default look, an organization's scheme, and a person's custom colors all take the same
  * path. Text placed on the accent and the accent used as text are computed, never chosen, so a
  * custom accent cannot make a button or link unreadable.
  */
@@ -36,7 +36,7 @@ export interface OrganizationScheme {
 }
 
 export interface CustomTheme {
-  /** Which built-in mode the custom colours replace. It decides shadows, status colours, and the browser's own controls. */
+  /** Which built-in mode the custom colors replace. It decides shadows, status colors, and the browser's own controls. */
   base: ThemeBase
   colors: Palette
 }
@@ -79,7 +79,7 @@ function luminance(color: string): number {
   return 0.2126 * red + 0.7152 * green + 0.0722 * blue
 }
 
-/** WCAG contrast ratio between two opaque colours, from 1 to 21. */
+/** WCAG contrast ratio between two opaque colors, from 1 to 21. */
 export function contrast(first: string, second: string): number {
   const [light, dark] = [luminance(first), luminance(second)].sort((a, b) => b - a)
   return (light + 0.05) / (dark + 0.05)
@@ -228,7 +228,6 @@ export function paletteTokens(palette: Palette, base: ThemeBase): Record<string,
     '--mosaic-border': border,
     '--mosaic-border-soft': alpha(border, dark ? 0.6 : 0.62),
     '--mosaic-edge': dark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(255, 255, 255, 0.86)',
-    '--mosaic-chrome-tint': alpha(accent, dark ? 0.5 : 0.3),
     '--mosaic-text': text,
     '--mosaic-text-muted': textMuted,
     '--mosaic-text-faint': readableAs(mix(textMuted, panel, 0.3), panel, 3),
