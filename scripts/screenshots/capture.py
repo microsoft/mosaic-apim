@@ -195,9 +195,13 @@ FIND_SENSITIVE_TEXT = """
     })
   // A fixed or sticky bar, such as each app's top bar, paints over the page scrolled beneath it.
   // A region it hides is cut back as one behind a dialog is, but only where the bar is opaque and
-  // really on top at that spot, so text it doesn't hide is still blurred.
+  // really on top at that spot, so text it doesn't hide is still blurred. The frosted top bar
+  // counts too: its backdrop blur is at least as strong as the blur applied here, so text
+  // beneath it is already unreadable, and blurring it again would only smear the bar.
   const opaque = (style) => {
     if (style.visibility !== 'visible' || Number(style.opacity) < 0.99) return false
+    const frost = style.backdropFilter.match(/blur\\((\\d+(?:\\.\\d+)?)px\\)/)
+    if (frost && Number(frost[1]) >= 16) return true
     const match = style.backgroundColor.match(/^rgba?\\(([^)]*)\\)$/)
     if (!match) return false
     const channels = match[1].split(/[\\s,/]+/).filter(Boolean)
@@ -2312,11 +2316,15 @@ def _blur(
         if right <= left or bottom <= top:
             continue
         region = image.crop((left, top, right, bottom))
+        # Taller text needs coarser cells: at the size that hides body text, a large heading still
+        # keeps its word shapes. No region is left more than three cells high.
+        cell = max(8, (bottom - top) // 3)
         small = region.resize(
-            (max((right - left) // 8, 1), max((bottom - top) // 8, 1)), Image.Resampling.BILINEAR
+            (max((right - left) // cell, 1), max((bottom - top) // cell, 1)),
+            Image.Resampling.BILINEAR,
         )
         smeared = small.resize(region.size, Image.Resampling.BILINEAR)
-        image.paste(smeared.filter(ImageFilter.GaussianBlur(3)), (left, top))
+        image.paste(smeared.filter(ImageFilter.GaussianBlur(max(3, cell // 3))), (left, top))
     return image
 
 

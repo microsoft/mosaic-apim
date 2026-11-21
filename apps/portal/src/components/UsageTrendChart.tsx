@@ -160,13 +160,16 @@ export function UsageTrendChart({
   const [showTable, setShowTable] = useState(false)
   const [metric, setMetric] = useState<Metric>('requests')
   const [groupBy, setGroupBy] = useState<GroupBy>('environment')
-  const { dates, series } = useMemo(
-    () =>
-      groupBy === 'environment'
-        ? buildEnvironmentSeries(points, metric, environments)
-        : buildResourceSeries(points, resources, metric, environments),
-    [environments, groupBy, metric, points, resources],
-  )
+  const { dates, series } = useMemo(() => {
+    const built = groupBy === 'environment'
+      ? buildEnvironmentSeries(points, metric, environments)
+      : buildResourceSeries(points, resources, metric, environments)
+    // Color tells lines apart. One line has nothing to be told from, so it is drawn in the text
+    // color like every other single-series graph, and reads the same under any palette.
+    return built.series.length === 1
+      ? { dates: built.dates, series: [{ ...built.series[0], color: 'var(--mosaic-text)' }] }
+      : built
+  }, [environments, groupBy, metric, points, resources])
   const max = Math.max(0, ...series.flatMap((item) => item.points))
   const metricLabel = metric === 'requests' ? 'requests' : 'tokens'
   const ariaLabel =

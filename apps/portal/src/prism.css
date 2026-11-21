@@ -244,6 +244,11 @@ code,
   scrollbar-width: none;
 }
 
+/* On a short window the rail scrolls; its parts keep their size and never slide over each other. */
+.sidebar > * {
+  flex-shrink: 0;
+}
+
 .sidebar-brand {
   min-height: 72px;
   padding: 16px 14px 12px;
@@ -442,14 +447,37 @@ code,
   border-radius: inherit;
 }
 
+/*
+ * Round enough to make a one-line button a pill, and no rounder: a multi-line button with a
+ * fully round corner clips the start of its last line.
+ */
 .fui-FluentProvider .fui-Button {
-  border-radius: 999px;
+  border-radius: 16px;
+}
+
+/*
+ * A text input is twenty characters wide unless told otherwise, and Outfit's characters are wide.
+ * Letting fields shrink keeps a row of them inside its columns.
+ */
+.fui-FluentProvider .fui-Field,
+.fui-FluentProvider .fui-Input {
+  min-width: 0;
+}
+
+.fui-FluentProvider .fui-Input__input {
+  width: 100%;
+  min-width: 0;
+}
+
+/* Fluent pads a message only once it decides the text wraps. This keeps wrapped text off the border either way. */
+.fui-FluentProvider .fui-MessageBar {
+  padding-block: 8px;
 }
 
 /* Menus, dialogs, and drawers stay solid so their text never competes with what is behind them. */
 .search-results,
 .skip-link,
-.identity-drawer.fui-OverlayDrawer {
+.fui-FluentProvider :is(.fui-PopoverSurface, .fui-MenuPopover, .fui-DialogSurface, .fui-OverlayDrawer, .fui-Listbox) {
   background: var(--mosaic-surface-solid);
 }
 
@@ -485,6 +513,16 @@ code,
   line-height: 24px;
 }
 
-table th {
+/* The header tint goes on the row group: on each cell, translucent tints overlap at the seams. */
+.fui-FluentProvider table thead {
   background: var(--mosaic-surface-subtle);
+}
+
+.fui-FluentProvider table thead th {
+  background: none;
+}
+
+table th,
+table td {
+  padding: 14px;
 }

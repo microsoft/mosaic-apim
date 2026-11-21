@@ -305,7 +305,7 @@ code,
 .identity-drawer.fui-OverlayDrawer {
   width: min(560px, 100vw);
   max-width: 100vw;
-  background: var(--mosaic-surface);
+  background: var(--mosaic-surface-solid);
   color: var(--mosaic-text);
 }
 

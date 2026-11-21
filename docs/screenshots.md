@@ -334,7 +334,12 @@ portal at `http://localhost:5174` signs you in as the demo end user, Megan Bowen
 
 Before each capture, the script checks every visible text node, form value, and selected option
 against these rules. Anything that matches is pixelated and then blurred, so no letter shape
-survives to be read back.
+survives to be read back. Taller text gets coarser cells and a wider blur, because a large heading
+keeps its word shapes at the cell size that hides body text.
+
+Text that has scrolled beneath an opaque bar is left alone, since the bar already hides it. The
+frosted top bar counts as such a bar: its own backdrop blur is stronger than the redaction's, and
+blurring that area again would only smear the bar.
 
 - `SENSITIVE_LITERALS` in `demo_api.py`: the demo tenant, client, and object IDs.
 - `RESOURCE_NAMES` in `capture.py`: the demo's gateway, resource group, account, vault, MCP, and
