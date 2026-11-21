@@ -261,7 +261,8 @@ code,
   color: var(--mosaic-rail-muted);
 }
 
-.brand-mark {
+/* Only the rail's own mark: the same mark sits on a light card on the sign-in handoff page. */
+.sidebar .brand-mark {
   color: var(--mosaic-rail-text);
 }
 
