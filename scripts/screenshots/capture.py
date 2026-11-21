@@ -1125,7 +1125,6 @@ SHOTS: list[Shot] = [
         actions=(
             click_button("Anthropic Claude"),
             click_button("Collapse Pools sections"),
-            click_button("Collapse navigation"),
             click_tab("Models and deployments"),
             scroll_to_text("served by 5 active deployments", margin=160),
         ),
@@ -1143,7 +1142,6 @@ SHOTS: list[Shot] = [
         actions=(
             click_button("Anthropic Claude"),
             click_button("Collapse Pools sections"),
-            click_button("Collapse navigation"),
             click_tab("Access and connection"),
             wait_for_text("Grants in force"),
             scroll_to_text("Who can call it", margin=110),
@@ -1163,7 +1161,6 @@ SHOTS: list[Shot] = [
         actions=(
             click_button("Anthropic Claude"),
             click_button("Collapse Pools sections"),
-            click_button("Collapse navigation"),
             click_tab("Health"),
             wait_for_text("Breaker tripped"),
             scroll_to_text("calls to each model ended", margin=168),
@@ -2424,9 +2421,38 @@ def _capture_one(
     return target
 
 
+# The built-in palettes' solid panel colour, which dialogs, drawers, and every fallback use.
+SOLID_PANEL: dict[Theme, str] = {"light": "rgb(255, 255, 255)", "dark": "rgb(27, 34, 51)"}
+
+# Reads an element's paint, the bar drawn in its ::before, and what the shell's tokens resolve to.
+SHELL_PAINT = """element => {
+  const resolve = token => {
+    const probe = document.createElement('span');
+    probe.style.backgroundColor = `var(${token})`;
+    element.append(probe);
+    const color = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return color;
+  };
+  const style = getComputedStyle(element);
+  return {
+    blur: style.backdropFilter, background: style.backgroundColor, radius: style.borderRadius,
+    padding: style.padding, bar: getComputedStyle(element, '::before').backgroundColor,
+    glass: resolve('--mosaic-glass'), surface: resolve('--mosaic-surface'),
+    solid: resolve('--mosaic-surface-solid'), rail: resolve('--mosaic-rail'),
+    page: resolve('--mosaic-bg'),
+  };
+}"""
+
+
+def _translucent(color: str) -> bool:
+    channels = re.findall(r"[\d.]+", color)
+    return len(channels) == 4 and 0 < float(channels[3]) < 1
+
+
 def _check_portal_appearance(page: Page, theme: Theme) -> None:
     origin = "/".join(page.url.split("/")[:3])
-    expected = "rgb(255, 255, 255)" if theme == "light" else "rgb(28, 37, 49)"
+    expected = SOLID_PANEL[theme]
     session = page.context.new_cdp_session(page)
     try:
         page.goto(origin + "/cost-centers?view=discover")
@@ -2435,18 +2461,19 @@ def _check_portal_appearance(page: Page, theme: Theme) -> None:
         join_route = join_link.get_attribute("href")
         if not join_route:
             raise CaptureError("portal: the fictional published center has no join route")
+        routes = (
+            ("/usage", ".usage-kpi-card"),
+            ("/catalog", ".resource-list"),
+            ("/access", ".resource-list"),
+            ("/requests", ".request-card"),
+            ("/cost-centers", ".cost-center-list"),
+            ("/cost-centers?view=discover", ".cost-center-list"),
+            ("/cost-centers/new", ".request-form-section"),
+            (join_route, ".request-form-section"),
+        )
         for width, height in ((1440, 900), (390, 844)):
             page.set_viewport_size({"width": width, "height": height})
-            for route, surface in (
-                ("/usage", ".usage-kpi-card"),
-                ("/catalog", ".resource-list"),
-                ("/access", ".resource-list"),
-                ("/requests", ".request-card"),
-                ("/cost-centers", ".cost-center-list"),
-                ("/cost-centers?view=discover", ".cost-center-list"),
-                ("/cost-centers/new", ".request-form-section"),
-                (join_route, ".request-form-section"),
-            ):
+            for route, surface in routes:
                 page.goto(origin + route)
                 _settle(page)
                 page.locator(surface).first.wait_for()
@@ -2476,49 +2503,41 @@ def _check_portal_appearance(page: Page, theme: Theme) -> None:
                         raise CaptureError(
                             f"portal: join action contrast {contrast:.2f} is below 4.5 in {theme}"
                         )
-                for selector in (".sidebar", ".topbar"):
-                    chrome = page.locator(selector).evaluate(
-                        """element => {
-                          const style = getComputedStyle(element);
-                          const probe = document.createElement('span');
-                          probe.style.backgroundColor = 'var(--mosaic-glass)';
-                          element.append(probe);
-                          const glass = getComputedStyle(probe).backgroundColor;
-                          probe.remove();
-                          return { blur: style.backdropFilter, background: style.backgroundColor,
-                            glass };
-                        }"""
+                # The top bar is a band that blurs what scrolls beneath it, with the glass bar
+                # drawn inside it. The rail is a solid colour of its own.
+                topbar = page.locator(".topbar").evaluate(SHELL_PAINT)
+                if (
+                    topbar["blur"] != "blur(20px) saturate(1.4)"
+                    or topbar["bar"] != topbar["glass"]
+                    or not _translucent(topbar["glass"])
+                ):
+                    raise CaptureError(
+                        f"portal: {route} top bar does not use {theme} glass chrome: {topbar}"
                     )
-                    if (
-                        chrome["blur"] != "blur(20px) saturate(1.4)"
-                        or chrome["background"] != chrome["glass"]
-                    ):
-                        raise CaptureError(
-                            f"portal: {route} {selector} does not use {theme} glass chrome: "
-                            f"{chrome}"
-                        )
-                for selector in (surface, ".fui-FluentProvider"):
-                    style = page.locator(selector).first.evaluate(
-                        """element => {
-                          const style = getComputedStyle(element);
-                          return {background: style.backgroundColor, radius: style.borderRadius,
-                            padding: style.padding};
-                        }"""
+                rail = page.locator(".sidebar").evaluate(SHELL_PAINT)
+                if rail["blur"] != "none" or rail["background"] != rail["rail"]:
+                    raise CaptureError(
+                        f"portal: {route} rail is not the solid {theme} rail: {rail}"
                     )
-                    if style["background"] != expected:
-                        raise CaptureError(
-                            f"portal: {route} {selector} is not an opaque {theme} surface"
-                        )
-                    if selector == surface and style["radius"] != "12px":
-                        raise CaptureError(f"portal: {route} does not use rounded panels")
-                    if (
-                        surface in (".usage-kpi-card", ".request-card")
-                        and selector == surface
-                        and (style["padding"] != "20px")
-                    ):
-                        raise CaptureError(
-                            f"portal: {route} Fluent card styles override panel spacing"
-                        )
+                panel = page.locator(surface).first.evaluate(SHELL_PAINT)
+                if panel["background"] != panel["surface"] or not _translucent(panel["surface"]):
+                    raise CaptureError(
+                        f"portal: {route} {surface} is not a {theme} glass panel: {panel}"
+                    )
+                if panel["solid"] != expected:
+                    raise CaptureError(
+                        f"portal: {route} does not use the built-in {theme} panel colour: {panel}"
+                    )
+                if panel["radius"] != "20px":
+                    raise CaptureError(f"portal: {route} does not use rounded panels")
+                if surface in (".usage-kpi-card", ".request-card") and panel["padding"] != "20px":
+                    raise CaptureError(
+                        f"portal: {route} Fluent card styles override panel spacing"
+                    )
+                # Fluent paints menus, dialogs, and drawers from its provider, which stays solid.
+                provider = page.locator(".fui-FluentProvider").first.evaluate(SHELL_PAINT)
+                if provider["background"] != expected:
+                    raise CaptureError(f"portal: {route} Fluent surfaces are not solid in {theme}")
             page.goto(origin + "/catalog")
             _settle(page)
             page.get_by_role("button", name=re.compile("^View access options for ")).first.click()
@@ -2530,6 +2549,20 @@ def _check_portal_appearance(page: Page, theme: Theme) -> None:
             page.keyboard.press("Escape")
             drawer.wait_for(state="hidden")
 
+        page.set_viewport_size({"width": 1440, "height": 900})
+        page.goto(origin + "/usage")
+        _settle(page)
+
+        def solid_everywhere(reason: str) -> None:
+            topbar = page.locator(".topbar").evaluate(SHELL_PAINT)
+            if topbar["blur"] != "none":
+                raise CaptureError(f"portal: {reason} did not disable the top bar's blur")
+            if topbar["background"] != topbar["page"] or topbar["bar"] != expected:
+                raise CaptureError(f"portal: {reason} left the top bar translucent: {topbar}")
+            rail = page.locator(".sidebar").evaluate(SHELL_PAINT)
+            if rail["blur"] != "none" or _translucent(rail["background"]):
+                raise CaptureError(f"portal: {reason} left the rail translucent: {rail}")
+
         for feature, value in (
             ("prefers-reduced-transparency", "reduce"),
             ("forced-colors", "active"),
@@ -2538,17 +2571,18 @@ def _check_portal_appearance(page: Page, theme: Theme) -> None:
                 "Emulation.setEmulatedMedia",
                 {"features": [{"name": feature, "value": value}]},
             )
-            for selector in (".sidebar", ".topbar"):
-                style = page.locator(selector).evaluate(
-                    """element => {
-                      const style = getComputedStyle(element);
-                      return {blur: style.backdropFilter, background: style.backgroundColor};
-                    }"""
-                )
-                if style["blur"] != "none":
-                    raise CaptureError(f"portal: {feature} did not disable {selector} blur")
-                if feature == "prefers-reduced-transparency" and style["background"] != expected:
-                    raise CaptureError(f"portal: reduced transparency left {selector} translucent")
+            if feature == "prefers-reduced-transparency":
+                solid_everywhere("reduced transparency")
+                panel = page.locator(".usage-kpi-card").first.evaluate(SHELL_PAINT)
+                if panel["background"] != expected:
+                    raise CaptureError(
+                        f"portal: reduced transparency left panels translucent: {panel}"
+                    )
+            else:
+                # Forced colours replace every background, so only the blur is ours to check.
+                for selector in (".sidebar", ".topbar"):
+                    if page.locator(selector).evaluate(SHELL_PAINT)["blur"] != "none":
+                        raise CaptureError(f"portal: {feature} did not disable {selector} blur")
             session.send("Emulation.setEmulatedMedia", {"features": []})
 
         page.evaluate(
@@ -2564,25 +2598,21 @@ def _check_portal_appearance(page: Page, theme: Theme) -> None:
               }
             }"""
         )
-        for selector in (".sidebar", ".topbar"):
-            style = page.locator(selector).evaluate(
-                """element => {
-                  const style = getComputedStyle(element);
-                  return {blur: style.backdropFilter, background: style.backgroundColor};
-                }"""
-            )
-            if style["blur"] != "none" or style["background"] != expected:
-                raise CaptureError(f"portal: unsupported blur did not leave {selector} solid")
+        solid_everywhere("unsupported blur")
     finally:
         session.send("Emulation.setEmulatedMedia", {"features": []})
         session.detach()
-    print(f"verified portal {theme} glass, solid surfaces, mobile reflow, and blur fallbacks")
+    print(f"verified portal {theme} glass, solid fallbacks, mobile reflow, and blur fallbacks")
 
 
 def _check_navigation(page: Page, app: App) -> None:
     """Exercise shell geometry and focus using the same fictional estate as the captures."""
     origin = "/".join(page.url.split("/")[:3])
     original_preference = page.evaluate("localStorage.getItem('mosaic-theme')")
+    # The rail starts compact. These checks exercise both states from the expanded one, so expand
+    # it the way a person's stored choice would.
+    rail_key = "mosaic.portal.primary.collapsed" if app == "portal" else "mosaic.primary.collapsed"
+    page.evaluate("key => localStorage.setItem(key, 'false')", rail_key)
     page.set_viewport_size({"width": 1440, "height": 900})
     page.goto(origin + ("/catalog" if app == "portal" else "/dashboard"))
     _settle(page)
@@ -2861,7 +2891,11 @@ def _check_identity_workspace(page: Page) -> None:
         ).click()
         page.get_by_role("dialog", name="Discard unsaved changes?", exact=True).wait_for()
         page.get_by_role("button", name="Discard changes", exact=True).click()
-        page.wait_for_function("new URLSearchParams(location.search).get('tab') === 'agents'")
+        # A function, not a bare expression: the apps' Content-Security-Policy forbids the eval a
+        # bare expression needs.
+        page.wait_for_function(
+            "() => new URLSearchParams(location.search).get('tab') === 'agents'"
+        )
         page.locator("[data-workspace-editor]").wait_for(state="hidden")
         if page.get_by_role("dialog", name="Discard unsaved changes?", exact=True).count():
             raise CaptureError("console: discarding a section draft left the confirmation open")

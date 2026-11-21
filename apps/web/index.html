@@ -8,14 +8,22 @@
     <title>MOSAIC | AI gateway control plane</title>
     <script>
       (() => {
+        // Paint the last applied theme before the app loads. The app replaces it as soon as it starts.
+        const root = document.documentElement
         const preference = localStorage.getItem('mosaic-theme') || 'system'
-        const theme =
-          preference === 'system'
-            ? matchMedia('(prefers-color-scheme: dark)').matches
-              ? 'dark'
-              : 'light'
-            : preference
-        document.documentElement.dataset.theme = theme
+        const system = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+        root.dataset.theme = preference === 'light' || preference === 'dark' ? preference : system
+        try {
+          const paint = JSON.parse(localStorage.getItem('mosaic-theme-paint') || 'null')
+          if (!paint || (paint.theme !== 'light' && paint.theme !== 'dark')) return
+          if (preference !== 'custom' && paint.theme !== root.dataset.theme) return
+          root.dataset.theme = paint.theme
+          for (const name of Object.keys(paint.tokens || {})) {
+            if (name.startsWith('--mosaic-')) root.style.setProperty(name, String(paint.tokens[name]))
+          }
+        } catch {
+          // A damaged cache only costs the first frame; the built-in palette shows instead.
+        }
       })()
     </script>
   </head>

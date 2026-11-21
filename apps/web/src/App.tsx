@@ -40,6 +40,7 @@ import {
   Routes,
   useNavigate,
 } from 'react-router-dom'
+import { useMosaicApi } from './api'
 import { AuthGate } from './auth'
 import { ConsoleAccessGate } from './console-access'
 import { AdminProfilePage } from './pages/AdminProfilePage'
@@ -66,8 +67,10 @@ import { RequestNotifications } from './components/RequestNotifications'
 import { NotificationBell, NotificationInboxPage } from './components/NotificationInbox'
 import { useNavigationDrawer } from './components/useNavigationDrawer'
 import { AppearanceControl } from './components/AppearanceControl'
+import { OrganizationAppearanceLoader } from './components/appearance/OrganizationAppearanceLoader'
 import { IdentityAvatar } from './components/IdentityAvatar'
 import './index.css'
+import './prism.css'
 
 interface NavigationItem {
   to: string
@@ -118,10 +121,11 @@ function NavigationLinks({
 }
 
 function AdminShell() {
+  const api = useMosaicApi()
   const { instance, accounts } = useMsal()
   const navigate = useNavigate()
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false)
-  const [collapsed, setCollapsed] = useState(() => localStorage.getItem('mosaic.primary.collapsed') === 'true')
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem('mosaic.primary.collapsed') !== 'false')
   const accountName = accounts[0]?.name ?? 'MOSAIC administrator'
   const accountObjectId = accounts[0]?.localAccountId
 
@@ -153,6 +157,7 @@ function AdminShell() {
   return (
     <div className={`app-shell ${collapsed ? 'rail-collapsed' : ''}`}>
       <a className="skip-link" href="#main-content">Skip to content</a>
+      <OrganizationAppearanceLoader load={api.getOrganizationAppearance} />
       <aside ref={navigationRef} className={mobileNavigationOpen ? 'sidebar open' : 'sidebar'}
         role={mobileNavigationOpen ? 'dialog' : undefined} aria-modal={mobileNavigationOpen || undefined}
         aria-label={mobileNavigationOpen ? 'Navigation' : undefined}>
@@ -179,7 +184,7 @@ function AdminShell() {
         </nav>
         <nav className="utility-navigation" aria-label="Utility navigation">
           <NavigationLinks items={utilityNavigation} onNavigate={closeNavigation} />
-          <AppearanceControl />
+          <AppearanceControl onCustomize={() => { closeNavigation(); navigate('/settings?tab=appearance') }} />
           <Menu>
             <MenuTrigger disableButtonEnhancement>
           <button className="profile-quick-link" aria-label={`Account menu for ${accountName}`} title={accountName}>
@@ -213,6 +218,7 @@ function AdminShell() {
           aria-label="Open navigation"
           onClick={() => setMobileNavigationOpen(true)}
         />
+        <span className="topbar-brand">MOSAIC</span>
         <PageSearch destinations={searchDestinations} />
         <div className="topbar-actions">
           <RequestNotifications />

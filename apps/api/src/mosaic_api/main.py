@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, Response
 from mosaic_api.analytics_api import analytics_router
 from mosaic_api.api import portal_router, router
 from mosaic_api.api_docs import RUNTIME_ASSET_POLICY, install_api_docs
+from mosaic_api.appearance_api import appearance_router, portal_appearance_router
 from mosaic_api.approvals_api import approvals_router
 from mosaic_api.auth import EntraAuthenticator, LocalAuthenticator
 from mosaic_api.azure_connections import (
@@ -87,7 +88,9 @@ from mosaic_api.observability import configure_logging, configure_telemetry, ins
 from mosaic_api.pricing import load_seed
 from mosaic_api.pricing_api import pricing_router
 from mosaic_api.repositories import (
+    AppearanceRepository,
     BudgetRepository,
+    CosmosAppearanceRepository,
     CosmosBudgetRepository,
     CosmosCostCenterRepository,
     CosmosDirectoryRepository,
@@ -103,6 +106,7 @@ from mosaic_api.repositories import (
     EntitlementRepository,
     EnvironmentRepository,
     GatewayRepository,
+    InMemoryAppearanceRepository,
     InMemoryBudgetRepository,
     InMemoryCostCenterRepository,
     InMemoryDirectoryRepository,
@@ -136,6 +140,7 @@ from mosaic_api.services import (
     UsageService,
 )
 from mosaic_api.services.analytics import AnalyticsService
+from mosaic_api.services.appearance import AppearanceService
 from mosaic_api.services.approval_ai import ApprovalAiService, HttpGovernedApprovalModel
 from mosaic_api.services.approval_events import GrantNotificationRecipientResolver
 from mosaic_api.services.approvals import ApprovalService
@@ -234,6 +239,7 @@ def create_app(
         endpoint_repository: ModelEndpointRepository
         entitlement_repository: EntitlementRepository
         environment_repository: EnvironmentRepository
+        appearance_repository: AppearanceRepository
         connection_repository: AzureConnectionRepository
         mcp_repository: McpEndpointRepository
         rollup_repository: UsageRollupRepository
@@ -247,6 +253,7 @@ def create_app(
         retention_probes: tuple[CapabilityProbe, ...] = ()
         if app_settings.repository_backend is RepositoryBackend.MEMORY:
             repository = InMemoryDirectoryRepository()
+            appearance_repository = InMemoryAppearanceRepository()
             approval_repository = InMemoryApprovalRepository()
             connection_repository = InMemoryAzureConnectionRepository()
             gateway_repository = InMemoryGatewayRepository()
@@ -339,6 +346,13 @@ def create_app(
                 owns_client=False,
             )
             environment_repository = CosmosEnvironmentRepository(
+                cosmos_client,
+                app_settings.cosmos_database,
+                app_settings.cosmos_desired_state_container,
+                app_settings.cosmos_audit_events_container,
+                owns_client=False,
+            )
+            appearance_repository = CosmosAppearanceRepository(
                 cosmos_client,
                 app_settings.cosmos_database,
                 app_settings.cosmos_desired_state_container,
@@ -595,6 +609,8 @@ def create_app(
         app.state.model_endpoint_repository = endpoint_repository
         app.state.entitlement_repository = entitlement_repository
         app.state.environment_repository = environment_repository
+        app.state.appearance_repository = appearance_repository
+        app.state.appearance_service = AppearanceService(appearance_repository)
         app.state.mcp_endpoint_repository = mcp_repository
         app.state.cost_center_repository = cost_center_repository
         entitlement_service = EntitlementService(
@@ -1308,6 +1324,7 @@ def create_app(
             await endpoint_repository.close()
             await entitlement_repository.close()
             await environment_repository.close()
+            await appearance_repository.close()
             await connection_repository.close()
             await mcp_repository.close()
             await rollup_repository.close()
@@ -1378,6 +1395,7 @@ def create_app(
         entitlement_repository = getattr(request.app.state, "entitlement_repository", None)
         mcp_repository = getattr(request.app.state, "mcp_endpoint_repository", None)
         environment_repository = getattr(request.app.state, "environment_repository", None)
+        appearance_repository = getattr(request.app.state, "appearance_repository", None)
         connection_repository = getattr(request.app.state, "azure_connection_repository", None)
         rollup_repository = getattr(request.app.state, "usage_rollup_repository", None)
         pricing_repository = getattr(request.app.state, "pricing_repository", None)
@@ -1398,6 +1416,8 @@ def create_app(
             and await mcp_repository.ready()
             and environment_repository is not None
             and await environment_repository.ready()
+            and appearance_repository is not None
+            and await appearance_repository.ready()
             and connection_repository is not None
             and await connection_repository.ready()
             and rollup_repository is not None
@@ -1439,6 +1459,8 @@ def create_app(
     app.include_router(cost_center_requests_router)
     app.include_router(membership_requests_router)
     app.include_router(delegation_router)
+    app.include_router(appearance_router)
+    app.include_router(portal_appearance_router)
     app.include_router(budgets_router)
     app.include_router(portal_budgets_router)
     app.include_router(portal_router)

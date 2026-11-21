@@ -1,63 +1,4 @@
-:root {
-  font-family: "Segoe UI", Aptos, Calibri, -apple-system, BlinkMacSystemFont, sans-serif;
-  color: #1a1c1c;
-  background: var(--mosaic-bg);
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  color-scheme: light;
-  --mosaic-bg: #edf3fa;
-  --mosaic-surface: #ffffff;
-  --mosaic-surface-subtle: #f5f7fa;
-  --mosaic-surface-strong: #e8edf4;
-  --mosaic-border: #c6cfdb;
-  --mosaic-border-soft: #dce5ef;
-  --mosaic-glass: rgba(250, 252, 255, 0.72);
-  --mosaic-chrome-tint: #d8e8f8;
-  --mosaic-text: #1a1c1c;
-  --mosaic-text-muted: #404752;
-  --mosaic-primary: #005faa;
-  --mosaic-primary-hover: #004f8e;
-  --mosaic-primary-soft: #e8f2fb;
-  --mosaic-primary-text: #ffffff;
-  --mosaic-success: #107c10;
-  --mosaic-success-soft: #dff6dd;
-  --mosaic-warning: #9d5d00;
-  --mosaic-warning-soft: #fff4ce;
-  --mosaic-danger: #ba1a1a;
-  --mosaic-danger-soft: #fde7e9;
-  --mosaic-code-bg: #17212b;
-  --mosaic-code-text: #e8eef4;
-  --mosaic-shadow: 0 2px 6px rgba(25, 44, 72, 0.035), 0 10px 28px rgba(25, 44, 72, 0.055);
-  --sidebar-width: 232px;
-  --topbar-height: 64px;
-}
-
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --mosaic-bg: #141b25;
-  --mosaic-surface: #1c2531;
-  --mosaic-surface-subtle: #222e3b;
-  --mosaic-surface-strong: #303e4e;
-  --mosaic-border: #536479;
-  --mosaic-border-soft: #354354;
-  --mosaic-glass: rgba(28, 37, 49, 0.76);
-  --mosaic-chrome-tint: #1b3550;
-  --mosaic-text: #f5f5f5;
-  --mosaic-text-muted: #c8c6c4;
-  --mosaic-primary: #69afe5;
-  --mosaic-primary-hover: #8ac5ee;
-  --mosaic-primary-soft: #173a55;
-  --mosaic-primary-text: #102333;
-  --mosaic-success: #6ccb5f;
-  --mosaic-success-soft: #163d19;
-  --mosaic-warning: #f8c45e;
-  --mosaic-warning-soft: #4a3512;
-  --mosaic-danger: #ff99a4;
-  --mosaic-danger-soft: #521a20;
-  --mosaic-code-bg: #101417;
-  --mosaic-code-text: #edf2f7;
-  --mosaic-shadow: 0 3px 8px rgba(0, 0, 0, 0.12), 0 12px 32px rgba(0, 0, 0, 0.12);
-}
+/* Colour tokens, fonts, and the shared shell live in prism.css, which loads after this file. */
 
 * {
   box-sizing: border-box;
@@ -114,7 +55,6 @@ code,
   grid-template:
     "nav header" var(--topbar-height)
     "nav content" minmax(0, 1fr) / var(--sidebar-width) minmax(0, 1fr);
-  background: linear-gradient(135deg, var(--mosaic-chrome-tint), var(--mosaic-bg) 65%);
 }
 
 .topbar {
@@ -476,21 +416,7 @@ code,
   line-height: 1.5;
 }
 
-@supports (backdrop-filter: blur(16px)) {
-  .sidebar,
-  .topbar {
-    background: var(--mosaic-glass);
-    backdrop-filter: blur(20px) saturate(140%);
-  }
-}
 
-@media (prefers-reduced-transparency: reduce), (forced-colors: active) {
-  .sidebar,
-  .topbar {
-    background: var(--mosaic-surface);
-    backdrop-filter: none;
-  }
-}
 
 .content {
   grid-area: content;

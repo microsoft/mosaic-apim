@@ -29,6 +29,8 @@ import { usePortalApi } from './api'
 import { AuthGate } from './auth'
 import { ErrorState, Loading } from './components/AsyncState'
 import { AppearanceControl } from './components/AppearanceControl'
+import { AppearanceDialog } from './components/appearance/AppearanceDialog'
+import { OrganizationAppearanceLoader } from './components/appearance/OrganizationAppearanceLoader'
 import { initialsFor } from './initials'
 import { CatalogPage } from './pages/CatalogPage'
 import { MyAccessPage } from './pages/MyAccessPage'
@@ -49,6 +51,7 @@ import { requestCountsKey } from './request-queries'
 import { scopesKey } from './approvals'
 import { ApprovalsPage } from './pages/ApprovalsPage'
 import './index.css'
+import './prism.css'
 
 interface NavigationItem {
   to: string
@@ -90,7 +93,8 @@ function PortalShell() {
   const { instance, accounts } = useMsal()
   const api = usePortalApi()
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false)
-  const [collapsed, setCollapsed] = useState(() => localStorage.getItem('mosaic.portal.primary.collapsed') === 'true')
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem('mosaic.portal.primary.collapsed') !== 'false')
+  const [appearanceOpen, setAppearanceOpen] = useState(false)
   const profile = useQuery({ queryKey: ['portal', 'profile'], queryFn: api.getProfile })
   const scopes = useQuery({
     queryKey: [...scopesKey, accounts[0]?.homeAccountId],
@@ -154,7 +158,7 @@ function PortalShell() {
           <NavigationLinks onNavigate={closeNavigation} canReview={scopes.isSuccess && scopes.data.length > 0} />
         </nav>
         <div className="utility-navigation">
-          <AppearanceControl />
+          <AppearanceControl onCustomize={() => { closeNavigation(); setAppearanceOpen(true) }} />
           <Menu>
             <MenuTrigger disableButtonEnhancement>
               <Button className="profile-quick-link" appearance="subtle" aria-label={`Account menu for ${accountName}`} title={accountName}>
@@ -166,6 +170,7 @@ function PortalShell() {
               <MenuItem>{accountName}</MenuItem>
               <MenuItem onClick={() => { closeNavigation(); navigate('/notifications') }}>Notifications</MenuItem>
               <MenuItem onClick={() => { closeNavigation(); navigate('/notification-preferences') }}>Notification preferences</MenuItem>
+              <MenuItem onClick={() => { closeNavigation(); setAppearanceOpen(true) }}>Custom colours</MenuItem>
               {runtimeConfig.authMode === 'entra' && <MenuItem icon={<SignOutRegular />} onClick={signOut}>Sign out</MenuItem>}
             </MenuList></MenuPopover>
           </Menu>
@@ -182,6 +187,7 @@ function PortalShell() {
           aria-label="Open navigation"
           onClick={() => setMobileNavigationOpen(true)}
         />
+        <span className="topbar-brand">MOSAIC</span>
         <div className="signed-in-summary">
           <span>
             <strong>Your workspace</strong>
@@ -203,6 +209,8 @@ function PortalShell() {
           <Outlet />
         </div>
       </main>
+      <OrganizationAppearanceLoader load={api.getAppearance} />
+      <AppearanceDialog open={appearanceOpen} onClose={() => setAppearanceOpen(false)} />
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { type ReactNode, useId } from 'react'
 import styles from './charts.module.css'
 
 interface Point {
@@ -13,16 +13,26 @@ function peak(values: Array<number | null | undefined>): number {
   return Math.max(0, ...values.map((value) => value ?? 0))
 }
 
-function points(values: Array<number | null | undefined>, max: number): string {
-  return values
-    .map((value, index) => {
-      if (value == null) return null
-      const x = values.length === 1 ? 50 : (index / (values.length - 1)) * 100
-      // Costs peak below 1, so scale to the real peak whenever there is one.
-      const y = 94 - (value / (max > 0 ? max : 1)) * 82
-      return `${x},${y}`
+type Coordinate = [x: number, y: number]
+
+function coordinates(values: Array<number | null | undefined>, max: number): Coordinate[] {
+  return values.flatMap((value, index): Coordinate[] => {
+    if (value == null) return []
+    const x = values.length === 1 ? 50 : (index / (values.length - 1)) * 100
+    // Costs peak below 1, so scale to the real peak whenever there is one.
+    return [[x, 94 - (value / (max > 0 ? max : 1)) * 82]]
+  })
+}
+
+// Eases between buckets without rising above or dipping below either neighbour, so the curve invents no peak.
+function curve(line: Coordinate[]): string {
+  return line
+    .map(([x, y], index) => {
+      if (index === 0) return `M${x} ${y}`
+      const [previousX, previousY] = line[index - 1]
+      const middle = (previousX + x) / 2
+      return `C${middle} ${previousY} ${middle} ${y} ${x} ${y}`
     })
-    .filter(Boolean)
     .join(' ')
 }
 
@@ -49,8 +59,11 @@ export function TrendChart({
   const secondaryValues = chartPoints.map((point) => point.secondary)
   const primaryPeak = peak(primaryValues)
   const secondaryPeak = peak(secondaryValues)
-  const primary = points(primaryValues, primaryPeak)
-  const secondary = secondaryLabel ? points(secondaryValues, secondaryPeak) : ''
+  const gradient = useId()
+  const primaryLine = coordinates(primaryValues, primaryPeak)
+  const primary = curve(primaryLine)
+  const secondary = secondaryLabel ? curve(coordinates(secondaryValues, secondaryPeak)) : ''
+  const latest = primaryLine.at(-1)
   const first = chartPoints[0]?.label
   const last = chartPoints.length > 1 ? chartPoints[chartPoints.length - 1].label : undefined
   // A line with no values has no peak. Saying "peak 0" would claim a value nobody measured.
@@ -64,14 +77,24 @@ export function TrendChart({
           <span><i className={`${styles.swatch} ${styles.swatchSecondary}`} />{legend(secondaryLabel, secondaryValues, secondaryPeak, secondaryFormat)}</span>
         )}
       </div>
-      <svg className={styles.chart} viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label={title}>
-        {[20, 40, 60, 80].map((y) => (
-          <line key={y} className={styles.gridLine} x1="0" x2="100" y1={y} y2={y} />
-        ))}
-        {primary && <polyline className={styles.area} points={`0,100 ${primary} 100,100`} />}
-        {primary && <polyline className={styles.line} points={primary} />}
-        {secondary && <polyline className={styles.lineSecondary} points={secondary} />}
-      </svg>
+      <div className={styles.plot}>
+        <svg className={styles.chart} viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label={title}>
+          <defs>
+            <linearGradient id={gradient} x1="0" y1="0" x2="0" y2="1">
+              <stop className={styles.areaStart} offset="0" />
+              <stop className={styles.areaEnd} offset="1" />
+            </linearGradient>
+          </defs>
+          {[20, 40, 60, 80].map((y) => (
+            <line key={y} className={styles.gridLine} x1="0" x2="100" y1={y} y2={y} />
+          ))}
+          {primary && <path className={styles.area} fill={`url(#${gradient})`} d={`${primary} L${primaryLine.at(-1)![0]} 100 L${primaryLine[0][0]} 100 Z`} />}
+          {secondary && <path className={styles.lineSecondary} d={secondary} />}
+          {primary && <path className={styles.line} d={primary} />}
+        </svg>
+        {/* The latest bucket, marked in the accent. The SVG stretches, so the dot is positioned over it instead of drawn in it. */}
+        {latest && <span className={styles.latest} style={{ left: `${latest[0]}%`, top: `${latest[1]}%` }} aria-hidden="true" />}
+      </div>
       {first && (
         <div className={styles.axis} aria-hidden="true">
           <span>{first}</span>

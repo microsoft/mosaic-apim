@@ -71,6 +71,12 @@ function costCenterSearchPath(path: string, filter: { q?: string; cursor?: strin
   return `${path}?${params}`
 }
 
+export interface OrganizationAppearanceResponse {
+  /** Validated by the theme before use, so it stays untyped here. */
+  scheme: unknown
+  allowCustomThemes: boolean
+}
+
 export interface PortalApi {
   listReviewCenters(): Promise<ReviewCenter[]>
   listApprovals(centerId: string, state: ReviewState, cursor?: string): Promise<ReviewPage>
@@ -90,6 +96,8 @@ export interface PortalApi {
   listEnvironments(): Promise<PortalEnvironment[]>
   listCatalog(): Promise<CatalogEntry[]>
   listCostCenters(): Promise<PortalCostCenter[]>
+  /** The organization's colours, readable by every signed-in person. */
+  getAppearance(): Promise<OrganizationAppearanceResponse>
   getCostCenterSelfServiceSettings(): Promise<CostCenterSelfServiceSettings>
   listMyCostCenters(filter?: { q?: string; cursor?: string }): Promise<CostCenterDirectoryPage>
   searchCostCenters(filter?: { q?: string; cursor?: string }): Promise<CostCenterDirectoryPage>
@@ -207,6 +215,7 @@ export function usePortalApi(): PortalApi {
       listEnvironments: () => request<PortalEnvironment[]>('/api/v1/portal/environments'),
       listCatalog: () => request<CatalogEntry[]>('/api/v1/portal/catalog'),
       listCostCenters: () => request<PortalCostCenter[]>('/api/v1/portal/cost-centers'),
+      getAppearance: () => request<OrganizationAppearanceResponse>('/api/v1/portal/appearance'),
       getCostCenterSelfServiceSettings: () =>
         request<CostCenterSelfServiceSettings>('/api/v1/portal/cost-center-self-service-settings', { cache: 'no-store' }),
       listMyCostCenters: (filter = {}) => request<CostCenterDirectoryPage>(

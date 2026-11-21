@@ -67,6 +67,8 @@ import {
 import { plural } from '../labels'
 import { runtimeConfig } from '../runtime-config'
 import { type ThemePreference, useMosaicTheme } from '../theme-context'
+import { CustomThemeEditor } from '../components/appearance/CustomThemeEditor'
+import { OrganizationAppearanceEditor } from '../components/appearance/OrganizationAppearanceEditor'
 import type {
   EnvironmentCatalogView,
   EnvironmentColor,
@@ -79,13 +81,14 @@ const appearanceOptions: Array<{
   label: string
   description: string
 }> = [
-  { value: 'light', label: 'Light', description: 'Always use the MOSAIC light theme.' },
-  { value: 'dark', label: 'Dark', description: 'Always use the MOSAIC dark theme.' },
+  { value: 'light', label: 'Light', description: 'Always use your organization\u2019s light colours.' },
+  { value: 'dark', label: 'Dark', description: 'Always use your organization\u2019s dark colours.' },
   {
     value: 'system',
     label: 'System',
     description: 'Follow your browser and operating system color-scheme preference.',
   },
+  { value: 'custom', label: 'Custom', description: 'Use the colours you choose below.' },
 ]
 
 const environmentColors: EnvironmentColor[] = [
@@ -675,12 +678,12 @@ export function SettingsPage() {
     { value: 'notifications', label: 'Notifications', icon: <MailRegular />, description: 'Configure shared channels, administrator routing, Teams destinations, and inspect delivery evidence.' },
     { value: 'costCenters', label: 'Cost centers', icon: <SettingsRegular />, description: 'Persisted portal request controls and separate directory capability status.' },
     { value: 'runtime', label: 'Runtime configuration', icon: <SettingsRegular />, description: 'Read-only deployed configuration. Change deployment settings outside this page.' },
-    { value: 'appearance', label: 'Appearance', icon: <WeatherMoonRegular />, description: 'Preferences apply immediately and are saved only in this browser.' },
+    { value: 'appearance', label: 'Appearance', icon: <WeatherMoonRegular />, description: 'Choose your own mode and colours, and set the colours everyone in the organization sees.' },
   ]
   const [section, selectSection] = usePageSection(sections)
   const [params] = useSearchParams()
   const { accounts } = useMsal()
-  const { preference, resolvedTheme, setPreference } = useMosaicTheme()
+  const { preference, resolvedTheme, setPreference, customTheme, organization } = useMosaicTheme()
 
   const administratorLabel = accounts[0]?.name ?? 'Local administrator'
   const safeRuntimeValues = [
@@ -738,39 +741,71 @@ export function SettingsPage() {
           <DirectoryConfiguration />
         </Card>}
 
-        {section === 'appearance' && <Card className={styles.card}>
-          <div className={styles.cardHeader}>
-            <div>
-              <Title3 as="h2">Appearance</Title3>
-              <Text className={styles.cardDescription}>
-                Theme changes apply immediately and stay in this browser through local storage.
+        {section === 'appearance' && <>
+          <Card className={styles.card}>
+            <div className={styles.cardHeader}>
+              <div>
+                <Title3 as="h2">Appearance</Title3>
+                <Text className={styles.cardDescription}>
+                  Your choice applies immediately and stays in this browser through local storage.
+                </Text>
+              </div>
+            </div>
+            <RadioGroup
+              aria-label="MOSAIC theme preference"
+              className={styles.radioGroup}
+              value={preference}
+              onChange={(_, data) => setPreference(data.value as ThemePreference)}
+            >
+              {appearanceOptions.map((option) => {
+                // Custom needs saved colours, and an administrator can turn it off for everyone.
+                const unavailable = option.value === 'custom' && (!organization.allowCustomThemes || !customTheme)
+                return (
+                  <div key={option.value} className={styles.radioOption}>
+                    <Radio label={option.label} value={option.value} disabled={unavailable} />
+                    <Text className={styles.radioDescription}>
+                      {option.value !== 'custom' ? option.description
+                        : !organization.allowCustomThemes ? 'Your administrator has turned off custom colours.'
+                          : customTheme ? option.description : 'Save your own colours below to use them.'}
+                    </Text>
+                  </div>
+                )
+              })}
+            </RadioGroup>
+            <div className={styles.appearanceSummary}>
+              <Text className={styles.emphasis}>Active theme</Text>
+              <Text>
+                Preference: {preference}. Resolved theme: {resolvedTheme}.
+              </Text>
+              <Text className={styles.caption}>
+                The preference is saved per browser profile, so System follows your device setting
+                while Light, Dark, and Custom override it immediately.
               </Text>
             </div>
-          </div>
-          <RadioGroup
-            aria-label="MOSAIC theme preference"
-            className={styles.radioGroup}
-            value={preference}
-            onChange={(_, data) => setPreference(data.value as ThemePreference)}
-          >
-            {appearanceOptions.map((option) => (
-              <div key={option.value} className={styles.radioOption}>
-                <Radio label={option.label} value={option.value} />
-                <Text className={styles.radioDescription}>{option.description}</Text>
+          </Card>
+          <Card className={styles.card}>
+            <div className={styles.cardHeader}>
+              <div>
+                <Title3 as="h2">Your custom colours</Title3>
+                <Text className={styles.cardDescription}>
+                  Choose six colours and MOSAIC works out the rest, including readable text on your accent.
+                </Text>
               </div>
-            ))}
-          </RadioGroup>
-          <div className={styles.appearanceSummary}>
-            <Text className={styles.emphasis}>Active theme</Text>
-            <Text>
-              Preference: {preference}. Resolved theme: {resolvedTheme}.
-            </Text>
-            <Text className={styles.caption}>
-              The preference is saved per browser profile, so System follows your device setting
-              while Light and Dark override it immediately.
-            </Text>
-          </div>
-        </Card>}
+            </div>
+            <CustomThemeEditor />
+          </Card>
+          <Card className={styles.card}>
+            <div className={styles.cardHeader}>
+              <div>
+                <Title3 as="h2">Organization colours</Title3>
+                <Text className={styles.cardDescription}>
+                  Set the Light and Dark colours everyone sees in the console and the portal.
+                </Text>
+              </div>
+            </div>
+            <OrganizationAppearanceEditor />
+          </Card>
+        </>}
 
       </SectionLayout>
     </section>

@@ -4,6 +4,7 @@ import { runtimeConfig } from './runtime-config'
 import { adminApi, type AdminApi } from './admin-api'
 import type { CapabilityCheck } from './admin-types'
 import { isGatewayPolicyCapabilities } from './policy-capabilities'
+import type { OrganizationScheme } from './appearance'
 import type {
   AccessRequest,
   AccessRequestApproval,
@@ -226,6 +227,12 @@ export function failureMessage(body: ApiErrorBody | undefined, status: number): 
   return `Request failed with status ${status}`
 }
 
+/** What an administrator has saved for everyone: optional light and dark palettes, and whether people may use their own. */
+export interface AppearanceSettings {
+  scheme: OrganizationScheme | null
+  allowCustomThemes: boolean
+}
+
 export interface MosaicApi extends AdminApi {
   listAzureConnections(): Promise<AzureConnection[]>
   createAzureConnection(payload: { name: string; azureCloud: AzureCloud; azureTenantId: string; clientId: string; clientSecret: string }): Promise<AzureConnection>
@@ -305,6 +312,10 @@ export interface MosaicApi extends AdminApi {
   updateCostCenterLimits(costCenterId: string, limits: CostCenterLimit[]): Promise<CostCenter>
   recheckCostCenter(costCenterId: string): Promise<CostCenter>
   getCostCenterSettings(): Promise<CostCenterSettings>
+  /** The organization's colours as every signed-in person's app reads them. */
+  getOrganizationAppearance(): Promise<AppearanceSettings>
+  getAppearance(): Promise<AppearanceSettings>
+  updateAppearance(payload: AppearanceSettings): Promise<AppearanceSettings>
   updateCostCenterSettings(payload: CostCenterSettingsUpdate): Promise<CostCenterSettings>
   listCostCenterMembershipRequests(state?: string): Promise<AdminCostCenterMembershipRequest[]>
   getCostCenterMembershipRequest(id: string): Promise<AdminCostCenterMembershipRequest>
@@ -952,6 +963,9 @@ export function useMosaicApi(): MosaicApi {
           method: 'POST',
         }),
       getCostCenterSettings: () => request<CostCenterSettings>('/api/v1/cost-center-settings'),
+      getOrganizationAppearance: () => request<AppearanceSettings>('/api/v1/portal/appearance'),
+      getAppearance: () => request<AppearanceSettings>('/api/v1/appearance', { cache: 'no-store' }),
+      updateAppearance: (payload) => request<AppearanceSettings>('/api/v1/appearance', { method: 'PUT', body: payload }),
       listCostCenterMembershipRequests: (state) =>
         request<AdminCostCenterMembershipRequest[]>(`/api/v1/cost-center-membership-requests${state ? `?state=${encodeURIComponent(state)}` : ''}`, { cache: 'no-store' }),
       getCostCenterMembershipRequest: (id) =>

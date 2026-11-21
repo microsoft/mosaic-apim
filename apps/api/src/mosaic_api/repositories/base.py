@@ -2,6 +2,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Protocol
 
+from mosaic_api.appearance import AppearanceSettings
 from mosaic_api.billing_pricing import (
     BillingAcquisitionRun,
     BillingConnection,
@@ -118,6 +119,22 @@ class DirectoryRepository(Protocol):
     async def delete_membership(
         self, membership: GroupMembership, audit_event: AuditEvent
     ) -> None: ...
+
+
+class AppearanceRepository(Protocol):
+    """Persistence for the organization's colour scheme."""
+
+    async def ready(self) -> bool: ...
+
+    async def close(self) -> None: ...
+
+    async def get_appearance(self, tenant_id: str) -> AppearanceSettings | None: ...
+
+    async def save_appearance(
+        self, settings: AppearanceSettings, audit_event: AuditEvent
+    ) -> AppearanceSettings:
+        """Create the settings, or replace the version that was read."""
+        ...
 
 
 class EnvironmentRepository(Protocol):

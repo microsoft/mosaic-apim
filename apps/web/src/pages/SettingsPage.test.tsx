@@ -29,6 +29,8 @@ const api = {
   saveEmailSettings: vi.fn(),
   sendTestEmail: vi.fn(),
   getNotificationSettings: vi.fn(),
+  getAppearance: vi.fn(),
+  updateAppearance: vi.fn(),
 }
 
 vi.mock('../api', async (importOriginal) => {
@@ -106,6 +108,8 @@ describe('SettingsPage', () => {
     api.listEnvironmentSuggestions.mockResolvedValue({ items: [] })
     api.getEmailSettings.mockResolvedValue(emailSettingsFixture)
     api.getNotificationSettings.mockResolvedValue({ inAppEnabled: true, emailEnabled: false, teamsChannelEnabled: false, teamsPersonalEnabled: false, retentionDays: 90, revision: 1 })
+    api.getAppearance.mockResolvedValue({ scheme: null, allowCustomThemes: true })
+    api.updateAppearance.mockImplementation(async (payload) => payload)
     api.getDirectoryStatus.mockResolvedValue({
       lookupEnabled: true,
       groupClaimsEnabled: false,
@@ -130,6 +134,84 @@ describe('SettingsPage', () => {
     expect(document.documentElement.dataset.theme).toBe('dark')
     expect(window.localStorage.getItem('mosaic-theme')).toBe('dark')
     expect(screen.getByText(/Resolved theme: dark/i)).toBeVisible()
+  })
+
+  it('offers Custom only once colours are saved, then saves them from this page', async () => {
+    const user = userEvent.setup()
+    renderSettings()
+
+    await user.click(await screen.findByRole('button', { name: 'Appearance' }))
+    expect(screen.getByRole('radio', { name: 'Custom' })).toBeDisabled()
+    expect(screen.getByText('Save your own colours below to use them.')).toBeVisible()
+
+    const accent = screen.getAllByRole('textbox', { name: 'Accent' })[0]
+    await user.clear(accent)
+    await user.type(accent, '#7a5af8')
+    await user.click(screen.getByRole('button', { name: 'Save and use my colours' }))
+
+    expect(screen.getByRole('radio', { name: 'Custom' })).toBeChecked()
+    expect(screen.getByText(/Preference: custom\. Resolved theme: light\./)).toBeVisible()
+    expect(window.localStorage.getItem('mosaic-theme')).toBe('custom')
+    expect(api.updateAppearance).not.toHaveBeenCalled()
+  })
+
+  it('saves organization colours for everyone and can return to MOSAIC\u2019s own', async () => {
+    const user = userEvent.setup()
+    renderSettings()
+
+    await user.click(await screen.findByRole('button', { name: 'Appearance' }))
+    const organization = screen.getByRole('heading', { name: 'Organization colours' }).closest('.fui-Card') as HTMLElement
+    const editor = within(organization)
+    const own = await editor.findByRole('switch', { name: 'Use our own colours instead of MOSAIC\'s' })
+    expect(own).not.toBeChecked()
+    expect(editor.queryByRole('textbox', { name: 'Accent' })).not.toBeInTheDocument()
+
+    await user.click(own)
+    const accent = editor.getByRole('textbox', { name: 'Accent' })
+    await user.clear(accent)
+    await user.type(accent, '#0f9d8a')
+    await user.click(editor.getByRole('button', { name: 'Dark mode colours' }))
+    expect(editor.getByRole('textbox', { name: 'Accent' })).toHaveValue('#3566e8')
+    await user.click(editor.getByRole('switch', { name: 'Let people choose their own custom colours' }))
+    await user.click(editor.getByRole('button', { name: 'Save organization colours' }))
+
+    await waitFor(() => expect(api.updateAppearance).toHaveBeenCalledTimes(1))
+    const saved = api.updateAppearance.mock.calls[0][0]
+    expect(saved.allowCustomThemes).toBe(false)
+    expect(saved.scheme.light.accent).toBe('#0f9d8a')
+    expect(saved.scheme.dark.accent).toBe('#3566e8')
+    expect((await editor.findAllByText('Organization colours saved.'))[0]).toBeVisible()
+    // The administrator sees the result at once.
+    expect(document.documentElement.style.getPropertyValue('--mosaic-accent')).toBe('#0f9d8a')
+    expect(screen.getByText('Your administrator has turned off custom colours.')).toBeVisible()
+
+    await user.click(own)
+    await user.click(editor.getByRole('button', { name: 'Save organization colours' }))
+    await waitFor(() => expect(api.updateAppearance).toHaveBeenCalledTimes(2))
+    expect(api.updateAppearance.mock.calls[1][0].scheme).toBeNull()
+  })
+
+  it('will not save organization colours that leave text hard to read', async () => {
+    api.getAppearance.mockResolvedValue({
+      scheme: {
+        light: { accent: '#0f9d8a', backdrop: '#eef6f4', panel: '#ffffff', border: '#c9dcd8', text: '#10231f', textMuted: '#45605a' },
+        dark: { accent: '#0f9d8a', backdrop: '#07120f', panel: '#15241f', border: '#2f4a43', text: '#eef7f4', textMuted: '#a9c2bb' },
+      },
+      allowCustomThemes: true,
+    })
+    const user = userEvent.setup()
+    renderSettings()
+
+    await user.click(await screen.findByRole('button', { name: 'Appearance' }))
+    const editor = within(screen.getByRole('heading', { name: 'Organization colours' }).closest('.fui-Card') as HTMLElement)
+    expect(await editor.findByRole('switch', { name: 'Use our own colours instead of MOSAIC\'s' })).toBeChecked()
+    const text = editor.getByRole('textbox', { name: 'Text' })
+    await user.clear(text)
+    await user.type(text, '#c9d6d2')
+
+    expect(editor.getAllByText(/Some text would be hard to read in the light mode colours/)[0]).toBeVisible()
+    expect(editor.getByRole('button', { name: 'Save organization colours' })).toBeDisabled()
+    expect(api.updateAppearance).not.toHaveBeenCalled()
   })
 
   it('renders the live environment catalog', async () => {

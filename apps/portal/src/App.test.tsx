@@ -78,6 +78,38 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: 'Notification preferences' })).toBeVisible()
     expect(await screen.findByLabelText('Email — Access requests')).toHaveValue('off')
   })
+  it('paints the organization\u2019s colours and opens custom colours from the account menu', async () => {
+    const user = userEvent.setup()
+    localStorage.clear()
+    mocks.api = {
+      getProfile: async () => portalProfile(),
+      getAppearance: async () => ({
+        scheme: {
+          light: { accent: '#0f9d8a', backdrop: '#eef6f4', panel: '#ffffff', border: '#c9dcd8', text: '#10231f', textMuted: '#45605a' },
+          dark: { accent: '#0f9d8a', backdrop: '#07120f', panel: '#15241f', border: '#2f4a43', text: '#eef7f4', textMuted: '#a9c2bb' },
+        },
+        allowCustomThemes: true,
+      }),
+    } as unknown as PortalApi
+    renderApp('/notifications')
+
+    expect(await screen.findByRole('heading', { name: 'Notifications' })).toBeVisible()
+    await vi.waitFor(() => expect(document.documentElement.style.getPropertyValue('--mosaic-accent')).toBe('#0f9d8a'))
+    // Kept for the next visit, so the page paints in these colours before the API answers.
+    expect(JSON.parse(localStorage.getItem('mosaic-organization-appearance')!).scheme.light.accent).toBe('#0f9d8a')
+
+    await user.click(screen.getByRole('button', { name: 'Account menu for Ada Lovelace' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Custom colours' }))
+    // The account menu's focus handling leaves the dialog marked hidden in this test DOM, which also blanks its
+    // accessible name here. A real browser exposes it normally, so find it by its title and look past the flag.
+    const surface = (await screen.findByText('Your custom colours')).closest('[role="dialog"]') as HTMLElement
+    const dialog = within(surface)
+    expect(dialog.getByRole('textbox', { name: 'Accent', hidden: true })).toHaveValue('#0f9d8a')
+    await user.click(dialog.getByRole('button', { name: 'Save and use my colours', hidden: true }))
+    expect(localStorage.getItem('mosaic-theme')).toBe('custom')
+    await vi.waitFor(() => expect(screen.queryByText('Your custom colours')).not.toBeInTheDocument())
+    localStorage.clear()
+  })
   it.each(['/', '/unknown-page'])('lands %s on usage and orders end-user navigation', async (path) => {
     mocks.api = {
       getProfile: async () => portalProfile(),

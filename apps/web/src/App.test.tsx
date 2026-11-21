@@ -111,7 +111,8 @@ describe('App shell', () => {
       expect(screen.getByRole('link', { name: label })).toBeVisible()
     }
     expect(screen.queryByRole('button', { name: 'Add model endpoint' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Collapse navigation' })).toBeVisible()
+    // The rail starts compact, as icons; a stored choice to expand it is honoured below.
+    expect(screen.getByRole('button', { name: 'Expand navigation' })).toHaveAttribute('aria-expanded', 'false')
     expect(screen.getByRole('button', { name: 'Pending approvals' })).toBeVisible()
     expect(screen.getByRole('button', { name: /Notification inbox/ })).toBeVisible()
     expect(screen.queryByText('AzureLite')).not.toBeInTheDocument()
@@ -120,6 +121,15 @@ describe('App shell', () => {
     const labels = primary.getAllByRole('link').map((link) => link.textContent)
     expect(labels.indexOf('Cost centers')).toBe(labels.indexOf('Entitlements') + 1)
     expect(labels.indexOf('Pricing')).toBe(labels.indexOf('Analytics') + 1)
+  })
+
+  it('keeps the navigation expanded for someone who expanded it', async () => {
+    mocks.config.authMode = 'local'
+    localStorage.setItem('mosaic.primary.collapsed', 'false')
+
+    renderApp()
+
+    expect(await screen.findByRole('button', { name: 'Collapse navigation' })).toHaveAttribute('aria-expanded', 'true')
   })
 
   it('leaves local mode unchanged: no role check and a Local mode label', async () => {

@@ -1,0 +1,490 @@
+/*
+ * MOSAIC's shared shell: colour tokens, the tinted backdrop, the navigation rail, the frosted
+ * top bar and workspace, and the Fluent adjustments that go with them.
+ *
+ * The console and the portal each import this file after their own index.css, so it must stay
+ * identical in both apps. Page and component styles keep using the `--mosaic-*` tokens.
+ *
+ * The token values below are the built-in palettes. The theme provider recomputes all of them
+ * from the active palette (see appearance.ts) and sets them on <html>, which is how an
+ * organization's scheme and a person's custom colours reach every rule here.
+ */
+@import "./fonts/fonts.css";
+
+:root {
+  --mosaic-font: "Outfit Variable", "Segoe UI", Aptos, Calibri, -apple-system, BlinkMacSystemFont, sans-serif;
+  --mosaic-font-mono: "JetBrains Mono Variable", "Cascadia Mono", Consolas, "Courier New", monospace;
+  --mosaic-radius-panel: 20px;
+  --mosaic-radius-shell: 22px;
+  --shell-gap: 14px;
+  --sidebar-width: 232px;
+  --topbar-height: 56px;
+  font-family: var(--mosaic-font);
+  color: var(--mosaic-text);
+  background: var(--mosaic-bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  color-scheme: light;
+  --mosaic-bg: #eef1f8;
+  --mosaic-aurora-1: rgba(53, 102, 232, 0.3);
+  --mosaic-aurora-2: rgba(247, 175, 231, 0.55);
+  --mosaic-aurora-3: rgba(121, 228, 240, 0.5);
+  --mosaic-surface: rgba(255, 255, 255, 0.68);
+  --mosaic-surface-solid: #ffffff;
+  --mosaic-tray: rgba(255, 255, 255, 0.38);
+  --mosaic-glass: rgba(255, 255, 255, 0.7);
+  --mosaic-surface-subtle: rgba(15, 22, 41, 0.045);
+  --mosaic-surface-strong: rgba(15, 22, 41, 0.09);
+  --mosaic-border: #cdd4e3;
+  --mosaic-border-soft: rgba(205, 212, 227, 0.62);
+  --mosaic-edge: rgba(255, 255, 255, 0.86);
+  --mosaic-chrome-tint: rgba(53, 102, 232, 0.3);
+  --mosaic-text: #0f1629;
+  --mosaic-text-muted: #465069;
+  --mosaic-text-faint: #7e8596;
+  --mosaic-accent: #3566e8;
+  --mosaic-on-accent: #ffffff;
+  --mosaic-accent-glow: rgba(53, 102, 232, 0.45);
+  --mosaic-primary: #3566e8;
+  --mosaic-primary-hover: #2d56c3;
+  --mosaic-primary-soft: rgba(53, 102, 232, 0.13);
+  --mosaic-primary-text: #ffffff;
+  --mosaic-strong: #0f1629;
+  --mosaic-on-strong: #ffffff;
+  --mosaic-rail: #0d1324;
+  --mosaic-rail-text: #ffffff;
+  --mosaic-rail-muted: rgba(255, 255, 255, 0.64);
+  --mosaic-rail-hover: rgba(255, 255, 255, 0.1);
+  --mosaic-rail-active: rgba(255, 255, 255, 0.16);
+  --mosaic-success: #0e7a3b;
+  --mosaic-success-soft: rgba(14, 122, 59, 0.13);
+  --mosaic-warning: #8f5400;
+  --mosaic-warning-soft: rgba(143, 84, 0, 0.13);
+  --mosaic-danger: #b3261e;
+  --mosaic-danger-soft: rgba(179, 38, 30, 0.13);
+  --mosaic-code-bg: #151b29;
+  --mosaic-code-text: #e8eef4;
+  --mosaic-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 18px 44px -18px rgba(30, 45, 90, 0.22);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --mosaic-bg: #0a0e19;
+  --mosaic-aurora-1: rgba(53, 102, 232, 0.5);
+  --mosaic-aurora-2: rgba(151, 55, 135, 0.42);
+  --mosaic-aurora-3: rgba(0, 108, 127, 0.4);
+  --mosaic-surface: rgba(27, 34, 51, 0.6);
+  --mosaic-surface-solid: #1b2233;
+  --mosaic-tray: rgba(27, 34, 51, 0.4);
+  --mosaic-glass: rgba(27, 34, 51, 0.66);
+  --mosaic-surface-subtle: rgba(243, 245, 251, 0.07);
+  --mosaic-surface-strong: rgba(243, 245, 251, 0.13);
+  --mosaic-border: #3a4560;
+  --mosaic-border-soft: rgba(58, 69, 96, 0.6);
+  --mosaic-edge: rgba(255, 255, 255, 0.1);
+  --mosaic-chrome-tint: rgba(53, 102, 232, 0.5);
+  --mosaic-text: #f3f5fb;
+  --mosaic-text-muted: #b6bfd4;
+  --mosaic-text-faint: #8890a4;
+  --mosaic-accent: #3566e8;
+  --mosaic-on-accent: #ffffff;
+  --mosaic-accent-glow: rgba(53, 102, 232, 0.55);
+  --mosaic-primary: #5d85ed;
+  --mosaic-primary-hover: #7799f0;
+  --mosaic-primary-soft: rgba(53, 102, 232, 0.2);
+  --mosaic-primary-text: #0b0d12;
+  --mosaic-strong: #f3f5fb;
+  --mosaic-on-strong: #1b2233;
+  --mosaic-rail: #282f3f;
+  --mosaic-rail-text: #ffffff;
+  --mosaic-rail-muted: rgba(255, 255, 255, 0.64);
+  --mosaic-rail-hover: rgba(255, 255, 255, 0.1);
+  --mosaic-rail-active: rgba(255, 255, 255, 0.16);
+  --mosaic-success: #62d38e;
+  --mosaic-success-soft: rgba(98, 211, 142, 0.2);
+  --mosaic-warning: #f2c063;
+  --mosaic-warning-soft: rgba(242, 192, 99, 0.2);
+  --mosaic-danger: #ff9a94;
+  --mosaic-danger-soft: rgba(255, 154, 148, 0.2);
+  --mosaic-code-bg: #0d1017;
+  --mosaic-code-text: #e8eef4;
+  --mosaic-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 18px 44px -18px rgba(0, 0, 0, 0.6);
+}
+
+/*
+ * People who ask for less transparency, or use forced colours, get solid surfaces everywhere.
+ * `!important` is needed because the theme provider sets these tokens on <html> itself.
+ */
+@media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+  :root {
+    --mosaic-surface: var(--mosaic-surface-solid) !important;
+    --mosaic-tray: var(--mosaic-surface-solid) !important;
+    --mosaic-glass: var(--mosaic-surface-solid) !important;
+    --mosaic-aurora-1: transparent !important;
+    --mosaic-aurora-2: transparent !important;
+    --mosaic-aurora-3: transparent !important;
+  }
+}
+
+code,
+.mono {
+  font-family: var(--mosaic-font-mono);
+}
+
+/* ── Backdrop ─────────────────────────────────────────────────────────── */
+
+.app-shell,
+.centered-page {
+  position: relative;
+  isolation: isolate;
+  background: var(--mosaic-bg);
+}
+
+/* One fixed layer, so the wash stays put while the page scrolls and costs nothing to repaint. */
+.app-shell::before,
+.centered-page::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(62vw 54vh at 2% -8%, var(--mosaic-aurora-1), transparent 72%),
+    radial-gradient(50vw 52vh at 102% 12%, var(--mosaic-aurora-2), transparent 72%),
+    radial-gradient(64vw 46vh at 56% 110%, var(--mosaic-aurora-3), transparent 72%),
+    var(--mosaic-bg);
+}
+
+/* ── Shell ────────────────────────────────────────────────────────────── */
+
+.app-shell {
+  grid-template:
+    "nav header" auto
+    "nav content" minmax(0, 1fr) / var(--sidebar-width) minmax(0, 1fr);
+  column-gap: 12px;
+  padding: 0 var(--shell-gap) var(--shell-gap);
+}
+
+/*
+ * The top bar is a sticky band that reaches the top of the window. The band blurs whatever
+ * scrolls beneath it; the visible bar is drawn inside the band, below the gap.
+ */
+.topbar {
+  top: 0;
+  height: calc(var(--topbar-height) + var(--shell-gap));
+  margin-bottom: 12px;
+  padding: var(--shell-gap) 10px 0 16px;
+  border: 0;
+  isolation: isolate;
+  background: var(--mosaic-bg);
+}
+
+.topbar::before {
+  content: "";
+  position: absolute;
+  inset: var(--shell-gap) 0 0;
+  z-index: -1;
+  border: 1px solid var(--mosaic-edge);
+  border-radius: 18px;
+  background: var(--mosaic-surface-solid);
+  box-shadow: var(--mosaic-shadow);
+}
+
+@supports (backdrop-filter: blur(16px)) {
+  .topbar {
+    background: transparent;
+    backdrop-filter: blur(20px) saturate(140%);
+  }
+
+  .topbar::before {
+    background: var(--mosaic-glass);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+  .topbar {
+    background: var(--mosaic-bg);
+    backdrop-filter: none;
+  }
+}
+
+.topbar-brand {
+  display: none;
+  flex: none;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.rail-collapsed .topbar-brand {
+  display: inline;
+}
+
+.content {
+  min-height: calc(100vh - var(--topbar-height) - 3 * var(--shell-gap));
+  border: 1px solid var(--mosaic-edge);
+  border-radius: var(--mosaic-radius-shell);
+  background: var(--mosaic-tray);
+}
+
+.content-inner {
+  padding: 22px 22px 32px;
+}
+
+/* ── Navigation rail ──────────────────────────────────────────────────── */
+
+.sidebar {
+  top: var(--shell-gap);
+  height: calc(100vh - 2 * var(--shell-gap));
+  margin-top: var(--shell-gap);
+  border: 0;
+  border-radius: var(--mosaic-radius-shell);
+  background: var(--mosaic-rail);
+  color: var(--mosaic-rail-text);
+  box-shadow: 0 18px 44px -18px rgba(0, 0, 0, 0.45);
+  backdrop-filter: none;
+  scrollbar-width: none;
+}
+
+.sidebar-brand {
+  min-height: 72px;
+  padding: 16px 14px 12px;
+  border-bottom: 0;
+}
+
+.sidebar-brand [class*="fui-Title"] {
+  color: var(--mosaic-rail-text);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.sidebar-brand .fui-Text {
+  color: var(--mosaic-rail-muted);
+}
+
+.brand-mark {
+  color: var(--mosaic-rail-text);
+}
+
+.primary-navigation,
+.utility-navigation {
+  padding: 8px 10px;
+}
+
+.utility-navigation {
+  border-top: 1px solid var(--mosaic-rail-hover);
+  display: grid;
+  gap: 4px;
+  padding-bottom: 12px;
+}
+
+.sidebar .nav-link {
+  min-height: 40px;
+  padding: 9px 11px;
+  border: 0;
+  border-radius: 13px;
+  color: var(--mosaic-rail-muted);
+  font-weight: 400;
+}
+
+.sidebar .nav-link:hover,
+.sidebar .nav-link:focus-visible {
+  color: var(--mosaic-rail-text);
+  background: var(--mosaic-rail-hover);
+}
+
+.sidebar .nav-link.active {
+  color: var(--mosaic-on-accent);
+  background: var(--mosaic-accent);
+  box-shadow: 0 8px 18px -8px var(--mosaic-accent-glow);
+  font-weight: 500;
+}
+
+.sidebar .nav-link:focus-visible,
+.sidebar .profile-quick-link:focus-visible {
+  outline: 2px solid var(--mosaic-rail-text);
+  outline-offset: 2px;
+}
+
+/* Fluent buttons inside the rail read the rail's colours, not the page's. */
+.sidebar .fui-Button {
+  border-color: transparent;
+  background: transparent;
+  color: var(--mosaic-rail-muted);
+}
+
+.sidebar .fui-Button .fui-Button__icon {
+  color: inherit;
+}
+
+.sidebar .fui-Button:hover,
+.sidebar .fui-Button:focus-visible {
+  background: var(--mosaic-rail-hover);
+  color: var(--mosaic-rail-text);
+}
+
+.sidebar .fui-Button[aria-pressed="true"] {
+  background: var(--mosaic-rail-active);
+  color: var(--mosaic-rail-text);
+}
+
+.sidebar .appearance-options {
+  border: 0;
+  border-radius: 13px;
+  background: var(--mosaic-rail-hover);
+}
+
+.sidebar .profile-quick-link {
+  border: 0;
+  border-radius: 14px;
+  background: var(--mosaic-rail-hover);
+  color: var(--mosaic-rail-text);
+  justify-content: flex-start;
+}
+
+.sidebar .profile-quick-link:hover {
+  background: var(--mosaic-rail-active);
+}
+
+.sidebar .profile-quick-link small {
+  color: var(--mosaic-rail-muted);
+}
+
+@media (min-width: 761px) {
+  .rail-collapsed {
+    --sidebar-width: 64px;
+  }
+
+  .rail-collapsed .sidebar-brand {
+    padding: 14px 8px 8px;
+  }
+
+  .rail-collapsed .primary-navigation,
+  .rail-collapsed .utility-navigation {
+    padding: 8px 12px;
+    justify-items: center;
+  }
+
+  .rail-collapsed .sidebar .nav-link,
+  .rail-collapsed .sidebar .profile-quick-link {
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    padding: 0;
+  }
+
+  .rail-collapsed .sidebar .profile-quick-link {
+    background: transparent;
+  }
+}
+
+@media (max-width: 760px) {
+  .app-shell {
+    grid-template:
+      "header" auto
+      "content" minmax(0, 1fr) / minmax(0, 1fr);
+    padding: 0 8px 8px;
+    --shell-gap: 8px;
+  }
+
+  .sidebar {
+    position: fixed;
+    left: 8px;
+    top: 8px;
+    height: calc(100vh - 16px);
+    margin-top: 0;
+    width: min(var(--sidebar-width), 88vw);
+  }
+
+  .topbar {
+    padding: var(--shell-gap) 8px 0;
+  }
+
+  .topbar-brand {
+    display: inline;
+  }
+
+  .content-inner {
+    padding: 18px 14px 32px;
+  }
+}
+
+/* ── Panels and controls ──────────────────────────────────────────────── */
+
+.panel,
+.form-grid,
+.table-scroll,
+.detail-card,
+.planned-card,
+.empty-state,
+.access-denied-card,
+.portal-handoff-card {
+  border: 1px solid var(--mosaic-edge);
+  border-radius: var(--mosaic-radius-panel);
+  background: var(--mosaic-surface);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.empty-state {
+  border-color: var(--mosaic-border);
+  box-shadow: none;
+}
+
+.fui-FluentProvider .fui-Card {
+  border-radius: var(--mosaic-radius-panel);
+  background: var(--mosaic-surface);
+  box-shadow: var(--mosaic-shadow);
+}
+
+.fui-FluentProvider .fui-Card::after {
+  border-color: var(--mosaic-edge);
+  border-radius: inherit;
+}
+
+.fui-FluentProvider .fui-Button {
+  border-radius: 999px;
+}
+
+/* Menus, dialogs, and drawers stay solid so their text never competes with what is behind them. */
+.search-results,
+.skip-link,
+.identity-drawer.fui-OverlayDrawer {
+  background: var(--mosaic-surface-solid);
+}
+
+.search-results {
+  border-radius: 14px;
+}
+
+.fui-FluentProvider :is(h1, h2, h3, span)[class*="fui-Title"],
+.fui-FluentProvider [class*="fui-Subtitle"] {
+  font-weight: 500;
+}
+
+.page-title-row h1 {
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+.breadcrumbs {
+  font-family: var(--mosaic-font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--mosaic-text-faint);
+}
+
+.panel-header {
+  border-bottom-color: var(--mosaic-border-soft);
+}
+
+/* Card titles sit a step below the page title, so the page reads as one heading and its parts. */
+.fui-FluentProvider :is(.panel-header, .fui-Card) :is(h2, h3)[class*="fui-Title"] {
+  font-size: 17px;
+  line-height: 24px;
+}
+
+table th {
+  background: var(--mosaic-surface-subtle);
+}

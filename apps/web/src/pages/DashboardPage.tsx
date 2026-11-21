@@ -8,10 +8,9 @@ import {
   Title3,
 } from '@fluentui/react-components'
 import {
+  ArrowRightRegular,
   BotRegular,
-  ChartMultipleRegular,
   CloudDatabaseRegular,
-  MoneyRegular,
   PeopleCommunityRegular,
   PersonAccountsRegular,
 } from '@fluentui/react-icons'
@@ -34,28 +33,16 @@ import { holdsApi } from '../publication-state'
 import type { AnalyticsRankRow, AnalyticsSpend, BudgetOverview, ModelPoolSummary } from '../types'
 import styles from './DashboardPage.module.css'
 
-function SparkMetric({
-  label,
-  value,
-  detail,
-  icon,
-}: {
-  label: string
-  value: string
-  detail: string
-  icon: ReactNode
-}) {
+/** One supporting figure beside the headline number. */
+function HeroFact({ label, value, detail }: { label: string; value: string; detail: string }) {
   return (
-    <Card className={styles.metricCard}>
-      <div className={styles.metricLabel}>
-        <Text>{label}</Text>
-        <span className={styles.metricIcon}>{icon}</span>
-      </div>
-      <div className={styles.metricValue}>{value}</div>
-      <div className={styles.trendDetail}>
-        <Text size={200}>{detail}</Text>
-      </div>
-    </Card>
+    <div className={styles.heroFact}>
+      <dt>
+        {label}
+        <small>{detail}</small>
+      </dt>
+      <dd>{value}</dd>
+    </div>
   )
 }
 
@@ -402,15 +389,16 @@ export function DashboardPage() {
         title="Overview"
         description="Monitor MOSAIC desired state and real gateway usage from the last 7 days."
       />
-      <div className={styles.sectionHeading}>
-        <div>
+      <div className={`panel ${styles.requestsStrip}`}>
+        {requestCounts.data && <span className={styles.countChip} aria-hidden="true">{requestCounts.data.pendingCount}</span>}
+        <div className={styles.requestsText}>
           <Title3 as="h2">Administrator requests</Title3>
           {requestCounts.isPending && <Text role="status">Loading request counts…</Text>}
           {requestCounts.data && <Text block>{requestCounts.data.pendingCount} pending requests · {requestCounts.data.pendingResourceCount} resource · {requestCounts.data.pendingCostCenterCount} cost-center creation · {requestCounts.data.pendingMembershipCount ?? 0} membership</Text>}
-          <Text block>Approved membership requests with incomplete directory outcomes also need attention in the request queue.</Text>
+          <Text block size={200}>Approved membership requests with incomplete directory outcomes also need attention in the request queue.</Text>
           {requestCounts.isError && <><ErrorState title="Request counts unavailable" error={requestCounts.error} /><Button onClick={() => void requestCounts.refetch()}>Retry request counts</Button></>}
         </div>
-        <Button onClick={() => navigate('/entitlements?tab=requests')}>Review administrator requests</Button>
+        <Button appearance="primary" icon={<ArrowRightRegular />} iconPosition="after" onClick={() => navigate('/entitlements?tab=requests')}>Review administrator requests</Button>
       </div>
 
       <div className={styles.liveSection}>
@@ -481,32 +469,39 @@ export function DashboardPage() {
         </Card>
       )}
 
-      <div className={styles.metricGrid}>
-        <SparkMetric label="Requests" value={analytics.isLoading ? '—' : formatCompact(analytics.data?.kpis.requests)} detail="Last 7 days" icon={<ChartMultipleRegular />} />
-        <SparkMetric label="Tokens" value={analytics.isLoading ? '—' : formatCompact(analytics.data?.kpis.totalTokens)} detail="Prompt and completion tokens" icon={<CloudDatabaseRegular />} />
-        <SparkMetric label="Active callers" value={analytics.isLoading ? '—' : formatCompact(analytics.data?.kpis.activeCallers)} detail="Linked people, apps, and groups" icon={<PersonAccountsRegular />} />
-        <SparkMetric label="Error rate" value={analytics.isLoading ? '—' : formatPercent(analytics.data?.kpis.errorRate)} detail={`${formatCompact(analytics.data?.kpis.errors)} error calls`} icon={<ChartMultipleRegular />} />
-        <SparkMetric label="P95 latency" value={analytics.isLoading ? '—' : formatLatency(analytics.data?.kpis.p95LatencyMs)} detail="Estimated from latency buckets" icon={<CloudDatabaseRegular />} />
-        <SparkMetric label="This month" value={analytics.isLoading ? '—' : formatCostCompact(analytics.data?.spend?.monthToDate, '—')} detail={analytics.isLoading ? 'Loading' : spendDetail(analytics.data?.spend)} icon={<MoneyRegular />} />
-      </div>
-
       <div className={styles.dashboardGrid}>
-        <div className={`panel ${styles.volumePanel}`}>
-          <div className="panel-header">
+        <Card className={styles.heroCard}>
+          <div className={styles.heroHeader}>
             <div className={styles.panelHeading}>
               <Title3 as="h2">Requests and tokens</Title3>
               <Text size={200}>Gateway calls in the last 7 days, rolled up from Log Analytics.</Text>
             </div>
-            <Button appearance="subtle" size="small" onClick={() => navigate('/analytics')}>
+            <Button size="small" icon={<ArrowRightRegular />} iconPosition="after" onClick={() => navigate('/analytics')}>
               Open analytics
             </Button>
           </div>
-          <div className={styles.panelBody}>
-            {analytics.isLoading ? <Spinner label="Loading request volume" /> : analytics.isError ? <ErrorState error={analytics.error} /> : (
-              <TrendChart title="Requests and tokens in the last 7 days" points={trend} primaryLabel="Requests" secondaryLabel="Tokens" />
-            )}
+          <div className={styles.hero}>
+            <div className={styles.heroFigures}>
+              <div className={styles.heroLabel}>
+                <Text>Requests</Text>
+                <Text size={200}>Last 7 days</Text>
+              </div>
+              <div className={styles.heroValue}>{analytics.isLoading ? '—' : formatCompact(analytics.data?.kpis.requests)}</div>
+              <dl className={styles.heroFacts}>
+                <HeroFact label="Active callers" value={analytics.isLoading ? '—' : formatCompact(analytics.data?.kpis.activeCallers)} detail="Linked people, apps, and groups" />
+                <HeroFact label="Tokens" value={analytics.isLoading ? '—' : formatCompact(analytics.data?.kpis.totalTokens)} detail="Prompt and completion tokens" />
+                <HeroFact label="Error rate" value={analytics.isLoading ? '—' : formatPercent(analytics.data?.kpis.errorRate)} detail={`${formatCompact(analytics.data?.kpis.errors)} error calls`} />
+                <HeroFact label="P95 latency" value={analytics.isLoading ? '—' : formatLatency(analytics.data?.kpis.p95LatencyMs)} detail="Estimated from latency buckets" />
+                <HeroFact label="This month" value={analytics.isLoading ? '—' : formatCostCompact(analytics.data?.spend?.monthToDate, '—')} detail={analytics.isLoading ? 'Loading' : spendDetail(analytics.data?.spend)} />
+              </dl>
+            </div>
+            <div className={styles.heroChart}>
+              {analytics.isLoading ? <Spinner label="Loading request volume" /> : analytics.isError ? <ErrorState error={analytics.error} /> : (
+                <TrendChart title="Requests and tokens in the last 7 days" points={trend} primaryLabel="Requests" secondaryLabel="Tokens" />
+              )}
+            </div>
           </div>
-        </div>
+        </Card>
 
         <div className="panel">
           <div className="panel-header">

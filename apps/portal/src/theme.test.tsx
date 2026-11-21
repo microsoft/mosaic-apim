@@ -3,6 +3,7 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { StrictMode, useState } from 'react'
+import { DEFAULT_PALETTES, fluentOverrides } from './appearance'
 import { useMosaicTheme } from './theme-context'
 import { MosaicThemeProvider } from './theme'
 import { ErrorState } from './components/AsyncState'
@@ -16,6 +17,7 @@ function ThemeProbe() {
       <span>{`${preference}:${resolvedTheme}`}</span>
       <Button onClick={() => setPreference('dark')}>Use dark</Button>
       <Button onClick={() => setPreference('system')}>Use system</Button>
+      <Button onClick={() => setPreference('custom')}>Use custom</Button>
     </>
   )
 }
@@ -47,22 +49,59 @@ describe('MosaicThemeProvider', () => {
     else Reflect.deleteProperty(document, 'ariaNotify')
   })
 
-  it.each([
-    { preference: 'light', surface: '#ffffff', subtle: '#f5f7fa', border: '#c6cfdb' },
-    { preference: 'dark', surface: '#1c2531', subtle: '#222e3b', border: '#536479' },
-  ])('uses the console palette for stored $preference appearance', async ({ preference, surface, subtle, border }) => {
+  it.each(['light', 'dark'] as const)('uses the built-in palette for stored %s appearance', async (preference) => {
     window.localStorage.setItem('mosaic-theme', preference)
     render(<MosaicThemeProvider><ThemeProbe /></MosaicThemeProvider>)
 
     expect(await screen.findByText(`${preference}:${preference}`)).toBeVisible()
-    expect(themeValue('colorNeutralBackground1')).toBe(surface)
-    expect(themeValue('colorNeutralBackground2')).toBe(subtle)
-    expect(themeValue('colorNeutralStroke1')).toBe(border)
-    expect(themeValue('colorBrandBackground')).toBe('#005faa')
-    expect(themeValue('colorNeutralStroke2')).toBe(preference === 'light' ? '#dce5ef' : '#354354')
-    expect(themeValue('borderRadiusMedium')).toBe('8px')
-    expect(themeValue('borderRadiusLarge')).toBe('12px')
+    const palette = DEFAULT_PALETTES[preference]
+    expect(themeValue('colorNeutralBackground1')).toBe(palette.panel)
+    expect(themeValue('colorNeutralStroke1')).toBe(palette.border)
+    expect(themeValue('colorNeutralForeground1')).toBe(palette.text)
+    expect(themeValue('colorBrandBackground')).toBe(palette.accent)
+    expect(themeValue('borderRadiusMedium')).toBe('10px')
+    for (const [token, value] of Object.entries(fluentOverrides(palette, preference))) {
+      expect(themeValue(token)).toBe(value)
+    }
     expect(document.documentElement.dataset.theme).toBe(preference)
+    expect(document.documentElement.style.getPropertyValue('--mosaic-bg')).toBe(palette.backdrop)
+  })
+
+  it('paints the organization\u2019s colours in light and dark, and a person\u2019s own in custom', async () => {
+    const scheme = {
+      light: { ...DEFAULT_PALETTES.light, accent: '#0f9d8a' },
+      dark: { ...DEFAULT_PALETTES.dark, accent: '#0f9d8a', panel: '#15241f' },
+    }
+    const custom = { base: 'dark', colors: { accent: '#f0603f', backdrop: '#160b08', panel: '#2a1611', border: '#5a3329', text: '#fdf3ef', textMuted: '#e0b9ad' } }
+    window.localStorage.setItem('mosaic-organization-appearance', JSON.stringify({ scheme, allowCustomThemes: true }))
+    window.localStorage.setItem('mosaic-custom-theme', JSON.stringify(custom))
+    const user = userEvent.setup()
+    render(<MosaicThemeProvider><ThemeProbe /></MosaicThemeProvider>)
+
+    expect(await screen.findByText('system:light')).toBeVisible()
+    expect(themeValue('colorBrandBackground')).toBe('#0f9d8a')
+    await user.click(screen.getByRole('button', { name: 'Use dark' }))
+    expect(themeValue('colorNeutralBackground1')).toBe('#15241f')
+
+    await user.click(screen.getByRole('button', { name: 'Use custom' }))
+    expect(screen.getByText('custom:dark')).toBeVisible()
+    expect(themeValue('colorBrandBackground')).toBe('#f0603f')
+    expect(document.documentElement.style.getPropertyValue('--mosaic-surface-solid')).toBe('#2a1611')
+    // What index.html paints before the app loads on the next visit.
+    const paint = JSON.parse(window.localStorage.getItem('mosaic-theme-paint')!)
+    expect(paint.theme).toBe('dark')
+    expect(paint.tokens['--mosaic-accent']).toBe('#f0603f')
+  })
+
+  it('ignores stored colours that are not colours', async () => {
+    window.localStorage.setItem('mosaic-theme', 'custom')
+    window.localStorage.setItem('mosaic-custom-theme', JSON.stringify({ base: 'dark', colors: { ...DEFAULT_PALETTES.dark, accent: 'red; background: url(https://example.test)' } }))
+    window.localStorage.setItem('mosaic-organization-appearance', '{not json')
+    render(<MosaicThemeProvider><ThemeProbe /></MosaicThemeProvider>)
+
+    expect(await screen.findByText('custom:light')).toBeVisible()
+    expect(themeValue('colorBrandBackground')).toBe(DEFAULT_PALETTES.light.accent)
+    expect(document.documentElement.getAttribute('style')).not.toContain('example.test')
   })
 
   it('persists an explicit theme preference', async () => {
@@ -75,7 +114,7 @@ describe('MosaicThemeProvider', () => {
     expect(screen.getByText('dark:dark')).toBeVisible()
     expect(window.localStorage.getItem('mosaic-theme')).toBe('dark')
     expect(document.documentElement.dataset.theme).toBe('dark')
-    expect(themeValue('colorNeutralBackground1')).toBe('#1c2531')
+    expect(themeValue('colorNeutralBackground1')).toBe(DEFAULT_PALETTES.dark.panel)
   })
 
   it('follows system changes only when system appearance is selected', async () => {
@@ -95,7 +134,7 @@ describe('MosaicThemeProvider', () => {
       media.dispatchEvent(new MediaQueryListEvent('change', { matches: true }))
     })
     expect(await screen.findByText('system:dark')).toBeVisible()
-    expect(themeValue('colorNeutralBackground1')).toBe('#1c2531')
+    expect(themeValue('colorNeutralBackground1')).toBe(DEFAULT_PALETTES.dark.panel)
 
     await user.click(screen.getByRole('button', { name: 'Use dark' }))
     act(() => {

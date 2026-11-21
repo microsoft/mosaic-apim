@@ -1,0 +1,226 @@
+.editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(240px, 1fr);
+  align-items: start;
+  gap: 24px;
+}
+
+.fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 16px;
+}
+
+.fields > * {
+  min-width: 0;
+  align-content: start;
+}
+
+.colorField {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.swatch {
+  width: 40px;
+  height: 32px;
+  flex: none;
+  padding: 0;
+  border: 1px solid var(--mosaic-border);
+  border-radius: 10px;
+  background: none;
+  cursor: pointer;
+}
+
+.swatch::-webkit-color-swatch-wrapper {
+  padding: 3px;
+}
+
+.swatch::-webkit-color-swatch {
+  border: 0;
+  border-radius: 6px;
+}
+
+.hex {
+  min-width: 0;
+  flex: 1 1 0;
+  font-family: var(--mosaic-font-mono);
+}
+
+/* A text input is as wide as twenty characters unless told otherwise, which would push past its column. */
+.hex input {
+  width: 100%;
+  min-width: 0;
+}
+
+.side {
+  min-width: 0;
+  display: grid;
+  gap: 14px;
+}
+
+.checks {
+  margin: 0;
+  padding: 0;
+  display: grid;
+  list-style: none;
+}
+
+.checks li {
+  padding: 8px 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  border-top: 1px solid var(--mosaic-border-soft);
+  color: var(--mosaic-text-muted);
+}
+
+.checks li:first-child {
+  border-top: 0;
+}
+
+/* The preview carries its own tokens inline, so everything below reads the palette being edited. */
+.preview {
+  min-height: 150px;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 8px;
+  overflow: hidden;
+  border: 1px solid var(--mosaic-border);
+  border-radius: 16px;
+  background:
+    radial-gradient(70% 80% at 0% 0%, var(--mosaic-aurora-1), transparent 72%),
+    radial-gradient(60% 80% at 100% 10%, var(--mosaic-aurora-2), transparent 72%),
+    radial-gradient(70% 60% at 55% 110%, var(--mosaic-aurora-3), transparent 72%),
+    var(--mosaic-bg);
+  color: var(--mosaic-text);
+  font-size: 12.5px;
+}
+
+.previewRail {
+  padding: 6px 4px;
+  display: grid;
+  align-content: start;
+  justify-items: center;
+  gap: 6px;
+  border-radius: 10px;
+  background: var(--mosaic-rail);
+}
+
+.previewRail i {
+  width: 14px;
+  height: 14px;
+  border-radius: 5px;
+  background: var(--mosaic-rail-hover);
+}
+
+.previewRail .previewActive {
+  background: var(--mosaic-accent);
+}
+
+.previewTray {
+  min-width: 0;
+  padding: 8px;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  border: 1px solid var(--mosaic-edge);
+  border-radius: 12px;
+  background: var(--mosaic-tray);
+}
+
+.previewPanel {
+  padding: 10px 12px;
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--mosaic-edge);
+  border-radius: 12px;
+  background: var(--mosaic-surface);
+}
+
+.previewPanel strong {
+  font-weight: 500;
+}
+
+.previewPanel span,
+.previewCaption {
+  color: var(--mosaic-text-muted);
+}
+
+.previewCaption {
+  padding: 0 4px;
+}
+
+.previewRow {
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.previewButton {
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--mosaic-accent);
+  color: var(--mosaic-on-accent);
+  font-weight: 500;
+}
+
+.previewLink {
+  color: var(--mosaic-primary);
+}
+
+.previewChip {
+  min-width: 22px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--mosaic-primary-soft);
+  color: var(--mosaic-primary);
+  font-family: var(--mosaic-font-mono);
+  font-size: 11px;
+  font-style: normal;
+  text-align: center;
+}
+
+.stack {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+  container-type: inline-size;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.modeTabs {
+  width: max-content;
+  max-width: 100%;
+  padding: 3px;
+  display: flex;
+  gap: 2px;
+  border: 1px solid var(--mosaic-border-soft);
+  border-radius: 999px;
+  background: var(--mosaic-surface-subtle);
+}
+
+.note {
+  max-width: 75ch;
+  margin: 0;
+  color: var(--mosaic-text-muted);
+  line-height: 1.55;
+}
+
+@container (max-width: 700px) {
+  .editor {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

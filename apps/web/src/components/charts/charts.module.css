@@ -4,12 +4,27 @@
   gap: 8px;
 }
 
+.plot {
+  position: relative;
+}
+
 .chart {
   width: 100%;
-  height: 220px;
+  height: var(--chart-height, 220px);
+  display: block;
   overflow: visible;
-  border-left: 1px solid var(--mosaic-border-soft);
-  border-bottom: 1px solid var(--mosaic-border-soft);
+  border-bottom: 1px solid var(--mosaic-border);
+}
+
+.latest {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--mosaic-surface-solid);
+  border-radius: 50%;
+  background: var(--mosaic-accent);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
 }
 
 .gridLine {
@@ -17,27 +32,46 @@
   stroke-dasharray: 3 4;
 }
 
+/* Graphs are drawn in the text colour, so they read the same under any accent. */
 .area {
-  fill: var(--mosaic-primary-soft);
+  stroke: none;
+}
+
+.areaStart {
+  stop-color: var(--mosaic-text);
+  stop-opacity: 0.3;
+}
+
+.areaEnd {
+  stop-color: var(--mosaic-text);
+  stop-opacity: 0;
 }
 
 .line {
   fill: none;
-  stroke: var(--mosaic-primary);
+  stroke: var(--mosaic-text);
   stroke-width: 2.4;
+  stroke-linecap: round;
   vector-effect: non-scaling-stroke;
 }
 
 .lineSecondary {
   fill: none;
-  stroke: var(--mosaic-success);
-  stroke-width: 2;
+  stroke: var(--mosaic-text-muted);
+  stroke-width: 1.6;
+  stroke-dasharray: 5 4;
   vector-effect: non-scaling-stroke;
 }
 
 .caption {
   color: var(--mosaic-text-muted);
   font-size: 12px;
+}
+
+.legend,
+.axis {
+  font-family: var(--mosaic-font-mono);
+  letter-spacing: 0.02em;
 }
 
 .legend {
@@ -58,11 +92,14 @@
   width: 14px;
   height: 3px;
   border-radius: 999px;
-  background: var(--mosaic-primary);
+  background: var(--mosaic-text);
 }
 
 .swatchSecondary {
-  background: var(--mosaic-success);
+  height: 0;
+  border-top: 2px dashed var(--mosaic-text-muted);
+  border-radius: 0;
+  background: none;
 }
 
 .axis {
@@ -93,7 +130,7 @@
 }
 
 .track {
-  height: 8px;
+  height: 6px;
   overflow: hidden;
   border-radius: 999px;
   background: var(--mosaic-surface-strong);
@@ -103,7 +140,7 @@
   height: 100%;
   display: block;
   border-radius: inherit;
-  background: var(--mosaic-primary);
+  background: var(--mosaic-text);
 }
 
 .fillWarning {
@@ -133,7 +170,7 @@
 .bucketBar {
   min-height: 2px;
   border-radius: 4px 4px 0 0;
-  background: var(--mosaic-primary);
+  background: var(--mosaic-text);
 }
 
 .bucketLabel {
